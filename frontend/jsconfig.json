@@ -1,4 +1,9 @@
 {
-  "draft": true,
-  "path": "frontend/jsconfig.json"
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src"]
 }

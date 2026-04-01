@@ -1,1 +1,8 @@
-# draft placeholder for frontend/.gitignore
+node_modules/
+dist/
+.npm-cache/
+.npm-appdata/
+.edge-*/
+vite-dev*.log
+qa-*.png
+.env.local

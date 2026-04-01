@@ -1,1 +1,1 @@
-// draft placeholder for frontend/.eslintrc.js
+export { default } from "./eslint.config.js";
