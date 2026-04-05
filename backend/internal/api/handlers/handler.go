@@ -1,1 +1,221 @@
-package draft
+package handlers
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/sanjeewa/agentic-orchestrator/internal/api/middlewares"
+	"github.com/sanjeewa/agentic-orchestrator/internal/config"
+	"github.com/sanjeewa/agentic-orchestrator/internal/core/healing"
+	"github.com/sanjeewa/agentic-orchestrator/internal/core/runner"
+	"github.com/sanjeewa/agentic-orchestrator/internal/core/synthesizer"
+	workflowvalidator "github.com/sanjeewa/agentic-orchestrator/internal/core/validator"
+	"github.com/sanjeewa/agentic-orchestrator/internal/models"
+	"github.com/sanjeewa/agentic-orchestrator/internal/repository"
+	"go.uber.org/zap"
+)
+
+type Handler struct {
+	Cfg       config.Config
+	Store     *repository.Store
+	Synth     *synthesizer.Service
+	Validator *workflowvalidator.WorkflowValidator
+	Runner    *runner.Executor
+	Healer    *healing.Healer
+	Log       *zap.Logger
+}
+
+func New(cfg config.Config, store *repository.Store, synth *synthesizer.Service, validator *workflowvalidator.WorkflowValidator, exec *runner.Executor, healer *healing.Healer, log *zap.Logger) *Handler {
+	return &Handler{Cfg: cfg, Store: store, Synth: synth, Validator: validator, Runner: exec, Healer: healer, Log: log}
+}
+
+func (h *Handler) Health(c *fiber.Ctx) error {
+	return c.JSON(models.OK(map[string]interface{}{
+		"service":     h.Cfg.AppName,
+		"environment": h.Cfg.Environment,
+		"status":      "healthy",
+		"time":        time.Now().UTC(),
+	}, "OK", nil))
+}
+
+func (h *Handler) parseBody(c *fiber.Ctx, target interface{}) error {
+	if err := c.BodyParser(target); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+	}
+	return nil
+}
+
+func (h *Handler) currentUserID(c *fiber.Ctx) string {
+	userID, _ := c.Locals(middlewares.UserIDKey).(string)
+	if userID == "" {
+		return "usr_001"
+	}
+	return userID
+}
+
+func (h *Handler) currentUser(c *fiber.Ctx) *models.User {
+	userID := h.currentUserID(c)
+	h.Store.Mu.RLock()
+	defer h.Store.Mu.RUnlock()
+	if user, ok := h.Store.Users[userID]; ok {
+		return user
+	}
+	return h.Store.Users["usr_001"]
+}
+
+func (h *Handler) permissions(c *fiber.Ctx) []string {
+	user := h.currentUser(c)
+	if user == nil {
+		return nil
+	}
+	return user.Permissions
+}
+
+func principalFromUser(user *models.User) models.Principal {
+	if user == nil {
+		return models.Principal{ID: "system", Name: "System"}
+	}
+	return models.Principal{ID: user.ID, Name: user.Name}
+}
+
+func (h *Handler) tokenForUser(userID string) (models.TokenPair, error) {
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"sub": userID,
+		"iat": now.Unix(),
+		"exp": now.Add(h.Cfg.TokenTTL).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	access, err := token.SignedString([]byte(h.Cfg.JWTSecret))
+	if err != nil {
+		return models.TokenPair{}, err
+	}
+
+	return models.TokenPair{
+		AccessToken:  access,
+		RefreshToken: "refresh_" + randomHex(24),
+		ExpiresIn:    int(h.Cfg.TokenTTL.Seconds()),
+	}, nil
+}
+
+func randomHex(size int) string {
+	buffer := make([]byte, size)
+	if _, err := rand.Read(buffer); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buffer)
+}
+
+func pageLimit(c *fiber.Ctx) (int, int) {
+	page := c.QueryInt("page", 1)
+	limit := c.QueryInt("limit", 20)
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	return page, limit
+}
+
+func paginate[T any](items []T, page, limit int) ([]T, models.PaginationMeta) {
+	total := len(items)
+	totalPages := int(math.Ceil(float64(total) / float64(limit)))
+	start := (page - 1) * limit
+	if start > total {
+		return []T{}, models.PaginationMeta{Page: page, Limit: limit, Total: total, TotalPages: totalPages}
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	return items[start:end], models.PaginationMeta{Page: page, Limit: limit, Total: total, TotalPages: totalPages}
+}
+
+func mergeMap(dst map[string]interface{}, src map[string]interface{}) map[string]interface{} {
+	if dst == nil {
+		dst = map[string]interface{}{}
+	}
+	for key, value := range src {
+		if value != nil {
+			dst[key] = value
+		}
+	}
+	return dst
+}
+
+func decodeMap(c *fiber.Ctx) map[string]interface{} {
+	payload := map[string]interface{}{}
+	_ = c.BodyParser(&payload)
+	return payload
+}
+
+func initials(name string) string {
+	parts := strings.Fields(name)
+	if len(parts) == 0 {
+		return "U"
+	}
+	out := ""
+	for _, part := range parts {
+		out += strings.ToUpper(part[:1])
+		if len(out) == 2 {
+			break
+		}
+	}
+	return out
+}
+
+func parseStringSlice(value interface{}) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, fmt.Sprint(item))
+		}
+		return out
+	case string:
+		if typed == "" {
+			return []string{}
+		}
+		return strings.Split(typed, ",")
+	default:
+		return []string{}
+	}
+}
+
+func queryMeta(c *fiber.Ctx, keys ...string) map[string]interface{} {
+	meta := map[string]interface{}{}
+	for _, key := range keys {
+		if value := c.Query(key); value != "" {
+			meta[key] = value
+		}
+	}
+	return meta
+}
+
+func toInt(value interface{}, fallback int) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case float64:
+		return int(typed)
+	case string:
+		parsed, err := strconv.Atoi(typed)
+		if err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
