@@ -1,1 +1,19 @@
-/* draft placeholder for frontend/src/styles/theme.css */
+:root {
+  --color-primary: #84006a;
+  --color-background: #fafafa;
+  --color-surface: #ffffff;
+  --color-text: #333333;
+  --color-muted: #6b7280;
+  --color-border: #e5e7eb;
+  --radius-control: 999px;
+  --radius-panel: 14px;
+  --shadow-panel: 0 14px 30px rgba(0, 0, 0, 0.12);
+}
+
+.dark {
+  --color-background: #0f0f0f;
+  --color-surface: #1a1a1a;
+  --color-text: #f9fafb;
+  --color-muted: #9ca3af;
+  --color-border: #262626;
+}

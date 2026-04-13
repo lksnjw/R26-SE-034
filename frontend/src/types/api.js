@@ -1,1 +1,8 @@
-// draft placeholder for frontend/src/types/api.js
+/**
+ * @template T
+ * @typedef {Object} ApiResponse
+ * @property {T} data
+ * @property {string=} message
+ */
+
+export {};

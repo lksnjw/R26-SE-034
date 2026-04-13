@@ -1,1 +1,20 @@
-/* draft placeholder for frontend/src/styles/markdown.css */
+.markdown-body {
+  color: inherit;
+}
+
+.markdown-body p + p {
+  margin-top: 0.75rem;
+}
+
+.markdown-body code {
+  border-radius: 0.45rem;
+  background: rgba(132, 0, 106, 0.09);
+  padding: 0.1rem 0.35rem;
+  color: #84006a;
+  font-size: 0.85em;
+}
+
+.dark .markdown-body code {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f0abfc;
+}

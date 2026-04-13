@@ -1,4 +1,5 @@
 {
-  "draft": true,
-  "path": "frontend/src/locales/en/errors.json"
+  "notFound": "Page not found",
+  "unauthorized": "Unauthorized",
+  "serverError": "Server error"
 }

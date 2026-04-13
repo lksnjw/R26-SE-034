@@ -1,1 +1,5 @@
-// draft placeholder for frontend/src/components/navigation/SidebarItem.jsx
+function SidebarItem({ children }) {
+  return children;
+}
+
+export default SidebarItem;

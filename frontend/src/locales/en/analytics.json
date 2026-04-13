@@ -1,4 +1,5 @@
 {
-  "draft": true,
-  "path": "frontend/src/locales/en/analytics.json"
+  "title": "Workflow Analytics",
+  "runsToday": "Runs Today",
+  "avgLatency": "Average Latency"
 }

@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/config/sentry.js
+export function initSentry() {
+  const dsn = import.meta.env.VITE_SENTRY_DSN;
+  if (!dsn) {
+    return false;
+  }
+  return true;
+}

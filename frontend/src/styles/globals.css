@@ -1,1 +1,82 @@
-/* draft placeholder for frontend/src/styles/globals.css */
+@import url("https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  font-family: "Open Sans", sans-serif;
+  background: #0f0f0f;
+  color: #111827;
+  overflow-x: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+::selection {
+  color: #ffffff;
+  background: #84006a;
+}
+
+@layer components {
+  .surface-panel {
+    @apply border border-gray-200 bg-white shadow-sm transition-colors duration-200 dark:border-darkBackgroundVery dark:bg-darkBackground;
+  }
+
+  .soft-panel {
+    @apply border border-gray-200 bg-backgroundLight transition-colors duration-200 dark:border-darkBackgroundVery dark:bg-darkBackgroundVery;
+  }
+
+  .icon-button {
+    @apply flex h-10 w-10 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-400 transition-colors duration-200 hover:bg-gray-50 hover:text-gray-700 dark:border-gray-700 dark:bg-darkBackground dark:text-gray-300 dark:hover:bg-darkBackgroundVery dark:hover:text-white;
+  }
+
+  .section-title {
+    @apply text-xl font-semibold text-gray-900 dark:text-white;
+  }
+
+  .section-subtitle {
+    @apply text-sm leading-6 text-gray-500 dark:text-gray-400;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide {
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}

@@ -1,1 +1,4 @@
-// draft placeholder for frontend/src/config/i18n.js
+export const i18nConfig = {
+  defaultLocale: "en",
+  supportedLocales: ["en", "si"],
+};

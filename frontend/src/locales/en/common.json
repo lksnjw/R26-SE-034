@@ -1,4 +1,6 @@
 {
-  "draft": true,
-  "path": "frontend/src/locales/en/common.json"
+  "appName": "Agentic Workflow Engine",
+  "save": "Save",
+  "cancel": "Cancel",
+  "search": "Search"
 }

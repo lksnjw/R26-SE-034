@@ -1,1 +1,41 @@
-// draft placeholder for frontend/src/context/NotificationContext.jsx
+import { createContext, useContext, useMemo, useState } from "react";
+
+const NotificationContext = createContext(null);
+
+export function NotificationProvider({ children }) {
+  const [notifications, setNotifications] = useState([]);
+
+  const notify = (message, tone = "info") => {
+    const id = crypto.randomUUID?.() ?? `${Date.now()}`;
+    setNotifications((items) => [...items, { id, message, tone }]);
+    window.setTimeout(() => {
+      setNotifications((items) => items.filter((item) => item.id !== id));
+    }, 3400);
+  };
+
+  const value = useMemo(() => ({ notifications, notify }), [notifications]);
+
+  return (
+    <NotificationContext.Provider value={value}>
+      {children}
+      <div className="fixed right-6 top-20 z-[9999] flex w-[320px] max-w-[calc(100vw-3rem)] flex-col gap-3">
+        {notifications.map((item) => (
+          <div
+            key={item.id}
+            className="animate-slide-up rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-800 shadow-panel dark:border-gray-800 dark:bg-darkBackground dark:text-gray-100"
+          >
+            {item.message}
+          </div>
+        ))}
+      </div>
+    </NotificationContext.Provider>
+  );
+}
+
+export function useNotifications() {
+  const context = useContext(NotificationContext);
+  if (!context) {
+    throw new Error("useNotifications must be used within NotificationProvider");
+  }
+  return context;
+}

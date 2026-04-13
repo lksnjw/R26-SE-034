@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/layouts/AdminLayout.jsx
+import AppLayout from "./AppLayout";
+
+function AdminLayout({ children }) {
+  return <AppLayout>{children}</AppLayout>;
+}
+
+export default AdminLayout;

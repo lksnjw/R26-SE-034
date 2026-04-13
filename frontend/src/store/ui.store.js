@@ -1,1 +1,6 @@
-// draft placeholder for frontend/src/store/ui.store.js
+import { create } from "zustand";
+
+export const useUiStore = create((set) => ({
+  isSidebarCollapsed: false,
+  setSidebarCollapsed: (isSidebarCollapsed) => set({ isSidebarCollapsed }),
+}));

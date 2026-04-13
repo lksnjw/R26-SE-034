@@ -1,4 +1,5 @@
 {
-  "draft": true,
-  "path": "frontend/src/locales/en/workflows.json"
+  "listTitle": "Workflow Blueprints",
+  "builderTitle": "Workflow Builder",
+  "templatesTitle": "Template Gallery"
 }
