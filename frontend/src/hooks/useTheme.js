@@ -1,1 +1,1 @@
-// draft placeholder for frontend/src/hooks/useTheme.js
+export { useTheme as default, useTheme } from "../context/ThemeContext";

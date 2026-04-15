@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/components/shared/forms/SearchBar.jsx
+import Input from "../ui/Input";
+
+function SearchBar(props) {
+  return <Input type="search" placeholder="Search..." {...props} />;
+}
+
+export default SearchBar;

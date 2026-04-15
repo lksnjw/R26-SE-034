@@ -1,1 +1,6 @@
-// draft placeholder for frontend/src/utils/date.utils.js
+export function formatDateTime(value) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}

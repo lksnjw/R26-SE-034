@@ -1,1 +1,11 @@
-// draft placeholder for frontend/src/components/shared/feedback/LoadingOverlay.jsx
+import Spinner from "../ui/Spinner";
+
+function LoadingOverlay() {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center bg-white/70 dark:bg-black/60">
+      <Spinner className="text-primary" />
+    </div>
+  );
+}
+
+export default LoadingOverlay;

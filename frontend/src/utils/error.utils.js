@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/utils/error.utils.js
+export function formatApiError(error) {
+  return error?.response?.data?.message ?? error?.message ?? "Unexpected error";
+}
