@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/services/user.service.js
+import { users } from "../constants/mockData";
+
+export const userService = {
+  async list() {
+    return users;
+  },
+};

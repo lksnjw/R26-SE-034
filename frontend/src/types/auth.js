@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/types/auth.js
+/**
+ * @typedef {Object} AuthSession
+ * @property {string} token
+ * @property {import("./user.js").User} user
+ */
+
+export {};

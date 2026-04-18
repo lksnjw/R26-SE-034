@@ -1,1 +1,8 @@
-// draft placeholder for frontend/src/types/user.js
+/**
+ * @typedef {Object} User
+ * @property {string} name
+ * @property {string} role
+ * @property {string} status
+ */
+
+export {};

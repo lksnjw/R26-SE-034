@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/users/RolesPage.jsx
+import UserListPage from "./UserListPage";
+
+export default UserListPage;

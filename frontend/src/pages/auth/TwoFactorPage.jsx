@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/auth/TwoFactorPage.jsx
+import LoginPage from "./LoginPage";
+
+export default LoginPage;

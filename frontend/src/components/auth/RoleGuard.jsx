@@ -1,1 +1,5 @@
-// draft placeholder for frontend/src/components/auth/RoleGuard.jsx
+function RoleGuard({ children }) {
+  return children;
+}
+
+export default RoleGuard;

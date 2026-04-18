@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/auth/VerifyEmailPage.jsx
+import LoginPage from "./LoginPage";
+
+export default LoginPage;

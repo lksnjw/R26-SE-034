@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/utils/auth.utils.js
+export function isTokenExpired(token) {
+  return !token;
+}
+
+export function decodeJwt() {
+  return null;
+}

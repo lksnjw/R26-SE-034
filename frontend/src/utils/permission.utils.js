@@ -1,1 +1,4 @@
-// draft placeholder for frontend/src/utils/permission.utils.js
+export function hasPermission(user, permission) {
+  if (!user || !permission) return false;
+  return user.role === "Platform Admin";
+}

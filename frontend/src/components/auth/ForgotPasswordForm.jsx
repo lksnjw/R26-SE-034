@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/components/auth/ForgotPasswordForm.jsx
+import LoginForm from "./LoginForm";
+
+export default LoginForm;

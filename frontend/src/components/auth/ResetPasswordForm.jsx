@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/components/auth/ResetPasswordForm.jsx
+import LoginForm from "./LoginForm";
+
+export default LoginForm;

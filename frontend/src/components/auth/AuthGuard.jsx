@@ -1,1 +1,5 @@
-// draft placeholder for frontend/src/components/auth/AuthGuard.jsx
+function AuthGuard({ children }) {
+  return children;
+}
+
+export default AuthGuard;

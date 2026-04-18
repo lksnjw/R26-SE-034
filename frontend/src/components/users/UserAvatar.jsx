@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/components/users/UserAvatar.jsx
+import Avatar from "../shared/ui/Avatar";
+
+export default Avatar;

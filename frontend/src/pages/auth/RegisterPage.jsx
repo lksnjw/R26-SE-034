@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/auth/RegisterPage.jsx
+import LoginPage from "./LoginPage";
+
+export default LoginPage;

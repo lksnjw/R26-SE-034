@@ -1,1 +1,8 @@
-// draft placeholder for frontend/src/hooks/usePermissions.js
+export function usePermissions() {
+  return {
+    can: () => true,
+    role: "Platform Admin",
+  };
+}
+
+export default usePermissions;
