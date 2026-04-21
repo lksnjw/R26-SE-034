@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/components/analytics/AreaChart.jsx
+import LineChart from "./LineChart";
+
+export default LineChart;

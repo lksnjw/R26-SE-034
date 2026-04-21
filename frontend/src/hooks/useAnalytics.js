@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/hooks/useAnalytics.js
+import { analyticsSeries, dashboardMetrics } from "../constants/mockData";
+
+export function useAnalytics() {
+  return { analyticsSeries, dashboardMetrics };
+}
+
+export default useAnalytics;

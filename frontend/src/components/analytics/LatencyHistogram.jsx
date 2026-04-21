@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/components/analytics/LatencyHistogram.jsx
+import BarChart from "./BarChart";
+
+export default BarChart;

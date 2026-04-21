@@ -1,1 +1,10 @@
-// draft placeholder for frontend/src/services/analytics.service.js
+import { analyticsSeries, dashboardMetrics } from "../constants/mockData";
+
+export const analyticsService = {
+  async summary() {
+    return dashboardMetrics;
+  },
+  async series() {
+    return analyticsSeries;
+  },
+};

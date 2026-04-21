@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/analytics/UsagePage.jsx
+import AnalyticsPage from "./AnalyticsPage";
+
+export default AnalyticsPage;
