@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/components/canvas/nodes/HealingNode.jsx
+import TriggerNode from "./TriggerNode";
+
+function HealingNode(props) {
+  return <TriggerNode label="Self-Healing" {...props} />;
+}
+
+export default HealingNode;

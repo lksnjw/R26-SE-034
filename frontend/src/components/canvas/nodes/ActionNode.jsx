@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/components/canvas/nodes/ActionNode.jsx
+import TriggerNode from "./TriggerNode";
+
+function ActionNode(props) {
+  return <TriggerNode label="Action" {...props} />;
+}
+
+export default ActionNode;

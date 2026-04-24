@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/workflows/WorkflowNewPage.jsx
+import WorkflowBuilderPage from "./WorkflowBuilderPage";
+
+export default WorkflowBuilderPage;

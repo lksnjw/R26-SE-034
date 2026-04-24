@@ -1,1 +1,2 @@
-// draft placeholder for frontend/src/components/canvas/edges/index.js
+export { default as ConditionalEdge } from "./ConditionalEdge";
+export { default as DefaultEdge } from "./DefaultEdge";

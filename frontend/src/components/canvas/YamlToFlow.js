@@ -1,1 +1,8 @@
-// draft placeholder for frontend/src/components/canvas/YamlToFlow.js
+export function yamlToFlow() {
+  return {
+    nodes: [],
+    edges: [],
+  };
+}
+
+export default yamlToFlow;

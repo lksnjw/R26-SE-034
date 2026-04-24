@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/components/canvas/nodes/ConditionNode.jsx
+import TriggerNode from "./TriggerNode";
+
+function ConditionNode(props) {
+  return <TriggerNode label="Condition" {...props} />;
+}
+
+export default ConditionNode;

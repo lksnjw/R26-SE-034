@@ -1,1 +1,35 @@
-// draft placeholder for frontend/src/components/workflows/WorkflowTable.jsx
+import DataTable from "../shared/tables/DataTable";
+import WorkflowBadge from "./WorkflowBadge";
+
+const columns = [
+  { key: "name", label: "Workflow" },
+  { key: "owner", label: "Owner" },
+  { key: "trigger", label: "Trigger" },
+  { key: "successRate", label: "Success" },
+  { key: "status", label: "Status" },
+];
+
+function WorkflowTable({ workflows }) {
+  return (
+    <DataTable
+      columns={columns}
+      rows={workflows}
+      renderCell={(workflow, column) => {
+        if (column.key === "status") {
+          return <WorkflowBadge status={workflow.status} />;
+        }
+        if (column.key === "name") {
+          return (
+            <div>
+              <p className="font-bold text-gray-950 dark:text-white">{workflow.name}</p>
+              <p className="mt-1 text-xs text-gray-500">{workflow.id}</p>
+            </div>
+          );
+        }
+        return workflow[column.key];
+      }}
+    />
+  );
+}
+
+export default WorkflowTable;
