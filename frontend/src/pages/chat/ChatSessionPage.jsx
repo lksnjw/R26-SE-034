@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/chat/ChatSessionPage.jsx
+import ChatPage from "./ChatPage";
+
+export default ChatPage;
