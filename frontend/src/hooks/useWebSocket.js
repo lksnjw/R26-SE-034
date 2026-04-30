@@ -1,1 +1,9 @@
-// draft placeholder for frontend/src/hooks/useWebSocket.js
+export function useWebSocket() {
+  return {
+    readyState: "mock-connected",
+    sendJsonMessage: () => undefined,
+    lastJsonMessage: null,
+  };
+}
+
+export default useWebSocket;

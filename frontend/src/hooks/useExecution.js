@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/hooks/useExecution.js
+import { executions, logs } from "../constants/mockData";
+
+export function useExecution() {
+  return { executions, logs };
+}
+
+export default useExecution;
