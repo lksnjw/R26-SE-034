@@ -1,1 +1,1 @@
-// draft placeholder for frontend/src/hooks/useNotifications.js
+export { useNotifications as default, useNotifications } from "../context/NotificationContext";

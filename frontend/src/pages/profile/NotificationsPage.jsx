@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/profile/NotificationsPage.jsx
+import SecurityPage from "./SecurityPage";
+
+export default SecurityPage;

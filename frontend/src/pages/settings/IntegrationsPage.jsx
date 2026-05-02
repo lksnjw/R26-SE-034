@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/settings/IntegrationsPage.jsx
+import SettingsPage from "./SettingsPage";
+
+export default SettingsPage;

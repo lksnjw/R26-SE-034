@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/settings/BillingPage.jsx
+import SettingsPage from "./SettingsPage";
+
+export default SettingsPage;

@@ -1,1 +1,3 @@
-// draft placeholder for frontend/src/pages/profile/ApiKeysPage.jsx
+import ApiKeyCard from "../../components/settings/ApiKeyCard";
+
+export default ApiKeyCard;
