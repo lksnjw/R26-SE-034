@@ -1,1 +1,7 @@
-// draft placeholder for frontend/src/tests/unit/components/ChatWindow.test.jsx
+import { describe, expect, test } from "@jest/globals";
+
+describe("ChatWindow", () => {
+  test("placeholder suite", () => {
+    expect(true).toBe(true);
+  });
+});

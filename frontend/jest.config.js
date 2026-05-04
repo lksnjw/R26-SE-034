@@ -1,1 +1,7 @@
-// draft placeholder for frontend/jest.config.js
+export default {
+  testEnvironment: "jsdom",
+  setupFilesAfterEnv: ["<rootDir>/src/tests/setup.js"],
+  moduleNameMapper: {
+    "^@/(.*)$": "<rootDir>/src/$1",
+  },
+};
