@@ -1,1 +1,24 @@
-# draft placeholder for .gitignore
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+node_modules/
+dist/
+.npm-cache/
+.npm-appdata/
+.edge-*/
+
+.gocache/
+.gomodcache/
+bin/
+tmp/
+
+*.log
+coverage.out
+*.test
+qa-*.png
+
+RECONSTRUCTED_PLAN.md
