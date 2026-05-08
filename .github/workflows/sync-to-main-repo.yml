@@ -1,0 +1,39 @@
+name: Sync Low Code Platform to Main Repo
+
+on:
+  push:
+    branches:
+      - main
+      - workflow_generation
+
+jobs:
+  sync-to-main-repo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main repository
+        uses: actions/checkout@v4
+        with:
+          repository: lksnjw/R26-SE-034
+          ref: low_code_platform
+          token: ${{ secrets.MAIN_REPO_PAT }}
+          fetch-depth: 0
+
+      - name: Configure Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add low-code repo as remote
+        run: |
+          git remote remove lowcode || true
+          git remote add lowcode https://github.com/lksnjw/low-code-workflow-engine.git
+          git fetch lowcode
+
+      - name: Pull latest low-code repo into subtree folder
+        run: |
+          git subtree pull --prefix=low_code_platform lowcode main -m "Sync low-code workflow engine subtree"
+
+      - name: Push updated branch to main repository
+        run: |
+          git push origin low_code_platform
