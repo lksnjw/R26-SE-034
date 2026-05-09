@@ -24,6 +24,23 @@ func (h *Handler) runWorkflowByID(c *fiber.Ctx, workflowID string, req models.Ru
 	if !validation.Valid {
 		return c.Status(fiber.StatusUnprocessableEntity).JSON(models.Fail("Workflow failed validation before execution", validation))
 	}
+	if h.RegistryValidator != nil {
+		userRole := "anonymous"
+		if user := h.currentUser(c); user != nil {
+			userRole = user.Role.Name
+		}
+		fullValidation := h.RegistryValidator.ValidateCandidate("execution_candidate", workflow.YAML, userRole)
+		if !fullValidation.Passed {
+			return c.Status(fiber.StatusUnprocessableEntity).JSON(models.Fail("Workflow failed full registry validation before execution", fullValidation))
+		}
+		if req.DryRun {
+			planned := []map[string]interface{}{}
+			for _, step := range blueprint.Steps {
+				planned = append(planned, map[string]interface{}{"id": step.ID, "action": step.Action, "parameters": step.Parameters})
+			}
+			return c.JSON(models.OK(map[string]interface{}{"can_execute": true, "dry_run": true, "validation": fullValidation, "planned_steps": planned}, "Dry run validation passed", nil))
+		}
+	}
 
 	now := time.Now().UTC()
 	executionID := "run-" + randomHex(4)
@@ -45,9 +62,27 @@ func (h *Handler) runWorkflowByID(c *fiber.Ctx, workflowID string, req models.Ru
 		execution.Status = models.StatusHealing
 		repairedYAML, event, healErr := h.Healer.Repair(c.Context(), workflow.Name, workflow.YAML, err)
 		if healErr == nil {
+			repairValid := true
+			if h.RegistryValidator != nil {
+				userRole := "anonymous"
+				if user := h.currentUser(c); user != nil {
+					userRole = user.Role.Name
+				}
+				repairValidation := h.RegistryValidator.ValidateCandidate("repaired_candidate", repairedYAML, userRole)
+				repairValid = repairValidation.Passed
+				if event != nil {
+					event["validation"] = repairValidation
+				}
+			}
 			h.Store.Mu.Lock()
-			workflow.YAML = repairedYAML
-			h.Store.Healing[executionID] = models.HealingReport{ExecutionID: executionID, WorkflowID: workflow.ID, Status: "REPAIRED", Summary: "Execution failed and the self-healing module generated a corrected YAML path.", Events: []map[string]interface{}{event}, Metrics: map[string]interface{}{"ownerNotified": true, "duplicateWritesPrevented": true}}
+			status := "REPAIRED_NOT_SAVED"
+			summary := "Execution failed and self-healing generated YAML, but it did not pass full registry validation."
+			if repairValid {
+				workflow.YAML = repairedYAML
+				status = "REPAIRED"
+				summary = "Execution failed and the self-healing module generated a corrected YAML path that passed validation."
+			}
+			h.Store.Healing[executionID] = models.HealingReport{ExecutionID: executionID, WorkflowID: workflow.ID, Status: status, Summary: summary, Events: []map[string]interface{}{event}, Metrics: map[string]interface{}{"ownerNotified": true, "duplicateWritesPrevented": true}}
 			h.Store.Mu.Unlock()
 		}
 	} else {

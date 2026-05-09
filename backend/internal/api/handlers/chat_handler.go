@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/sanjeewa/agentic-orchestrator/internal/core/orchestrator"
 	"github.com/sanjeewa/agentic-orchestrator/internal/models"
 )
 
@@ -131,19 +132,18 @@ func (h *Handler) DeleteChatSession(c *fiber.Ctx) error {
 
 func (h *Handler) SendChatMessage(c *fiber.Ctx) error {
 	body := decodeMap(c)
-	message := fmt.Sprint(body["message"])
+	message := fmt.Sprint(body["content"])
+	if message == "" || message == "<nil>" {
+		message = fmt.Sprint(body["message"])
+	}
 	if message == "" || message == "<nil>" {
 		return fiber.NewError(fiber.StatusBadRequest, "message is required")
 	}
 	model, _ := body["model"].(string)
 	mode, _ := body["mode"].(string)
-	result, _ := h.Synth.Synthesize(c.Context(), message, mode, model, map[string]interface{}{"workflowId": body["workflowId"]})
-	validation, blueprint := h.Validator.ValidateYAML(result.YAML, h.permissions(c))
-	canvas := previewCanvas("chat-preview", blueprint)
 
 	now := time.Now().UTC()
 	userMessage := models.ChatMessage{ID: "msg_" + randomHex(4), Role: "user", Text: message, CreatedAt: now}
-	assistantMessage := models.ChatMessage{ID: "msg_" + randomHex(4), Role: "assistant", Text: "I generated a validated YAML workflow draft and updated the flow preview.", CreatedAt: now.Add(2 * time.Second)}
 
 	h.Store.Mu.Lock()
 	session, ok := h.Store.Chats[c.Params("id")]
@@ -151,18 +151,87 @@ func (h *Handler) SendChatMessage(c *fiber.Ctx) error {
 		session = &models.ChatSessionDetail{ChatSession: models.ChatSession{ID: c.Params("id"), Title: "Workflow conversation", CreatedAt: now}, Messages: []models.ChatMessage{}}
 		h.Store.Chats[session.ID] = session
 	}
-	session.Messages = append(session.Messages, userMessage, assistantMessage)
+	session.Messages = append(session.Messages, userMessage)
+	h.Store.Mu.Unlock()
+
+	if h.Orchestrator == nil {
+		result, _ := h.Synth.Synthesize(c.Context(), message, mode, model, map[string]interface{}{"workflowId": body["workflowId"]})
+		validation, blueprint := h.Validator.ValidateYAML(result.YAML, h.permissions(c))
+		canvas := previewCanvas("chat-preview", blueprint)
+		assistantMessage := models.ChatMessage{ID: "msg_" + randomHex(4), Role: "assistant", Text: "I generated a validated YAML workflow draft and updated the flow preview.", CreatedAt: now.Add(2 * time.Second)}
+		h.Store.Mu.Lock()
+		session.Messages = append(session.Messages, assistantMessage)
+		session.MessageCount = len(session.Messages)
+		session.UpdatedAt = now
+		h.Store.Mu.Unlock()
+		return c.JSON(models.OK(map[string]interface{}{
+			"userMessage":      userMessage,
+			"assistantMessage": assistantMessage,
+			"artifacts": map[string]interface{}{
+				"yaml":        result.YAML,
+				"flowPreview": canvas,
+				"validation":  validation,
+			},
+		}, "Message processed", nil))
+	}
+
+	user := h.currentUser(c)
+	userRole := "anonymous"
+	if user != nil {
+		userRole = user.Role.Name
+	}
+	generateCount := toInt(body["generate_candidates"], h.Cfg.CandidateCount)
+	if generateCount <= 0 {
+		generateCount = h.Cfg.CandidateCount
+	}
+	dryRun, _ := body["dry_run"].(bool)
+	response, err := h.Orchestrator.HandleChatMessage(c.Context(), orchestrator.ChatRequest{
+		SessionID:     c.Params("id"),
+		UserText:      message,
+		UserRole:      userRole,
+		Mode:          mode,
+		Model:         model,
+		TopKTools:     toInt(body["top_k_tools"], h.Cfg.SemanticSearchTopKTools),
+		TopKRules:     toInt(body["top_k_rules"], h.Cfg.SemanticSearchTopKRules),
+		TopKTemplates: toInt(body["top_k_templates"], h.Cfg.SemanticSearchTopKTemplates),
+		TopKExamples:  toInt(body["top_k_examples"], h.Cfg.SemanticSearchTopKExamples),
+		GenerateCount: generateCount,
+		DryRun:        dryRun,
+	})
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadGateway, "workflow orchestration failed: "+err.Error())
+	}
+
+	artifacts := map[string]interface{}{
+		"retrieval":              response.Retrieval,
+		"candidates":             response.Candidates,
+		"selected_candidate_id":  response.SelectedCandidateID,
+		"selected_workflow_yaml": response.SelectedWorkflowYAML,
+		"can_execute":            response.CanExecute,
+		"validation_summary":     response.ValidationSummary,
+		"blocking_errors":        response.BlockingErrors,
+		"next_action":            response.NextAction,
+	}
+	assistantMessage := models.ChatMessage{ID: "msg_" + randomHex(4), Role: "assistant", Text: response.AssistantMessage, Artifacts: artifacts, CreatedAt: now.Add(2 * time.Second)}
+
+	h.Store.Mu.Lock()
+	session.Messages = append(session.Messages, assistantMessage)
 	session.MessageCount = len(session.Messages)
 	session.UpdatedAt = now
 	h.Store.Mu.Unlock()
 
 	return c.JSON(models.OK(map[string]interface{}{
-		"userMessage":      userMessage,
-		"assistantMessage": assistantMessage,
-		"artifacts": map[string]interface{}{
-			"yaml":        result.YAML,
-			"flowPreview": canvas,
-			"validation":  validation,
-		},
+		"userMessage":            userMessage,
+		"assistantMessage":       assistantMessage,
+		"session_id":             response.SessionID,
+		"assistant_message":      response.AssistantMessage,
+		"retrieval":              response.Retrieval,
+		"candidates":             response.Candidates,
+		"selected_candidate_id":  response.SelectedCandidateID,
+		"selected_workflow_yaml": response.SelectedWorkflowYAML,
+		"can_execute":            response.CanExecute,
+		"validation_summary":     response.ValidationSummary,
+		"blocking_errors":        response.BlockingErrors,
+		"next_action":            response.NextAction,
 	}, "Message processed", nil))
 }

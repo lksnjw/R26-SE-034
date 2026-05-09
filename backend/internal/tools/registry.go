@@ -24,6 +24,13 @@ func (r *Registry) Register(tool Tool) {
 	r.tools[tool.Name()] = tool
 }
 
+func (r *Registry) Has(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.tools[name]
+	return ok
+}
+
 func (r *Registry) Get(name string) (Tool, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

@@ -1,0 +1,12 @@
+{
+  "fingerprint": "78f7e084c70ab5b18ad37c57",
+  "dataset_root": "C:\\Users\\LKsnj\\Desktop\\RESEARCH_LAKSHAN\\IMPLIMENTATION\\low-code-workflow-engine\\backend\\dataset",
+  "retrieval_method": "embedding_faiss_ollama_nomic-embed-text",
+  "document_count": 209,
+  "index_profile": "quick",
+  "max_items_per_file": 10,
+  "embedding_provider": "ollama",
+  "embedding_model": "nomic-embed-text",
+  "index_dimensions": 768,
+  "created_at_unix": 1778327548.7378867
+}

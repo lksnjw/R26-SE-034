@@ -14,7 +14,10 @@ import (
 	"github.com/sanjeewa/agentic-orchestrator/internal/api/middlewares"
 	"github.com/sanjeewa/agentic-orchestrator/internal/config"
 	"github.com/sanjeewa/agentic-orchestrator/internal/core/healing"
+	"github.com/sanjeewa/agentic-orchestrator/internal/core/orchestrator"
+	coreregistry "github.com/sanjeewa/agentic-orchestrator/internal/core/registry"
 	"github.com/sanjeewa/agentic-orchestrator/internal/core/runner"
+	"github.com/sanjeewa/agentic-orchestrator/internal/core/semanticsearch"
 	"github.com/sanjeewa/agentic-orchestrator/internal/core/synthesizer"
 	workflowvalidator "github.com/sanjeewa/agentic-orchestrator/internal/core/validator"
 	"github.com/sanjeewa/agentic-orchestrator/internal/models"
@@ -23,17 +26,21 @@ import (
 )
 
 type Handler struct {
-	Cfg       config.Config
-	Store     *repository.Store
-	Synth     *synthesizer.Service
-	Validator *workflowvalidator.WorkflowValidator
-	Runner    *runner.Executor
-	Healer    *healing.Healer
-	Log       *zap.Logger
+	Cfg               config.Config
+	Store             *repository.Store
+	Synth             *synthesizer.Service
+	Validator         *workflowvalidator.WorkflowValidator
+	Dataset           *coreregistry.Bundle
+	RegistryValidator *workflowvalidator.RegistryValidator
+	Search            *semanticsearch.Service
+	Orchestrator      *orchestrator.ChatOrchestrator
+	Runner            *runner.Executor
+	Healer            *healing.Healer
+	Log               *zap.Logger
 }
 
-func New(cfg config.Config, store *repository.Store, synth *synthesizer.Service, validator *workflowvalidator.WorkflowValidator, exec *runner.Executor, healer *healing.Healer, log *zap.Logger) *Handler {
-	return &Handler{Cfg: cfg, Store: store, Synth: synth, Validator: validator, Runner: exec, Healer: healer, Log: log}
+func New(cfg config.Config, store *repository.Store, synth *synthesizer.Service, validator *workflowvalidator.WorkflowValidator, dataset *coreregistry.Bundle, registryValidator *workflowvalidator.RegistryValidator, search *semanticsearch.Service, chatOrch *orchestrator.ChatOrchestrator, exec *runner.Executor, healer *healing.Healer, log *zap.Logger) *Handler {
+	return &Handler{Cfg: cfg, Store: store, Synth: synth, Validator: validator, Dataset: dataset, RegistryValidator: registryValidator, Search: search, Orchestrator: chatOrch, Runner: exec, Healer: healer, Log: log}
 }
 
 func (h *Handler) Health(c *fiber.Ctx) error {

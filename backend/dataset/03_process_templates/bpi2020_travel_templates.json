@@ -1,0 +1,2689 @@
+[
+  {
+    "template_id": "TPL-TRV-001",
+    "template_name": "Employee Travel Permit Variant 1",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for employee travel permit with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-001",
+      "TOOL-GLB-001",
+      "TOOL-TRV-002"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-PARAM-001",
+      "TRV-RBAC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of employee travel permit variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-001",
+        "tool_name": "travel.submit_travel_permit",
+        "purpose": "Execute submit travel permit as part of employee travel permit variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of employee travel permit variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-002",
+        "tool_name": "travel.approve_travel_permit",
+        "purpose": "Execute approve travel permit as part of employee travel permit variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit and approve employee travel permit."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-002",
+    "template_name": "Travel Reimbursement With Approval Variant 1",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for travel reimbursement with approval with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-006",
+      "TOOL-TRV-007",
+      "TOOL-GLB-001",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-PROC-002",
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-004",
+        "tool_name": "travel.submit_travel_declaration",
+        "purpose": "Execute submit travel declaration as part of travel reimbursement with approval variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of travel reimbursement with approval variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel reimbursement with approval variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of travel reimbursement with approval variant 1."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel reimbursement with approval variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit reimbursement with receipt validation and approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-003",
+    "template_name": "Missing Receipt Exception Variant 1",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for missing receipt exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-006",
+      "TOOL-TRV-027",
+      "TOOL-GLB-001",
+      "TOOL-TRV-028"
+    ],
+    "required_rules": [
+      "TRV-PARAM-001",
+      "TRV-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of missing receipt exception variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-027",
+        "tool_name": "travel.create_missing_receipt_exception",
+        "purpose": "Execute create missing receipt exception as part of missing receipt exception variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of missing receipt exception variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-028",
+        "tool_name": "travel.approve_missing_receipt_exception",
+        "purpose": "Execute approve missing receipt exception as part of missing receipt exception variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a missing receipt exception for a claim."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-004",
+    "template_name": "High Value Reimbursement Exception Variant 1",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for high value reimbursement exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of high value reimbursement exception variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-034",
+        "tool_name": "travel.request_department_manager_approval",
+        "purpose": "Execute request department manager approval as part of high value reimbursement exception variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-035",
+        "tool_name": "travel.request_finance_reimbursement_approval",
+        "purpose": "Execute request finance reimbursement approval as part of high value reimbursement exception variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of high value reimbursement exception variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Route high-value reimbursement for department and finance approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-005",
+    "template_name": "Employee Travel Permit Variant 2",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for employee travel permit with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-001",
+      "TOOL-GLB-001",
+      "TOOL-TRV-002"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-PARAM-001",
+      "TRV-RBAC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of employee travel permit variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-001",
+        "tool_name": "travel.submit_travel_permit",
+        "purpose": "Execute submit travel permit as part of employee travel permit variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of employee travel permit variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-002",
+        "tool_name": "travel.approve_travel_permit",
+        "purpose": "Execute approve travel permit as part of employee travel permit variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit and approve employee travel permit."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-006",
+    "template_name": "Travel Reimbursement With Approval Variant 2",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for travel reimbursement with approval with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-006",
+      "TOOL-TRV-007",
+      "TOOL-GLB-001",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-PROC-002",
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-004",
+        "tool_name": "travel.submit_travel_declaration",
+        "purpose": "Execute submit travel declaration as part of travel reimbursement with approval variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of travel reimbursement with approval variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel reimbursement with approval variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of travel reimbursement with approval variant 2."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel reimbursement with approval variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit reimbursement with receipt validation and approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-007",
+    "template_name": "Missing Receipt Exception Variant 2",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for missing receipt exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-006",
+      "TOOL-TRV-027",
+      "TOOL-GLB-001",
+      "TOOL-TRV-028"
+    ],
+    "required_rules": [
+      "TRV-PARAM-001",
+      "TRV-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of missing receipt exception variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-027",
+        "tool_name": "travel.create_missing_receipt_exception",
+        "purpose": "Execute create missing receipt exception as part of missing receipt exception variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of missing receipt exception variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-028",
+        "tool_name": "travel.approve_missing_receipt_exception",
+        "purpose": "Execute approve missing receipt exception as part of missing receipt exception variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a missing receipt exception for a claim."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-008",
+    "template_name": "High Value Reimbursement Exception Variant 2",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for high value reimbursement exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of high value reimbursement exception variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-034",
+        "tool_name": "travel.request_department_manager_approval",
+        "purpose": "Execute request department manager approval as part of high value reimbursement exception variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-035",
+        "tool_name": "travel.request_finance_reimbursement_approval",
+        "purpose": "Execute request finance reimbursement approval as part of high value reimbursement exception variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of high value reimbursement exception variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Route high-value reimbursement for department and finance approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-009",
+    "template_name": "Employee Travel Permit Variant 3",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for employee travel permit with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-001",
+      "TOOL-GLB-001",
+      "TOOL-TRV-002"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-PARAM-001",
+      "TRV-RBAC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of employee travel permit variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-001",
+        "tool_name": "travel.submit_travel_permit",
+        "purpose": "Execute submit travel permit as part of employee travel permit variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of employee travel permit variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-002",
+        "tool_name": "travel.approve_travel_permit",
+        "purpose": "Execute approve travel permit as part of employee travel permit variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit and approve employee travel permit."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-010",
+    "template_name": "Travel Reimbursement With Approval Variant 3",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for travel reimbursement with approval with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-006",
+      "TOOL-TRV-007",
+      "TOOL-GLB-001",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-PROC-002",
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-004",
+        "tool_name": "travel.submit_travel_declaration",
+        "purpose": "Execute submit travel declaration as part of travel reimbursement with approval variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of travel reimbursement with approval variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel reimbursement with approval variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of travel reimbursement with approval variant 3."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel reimbursement with approval variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit reimbursement with receipt validation and approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-011",
+    "template_name": "Missing Receipt Exception Variant 3",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for missing receipt exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-006",
+      "TOOL-TRV-027",
+      "TOOL-GLB-001",
+      "TOOL-TRV-028"
+    ],
+    "required_rules": [
+      "TRV-PARAM-001",
+      "TRV-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of missing receipt exception variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-027",
+        "tool_name": "travel.create_missing_receipt_exception",
+        "purpose": "Execute create missing receipt exception as part of missing receipt exception variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of missing receipt exception variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-028",
+        "tool_name": "travel.approve_missing_receipt_exception",
+        "purpose": "Execute approve missing receipt exception as part of missing receipt exception variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a missing receipt exception for a claim."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-012",
+    "template_name": "High Value Reimbursement Exception Variant 3",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for high value reimbursement exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of high value reimbursement exception variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-034",
+        "tool_name": "travel.request_department_manager_approval",
+        "purpose": "Execute request department manager approval as part of high value reimbursement exception variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-035",
+        "tool_name": "travel.request_finance_reimbursement_approval",
+        "purpose": "Execute request finance reimbursement approval as part of high value reimbursement exception variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of high value reimbursement exception variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Route high-value reimbursement for department and finance approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-013",
+    "template_name": "Employee Travel Permit Variant 4",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for employee travel permit with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-001",
+      "TOOL-GLB-001",
+      "TOOL-TRV-002"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-PARAM-001",
+      "TRV-RBAC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of employee travel permit variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-001",
+        "tool_name": "travel.submit_travel_permit",
+        "purpose": "Execute submit travel permit as part of employee travel permit variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of employee travel permit variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-002",
+        "tool_name": "travel.approve_travel_permit",
+        "purpose": "Execute approve travel permit as part of employee travel permit variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit and approve employee travel permit."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-014",
+    "template_name": "Travel Reimbursement With Approval Variant 4",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for travel reimbursement with approval with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-006",
+      "TOOL-TRV-007",
+      "TOOL-GLB-001",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-PROC-002",
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-004",
+        "tool_name": "travel.submit_travel_declaration",
+        "purpose": "Execute submit travel declaration as part of travel reimbursement with approval variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of travel reimbursement with approval variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel reimbursement with approval variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of travel reimbursement with approval variant 4."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel reimbursement with approval variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit reimbursement with receipt validation and approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-015",
+    "template_name": "Missing Receipt Exception Variant 4",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for missing receipt exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-006",
+      "TOOL-TRV-027",
+      "TOOL-GLB-001",
+      "TOOL-TRV-028"
+    ],
+    "required_rules": [
+      "TRV-PARAM-001",
+      "TRV-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of missing receipt exception variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-027",
+        "tool_name": "travel.create_missing_receipt_exception",
+        "purpose": "Execute create missing receipt exception as part of missing receipt exception variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of missing receipt exception variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-028",
+        "tool_name": "travel.approve_missing_receipt_exception",
+        "purpose": "Execute approve missing receipt exception as part of missing receipt exception variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a missing receipt exception for a claim."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-016",
+    "template_name": "High Value Reimbursement Exception Variant 4",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for high value reimbursement exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of high value reimbursement exception variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-034",
+        "tool_name": "travel.request_department_manager_approval",
+        "purpose": "Execute request department manager approval as part of high value reimbursement exception variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-035",
+        "tool_name": "travel.request_finance_reimbursement_approval",
+        "purpose": "Execute request finance reimbursement approval as part of high value reimbursement exception variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of high value reimbursement exception variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Route high-value reimbursement for department and finance approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-017",
+    "template_name": "Employee Travel Permit Variant 5",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for employee travel permit with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-001",
+      "TOOL-GLB-001",
+      "TOOL-TRV-002"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-PARAM-001",
+      "TRV-RBAC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of employee travel permit variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-001",
+        "tool_name": "travel.submit_travel_permit",
+        "purpose": "Execute submit travel permit as part of employee travel permit variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of employee travel permit variant 5."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-002",
+        "tool_name": "travel.approve_travel_permit",
+        "purpose": "Execute approve travel permit as part of employee travel permit variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit and approve employee travel permit."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-018",
+    "template_name": "Travel Reimbursement With Approval Variant 5",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for travel reimbursement with approval with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-006",
+      "TOOL-TRV-007",
+      "TOOL-GLB-001",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-PROC-002",
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-004",
+        "tool_name": "travel.submit_travel_declaration",
+        "purpose": "Execute submit travel declaration as part of travel reimbursement with approval variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of travel reimbursement with approval variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel reimbursement with approval variant 5."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of travel reimbursement with approval variant 5."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel reimbursement with approval variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit reimbursement with receipt validation and approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-019",
+    "template_name": "Missing Receipt Exception Variant 5",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for missing receipt exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-006",
+      "TOOL-TRV-027",
+      "TOOL-GLB-001",
+      "TOOL-TRV-028"
+    ],
+    "required_rules": [
+      "TRV-PARAM-001",
+      "TRV-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of missing receipt exception variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-027",
+        "tool_name": "travel.create_missing_receipt_exception",
+        "purpose": "Execute create missing receipt exception as part of missing receipt exception variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of missing receipt exception variant 5."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-028",
+        "tool_name": "travel.approve_missing_receipt_exception",
+        "purpose": "Execute approve missing receipt exception as part of missing receipt exception variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a missing receipt exception for a claim."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-020",
+    "template_name": "High Value Reimbursement Exception Variant 5",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for high value reimbursement exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of high value reimbursement exception variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-034",
+        "tool_name": "travel.request_department_manager_approval",
+        "purpose": "Execute request department manager approval as part of high value reimbursement exception variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-035",
+        "tool_name": "travel.request_finance_reimbursement_approval",
+        "purpose": "Execute request finance reimbursement approval as part of high value reimbursement exception variant 5."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of high value reimbursement exception variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Route high-value reimbursement for department and finance approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-021",
+    "template_name": "Employee Travel Permit Variant 6",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for employee travel permit with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-001",
+      "TOOL-GLB-001",
+      "TOOL-TRV-002"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-PARAM-001",
+      "TRV-RBAC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of employee travel permit variant 6."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-001",
+        "tool_name": "travel.submit_travel_permit",
+        "purpose": "Execute submit travel permit as part of employee travel permit variant 6."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of employee travel permit variant 6."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-002",
+        "tool_name": "travel.approve_travel_permit",
+        "purpose": "Execute approve travel permit as part of employee travel permit variant 6."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit and approve employee travel permit."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-022",
+    "template_name": "Travel Reimbursement With Approval Variant 6",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for travel reimbursement with approval with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-006",
+      "TOOL-TRV-007",
+      "TOOL-GLB-001",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-PROC-002",
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-004",
+        "tool_name": "travel.submit_travel_declaration",
+        "purpose": "Execute submit travel declaration as part of travel reimbursement with approval variant 6."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of travel reimbursement with approval variant 6."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel reimbursement with approval variant 6."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of travel reimbursement with approval variant 6."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel reimbursement with approval variant 6."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit reimbursement with receipt validation and approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-023",
+    "template_name": "Missing Receipt Exception Variant 6",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for missing receipt exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-006",
+      "TOOL-TRV-027",
+      "TOOL-GLB-001",
+      "TOOL-TRV-028"
+    ],
+    "required_rules": [
+      "TRV-PARAM-001",
+      "TRV-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of missing receipt exception variant 6."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-027",
+        "tool_name": "travel.create_missing_receipt_exception",
+        "purpose": "Execute create missing receipt exception as part of missing receipt exception variant 6."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of missing receipt exception variant 6."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-028",
+        "tool_name": "travel.approve_missing_receipt_exception",
+        "purpose": "Execute approve missing receipt exception as part of missing receipt exception variant 6."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a missing receipt exception for a claim."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-024",
+    "template_name": "High Value Reimbursement Exception Variant 6",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for high value reimbursement exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of high value reimbursement exception variant 6."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-034",
+        "tool_name": "travel.request_department_manager_approval",
+        "purpose": "Execute request department manager approval as part of high value reimbursement exception variant 6."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-035",
+        "tool_name": "travel.request_finance_reimbursement_approval",
+        "purpose": "Execute request finance reimbursement approval as part of high value reimbursement exception variant 6."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of high value reimbursement exception variant 6."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Route high-value reimbursement for department and finance approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-025",
+    "template_name": "Employee Travel Permit Variant 7",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for employee travel permit with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-001",
+      "TOOL-GLB-001",
+      "TOOL-TRV-002"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-PARAM-001",
+      "TRV-RBAC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of employee travel permit variant 7."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-001",
+        "tool_name": "travel.submit_travel_permit",
+        "purpose": "Execute submit travel permit as part of employee travel permit variant 7."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of employee travel permit variant 7."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-002",
+        "tool_name": "travel.approve_travel_permit",
+        "purpose": "Execute approve travel permit as part of employee travel permit variant 7."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit and approve employee travel permit."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-026",
+    "template_name": "Travel Reimbursement With Approval Variant 7",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for travel reimbursement with approval with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-006",
+      "TOOL-TRV-007",
+      "TOOL-GLB-001",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-PROC-002",
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-004",
+        "tool_name": "travel.submit_travel_declaration",
+        "purpose": "Execute submit travel declaration as part of travel reimbursement with approval variant 7."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of travel reimbursement with approval variant 7."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel reimbursement with approval variant 7."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of travel reimbursement with approval variant 7."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel reimbursement with approval variant 7."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit reimbursement with receipt validation and approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-027",
+    "template_name": "Missing Receipt Exception Variant 7",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for missing receipt exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-006",
+      "TOOL-TRV-027",
+      "TOOL-GLB-001",
+      "TOOL-TRV-028"
+    ],
+    "required_rules": [
+      "TRV-PARAM-001",
+      "TRV-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of missing receipt exception variant 7."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-027",
+        "tool_name": "travel.create_missing_receipt_exception",
+        "purpose": "Execute create missing receipt exception as part of missing receipt exception variant 7."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of missing receipt exception variant 7."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-028",
+        "tool_name": "travel.approve_missing_receipt_exception",
+        "purpose": "Execute approve missing receipt exception as part of missing receipt exception variant 7."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a missing receipt exception for a claim."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-028",
+    "template_name": "High Value Reimbursement Exception Variant 7",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for high value reimbursement exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of high value reimbursement exception variant 7."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-034",
+        "tool_name": "travel.request_department_manager_approval",
+        "purpose": "Execute request department manager approval as part of high value reimbursement exception variant 7."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-035",
+        "tool_name": "travel.request_finance_reimbursement_approval",
+        "purpose": "Execute request finance reimbursement approval as part of high value reimbursement exception variant 7."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of high value reimbursement exception variant 7."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Route high-value reimbursement for department and finance approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-029",
+    "template_name": "Employee Travel Permit Variant 8",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for employee travel permit with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-001",
+      "TOOL-GLB-001",
+      "TOOL-TRV-002"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-PARAM-001",
+      "TRV-RBAC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of employee travel permit variant 8."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-001",
+        "tool_name": "travel.submit_travel_permit",
+        "purpose": "Execute submit travel permit as part of employee travel permit variant 8."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of employee travel permit variant 8."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-002",
+        "tool_name": "travel.approve_travel_permit",
+        "purpose": "Execute approve travel permit as part of employee travel permit variant 8."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit and approve employee travel permit."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-030",
+    "template_name": "Travel Reimbursement With Approval Variant 8",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for travel reimbursement with approval with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-006",
+      "TOOL-TRV-007",
+      "TOOL-GLB-001",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-PROC-002",
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-004",
+        "tool_name": "travel.submit_travel_declaration",
+        "purpose": "Execute submit travel declaration as part of travel reimbursement with approval variant 8."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of travel reimbursement with approval variant 8."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel reimbursement with approval variant 8."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of travel reimbursement with approval variant 8."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel reimbursement with approval variant 8."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit reimbursement with receipt validation and approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-031",
+    "template_name": "Missing Receipt Exception Variant 8",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for missing receipt exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-006",
+      "TOOL-TRV-027",
+      "TOOL-GLB-001",
+      "TOOL-TRV-028"
+    ],
+    "required_rules": [
+      "TRV-PARAM-001",
+      "TRV-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of missing receipt exception variant 8."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-027",
+        "tool_name": "travel.create_missing_receipt_exception",
+        "purpose": "Execute create missing receipt exception as part of missing receipt exception variant 8."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of missing receipt exception variant 8."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-028",
+        "tool_name": "travel.approve_missing_receipt_exception",
+        "purpose": "Execute approve missing receipt exception as part of missing receipt exception variant 8."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a missing receipt exception for a claim."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-032",
+    "template_name": "High Value Reimbursement Exception Variant 8",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for high value reimbursement exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of high value reimbursement exception variant 8."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-034",
+        "tool_name": "travel.request_department_manager_approval",
+        "purpose": "Execute request department manager approval as part of high value reimbursement exception variant 8."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-035",
+        "tool_name": "travel.request_finance_reimbursement_approval",
+        "purpose": "Execute request finance reimbursement approval as part of high value reimbursement exception variant 8."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of high value reimbursement exception variant 8."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Route high-value reimbursement for department and finance approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-033",
+    "template_name": "Employee Travel Permit Variant 9",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for employee travel permit with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-001",
+      "TOOL-GLB-001",
+      "TOOL-TRV-002"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-PARAM-001",
+      "TRV-RBAC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of employee travel permit variant 9."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-001",
+        "tool_name": "travel.submit_travel_permit",
+        "purpose": "Execute submit travel permit as part of employee travel permit variant 9."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of employee travel permit variant 9."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-002",
+        "tool_name": "travel.approve_travel_permit",
+        "purpose": "Execute approve travel permit as part of employee travel permit variant 9."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit and approve employee travel permit."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-034",
+    "template_name": "Travel Reimbursement With Approval Variant 9",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for travel reimbursement with approval with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-006",
+      "TOOL-TRV-007",
+      "TOOL-GLB-001",
+      "TOOL-TRV-008"
+    ],
+    "required_rules": [
+      "TRV-PROC-002",
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-004",
+        "tool_name": "travel.submit_travel_declaration",
+        "purpose": "Execute submit travel declaration as part of travel reimbursement with approval variant 9."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of travel reimbursement with approval variant 9."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel reimbursement with approval variant 9."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of travel reimbursement with approval variant 9."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel reimbursement with approval variant 9."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001",
+      "TRV-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Submit reimbursement with receipt validation and approval."
+    ]
+  },
+  {
+    "template_id": "TPL-TRV-035",
+    "template_name": "Missing Receipt Exception Variant 9",
+    "erp_systems_involved": [
+      "Travel & Reimbursement ERP",
+      "HR ERP",
+      "Finance ERP"
+    ],
+    "bpi_alignment": "BPI2020_TRAVEL",
+    "description": "BPI 2020 travel and reimbursement template for missing receipt exception with policy checks, approvals, and exceptions.",
+    "required_tools": [
+      "TOOL-TRV-006",
+      "TOOL-TRV-027",
+      "TOOL-GLB-001",
+      "TOOL-TRV-028"
+    ],
+    "required_rules": [
+      "TRV-PARAM-001",
+      "TRV-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-TRV-006",
+        "tool_name": "travel.validate_receipt_presence",
+        "purpose": "Execute validate receipt presence as part of missing receipt exception variant 9."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-027",
+        "tool_name": "travel.create_missing_receipt_exception",
+        "purpose": "Execute create missing receipt exception as part of missing receipt exception variant 9."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of missing receipt exception variant 9."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-TRV-028",
+        "tool_name": "travel.approve_missing_receipt_exception",
+        "purpose": "Execute approve missing receipt exception as part of missing receipt exception variant 9."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a missing receipt exception for a claim."
+    ]
+  }
+]

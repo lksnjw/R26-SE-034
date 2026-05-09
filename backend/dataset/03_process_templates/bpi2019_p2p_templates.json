@@ -1,0 +1,3119 @@
+[
+  {
+    "template_id": "TPL-P2P-001",
+    "template_name": "Standard Invoice Listing Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for standard invoice listing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-001"
+    ],
+    "required_rules": [
+      "FIN-RBAC-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-001",
+        "tool_name": "finance.list_invoices",
+        "purpose": "Execute list invoices as part of standard invoice listing variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "List all open invoices for finance review."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-002",
+    "template_name": "Create Invoice With Approval Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for create invoice with approval with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-PARAM-002",
+      "FIN-THRESH-001",
+      "FIN-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of create invoice with approval variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of create invoice with approval variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of create invoice with approval variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a vendor invoice and request approval if required."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-003",
+    "template_name": "High Value Invoice Workflow Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for high value invoice workflow with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-FIN-005",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of high value invoice workflow variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of high value invoice workflow variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of high value invoice workflow variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of high value invoice workflow variant 1."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of high value invoice workflow variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create and route a high-value invoice for approval."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-004",
+    "template_name": "Three Way Match Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for three way match with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-004",
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-PROC-034"
+    ],
+    "required_rules": [
+      "PROC-PROC-003",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-004",
+        "tool_name": "procurement.get_purchase_order",
+        "purpose": "Execute get purchase order as part of three way match variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of three way match variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of three way match variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-PROC-034",
+        "tool_name": "procurement.validate_three_way_match",
+        "purpose": "Execute validate three way match as part of three way match variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Match PO, goods receipt, and invoice before clearing."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-005",
+    "template_name": "Goods Receipt Before Invoice Clearing Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for goods receipt before invoice clearing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007"
+    ],
+    "required_rules": [
+      "INV-PARAM-001",
+      "FIN-PROC-001",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of goods receipt before invoice clearing variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of goods receipt before invoice clearing variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-007",
+        "tool_name": "finance.clear_invoice",
+        "purpose": "Execute clear invoice as part of goods receipt before invoice clearing variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Record goods receipt and clear the related invoice."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-006",
+    "template_name": "Duplicate Invoice Handling Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for duplicate invoice handling with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-011",
+      "TOOL-FIN-010",
+      "TOOL-FIN-015"
+    ],
+    "required_rules": [
+      "FIN-POLICY-001",
+      "FIN-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-011",
+        "tool_name": "finance.detect_duplicate_invoice",
+        "purpose": "Execute detect duplicate invoice as part of duplicate invoice handling variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-FIN-010",
+        "tool_name": "finance.reject_invoice",
+        "purpose": "Execute reject invoice as part of duplicate invoice handling variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-015",
+        "tool_name": "finance.write_finance_audit_log",
+        "purpose": "Execute write finance audit log as part of duplicate invoice handling variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check and reject duplicate invoice."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-007",
+    "template_name": "Vendor Validation Before PO Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for vendor validation before po with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-008",
+      "TOOL-PROC-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "PROC-POLICY-001",
+      "PROC-PARAM-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-008",
+        "tool_name": "procurement.validate_vendor",
+        "purpose": "Execute validate vendor as part of vendor validation before po variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of vendor validation before po variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of vendor validation before po variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Validate vendor and create a purchase order."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-008",
+    "template_name": "Purchase Order Approval Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for purchase order approval with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-001",
+      "TOOL-PROC-010",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "PROC-THRESH-001",
+      "PROC-SOD-001",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of purchase order approval variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of purchase order approval variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-010",
+        "tool_name": "procurement.request_procurement_approval",
+        "purpose": "Execute request procurement approval as part of purchase order approval variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of purchase order approval variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "PROC-THRESH-001",
+      "PROC-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a PO and send it for approval."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-009",
+    "template_name": "Stock Check Before Procurement Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for stock check before procurement with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-003",
+      "TOOL-PROC-001",
+      "TOOL-PROC-003"
+    ],
+    "required_rules": [
+      "INV-PROC-001",
+      "PROC-PARAM-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of stock check before procurement variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-PROC-001",
+        "tool_name": "procurement.create_purchase_requisition",
+        "purpose": "Execute create purchase requisition as part of stock check before procurement variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of stock check before procurement variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check stock before starting procurement."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-010",
+    "template_name": "Low Stock Procurement Trigger Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for low stock procurement trigger with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-008",
+      "TOOL-INV-009",
+      "TOOL-PROC-053",
+      "TOOL-PROC-054"
+    ],
+    "required_rules": [
+      "INV-CACHE-002",
+      "PROC-PARAM-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-008",
+        "tool_name": "inventory.verify_reorder_point",
+        "purpose": "Execute verify reorder point as part of low stock procurement trigger variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-009",
+        "tool_name": "inventory.create_stock_alert",
+        "purpose": "Execute create stock alert as part of low stock procurement trigger variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-053",
+        "tool_name": "procurement.create_low_stock_requisition",
+        "purpose": "Execute create low stock requisition as part of low stock procurement trigger variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-PROC-054",
+        "tool_name": "procurement.link_requisition_to_stock_alert",
+        "purpose": "Execute link requisition to stock alert as part of low stock procurement trigger variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Trigger procurement from low stock alert."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-011",
+    "template_name": "Standard Invoice Listing Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for standard invoice listing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-001"
+    ],
+    "required_rules": [
+      "FIN-RBAC-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-001",
+        "tool_name": "finance.list_invoices",
+        "purpose": "Execute list invoices as part of standard invoice listing variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "List all open invoices for finance review."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-012",
+    "template_name": "Create Invoice With Approval Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for create invoice with approval with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-PARAM-002",
+      "FIN-THRESH-001",
+      "FIN-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of create invoice with approval variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of create invoice with approval variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of create invoice with approval variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a vendor invoice and request approval if required."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-013",
+    "template_name": "High Value Invoice Workflow Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for high value invoice workflow with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-FIN-005",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of high value invoice workflow variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of high value invoice workflow variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of high value invoice workflow variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of high value invoice workflow variant 2."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of high value invoice workflow variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create and route a high-value invoice for approval."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-014",
+    "template_name": "Three Way Match Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for three way match with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-004",
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-PROC-034"
+    ],
+    "required_rules": [
+      "PROC-PROC-003",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-004",
+        "tool_name": "procurement.get_purchase_order",
+        "purpose": "Execute get purchase order as part of three way match variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of three way match variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of three way match variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-PROC-034",
+        "tool_name": "procurement.validate_three_way_match",
+        "purpose": "Execute validate three way match as part of three way match variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Match PO, goods receipt, and invoice before clearing."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-015",
+    "template_name": "Goods Receipt Before Invoice Clearing Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for goods receipt before invoice clearing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007"
+    ],
+    "required_rules": [
+      "INV-PARAM-001",
+      "FIN-PROC-001",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of goods receipt before invoice clearing variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of goods receipt before invoice clearing variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-007",
+        "tool_name": "finance.clear_invoice",
+        "purpose": "Execute clear invoice as part of goods receipt before invoice clearing variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Record goods receipt and clear the related invoice."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-016",
+    "template_name": "Duplicate Invoice Handling Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for duplicate invoice handling with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-011",
+      "TOOL-FIN-010",
+      "TOOL-FIN-015"
+    ],
+    "required_rules": [
+      "FIN-POLICY-001",
+      "FIN-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-011",
+        "tool_name": "finance.detect_duplicate_invoice",
+        "purpose": "Execute detect duplicate invoice as part of duplicate invoice handling variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-FIN-010",
+        "tool_name": "finance.reject_invoice",
+        "purpose": "Execute reject invoice as part of duplicate invoice handling variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-015",
+        "tool_name": "finance.write_finance_audit_log",
+        "purpose": "Execute write finance audit log as part of duplicate invoice handling variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check and reject duplicate invoice."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-017",
+    "template_name": "Vendor Validation Before PO Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for vendor validation before po with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-008",
+      "TOOL-PROC-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "PROC-POLICY-001",
+      "PROC-PARAM-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-008",
+        "tool_name": "procurement.validate_vendor",
+        "purpose": "Execute validate vendor as part of vendor validation before po variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of vendor validation before po variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of vendor validation before po variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Validate vendor and create a purchase order."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-018",
+    "template_name": "Purchase Order Approval Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for purchase order approval with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-001",
+      "TOOL-PROC-010",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "PROC-THRESH-001",
+      "PROC-SOD-001",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of purchase order approval variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of purchase order approval variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-010",
+        "tool_name": "procurement.request_procurement_approval",
+        "purpose": "Execute request procurement approval as part of purchase order approval variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of purchase order approval variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "PROC-THRESH-001",
+      "PROC-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a PO and send it for approval."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-019",
+    "template_name": "Stock Check Before Procurement Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for stock check before procurement with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-003",
+      "TOOL-PROC-001",
+      "TOOL-PROC-003"
+    ],
+    "required_rules": [
+      "INV-PROC-001",
+      "PROC-PARAM-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of stock check before procurement variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-PROC-001",
+        "tool_name": "procurement.create_purchase_requisition",
+        "purpose": "Execute create purchase requisition as part of stock check before procurement variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of stock check before procurement variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check stock before starting procurement."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-020",
+    "template_name": "Low Stock Procurement Trigger Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for low stock procurement trigger with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-008",
+      "TOOL-INV-009",
+      "TOOL-PROC-053",
+      "TOOL-PROC-054"
+    ],
+    "required_rules": [
+      "INV-CACHE-002",
+      "PROC-PARAM-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-008",
+        "tool_name": "inventory.verify_reorder_point",
+        "purpose": "Execute verify reorder point as part of low stock procurement trigger variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-009",
+        "tool_name": "inventory.create_stock_alert",
+        "purpose": "Execute create stock alert as part of low stock procurement trigger variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-053",
+        "tool_name": "procurement.create_low_stock_requisition",
+        "purpose": "Execute create low stock requisition as part of low stock procurement trigger variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-PROC-054",
+        "tool_name": "procurement.link_requisition_to_stock_alert",
+        "purpose": "Execute link requisition to stock alert as part of low stock procurement trigger variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Trigger procurement from low stock alert."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-021",
+    "template_name": "Standard Invoice Listing Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for standard invoice listing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-001"
+    ],
+    "required_rules": [
+      "FIN-RBAC-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-001",
+        "tool_name": "finance.list_invoices",
+        "purpose": "Execute list invoices as part of standard invoice listing variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "List all open invoices for finance review."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-022",
+    "template_name": "Create Invoice With Approval Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for create invoice with approval with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-PARAM-002",
+      "FIN-THRESH-001",
+      "FIN-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of create invoice with approval variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of create invoice with approval variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of create invoice with approval variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a vendor invoice and request approval if required."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-023",
+    "template_name": "High Value Invoice Workflow Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for high value invoice workflow with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-FIN-005",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of high value invoice workflow variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of high value invoice workflow variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of high value invoice workflow variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of high value invoice workflow variant 3."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of high value invoice workflow variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create and route a high-value invoice for approval."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-024",
+    "template_name": "Three Way Match Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for three way match with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-004",
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-PROC-034"
+    ],
+    "required_rules": [
+      "PROC-PROC-003",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-004",
+        "tool_name": "procurement.get_purchase_order",
+        "purpose": "Execute get purchase order as part of three way match variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of three way match variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of three way match variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-PROC-034",
+        "tool_name": "procurement.validate_three_way_match",
+        "purpose": "Execute validate three way match as part of three way match variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Match PO, goods receipt, and invoice before clearing."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-025",
+    "template_name": "Goods Receipt Before Invoice Clearing Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for goods receipt before invoice clearing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007"
+    ],
+    "required_rules": [
+      "INV-PARAM-001",
+      "FIN-PROC-001",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of goods receipt before invoice clearing variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of goods receipt before invoice clearing variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-007",
+        "tool_name": "finance.clear_invoice",
+        "purpose": "Execute clear invoice as part of goods receipt before invoice clearing variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Record goods receipt and clear the related invoice."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-026",
+    "template_name": "Duplicate Invoice Handling Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for duplicate invoice handling with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-011",
+      "TOOL-FIN-010",
+      "TOOL-FIN-015"
+    ],
+    "required_rules": [
+      "FIN-POLICY-001",
+      "FIN-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-011",
+        "tool_name": "finance.detect_duplicate_invoice",
+        "purpose": "Execute detect duplicate invoice as part of duplicate invoice handling variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-FIN-010",
+        "tool_name": "finance.reject_invoice",
+        "purpose": "Execute reject invoice as part of duplicate invoice handling variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-015",
+        "tool_name": "finance.write_finance_audit_log",
+        "purpose": "Execute write finance audit log as part of duplicate invoice handling variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check and reject duplicate invoice."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-027",
+    "template_name": "Vendor Validation Before PO Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for vendor validation before po with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-008",
+      "TOOL-PROC-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "PROC-POLICY-001",
+      "PROC-PARAM-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-008",
+        "tool_name": "procurement.validate_vendor",
+        "purpose": "Execute validate vendor as part of vendor validation before po variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of vendor validation before po variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of vendor validation before po variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Validate vendor and create a purchase order."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-028",
+    "template_name": "Purchase Order Approval Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for purchase order approval with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-001",
+      "TOOL-PROC-010",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "PROC-THRESH-001",
+      "PROC-SOD-001",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of purchase order approval variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of purchase order approval variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-010",
+        "tool_name": "procurement.request_procurement_approval",
+        "purpose": "Execute request procurement approval as part of purchase order approval variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of purchase order approval variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "PROC-THRESH-001",
+      "PROC-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a PO and send it for approval."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-029",
+    "template_name": "Stock Check Before Procurement Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for stock check before procurement with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-003",
+      "TOOL-PROC-001",
+      "TOOL-PROC-003"
+    ],
+    "required_rules": [
+      "INV-PROC-001",
+      "PROC-PARAM-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of stock check before procurement variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-PROC-001",
+        "tool_name": "procurement.create_purchase_requisition",
+        "purpose": "Execute create purchase requisition as part of stock check before procurement variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of stock check before procurement variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check stock before starting procurement."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-030",
+    "template_name": "Low Stock Procurement Trigger Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for low stock procurement trigger with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-008",
+      "TOOL-INV-009",
+      "TOOL-PROC-053",
+      "TOOL-PROC-054"
+    ],
+    "required_rules": [
+      "INV-CACHE-002",
+      "PROC-PARAM-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-008",
+        "tool_name": "inventory.verify_reorder_point",
+        "purpose": "Execute verify reorder point as part of low stock procurement trigger variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-009",
+        "tool_name": "inventory.create_stock_alert",
+        "purpose": "Execute create stock alert as part of low stock procurement trigger variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-053",
+        "tool_name": "procurement.create_low_stock_requisition",
+        "purpose": "Execute create low stock requisition as part of low stock procurement trigger variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-PROC-054",
+        "tool_name": "procurement.link_requisition_to_stock_alert",
+        "purpose": "Execute link requisition to stock alert as part of low stock procurement trigger variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Trigger procurement from low stock alert."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-031",
+    "template_name": "Standard Invoice Listing Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for standard invoice listing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-001"
+    ],
+    "required_rules": [
+      "FIN-RBAC-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-001",
+        "tool_name": "finance.list_invoices",
+        "purpose": "Execute list invoices as part of standard invoice listing variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "List all open invoices for finance review."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-032",
+    "template_name": "Create Invoice With Approval Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for create invoice with approval with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-PARAM-002",
+      "FIN-THRESH-001",
+      "FIN-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of create invoice with approval variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of create invoice with approval variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of create invoice with approval variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a vendor invoice and request approval if required."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-033",
+    "template_name": "High Value Invoice Workflow Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for high value invoice workflow with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-FIN-005",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of high value invoice workflow variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of high value invoice workflow variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of high value invoice workflow variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of high value invoice workflow variant 4."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of high value invoice workflow variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create and route a high-value invoice for approval."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-034",
+    "template_name": "Three Way Match Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for three way match with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-004",
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-PROC-034"
+    ],
+    "required_rules": [
+      "PROC-PROC-003",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-004",
+        "tool_name": "procurement.get_purchase_order",
+        "purpose": "Execute get purchase order as part of three way match variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of three way match variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of three way match variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-PROC-034",
+        "tool_name": "procurement.validate_three_way_match",
+        "purpose": "Execute validate three way match as part of three way match variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Match PO, goods receipt, and invoice before clearing."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-035",
+    "template_name": "Goods Receipt Before Invoice Clearing Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for goods receipt before invoice clearing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007"
+    ],
+    "required_rules": [
+      "INV-PARAM-001",
+      "FIN-PROC-001",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of goods receipt before invoice clearing variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of goods receipt before invoice clearing variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-007",
+        "tool_name": "finance.clear_invoice",
+        "purpose": "Execute clear invoice as part of goods receipt before invoice clearing variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Record goods receipt and clear the related invoice."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-036",
+    "template_name": "Duplicate Invoice Handling Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for duplicate invoice handling with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-011",
+      "TOOL-FIN-010",
+      "TOOL-FIN-015"
+    ],
+    "required_rules": [
+      "FIN-POLICY-001",
+      "FIN-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-011",
+        "tool_name": "finance.detect_duplicate_invoice",
+        "purpose": "Execute detect duplicate invoice as part of duplicate invoice handling variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-FIN-010",
+        "tool_name": "finance.reject_invoice",
+        "purpose": "Execute reject invoice as part of duplicate invoice handling variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-015",
+        "tool_name": "finance.write_finance_audit_log",
+        "purpose": "Execute write finance audit log as part of duplicate invoice handling variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check and reject duplicate invoice."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-037",
+    "template_name": "Vendor Validation Before PO Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for vendor validation before po with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-008",
+      "TOOL-PROC-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "PROC-POLICY-001",
+      "PROC-PARAM-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-008",
+        "tool_name": "procurement.validate_vendor",
+        "purpose": "Execute validate vendor as part of vendor validation before po variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of vendor validation before po variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of vendor validation before po variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Validate vendor and create a purchase order."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-038",
+    "template_name": "Purchase Order Approval Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for purchase order approval with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-001",
+      "TOOL-PROC-010",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "PROC-THRESH-001",
+      "PROC-SOD-001",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of purchase order approval variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of purchase order approval variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-010",
+        "tool_name": "procurement.request_procurement_approval",
+        "purpose": "Execute request procurement approval as part of purchase order approval variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of purchase order approval variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "PROC-THRESH-001",
+      "PROC-SOD-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a PO and send it for approval."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-039",
+    "template_name": "Stock Check Before Procurement Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for stock check before procurement with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-003",
+      "TOOL-PROC-001",
+      "TOOL-PROC-003"
+    ],
+    "required_rules": [
+      "INV-PROC-001",
+      "PROC-PARAM-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of stock check before procurement variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-PROC-001",
+        "tool_name": "procurement.create_purchase_requisition",
+        "purpose": "Execute create purchase requisition as part of stock check before procurement variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of stock check before procurement variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check stock before starting procurement."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-040",
+    "template_name": "Low Stock Procurement Trigger Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for low stock procurement trigger with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-008",
+      "TOOL-INV-009",
+      "TOOL-PROC-053",
+      "TOOL-PROC-054"
+    ],
+    "required_rules": [
+      "INV-CACHE-002",
+      "PROC-PARAM-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-008",
+        "tool_name": "inventory.verify_reorder_point",
+        "purpose": "Execute verify reorder point as part of low stock procurement trigger variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-009",
+        "tool_name": "inventory.create_stock_alert",
+        "purpose": "Execute create stock alert as part of low stock procurement trigger variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-053",
+        "tool_name": "procurement.create_low_stock_requisition",
+        "purpose": "Execute create low stock requisition as part of low stock procurement trigger variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-PROC-054",
+        "tool_name": "procurement.link_requisition_to_stock_alert",
+        "purpose": "Execute link requisition to stock alert as part of low stock procurement trigger variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Trigger procurement from low stock alert."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-041",
+    "template_name": "Standard Invoice Listing Variant 5",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for standard invoice listing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-001"
+    ],
+    "required_rules": [
+      "FIN-RBAC-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-001",
+        "tool_name": "finance.list_invoices",
+        "purpose": "Execute list invoices as part of standard invoice listing variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "List all open invoices for finance review."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-042",
+    "template_name": "Create Invoice With Approval Variant 5",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for create invoice with approval with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-PARAM-002",
+      "FIN-THRESH-001",
+      "FIN-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of create invoice with approval variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of create invoice with approval variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of create invoice with approval variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a vendor invoice and request approval if required."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-043",
+    "template_name": "High Value Invoice Workflow Variant 5",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for high value invoice workflow with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-FIN-003",
+      "TOOL-GLB-001",
+      "TOOL-FIN-005",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-FIN-003",
+        "tool_name": "finance.create_invoice",
+        "purpose": "Execute create invoice as part of high value invoice workflow variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-001",
+        "tool_name": "approval.request_human_approval",
+        "purpose": "Execute request human approval as part of high value invoice workflow variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of high value invoice workflow variant 5."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of high value invoice workflow variant 5."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of high value invoice workflow variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "FIN-THRESH-001",
+      "FIN-THRESH-002",
+      "GLOBAL-SAFETY-006"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create and route a high-value invoice for approval."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-044",
+    "template_name": "Three Way Match Variant 5",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for three way match with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-PROC-004",
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-PROC-034"
+    ],
+    "required_rules": [
+      "PROC-PROC-003",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-004",
+        "tool_name": "procurement.get_purchase_order",
+        "purpose": "Execute get purchase order as part of three way match variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of three way match variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of three way match variant 5."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-PROC-034",
+        "tool_name": "procurement.validate_three_way_match",
+        "purpose": "Execute validate three way match as part of three way match variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Match PO, goods receipt, and invoice before clearing."
+    ]
+  },
+  {
+    "template_id": "TPL-P2P-045",
+    "template_name": "Goods Receipt Before Invoice Clearing Variant 5",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "Procurement ERP",
+      "Inventory ERP"
+    ],
+    "bpi_alignment": "BPI2019_P2P",
+    "description": "BPI 2019 purchase-to-pay template for goods receipt before invoice clearing with approval, rework, audit, and exception controls.",
+    "required_tools": [
+      "TOOL-INV-007",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007"
+    ],
+    "required_rules": [
+      "INV-PARAM-001",
+      "FIN-PROC-001",
+      "FIN-PROC-002"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-INV-007",
+        "tool_name": "inventory.record_goods_receipt",
+        "purpose": "Execute record goods receipt as part of goods receipt before invoice clearing variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-FIN-006",
+        "tool_name": "finance.record_invoice_receipt",
+        "purpose": "Execute record invoice receipt as part of goods receipt before invoice clearing variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-FIN-007",
+        "tool_name": "finance.clear_invoice",
+        "purpose": "Execute clear invoice as part of goods receipt before invoice clearing variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Record goods receipt and clear the related invoice."
+    ]
+  }
+]

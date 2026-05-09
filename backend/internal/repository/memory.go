@@ -81,7 +81,34 @@ func NewStore() *Store {
 	store.Users["usr_003"] = &models.User{ID: "usr_003", Name: "Naveen Perera", Email: "naveen@workflow.local", Role: models.RoleRef{ID: "role_reviewer", Name: "Execution Reviewer"}, Permissions: store.Roles["role_reviewer"].Permissions, Status: "Invited", Initials: "NP", CreatedAt: now.Add(-6 * time.Hour)}
 	store.Users["usr_004"] = &models.User{ID: "usr_004", Name: "Asha Fernando", Email: "asha@workflow.local", Role: models.RoleRef{ID: "role_auditor", Name: "Auditor"}, Permissions: store.Roles["role_auditor"].Permissions, Status: "Active", Initials: "AF", LastLoginAt: &lastLogin, CreatedAt: now.Add(-22 * time.Hour), EmailVerified: true}
 
-	invoiceYAML := "name: erp_invoice_exception_resolver\ntrigger:\n  type: erp.invoice.created\n  displayName: New invoice anomaly\nsteps:\n  - id: classify_intent\n    action: classify_invoice\n    parameters:\n      invoiceId: \"{{input.invoiceId}}\"\n  - id: policy_guardrail\n    action: policy_check\n    parameters:\n      amount: \"{{classify_intent.amount}}\"\n  - id: repair_connector\n    action: refresh_connector\n    retryCount: 2\n  - id: notify_owner\n    action: notify_finance\n    parameters:\n      message: Invoice exception requires review\n"
+	invoiceYAML := `name: erp_invoice_exception_resolver
+description: Resolve ERP invoice exceptions with policy checks, connector retry, finance notification, and audit logging.
+trigger:
+  type: erp.invoice.created
+  displayName: New invoice anomaly
+steps:
+  - id: classify_intent
+    action: classify_invoice
+    parameters:
+      invoiceId: "{{input.invoiceId}}"
+  - id: policy_guardrail
+    action: policy_check
+    parameters:
+      amount: "{{classify_intent.amount}}"
+  - id: repair_connector
+    action: refresh_connector
+    retryCount: 2
+  - id: notify_owner
+    action: notify_finance
+    parameters:
+      message: Invoice exception requires review
+  - id: audit_invoice_exception
+    action: audit.write_audit_log
+    parameters:
+      event_type: invoice_exception_resolution
+      actor_role: Workflow Builder
+      decision: finance_notified
+`
 	store.Workflows["wf-101"] = &models.Workflow{
 		ID: "wf-101", Name: "ERP Invoice Exception Resolver", Description: "Detects mismatched supplier invoices, classifies root cause, and routes approvals.",
 		Owner: models.Principal{ID: "team_ops", Name: "Ops Automation"}, Status: models.StatusRunning,
@@ -94,7 +121,23 @@ func NewStore() *Store {
 	store.Workflows["wf-104"] = &models.Workflow{ID: "wf-104", Name: "Inventory Reorder Planner", Description: "Combines demand signals and ERP inventory to recommend safe reorder quantities.", Owner: models.Principal{ID: "team_warehouse", Name: "Warehouse"}, Status: models.StatusPending, Trigger: map[string]interface{}{"type": "erp.stock.low", "displayName": "Stock below threshold"}, Steps: 8, SuccessRate: 92.6, LastRunAt: &lastRun, PublishedVersion: 1, DraftVersion: 2, Tags: []string{"inventory", "erp"}, YAML: invoiceYAML, Canvas: sampleCanvas("wf-104"), CreatedAt: now.Add(-16 * time.Hour), UpdatedAt: now.Add(-1 * time.Hour)}
 
 	store.Templates["tpl_invoice"] = &models.WorkflowTemplate{ID: "tpl_invoice", Name: "Invoice Exception Resolver", Description: "Duplicate invoice detection with self-healing ERP retry.", Category: "Finance", Tags: []string{"erp", "finance"}, YAML: invoiceYAML, Steps: 7, CreatedAt: now.Add(-30 * time.Hour)}
-	store.Templates["tpl_leave"] = &models.WorkflowTemplate{ID: "tpl_leave", Name: "Leave Approval Assistant", Description: "Fetch attendance, validate policy, and create leave request.", Category: "HR", Tags: []string{"hr", "mcp"}, YAML: "name: leave_approval\ntrigger:\n  type: user.requested\nsteps:\n  - id: fetch_attendance\n    action: fetch_attendance\n  - id: create_leave\n    action: create_leave\n", Steps: 2, CreatedAt: now.Add(-26 * time.Hour)}
+	store.Templates["tpl_leave"] = &models.WorkflowTemplate{ID: "tpl_leave", Name: "Leave Approval Assistant", Description: "Fetch attendance, validate policy, and create leave request.", Category: "HR", Tags: []string{"hr", "mcp"}, YAML: `name: leave_approval
+description: Fetch attendance, create a leave request, and write an audit record.
+trigger:
+  type: user.requested
+  displayName: Leave request
+steps:
+  - id: fetch_attendance
+    action: fetch_attendance
+  - id: create_leave
+    action: create_leave
+  - id: audit_leave
+    action: audit.write_audit_log
+    parameters:
+      event_type: leave_request_created
+      actor_role: Workflow Builder
+      decision: queued
+`, Steps: 3, CreatedAt: now.Add(-26 * time.Hour)}
 
 	store.Executions["run-4821"] = &models.Execution{ID: "run-4821", WorkflowID: "wf-101", WorkflowName: "ERP Invoice Exception Resolver", Status: models.StatusRunning, StartedAt: now.Add(-74 * time.Second), DurationMS: 74000, Tokens: models.Tokens{Input: 5400, Output: 3000, Total: 8400}, CostUSD: 0.31, StartedBy: models.Principal{ID: "usr_001", Name: "Lakshan Jay"}}
 	store.ExecutionLogs["run-4821"] = []models.ExecutionLog{

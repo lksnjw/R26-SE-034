@@ -10,7 +10,10 @@ import (
 	"github.com/sanjeewa/agentic-orchestrator/internal/api/routes"
 	"github.com/sanjeewa/agentic-orchestrator/internal/config"
 	"github.com/sanjeewa/agentic-orchestrator/internal/core/healing"
+	"github.com/sanjeewa/agentic-orchestrator/internal/core/orchestrator"
+	coreregistry "github.com/sanjeewa/agentic-orchestrator/internal/core/registry"
 	"github.com/sanjeewa/agentic-orchestrator/internal/core/runner"
+	"github.com/sanjeewa/agentic-orchestrator/internal/core/semanticsearch"
 	"github.com/sanjeewa/agentic-orchestrator/internal/core/synthesizer"
 	workflowvalidator "github.com/sanjeewa/agentic-orchestrator/internal/core/validator"
 	"github.com/sanjeewa/agentic-orchestrator/internal/repository"
@@ -32,10 +35,22 @@ func main() {
 	_ = config.NewRedisCache(cfg, zapLogger)
 
 	store := repository.NewStore()
-	synth := synthesizer.NewService(cfg.OllamaBaseURL, cfg.OllamaModel, cfg.OllamaEnabled)
+	synth := synthesizer.NewServiceWithProvider(cfg.OllamaBaseURL, cfg.OllamaModel, cfg.OllamaEnabled, cfg.WorkflowGenerationProvider, cfg.GeminiAPIKey, cfg.GeminiModel)
 	validator := workflowvalidator.NewWorkflowValidator()
+	var registryBundle *coreregistry.Bundle
+	if cfg.ToolRegistryPath != "" && cfg.RuleRegistryPath != "" {
+		registryBundle, err = coreregistry.LoadBundle(cfg.ToolRegistryPath, cfg.RuleRegistryPath, zapLogger)
+	} else {
+		registryBundle, err = coreregistry.LoadDataset(cfg.DatasetRoot, zapLogger)
+	}
+	if err != nil {
+		zapLogger.Fatal("load semantic registries", zap.Error(err))
+	}
+	registryValidator := workflowvalidator.NewRegistryValidator(registryBundle.Tools, registryBundle.Rules)
+	searchService := semanticsearch.NewServiceFromDataset(registryBundle, cfg.SemanticSearchMode, cfg.SemanticSearchURL, cfg.SemanticSearchAllowLexicalFallback)
+	chatOrchestrator := orchestrator.NewChatOrchestrator(searchService, synth, registryValidator)
 	mcp := tools.NewMCPClient(cfg.MCPBaseURL, cfg.MCPTimeout)
-	registry := tools.NewRegistry(tools.GenericMCPTool{Client: mcp})
+	registry := tools.NewRegistry(nil)
 	registry.Register(impl.FetchAttendanceTool{MCP: mcp})
 	registry.Register(impl.CreateLeaveTool{MCP: mcp})
 	registry.Register(tools.GenericMCPTool{Action: "classify_invoice", Client: mcp})
@@ -43,10 +58,15 @@ func main() {
 	registry.Register(tools.GenericMCPTool{Action: "refresh_connector", Client: mcp})
 	registry.Register(tools.GenericMCPTool{Action: "notify_finance", Client: mcp})
 	registry.Register(tools.GenericMCPTool{Action: "send_webhook", Client: mcp})
+	for _, toolDef := range registryBundle.Tools.GetAllTools() {
+		if !registry.Has(toolDef.Name) {
+			registry.Register(tools.GenericMCPTool{Action: toolDef.Name, Client: mcp})
+		}
+	}
 
 	exec := runner.NewExecutor(registry, zapLogger)
 	healer := healing.NewHealer(synth)
-	handler := handlers.New(cfg, store, synth, validator, exec, healer, zapLogger)
+	handler := handlers.New(cfg, store, synth, validator, registryBundle, registryValidator, searchService, chatOrchestrator, exec, healer, zapLogger)
 
 	app := fiber.New(fiber.Config{
 		AppName:      cfg.AppName,

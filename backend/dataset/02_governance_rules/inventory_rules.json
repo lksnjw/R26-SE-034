@@ -1,0 +1,2249 @@
+[
+  {
+    "rule_id": "INV-RBAC-001",
+    "rule_name": "Inventory viewer read-only access",
+    "rule_type": "rbac",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "inv_viewer can only read inventory data.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022",
+      "TOOL-INV-023",
+      "TOOL-INV-024",
+      "TOOL-INV-027",
+      "TOOL-INV-028",
+      "TOOL-INV-029",
+      "TOOL-INV-030",
+      "TOOL-INV-032",
+      "TOOL-INV-033",
+      "TOOL-INV-034",
+      "TOOL-INV-037",
+      "TOOL-INV-038",
+      "TOOL-INV-039",
+      "TOOL-INV-042",
+      "TOOL-INV-045",
+      "TOOL-INV-046",
+      "TOOL-INV-047",
+      "TOOL-INV-049",
+      "TOOL-INV-050",
+      "TOOL-INV-053",
+      "TOOL-INV-054",
+      "TOOL-INV-055"
+    ],
+    "applies_to_roles": [
+      "inv_viewer"
+    ],
+    "condition": {
+      "type": "role_permission",
+      "parameter": "user_role",
+      "operator": "==",
+      "value": "inv_viewer"
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "inv_viewer cannot execute inventory write tools.",
+    "llm_prompt_instruction": "Generate only read-only inventory steps for inv_viewer.",
+    "healing_guidance": "Route stock update to inv_editor or admin.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RBAC-002",
+    "rule_name": "Inventory editor stock update authority",
+    "rule_type": "rbac",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Stock updates require inv_editor or admin.",
+    "applies_to_tools": [
+      "TOOL-INV-006",
+      "TOOL-INV-015"
+    ],
+    "applies_to_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "role_permission",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Stock updates require inv_editor or admin.",
+    "llm_prompt_instruction": "Do not generate stock update for viewer roles.",
+    "healing_guidance": "Request inv_editor or admin execution.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-PROC-001",
+    "rule_name": "Stock check before reservation",
+    "rule_type": "process_order",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Stock check must occur before stock reservation.",
+    "applies_to_tools": [
+      "TOOL-INV-003",
+      "TOOL-INV-004"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_order",
+      "parameter": "workflow.steps",
+      "operator": "before",
+      "value": [
+        "inventory.check_stock_level",
+        "inventory.reserve_stock"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Stock reservation requires prior stock check.",
+    "llm_prompt_instruction": "Generate check_stock_level before reserve_stock.",
+    "healing_guidance": "Reorder workflow candidate.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-PARAM-001",
+    "rule_name": "Goods receipt required parameters",
+    "rule_type": "parameter_required",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Goods receipt must include purchase_order_id and received_quantity.",
+    "applies_to_tools": [
+      "TOOL-INV-007"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "required_parameters",
+      "operator": "exists",
+      "value": [
+        "purchase_order_id",
+        "received_quantity"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Goods receipt requires purchase_order_id and received_quantity.",
+    "llm_prompt_instruction": "Ask for purchase_order_id and received_quantity.",
+    "healing_guidance": "Request missing goods receipt fields.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-QUANTITY-001",
+    "rule_name": "Over receipt approval",
+    "rule_type": "quantity_threshold",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Received quantity cannot exceed ordered quantity unless approval exists.",
+    "applies_to_tools": [
+      "TOOL-INV-007",
+      "TOOL-INV-050"
+    ],
+    "applies_to_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "quantity_threshold",
+      "parameter": "received_quantity",
+      "operator": ">",
+      "value": "ordered_quantity"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Received quantity exceeds ordered quantity and requires approval.",
+    "llm_prompt_instruction": "Add approval for over receipt before stock update.",
+    "healing_guidance": "Create over receipt exception and approval.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-CACHE-001",
+    "rule_name": "Inventory read cache allowed",
+    "rule_type": "cache_safety",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Read-only inventory tools can use shared semantic cache.",
+    "applies_to_tools": [
+      "TOOL-INV-001",
+      "TOOL-INV-002",
+      "TOOL-INV-003",
+      "TOOL-INV-008",
+      "TOOL-INV-010",
+      "TOOL-INV-012",
+      "TOOL-INV-013",
+      "TOOL-INV-017",
+      "TOOL-INV-018",
+      "TOOL-INV-019",
+      "TOOL-INV-020",
+      "TOOL-INV-026",
+      "TOOL-INV-031",
+      "TOOL-INV-035",
+      "TOOL-INV-036",
+      "TOOL-INV-041",
+      "TOOL-INV-043",
+      "TOOL-INV-044",
+      "TOOL-INV-048",
+      "TOOL-INV-051",
+      "TOOL-INV-052"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "cache_policy",
+      "parameter": "is_read_only",
+      "operator": "==",
+      "value": true
+    },
+    "enforcement_action": "allow",
+    "severity": "low",
+    "validator_message": "Inventory read cache is allowed for read-only tools.",
+    "llm_prompt_instruction": "Use cache for read-only inventory grounding.",
+    "healing_guidance": "No healing required.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-CACHE-002",
+    "rule_name": "Inventory write flush cache",
+    "rule_type": "cache_safety",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Inventory write tools must flush inventory read caches.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022",
+      "TOOL-INV-023",
+      "TOOL-INV-024",
+      "TOOL-INV-027",
+      "TOOL-INV-028",
+      "TOOL-INV-029",
+      "TOOL-INV-030",
+      "TOOL-INV-032",
+      "TOOL-INV-033",
+      "TOOL-INV-034",
+      "TOOL-INV-037",
+      "TOOL-INV-038",
+      "TOOL-INV-039",
+      "TOOL-INV-042",
+      "TOOL-INV-045",
+      "TOOL-INV-046",
+      "TOOL-INV-047",
+      "TOOL-INV-049",
+      "TOOL-INV-050",
+      "TOOL-INV-053",
+      "TOOL-INV-054",
+      "TOOL-INV-055"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "cache_policy",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "inventory"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory write workflow must flush read caches.",
+    "llm_prompt_instruction": "Include cache invalidation after inventory writes.",
+    "healing_guidance": "Add flush_on inventory and audit log.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-AUDIT-001",
+    "rule_name": "Inventory writes require audit",
+    "rule_type": "audit",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "All inventory write operations must write an audit log.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022",
+      "TOOL-INV-023",
+      "TOOL-INV-024",
+      "TOOL-INV-027",
+      "TOOL-INV-028",
+      "TOOL-INV-029",
+      "TOOL-INV-030",
+      "TOOL-INV-032",
+      "TOOL-INV-033",
+      "TOOL-INV-034",
+      "TOOL-INV-037",
+      "TOOL-INV-038",
+      "TOOL-INV-039",
+      "TOOL-INV-042",
+      "TOOL-INV-045",
+      "TOOL-INV-046",
+      "TOOL-INV-047",
+      "TOOL-INV-049",
+      "TOOL-INV-050",
+      "TOOL-INV-053",
+      "TOOL-INV-054",
+      "TOOL-INV-055",
+      "TOOL-GLB-004"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "audit",
+      "parameter": "audit.write_audit_log",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "high",
+    "validator_message": "Inventory write workflow requires audit logging.",
+    "llm_prompt_instruction": "Append audit.write_audit_log to inventory write workflows.",
+    "healing_guidance": "Add audit log step.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [
+      "workflow_id",
+      "event_type",
+      "actor_role",
+      "decision"
+    ],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-PARAM-101",
+    "rule_name": "Inventory ERP generated parameter required control 1",
+    "rule_type": "parameter_required",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 1 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 1 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 1 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-AUDIT-102",
+    "rule_name": "Inventory ERP generated audit control 2",
+    "rule_type": "audit",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 2 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 2 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 2 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-CACHE-103",
+    "rule_name": "Inventory ERP generated cache safety control 3",
+    "rule_type": "cache_safety",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 3 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "inventory"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 3 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 3 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-DATA-104",
+    "rule_name": "Inventory ERP generated data confidentiality control 4",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 4 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 4 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 4 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RISK-105",
+    "rule_name": "Inventory ERP generated risk escalation control 5",
+    "rule_type": "risk_escalation",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "High-risk actions require explicit approval. Generated control variant 5 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 5 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 5 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-ORDER-106",
+    "rule_name": "Inventory ERP generated process order control 6",
+    "rule_type": "process_order",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Required precheck must be present before execution. Generated control variant 6 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 6 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 6 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RBAC-107",
+    "rule_name": "Inventory ERP generated rbac control 7",
+    "rule_type": "rbac",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 7 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 7 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 7 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-PARAM-108",
+    "rule_name": "Inventory ERP generated parameter required control 8",
+    "rule_type": "parameter_required",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 8 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 8 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 8 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-AUDIT-109",
+    "rule_name": "Inventory ERP generated audit control 9",
+    "rule_type": "audit",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 9 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 9 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 9 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-CACHE-110",
+    "rule_name": "Inventory ERP generated cache safety control 10",
+    "rule_type": "cache_safety",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 10 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "inventory"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 10 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 10 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-DATA-111",
+    "rule_name": "Inventory ERP generated data confidentiality control 11",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 11 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 11 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 11 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RISK-112",
+    "rule_name": "Inventory ERP generated risk escalation control 12",
+    "rule_type": "risk_escalation",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "High-risk actions require explicit approval. Generated control variant 12 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 12 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 12 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-ORDER-113",
+    "rule_name": "Inventory ERP generated process order control 13",
+    "rule_type": "process_order",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Required precheck must be present before execution. Generated control variant 13 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 13 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 13 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RBAC-114",
+    "rule_name": "Inventory ERP generated rbac control 14",
+    "rule_type": "rbac",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 14 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 14 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 14 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-PARAM-115",
+    "rule_name": "Inventory ERP generated parameter required control 15",
+    "rule_type": "parameter_required",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 15 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 15 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 15 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-AUDIT-116",
+    "rule_name": "Inventory ERP generated audit control 16",
+    "rule_type": "audit",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 16 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 16 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 16 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-CACHE-117",
+    "rule_name": "Inventory ERP generated cache safety control 17",
+    "rule_type": "cache_safety",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 17 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "inventory"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 17 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 17 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-DATA-118",
+    "rule_name": "Inventory ERP generated data confidentiality control 18",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 18 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 18 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 18 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RISK-119",
+    "rule_name": "Inventory ERP generated risk escalation control 19",
+    "rule_type": "risk_escalation",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "High-risk actions require explicit approval. Generated control variant 19 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 19 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 19 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-ORDER-120",
+    "rule_name": "Inventory ERP generated process order control 20",
+    "rule_type": "process_order",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Required precheck must be present before execution. Generated control variant 20 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 20 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 20 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RBAC-121",
+    "rule_name": "Inventory ERP generated rbac control 21",
+    "rule_type": "rbac",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 21 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 21 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 21 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-PARAM-122",
+    "rule_name": "Inventory ERP generated parameter required control 22",
+    "rule_type": "parameter_required",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 22 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 22 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 22 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-AUDIT-123",
+    "rule_name": "Inventory ERP generated audit control 23",
+    "rule_type": "audit",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 23 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 23 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 23 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-CACHE-124",
+    "rule_name": "Inventory ERP generated cache safety control 24",
+    "rule_type": "cache_safety",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 24 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "inventory"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 24 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 24 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-DATA-125",
+    "rule_name": "Inventory ERP generated data confidentiality control 25",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 25 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 25 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 25 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RISK-126",
+    "rule_name": "Inventory ERP generated risk escalation control 26",
+    "rule_type": "risk_escalation",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "High-risk actions require explicit approval. Generated control variant 26 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 26 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 26 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-ORDER-127",
+    "rule_name": "Inventory ERP generated process order control 27",
+    "rule_type": "process_order",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Required precheck must be present before execution. Generated control variant 27 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 27 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 27 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RBAC-128",
+    "rule_name": "Inventory ERP generated rbac control 28",
+    "rule_type": "rbac",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 28 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 28 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 28 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-PARAM-129",
+    "rule_name": "Inventory ERP generated parameter required control 29",
+    "rule_type": "parameter_required",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 29 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 29 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 29 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-AUDIT-130",
+    "rule_name": "Inventory ERP generated audit control 30",
+    "rule_type": "audit",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 30 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 30 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 30 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-CACHE-131",
+    "rule_name": "Inventory ERP generated cache safety control 31",
+    "rule_type": "cache_safety",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 31 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "inventory"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 31 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 31 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-DATA-132",
+    "rule_name": "Inventory ERP generated data confidentiality control 32",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 32 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 32 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 32 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RISK-133",
+    "rule_name": "Inventory ERP generated risk escalation control 33",
+    "rule_type": "risk_escalation",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "High-risk actions require explicit approval. Generated control variant 33 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 33 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 33 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-ORDER-134",
+    "rule_name": "Inventory ERP generated process order control 34",
+    "rule_type": "process_order",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Required precheck must be present before execution. Generated control variant 34 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 34 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 34 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RBAC-135",
+    "rule_name": "Inventory ERP generated rbac control 35",
+    "rule_type": "rbac",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 35 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 35 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 35 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-PARAM-136",
+    "rule_name": "Inventory ERP generated parameter required control 36",
+    "rule_type": "parameter_required",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 36 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 36 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 36 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-AUDIT-137",
+    "rule_name": "Inventory ERP generated audit control 37",
+    "rule_type": "audit",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 37 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 37 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 37 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-CACHE-138",
+    "rule_name": "Inventory ERP generated cache safety control 38",
+    "rule_type": "cache_safety",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 38 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "inventory"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 38 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 38 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-DATA-139",
+    "rule_name": "Inventory ERP generated data confidentiality control 39",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 39 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 39 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 39 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RISK-140",
+    "rule_name": "Inventory ERP generated risk escalation control 40",
+    "rule_type": "risk_escalation",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "High-risk actions require explicit approval. Generated control variant 40 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 40 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 40 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-ORDER-141",
+    "rule_name": "Inventory ERP generated process order control 41",
+    "rule_type": "process_order",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Required precheck must be present before execution. Generated control variant 41 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Inventory ERP control 41 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 41 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "INV-RBAC-142",
+    "rule_name": "Inventory ERP generated rbac control 42",
+    "rule_type": "rbac",
+    "erp_system": "Inventory ERP",
+    "domain": "inventory",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 42 for Inventory ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-INV-004",
+      "TOOL-INV-005",
+      "TOOL-INV-006",
+      "TOOL-INV-007",
+      "TOOL-INV-009",
+      "TOOL-INV-014",
+      "TOOL-INV-015",
+      "TOOL-INV-016",
+      "TOOL-INV-021",
+      "TOOL-INV-022"
+    ],
+    "applies_to_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin",
+      "inv_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inventory ERP control 42 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 42 for inventory workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  }
+]

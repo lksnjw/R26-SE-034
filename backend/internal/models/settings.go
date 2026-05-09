@@ -38,10 +38,11 @@ type ChatSession struct {
 }
 
 type ChatMessage struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID        string                 `json:"id"`
+	Role      string                 `json:"role"`
+	Text      string                 `json:"text"`
+	Artifacts map[string]interface{} `json:"artifacts,omitempty"`
+	CreatedAt time.Time              `json:"createdAt"`
 }
 
 type ChatSessionDetail struct {

@@ -1,0 +1,2054 @@
+[
+  {
+    "template_id": "TPL-CROSS-001",
+    "template_name": "Cross ERP Employee Inventory Procurement Invoice Notify Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for cross erp employee inventory procurement invoice notify using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-002",
+      "TOOL-INV-003",
+      "TOOL-PROC-003",
+      "TOOL-FIN-005",
+      "TOOL-GLB-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-PARAM-001",
+      "INV-PROC-001",
+      "PROC-PARAM-001",
+      "FIN-PROC-003",
+      "GLOBAL-SAFETY-004"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-002",
+        "tool_name": "hr.get_employee",
+        "purpose": "Execute get employee as part of cross erp employee inventory procurement invoice notify variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of cross erp employee inventory procurement invoice notify variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of cross erp employee inventory procurement invoice notify variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of cross erp employee inventory procurement invoice notify variant 1."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-003",
+        "tool_name": "notification.send_email_notification",
+        "purpose": "Execute send email notification as part of cross erp employee inventory procurement invoice notify variant 1."
+      },
+      {
+        "step": 6,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of cross erp employee inventory procurement invoice notify variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check employee, stock, create PO, validate invoice, and notify manager."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-002",
+    "template_name": "P2P Self Healing Capability Gap Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for p2p self healing capability gap using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-005",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "GLOBAL-SAFETY-005",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of p2p self healing capability gap variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-005",
+        "tool_name": "capability.create_capability_request",
+        "purpose": "Execute create capability request as part of p2p self healing capability gap variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of p2p self healing capability gap variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a capability request when PO execution path is missing."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-003",
+    "template_name": "Travel Claim Finance Payment Bridge Variant 1",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for travel claim finance payment bridge using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-THRESH-001",
+      "FIN-PROC-003"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of travel claim finance payment bridge variant 1."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel claim finance payment bridge variant 1."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel claim finance payment bridge variant 1."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of travel claim finance payment bridge variant 1."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of travel claim finance payment bridge variant 1."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Approve reimbursement and request finance payment."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-004",
+    "template_name": "Cross ERP Employee Inventory Procurement Invoice Notify Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for cross erp employee inventory procurement invoice notify using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-002",
+      "TOOL-INV-003",
+      "TOOL-PROC-003",
+      "TOOL-FIN-005",
+      "TOOL-GLB-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-PARAM-001",
+      "INV-PROC-001",
+      "PROC-PARAM-001",
+      "FIN-PROC-003",
+      "GLOBAL-SAFETY-004"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-002",
+        "tool_name": "hr.get_employee",
+        "purpose": "Execute get employee as part of cross erp employee inventory procurement invoice notify variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of cross erp employee inventory procurement invoice notify variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of cross erp employee inventory procurement invoice notify variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of cross erp employee inventory procurement invoice notify variant 2."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-003",
+        "tool_name": "notification.send_email_notification",
+        "purpose": "Execute send email notification as part of cross erp employee inventory procurement invoice notify variant 2."
+      },
+      {
+        "step": 6,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of cross erp employee inventory procurement invoice notify variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check employee, stock, create PO, validate invoice, and notify manager."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-005",
+    "template_name": "P2P Self Healing Capability Gap Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for p2p self healing capability gap using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-005",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "GLOBAL-SAFETY-005",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of p2p self healing capability gap variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-005",
+        "tool_name": "capability.create_capability_request",
+        "purpose": "Execute create capability request as part of p2p self healing capability gap variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of p2p self healing capability gap variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a capability request when PO execution path is missing."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-006",
+    "template_name": "Travel Claim Finance Payment Bridge Variant 2",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for travel claim finance payment bridge using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-THRESH-001",
+      "FIN-PROC-003"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of travel claim finance payment bridge variant 2."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel claim finance payment bridge variant 2."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel claim finance payment bridge variant 2."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of travel claim finance payment bridge variant 2."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of travel claim finance payment bridge variant 2."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Approve reimbursement and request finance payment."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-007",
+    "template_name": "Cross ERP Employee Inventory Procurement Invoice Notify Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for cross erp employee inventory procurement invoice notify using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-002",
+      "TOOL-INV-003",
+      "TOOL-PROC-003",
+      "TOOL-FIN-005",
+      "TOOL-GLB-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-PARAM-001",
+      "INV-PROC-001",
+      "PROC-PARAM-001",
+      "FIN-PROC-003",
+      "GLOBAL-SAFETY-004"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-002",
+        "tool_name": "hr.get_employee",
+        "purpose": "Execute get employee as part of cross erp employee inventory procurement invoice notify variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of cross erp employee inventory procurement invoice notify variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of cross erp employee inventory procurement invoice notify variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of cross erp employee inventory procurement invoice notify variant 3."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-003",
+        "tool_name": "notification.send_email_notification",
+        "purpose": "Execute send email notification as part of cross erp employee inventory procurement invoice notify variant 3."
+      },
+      {
+        "step": 6,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of cross erp employee inventory procurement invoice notify variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check employee, stock, create PO, validate invoice, and notify manager."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-008",
+    "template_name": "P2P Self Healing Capability Gap Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for p2p self healing capability gap using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-005",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "GLOBAL-SAFETY-005",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of p2p self healing capability gap variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-005",
+        "tool_name": "capability.create_capability_request",
+        "purpose": "Execute create capability request as part of p2p self healing capability gap variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of p2p self healing capability gap variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a capability request when PO execution path is missing."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-009",
+    "template_name": "Travel Claim Finance Payment Bridge Variant 3",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for travel claim finance payment bridge using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-THRESH-001",
+      "FIN-PROC-003"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of travel claim finance payment bridge variant 3."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel claim finance payment bridge variant 3."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel claim finance payment bridge variant 3."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of travel claim finance payment bridge variant 3."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of travel claim finance payment bridge variant 3."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Approve reimbursement and request finance payment."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-010",
+    "template_name": "Cross ERP Employee Inventory Procurement Invoice Notify Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for cross erp employee inventory procurement invoice notify using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-002",
+      "TOOL-INV-003",
+      "TOOL-PROC-003",
+      "TOOL-FIN-005",
+      "TOOL-GLB-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-PARAM-001",
+      "INV-PROC-001",
+      "PROC-PARAM-001",
+      "FIN-PROC-003",
+      "GLOBAL-SAFETY-004"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-002",
+        "tool_name": "hr.get_employee",
+        "purpose": "Execute get employee as part of cross erp employee inventory procurement invoice notify variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of cross erp employee inventory procurement invoice notify variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of cross erp employee inventory procurement invoice notify variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of cross erp employee inventory procurement invoice notify variant 4."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-003",
+        "tool_name": "notification.send_email_notification",
+        "purpose": "Execute send email notification as part of cross erp employee inventory procurement invoice notify variant 4."
+      },
+      {
+        "step": 6,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of cross erp employee inventory procurement invoice notify variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check employee, stock, create PO, validate invoice, and notify manager."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-011",
+    "template_name": "P2P Self Healing Capability Gap Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for p2p self healing capability gap using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-005",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "GLOBAL-SAFETY-005",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of p2p self healing capability gap variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-005",
+        "tool_name": "capability.create_capability_request",
+        "purpose": "Execute create capability request as part of p2p self healing capability gap variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of p2p self healing capability gap variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a capability request when PO execution path is missing."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-012",
+    "template_name": "Travel Claim Finance Payment Bridge Variant 4",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for travel claim finance payment bridge using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-THRESH-001",
+      "FIN-PROC-003"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of travel claim finance payment bridge variant 4."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel claim finance payment bridge variant 4."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel claim finance payment bridge variant 4."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of travel claim finance payment bridge variant 4."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of travel claim finance payment bridge variant 4."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Approve reimbursement and request finance payment."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-013",
+    "template_name": "Cross ERP Employee Inventory Procurement Invoice Notify Variant 5",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for cross erp employee inventory procurement invoice notify using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-002",
+      "TOOL-INV-003",
+      "TOOL-PROC-003",
+      "TOOL-FIN-005",
+      "TOOL-GLB-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-PARAM-001",
+      "INV-PROC-001",
+      "PROC-PARAM-001",
+      "FIN-PROC-003",
+      "GLOBAL-SAFETY-004"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-002",
+        "tool_name": "hr.get_employee",
+        "purpose": "Execute get employee as part of cross erp employee inventory procurement invoice notify variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of cross erp employee inventory procurement invoice notify variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of cross erp employee inventory procurement invoice notify variant 5."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of cross erp employee inventory procurement invoice notify variant 5."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-003",
+        "tool_name": "notification.send_email_notification",
+        "purpose": "Execute send email notification as part of cross erp employee inventory procurement invoice notify variant 5."
+      },
+      {
+        "step": 6,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of cross erp employee inventory procurement invoice notify variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check employee, stock, create PO, validate invoice, and notify manager."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-014",
+    "template_name": "P2P Self Healing Capability Gap Variant 5",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for p2p self healing capability gap using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-005",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "GLOBAL-SAFETY-005",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of p2p self healing capability gap variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-005",
+        "tool_name": "capability.create_capability_request",
+        "purpose": "Execute create capability request as part of p2p self healing capability gap variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of p2p self healing capability gap variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a capability request when PO execution path is missing."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-015",
+    "template_name": "Travel Claim Finance Payment Bridge Variant 5",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for travel claim finance payment bridge using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-THRESH-001",
+      "FIN-PROC-003"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of travel claim finance payment bridge variant 5."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel claim finance payment bridge variant 5."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel claim finance payment bridge variant 5."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of travel claim finance payment bridge variant 5."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of travel claim finance payment bridge variant 5."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Approve reimbursement and request finance payment."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-016",
+    "template_name": "Cross ERP Employee Inventory Procurement Invoice Notify Variant 6",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for cross erp employee inventory procurement invoice notify using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-002",
+      "TOOL-INV-003",
+      "TOOL-PROC-003",
+      "TOOL-FIN-005",
+      "TOOL-GLB-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-PARAM-001",
+      "INV-PROC-001",
+      "PROC-PARAM-001",
+      "FIN-PROC-003",
+      "GLOBAL-SAFETY-004"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-002",
+        "tool_name": "hr.get_employee",
+        "purpose": "Execute get employee as part of cross erp employee inventory procurement invoice notify variant 6."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of cross erp employee inventory procurement invoice notify variant 6."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of cross erp employee inventory procurement invoice notify variant 6."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of cross erp employee inventory procurement invoice notify variant 6."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-003",
+        "tool_name": "notification.send_email_notification",
+        "purpose": "Execute send email notification as part of cross erp employee inventory procurement invoice notify variant 6."
+      },
+      {
+        "step": 6,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of cross erp employee inventory procurement invoice notify variant 6."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check employee, stock, create PO, validate invoice, and notify manager."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-017",
+    "template_name": "P2P Self Healing Capability Gap Variant 6",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for p2p self healing capability gap using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-005",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "GLOBAL-SAFETY-005",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of p2p self healing capability gap variant 6."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-005",
+        "tool_name": "capability.create_capability_request",
+        "purpose": "Execute create capability request as part of p2p self healing capability gap variant 6."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of p2p self healing capability gap variant 6."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a capability request when PO execution path is missing."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-018",
+    "template_name": "Travel Claim Finance Payment Bridge Variant 6",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for travel claim finance payment bridge using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-THRESH-001",
+      "FIN-PROC-003"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of travel claim finance payment bridge variant 6."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel claim finance payment bridge variant 6."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel claim finance payment bridge variant 6."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of travel claim finance payment bridge variant 6."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of travel claim finance payment bridge variant 6."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Approve reimbursement and request finance payment."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-019",
+    "template_name": "Cross ERP Employee Inventory Procurement Invoice Notify Variant 7",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for cross erp employee inventory procurement invoice notify using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-002",
+      "TOOL-INV-003",
+      "TOOL-PROC-003",
+      "TOOL-FIN-005",
+      "TOOL-GLB-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-PARAM-001",
+      "INV-PROC-001",
+      "PROC-PARAM-001",
+      "FIN-PROC-003",
+      "GLOBAL-SAFETY-004"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-002",
+        "tool_name": "hr.get_employee",
+        "purpose": "Execute get employee as part of cross erp employee inventory procurement invoice notify variant 7."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of cross erp employee inventory procurement invoice notify variant 7."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of cross erp employee inventory procurement invoice notify variant 7."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of cross erp employee inventory procurement invoice notify variant 7."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-003",
+        "tool_name": "notification.send_email_notification",
+        "purpose": "Execute send email notification as part of cross erp employee inventory procurement invoice notify variant 7."
+      },
+      {
+        "step": 6,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of cross erp employee inventory procurement invoice notify variant 7."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check employee, stock, create PO, validate invoice, and notify manager."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-020",
+    "template_name": "P2P Self Healing Capability Gap Variant 7",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for p2p self healing capability gap using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-005",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "GLOBAL-SAFETY-005",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of p2p self healing capability gap variant 7."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-005",
+        "tool_name": "capability.create_capability_request",
+        "purpose": "Execute create capability request as part of p2p self healing capability gap variant 7."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of p2p self healing capability gap variant 7."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a capability request when PO execution path is missing."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-021",
+    "template_name": "Travel Claim Finance Payment Bridge Variant 7",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for travel claim finance payment bridge using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-THRESH-001",
+      "FIN-PROC-003"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of travel claim finance payment bridge variant 7."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel claim finance payment bridge variant 7."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel claim finance payment bridge variant 7."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of travel claim finance payment bridge variant 7."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of travel claim finance payment bridge variant 7."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Approve reimbursement and request finance payment."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-022",
+    "template_name": "Cross ERP Employee Inventory Procurement Invoice Notify Variant 8",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for cross erp employee inventory procurement invoice notify using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-002",
+      "TOOL-INV-003",
+      "TOOL-PROC-003",
+      "TOOL-FIN-005",
+      "TOOL-GLB-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-PARAM-001",
+      "INV-PROC-001",
+      "PROC-PARAM-001",
+      "FIN-PROC-003",
+      "GLOBAL-SAFETY-004"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-002",
+        "tool_name": "hr.get_employee",
+        "purpose": "Execute get employee as part of cross erp employee inventory procurement invoice notify variant 8."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of cross erp employee inventory procurement invoice notify variant 8."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of cross erp employee inventory procurement invoice notify variant 8."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of cross erp employee inventory procurement invoice notify variant 8."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-003",
+        "tool_name": "notification.send_email_notification",
+        "purpose": "Execute send email notification as part of cross erp employee inventory procurement invoice notify variant 8."
+      },
+      {
+        "step": 6,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of cross erp employee inventory procurement invoice notify variant 8."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check employee, stock, create PO, validate invoice, and notify manager."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-023",
+    "template_name": "P2P Self Healing Capability Gap Variant 8",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for p2p self healing capability gap using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-PROC-003",
+      "TOOL-GLB-005",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "GLOBAL-SAFETY-005",
+      "PROC-AUDIT-001"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of p2p self healing capability gap variant 8."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-GLB-005",
+        "tool_name": "capability.create_capability_request",
+        "purpose": "Execute create capability request as part of p2p self healing capability gap variant 8."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of p2p self healing capability gap variant 8."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Create a capability request when PO execution path is missing."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-024",
+    "template_name": "Travel Claim Finance Payment Bridge Variant 8",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for travel claim finance payment bridge using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-007",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-FIN-008",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-POLICY-001",
+      "TRV-THRESH-001",
+      "FIN-PROC-003"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-007",
+        "tool_name": "hr.validate_employee_active_status",
+        "purpose": "Execute validate employee active status as part of travel claim finance payment bridge variant 8."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-TRV-007",
+        "tool_name": "travel.submit_reimbursement_claim",
+        "purpose": "Execute submit reimbursement claim as part of travel claim finance payment bridge variant 8."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-TRV-008",
+        "tool_name": "travel.approve_reimbursement",
+        "purpose": "Execute approve reimbursement as part of travel claim finance payment bridge variant 8."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-008",
+        "tool_name": "finance.request_payment",
+        "purpose": "Execute request payment as part of travel claim finance payment bridge variant 8."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of travel claim finance payment bridge variant 8."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [
+      "TRV-THRESH-001"
+    ],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Approve reimbursement and request finance payment."
+    ]
+  },
+  {
+    "template_id": "TPL-CROSS-025",
+    "template_name": "Cross ERP Employee Inventory Procurement Invoice Notify Variant 9",
+    "erp_systems_involved": [
+      "Finance ERP",
+      "HR ERP",
+      "Inventory ERP",
+      "Procurement ERP",
+      "Travel & Reimbursement ERP"
+    ],
+    "bpi_alignment": "CROSS_ERP",
+    "description": "Cross-ERP orchestration template for cross erp employee inventory procurement invoice notify using retrieved tools, governance rules, and self-healing capability requests.",
+    "required_tools": [
+      "TOOL-HR-002",
+      "TOOL-INV-003",
+      "TOOL-PROC-003",
+      "TOOL-FIN-005",
+      "TOOL-GLB-003",
+      "TOOL-GLB-004"
+    ],
+    "required_rules": [
+      "HR-PARAM-001",
+      "INV-PROC-001",
+      "PROC-PARAM-001",
+      "FIN-PROC-003",
+      "GLOBAL-SAFETY-004"
+    ],
+    "normal_flow": [
+      {
+        "step": 1,
+        "tool_id": "TOOL-HR-002",
+        "tool_name": "hr.get_employee",
+        "purpose": "Execute get employee as part of cross erp employee inventory procurement invoice notify variant 9."
+      },
+      {
+        "step": 2,
+        "tool_id": "TOOL-INV-003",
+        "tool_name": "inventory.check_stock_level",
+        "purpose": "Execute check stock level as part of cross erp employee inventory procurement invoice notify variant 9."
+      },
+      {
+        "step": 3,
+        "tool_id": "TOOL-PROC-003",
+        "tool_name": "procurement.create_purchase_order",
+        "purpose": "Execute create purchase order as part of cross erp employee inventory procurement invoice notify variant 9."
+      },
+      {
+        "step": 4,
+        "tool_id": "TOOL-FIN-005",
+        "tool_name": "finance.validate_invoice",
+        "purpose": "Execute validate invoice as part of cross erp employee inventory procurement invoice notify variant 9."
+      },
+      {
+        "step": 5,
+        "tool_id": "TOOL-GLB-003",
+        "tool_name": "notification.send_email_notification",
+        "purpose": "Execute send email notification as part of cross erp employee inventory procurement invoice notify variant 9."
+      },
+      {
+        "step": 6,
+        "tool_id": "TOOL-GLB-004",
+        "tool_name": "audit.write_audit_log",
+        "purpose": "Execute write audit log as part of cross erp employee inventory procurement invoice notify variant 9."
+      }
+    ],
+    "exception_flows": [
+      {
+        "name": "Missing parameters",
+        "handling": "Ask clarification or block execution until required parameters are supplied."
+      },
+      {
+        "name": "RBAC denied",
+        "handling": "Route to authorized role or create human approval task."
+      },
+      {
+        "name": "Capability gap",
+        "handling": "Use capability.create_capability_request when endpoint or MCP schema is missing."
+      }
+    ],
+    "approval_points": [],
+    "validation_focus": [
+      "tool_validity",
+      "parameter_completeness",
+      "rbac",
+      "policy",
+      "process_order",
+      "audit"
+    ],
+    "sample_user_intents": [
+      "Check employee, stock, create PO, validate invoice, and notify manager."
+    ]
+  }
+]

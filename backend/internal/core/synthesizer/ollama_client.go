@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -17,8 +18,10 @@ type OllamaClient struct {
 }
 
 type Service struct {
-	Ollama *OllamaClient
-	Prompt PromptBuilder
+	Ollama   *OllamaClient
+	Gemini   *GeminiClient
+	Provider string
+	Prompt   PromptBuilder
 }
 
 type Result struct {
@@ -35,15 +38,27 @@ func NewService(baseURL, model string, enabled bool) *Service {
 			Enabled: enabled,
 			HTTP:    &http.Client{Timeout: 45 * time.Second},
 		},
-		Prompt: NewPromptBuilder(),
+		Provider: "gemini",
+		Prompt:   NewPromptBuilder(),
 	}
+}
+
+func NewServiceWithProvider(baseURL, ollamaModel string, ollamaEnabled bool, provider, geminiAPIKey, geminiModel string) *Service {
+	service := NewService(baseURL, ollamaModel, ollamaEnabled)
+	service.Provider = strings.ToLower(strings.TrimSpace(provider))
+	if service.Provider == "" {
+		service.Provider = "gemini"
+	}
+	service.Gemini = NewGeminiClient(geminiAPIKey, geminiModel)
+	return service
 }
 
 func (s *Service) Synthesize(ctx context.Context, userPrompt, mode, model string, context map[string]interface{}) (Result, error) {
 	prompt := s.Prompt.Build(userPrompt, mode, context)
-	yamlText, err := s.Ollama.Generate(ctx, prompt, model)
+	yamlText, provider, err := s.generate(ctx, prompt, model)
 	if err != nil {
 		yamlText = FallbackYAML(userPrompt)
+		provider = "fallback"
 	}
 
 	return Result{
@@ -53,10 +68,22 @@ func (s *Service) Synthesize(ctx context.Context, userPrompt, mode, model string
 			"inputTokens":  1210,
 			"outputTokens": 830,
 			"costUsd":      0.0,
+			"provider":     provider,
 			"localModel":   s.Ollama.Model,
 			"fallback":     err != nil,
 		},
 	}, nil
+}
+
+func (s *Service) generate(ctx context.Context, prompt, overrideModel string) (string, string, error) {
+	if strings.EqualFold(s.Provider, "gemini") {
+		if s.Gemini == nil {
+			return "", "gemini", fmt.Errorf("gemini client is not configured")
+		}
+		text, err := s.Gemini.Generate(ctx, prompt, overrideModel)
+		return text, "gemini", err
+	}
+	return "", s.Provider, fmt.Errorf("local workflow-generation provider %q is disabled for the final Gemini pipeline", s.Provider)
 }
 
 func (c *OllamaClient) Generate(ctx context.Context, prompt, overrideModel string) (string, error) {

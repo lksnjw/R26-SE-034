@@ -62,6 +62,10 @@ func Register(app *fiber.App, h *handlers.Handler) {
 	protected.Post("/synthesis/validate", h.SynthesisValidate)
 	protected.Post("/synthesis/preview-flow", h.SynthesisPreviewFlow)
 	protected.Post("/synthesis/explain", h.SynthesisExplain)
+	protected.Get("/tools/catalog", h.ToolsCatalog)
+	protected.Get("/rules/catalog", h.RulesCatalog)
+	protected.Post("/semantic-search", h.SemanticSearch)
+	protected.Post("/canvas/validate-workflow", h.CanvasValidateWorkflow)
 
 	protected.Get("/chat/sessions", h.ListChatSessions)
 	protected.Post("/chat/sessions", h.CreateChatSession)
