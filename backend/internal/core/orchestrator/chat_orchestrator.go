@@ -54,6 +54,7 @@ func (o *ChatOrchestrator) HandleChatMessage(ctx context.Context, req ChatReques
 		return ChatResponse{}, err
 	}
 
+	retrieval.Tools = o.backfillExecutableToolResults(req.UserText, req.UserRole, retrieval.Tools, 3)
 	retrievedTools := toolsFromResults(retrieval.Tools)
 	executableTools, schemaMissingTools, futureCapabilities := splitToolsByStatus(retrievedTools)
 	domain := detectRequestDomain(req.UserText, retrievedTools, rulesFromResults(retrieval.Rules))
@@ -148,6 +149,38 @@ func (o *ChatOrchestrator) HandleChatMessage(ctx context.Context, req ChatReques
 	return response, nil
 }
 
+func (o *ChatOrchestrator) backfillExecutableToolResults(query, userRole string, current []semanticsearch.ToolResult, max int) []semanticsearch.ToolResult {
+	if o == nil || o.Search == nil || o.Search.Tools == nil || max <= 0 {
+		return current
+	}
+	seen := map[string]bool{}
+	for _, item := range current {
+		seen[strings.ToLower(firstNonEmpty(item.ToolID, item.Name, item.MCPToolName))] = true
+	}
+
+	added := 0
+	for _, tool := range o.Search.Tools.GetAllTools() {
+		key := strings.ToLower(firstNonEmpty(tool.ToolID, tool.Name, tool.MCPToolName))
+		if key == "" || seen[key] || !toolIsExecutable(tool) {
+			continue
+		}
+		if !toolRoleAllowed(userRole, tool.AllowedRoles) || !toolMatchesRequest(query, tool) {
+			continue
+		}
+		current = append([]semanticsearch.ToolResult{{
+			Tool:        tool,
+			Score:       0.99,
+			MatchReason: "Executable registry backfill matched the user intent",
+		}}, current...)
+		seen[key] = true
+		added++
+		if added == max {
+			break
+		}
+	}
+	return current
+}
+
 func (o *ChatOrchestrator) executableCapabilityRequestTool() (registry.Tool, bool) {
 	if o == nil || o.Validator == nil || o.Validator.Tools == nil {
 		return registry.Tool{}, false
@@ -156,12 +189,10 @@ func (o *ChatOrchestrator) executableCapabilityRequestTool() (registry.Tool, boo
 	if !ok {
 		return registry.Tool{}, false
 	}
-	switch strings.ToLower(strings.TrimSpace(tool.Status)) {
-	case "", "active_mcp_schema_present":
+	if toolIsExecutable(tool) {
 		return tool, true
-	default:
-		return registry.Tool{}, false
 	}
+	return registry.Tool{}, false
 }
 
 func splitToolsByStatus(items []registry.Tool) (executable []registry.Tool, schemaMissing []registry.Tool, future []registry.Tool) {
@@ -182,6 +213,85 @@ func splitToolsByStatus(items []registry.Tool) (executable []registry.Tool, sche
 		}
 	}
 	return executable, schemaMissing, future
+}
+
+func toolIsExecutable(tool registry.Tool) bool {
+	switch strings.ToLower(strings.TrimSpace(tool.Status)) {
+	case "", "active_mcp_schema_present":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolRoleAllowed(userRole string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	role := normalizeRole(userRole)
+	if role == "admin" {
+		return true
+	}
+	for _, item := range allowed {
+		if normalizeRole(item) == role {
+			return true
+		}
+	}
+	return false
+}
+
+func toolMatchesRequest(query string, tool registry.Tool) bool {
+	query = strings.ToLower(query)
+	if query == "" {
+		return false
+	}
+
+	nameTokens := significantTokens(tool.Name)
+	if len(nameTokens) > 0 && allTokensPresent(query, nameTokens) {
+		return true
+	}
+	capabilityTokens := significantTokens(tool.BusinessCapability)
+	if len(capabilityTokens) > 0 && allTokensPresent(query, capabilityTokens) {
+		return true
+	}
+	for _, keyword := range tool.SemanticSearchKeywords {
+		keywordTokens := significantTokens(keyword)
+		if len(keywordTokens) > 0 && allTokensPresent(query, keywordTokens) {
+			return true
+		}
+	}
+	return false
+}
+
+func significantTokens(value string) []string {
+	value = strings.ToLower(value)
+	replacer := strings.NewReplacer(".", " ", "_", " ", "-", " ", "/", " ", "&", " ")
+	value = replacer.Replace(value)
+	stop := map[string]bool{
+		"api": true, "erp": true, "mcp": true, "tool": true, "workflow": true,
+		"finance": true, "procurement": true, "inventory": true, "travel": true, "hr": true,
+	}
+	tokens := []string{}
+	for _, token := range strings.Fields(value) {
+		token = strings.TrimSpace(token)
+		if len(token) < 3 || stop[token] {
+			continue
+		}
+		if token == "invoices" {
+			token = "invoice"
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens
+}
+
+func allTokensPresent(text string, tokens []string) bool {
+	for _, token := range tokens {
+		if !strings.Contains(text, token) {
+			return false
+		}
+	}
+	return true
 }
 
 func detectRequestDomain(query string, tools []registry.Tool, rules []registry.Rule) string {
