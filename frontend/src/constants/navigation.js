@@ -76,6 +76,27 @@ export const NAVIGATION_GROUPS = [
     ],
   },
   {
+    id: "mcp_bridge",
+    label: "MCP Bridge",
+    description: "ERP bridge integration",
+    icon: "mdi:lan-connect",
+    subMenu: [{ id: "overview", label: "Bridge Overview", path: "/mcp-bridge" }],
+  },
+  {
+    id: "datafeed",
+    label: "Datafeed",
+    description: "BPI and dataset pipeline",
+    icon: "mdi:database-sync-outline",
+    subMenu: [{ id: "overview", label: "Datafeed Overview", path: "/datafeed" }],
+  },
+  {
+    id: "finetune",
+    label: "Finetune",
+    description: "Model training workspace",
+    icon: "mdi:tune-variant",
+    subMenu: [{ id: "overview", label: "Finetune Overview", path: "/finetune" }],
+  },
+  {
     id: "profile",
     label: "Profile",
     description: "Account and security",

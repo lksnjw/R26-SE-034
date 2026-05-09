@@ -11,6 +11,9 @@ import AnalyticsPage from "./pages/analytics/AnalyticsPage";
 import UserListPage from "./pages/users/UserListPage";
 import SettingsPage from "./pages/settings/SettingsPage";
 import ProfilePage from "./pages/profile/ProfilePage";
+import McpBridgePage from "./pages/mcp_bridge/McpBridgePage";
+import DatafeedPage from "./pages/datafeed/DatafeedPage";
+import FinetunePage from "./pages/finetune/FinetunePage";
 import NotFoundPage from "./pages/errors/NotFoundPage";
 import { ThemeProvider } from "./context/ThemeContext";
 import { RouteProvider, useRoute } from "./context/RouteContext";
@@ -39,6 +42,9 @@ const routeComponents = {
   "settings.llm": SettingsPage,
   "profile.profile": ProfilePage,
   "profile.security": ProfilePage,
+  "mcp_bridge.overview": McpBridgePage,
+  "datafeed.overview": DatafeedPage,
+  "finetune.overview": FinetunePage,
 };
 
 function ActivePage() {

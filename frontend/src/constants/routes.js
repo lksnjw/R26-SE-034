@@ -7,5 +7,8 @@ export const ROUTES = {
   analytics: "/analytics",
   users: "/users",
   settings: "/settings",
+  mcpBridge: "/mcp-bridge",
+  datafeed: "/datafeed",
+  finetune: "/finetune",
   profile: "/profile",
 };
