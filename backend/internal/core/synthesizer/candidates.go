@@ -120,6 +120,9 @@ STRICT RULES:
 - Do not invent actions, tool names, parameters, approvals, or audit tools.
 - Include all required parameters for every selected tool.
 - Follow RELEVANT GOVERNANCE RULES.
+- Never generate workflows for deleting, removing, disabling, terminating, or revoking admins, users, employees, roles, permissions, access, or accounts.
+- If using procurement.create_purchase_order, include procurement.validate_vendor first, before any procurement.create_purchase_order step.
+- For purchase order requests, use this process order when the tools exist: procurement.validate_vendor, policy.check_policy_limit, approval.request_human_approval when required, procurement.create_purchase_order, audit.write_audit_log.
 - High-risk workflows should include approval and audit steps only when executable tools exist for those actions and rules require them.
 - Return exactly %d candidates.
 - Return candidate blocks only. Do not use markdown fences. Do not add prose outside candidate blocks.

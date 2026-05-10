@@ -202,10 +202,8 @@ func (s *Service) externalToResult(query, userRole string, payload externalRespo
 		if tool.SourceFile == "" {
 			tool.SourceFile = item.SourceFile
 		}
-		if tool.Name == "" {
-			if found, ok := s.Tools.FindToolByID(tool.ToolID); ok {
-				tool = found
-			}
+		if found, ok := s.findAuthoritativeTool(tool); ok {
+			tool = found
 		}
 		result.Tools = append(result.Tools, ToolResult{Tool: tool, Score: item.Score, MatchReason: firstNonEmpty(item.MatchReason, "Embedding similarity match")})
 	}
@@ -220,6 +218,9 @@ func (s *Service) externalToResult(query, userRole string, payload externalRespo
 		}
 		if rule.SourceFile == "" {
 			rule.SourceFile = item.SourceFile
+		}
+		if found, ok := s.findAuthoritativeRule(rule); ok {
+			rule = found
 		}
 		result.Rules = append(result.Rules, RuleResult{Rule: rule, Score: item.Score, MatchReason: firstNonEmpty(item.MatchReason, "Embedding similarity match")})
 	}
@@ -249,6 +250,36 @@ func (s *Service) externalToResult(query, userRole string, payload externalRespo
 		result.Examples = append(result.Examples, ExampleResult{FewShotExample: example, Score: item.Score, MatchReason: firstNonEmpty(item.MatchReason, "Embedding similarity match")})
 	}
 	return result
+}
+
+func (s *Service) findAuthoritativeTool(candidate registry.Tool) (registry.Tool, bool) {
+	if s == nil || s.Tools == nil {
+		return registry.Tool{}, false
+	}
+	for _, ref := range []string{candidate.Name, candidate.MCPToolName} {
+		if strings.TrimSpace(ref) == "" {
+			continue
+		}
+		if found, ok := s.Tools.FindToolByName(ref); ok {
+			return found, true
+		}
+	}
+	if strings.TrimSpace(candidate.ToolID) != "" {
+		return s.Tools.FindToolByID(candidate.ToolID)
+	}
+	return registry.Tool{}, false
+}
+
+func (s *Service) findAuthoritativeRule(candidate registry.Rule) (registry.Rule, bool) {
+	if s == nil || s.Rules == nil || strings.TrimSpace(candidate.RuleID) == "" {
+		return registry.Rule{}, false
+	}
+	for _, rule := range s.Rules.GetAllRules() {
+		if strings.EqualFold(rule.RuleID, candidate.RuleID) {
+			return rule, true
+		}
+	}
+	return registry.Rule{}, false
 }
 
 func (s *Service) rankTools(query, userRole string) []ToolResult {
@@ -375,17 +406,24 @@ func roleAllowed(userRole string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return true
 	}
-	role := strings.ToLower(strings.TrimSpace(userRole))
-	if role == "platform admin" {
-		role = "admin"
-	}
+	role := normalizeRole(userRole)
 	for _, item := range allowed {
-		allowedRole := strings.ToLower(strings.TrimSpace(item))
+		allowedRole := normalizeRole(item)
 		if allowedRole == role || allowedRole == "admin" && role == "admin" {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeRole(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, " ", "_")
+	value = strings.ReplaceAll(value, "-", "_")
+	if value == "platform_admin" {
+		return "admin"
+	}
+	return value
 }
 
 func queryMentionsTool(query string, tool registry.Tool) bool {

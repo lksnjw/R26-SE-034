@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Icon } from "@iconify/react";
+import { useRoute } from "../../context/RouteContext";
+import { saveWorkflowForCanvas } from "../../utils/workflowCanvas.utils";
 
 // ── Risk badge colours ──────────────────────────────────────────────────────
 const RISK_COLORS = {
@@ -250,6 +252,8 @@ function NextActionBanner({ nextAction }) {
 
 // ── MAIN COMPONENT ──────────────────────────────────────────────────────────
 function ChatArtifactPanel({ artifact }) {
+  const { navigateTo } = useRoute();
+
   if (!artifact) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-gray-200 bg-white py-16 text-center dark:border-gray-700 dark:bg-darkBackground">
@@ -263,18 +267,35 @@ function ChatArtifactPanel({ artifact }) {
   }
 
   const {
-    blocking_errors = [],
+    blocking_errors: rawBlockingErrors,
     can_execute,
-    candidates = [],
+    candidates: rawCandidates,
     next_action,
     retrieval = {},
     validation_summary = {},
     selected_workflow_yaml,
+    selected_candidate_id,
   } = artifact;
+
+  const blocking_errors = rawBlockingErrors ?? [];
+  const candidates = rawCandidates ?? [];
 
   const tools = retrieval.tools ?? [];
   const rules = [...(retrieval.rules ?? []), ...(retrieval.global_rules ?? [])];
   const examples = retrieval.examples ?? [];
+
+  const handlePassToCanvas = () => {
+    if (!can_execute || !selected_workflow_yaml) return;
+
+    saveWorkflowForCanvas({
+      yaml: selected_workflow_yaml,
+      candidateId: selected_candidate_id,
+      canExecute: can_execute,
+      validationSummary: validation_summary,
+      source: "chat_semantic_validator",
+    });
+    navigateTo("workflows", "builder");
+  };
 
   return (
     <div className="space-y-3">
@@ -304,6 +325,16 @@ function ChatArtifactPanel({ artifact }) {
             {can_execute ? "Executable candidate available" : "No executable candidate"}
           </span>
         </div>
+        {can_execute && selected_workflow_yaml && (
+          <button
+            type="button"
+            onClick={handlePassToCanvas}
+            className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-3 text-xs font-bold text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200"
+          >
+            <Icon icon="mdi:graph-outline" className="h-4 w-4" />
+            Pass to Canvas
+          </button>
+        )}
       </div>
 
       {/* ── Next action ── */}

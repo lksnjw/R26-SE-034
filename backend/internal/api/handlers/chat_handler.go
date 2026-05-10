@@ -180,6 +180,9 @@ func (h *Handler) SendChatMessage(c *fiber.Ctx) error {
 	if user != nil {
 		userRole = user.Role.Name
 	}
+	if h.Cfg.ChatUserRoleOverride != "" {
+		userRole = h.Cfg.ChatUserRoleOverride
+	}
 	generateCount := toInt(body["generate_candidates"], h.Cfg.CandidateCount)
 	if generateCount <= 0 {
 		generateCount = h.Cfg.CandidateCount
