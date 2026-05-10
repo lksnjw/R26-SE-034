@@ -560,7 +560,7 @@ function WorkflowBuilderSurface() {
   }, [fitView]);
 
   return (
-    <div className="fixed inset-0 z-50 flex h-screen w-screen overflow-hidden bg-slate-100 text-slate-950">
+    <div className="fixed inset-y-0 right-0 left-0 z-50 flex overflow-hidden bg-slate-100 text-slate-950 md:left-16">
       <BuilderSidebar />
       <section className="flex min-w-0 flex-1 flex-col">
         <BuilderHeader

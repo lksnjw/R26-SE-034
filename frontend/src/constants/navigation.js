@@ -85,16 +85,20 @@ export const NAVIGATION_GROUPS = [
   {
     id: "datafeed",
     label: "Datafeed",
-    description: "BPI and dataset pipeline",
+    description: "Vector DB & Pipeline",
     icon: "mdi:database-sync-outline",
-    subMenu: [{ id: "overview", label: "Datafeed Overview", path: "/datafeed" }],
+    subMenu: [
+      { id: "overview", label: "Pipeline Status" },
+      { id: "metrics", label: "Vector Metrics" },
+      { id: "config", label: "Configuration" }
+    ],
   },
   {
     id: "finetune",
-    label: "Finetune",
-    description: "Model training workspace",
-    icon: "mdi:tune-variant",
-    subMenu: [{ id: "overview", label: "Finetune Overview", path: "/finetune" }],
+    label: "ERP Models",
+    description: "ERP data & queries",
+    icon: "mdi:robot-industrial",
+    subMenu: [{ id: "overview", label: "Model Integration", path: "/finetune" }],
   },
   {
     id: "profile",
