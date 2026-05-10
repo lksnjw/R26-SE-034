@@ -17,7 +17,7 @@ It connects the React frontend to:
 
 ```bash
 go mod tidy
-go run ./cmd/server
+go run -buildvcs=false ./cmd/server
 ```
 
 The API starts at:
@@ -47,9 +47,14 @@ SEMANTIC_SEARCH_TOP_K_RULES=15
 SEMANTIC_SEARCH_TOP_K_TEMPLATES=5
 SEMANTIC_SEARCH_TOP_K_EXAMPLES=5
 SEMANTIC_SEARCH_ALLOW_LEXICAL_FALLBACK=false
+INDEX_MAX_TOOLS_PER_FILE=0
+INDEX_MAX_RULES_PER_FILE=0
+INDEX_MAX_TEMPLATES_PER_FILE=0
+INDEX_MAX_EXAMPLES_PER_FILE=25
 WORKFLOW_GENERATION_PROVIDER=gemini
 GEMINI_MODEL=gemini-1.5-flash
 CANDIDATE_COUNT=5
+CHAT_TRACE_BOXES=true
 ```
 
 Full notes are in `docs/CHAT_EMBEDDING_SEARCH_GEMINI_PIPELINE.md`.
@@ -68,6 +73,10 @@ $env:OLLAMA_EMBEDDING_BASE_URL="http://localhost:11434"
 $env:OLLAMA_EMBEDDING_MODEL="nomic-embed-text"
 $env:INDEX_PROFILE="dev"
 $env:INDEX_MAX_ITEMS_PER_FILE="25"
+$env:INDEX_MAX_TOOLS_PER_FILE="0"
+$env:INDEX_MAX_RULES_PER_FILE="0"
+$env:INDEX_MAX_TEMPLATES_PER_FILE="0"
+$env:INDEX_MAX_EXAMPLES_PER_FILE="25"
 $env:EMBED_BATCH_SIZE="32"
 $env:EMBEDDING_TEXT_MAX_CHARS="2000"
 $env:REBUILD_SEMANTIC_INDEX="false"
@@ -80,6 +89,10 @@ uvicorn app:app --host 127.0.0.1 --port 8090
 ```
 
 Then start the Go backend in another terminal. Gemini is not used for semantic search; Gemini is used only for YAML workflow generation.
+
+The development index loads every tool, rule, and process template. It samples examples at 25 per file so startup stays practical; set `INDEX_MAX_EXAMPLES_PER_FILE=0` when you want every scenario embedded too.
+
+When `CHAT_TRACE_BOXES=true`, every chat generation prints boxed terminal output for retrieved tools/rules, generated candidates, validation results, and the selected YAML.
 
 The first semantic-search startup creates a persistent FAISS/embedding cache under `semantic_search_service/.cache`. Later startups load from cache when the dataset/config fingerprint is unchanged. Check `http://127.0.0.1:8090/index/status`.
 

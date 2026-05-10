@@ -4,22 +4,13 @@ import ChatMessage from "./ChatMessage";
 import ChatToolbar from "./ChatToolbar";
 import ChatWelcome from "./ChatWelcome";
 import SuggestedPrompts from "./SuggestedPrompts";
-import { chatMessages } from "../../constants/mockData";
 
-function ChatWindow() {
-  const [messages, setMessages] = useState(chatMessages);
+function ChatWindow({ messages, onSend, loading, error }) {
   const [draft, setDraft] = useState("");
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!draft.trim()) return;
-    setMessages((items) => [
-      ...items,
-      { role: "user", text: draft.trim() },
-      {
-        role: "assistant",
-        text: "I created a draft workflow blueprint and updated the YAML preview for review.",
-      },
-    ]);
+    await onSend?.(draft.trim());
     setDraft("");
   };
 
@@ -29,12 +20,13 @@ function ChatWindow() {
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
         <ChatWelcome />
         {messages.map((message, index) => (
-          <ChatMessage key={`${message.role}-${index}`} message={message} />
+          <ChatMessage key={message.id ?? `${message.role}-${index}`} message={message} />
         ))}
+        {error ? <p className="rounded-xl bg-red-50 p-3 text-sm font-medium text-red-700">{error}</p> : null}
       </div>
       <div className="space-y-3 border-t border-gray-200 p-4 dark:border-gray-800">
         <SuggestedPrompts onSelect={setDraft} />
-        <ChatInput value={draft} onChange={setDraft} onSend={handleSend} />
+        <ChatInput value={draft} onChange={setDraft} onSend={handleSend} disabled={loading} />
       </div>
     </section>
   );

@@ -3,6 +3,7 @@ export const API_ENDPOINTS = {
   users: "/users",
   workflows: "/workflows",
   synthesis: "/synthesis",
+  chat: "/chat/sessions",
   executions: "/executions",
   analytics: "/analytics",
   settings: "/settings",

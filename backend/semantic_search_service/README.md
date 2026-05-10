@@ -23,6 +23,10 @@ $env:OLLAMA_EMBEDDING_BASE_URL="http://localhost:11434"
 $env:OLLAMA_EMBEDDING_MODEL="nomic-embed-text"
 $env:INDEX_PROFILE="dev"
 $env:INDEX_MAX_ITEMS_PER_FILE="25"
+$env:INDEX_MAX_TOOLS_PER_FILE="0"
+$env:INDEX_MAX_RULES_PER_FILE="0"
+$env:INDEX_MAX_TEMPLATES_PER_FILE="0"
+$env:INDEX_MAX_EXAMPLES_PER_FILE="25"
 $env:EMBED_BATCH_SIZE="32"
 $env:EMBEDDING_TEXT_MAX_CHARS="2000"
 $env:REBUILD_SEMANTIC_INDEX="false"
@@ -49,9 +53,13 @@ For a full research-scale index, set:
 ```powershell
 $env:INDEX_PROFILE="full"
 $env:INDEX_MAX_ITEMS_PER_FILE="0"
+$env:INDEX_MAX_TOOLS_PER_FILE="0"
+$env:INDEX_MAX_RULES_PER_FILE="0"
+$env:INDEX_MAX_TEMPLATES_PER_FILE="0"
+$env:INDEX_MAX_EXAMPLES_PER_FILE="0"
 ```
 
-The full index takes longer because every dataset item is embedded through Ollama.
+The dev setup already indexes every tool, rule, and process template. The full setting also embeds every scenario example, which takes longer because every dataset item goes through Ollama.
 
 If Ollama rejects a large embedding batch, reduce the request size:
 

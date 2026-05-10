@@ -287,6 +287,10 @@ $env:OLLAMA_EMBEDDING_BASE_URL="http://localhost:11434"
 $env:OLLAMA_EMBEDDING_MODEL="nomic-embed-text"
 $env:INDEX_PROFILE="dev"
 $env:INDEX_MAX_ITEMS_PER_FILE="25"
+$env:INDEX_MAX_TOOLS_PER_FILE="0"
+$env:INDEX_MAX_RULES_PER_FILE="0"
+$env:INDEX_MAX_TEMPLATES_PER_FILE="0"
+$env:INDEX_MAX_EXAMPLES_PER_FILE="25"
 $env:EMBED_BATCH_SIZE="32"
 $env:EMBEDDING_TEXT_MAX_CHARS="2000"
 $env:REBUILD_SEMANTIC_INDEX="false"
@@ -311,6 +315,8 @@ http://localhost:8090/index/status
 ```
 
 The first startup builds `.cache/index_<fingerprint>.faiss`, `.cache/documents_<fingerprint>.json`, `.cache/embeddings_<fingerprint>.npy`, and `.cache/metadata_<fingerprint>.json`. Later startups load the same fingerprint from cache unless `REBUILD_SEMANTIC_INDEX=true`.
+
+In development, tools, governance rules, and process templates are fully indexed. Scenario examples stay sampled at 25 per file for startup speed; set `INDEX_MAX_EXAMPLES_PER_FILE=0` to embed every scenario too.
 
 For slower machines or if Ollama returns a batch `400 Bad Request`, use:
 

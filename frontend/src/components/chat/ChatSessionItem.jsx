@@ -1,7 +1,8 @@
-function ChatSessionItem({ title, active }) {
+function ChatSessionItem({ title, active, onClick }) {
   return (
     <button
       type="button"
+      onClick={onClick}
       className={`w-full rounded-xl px-3 py-2 text-left text-sm font-semibold transition ${
         active
           ? "bg-primary text-white"

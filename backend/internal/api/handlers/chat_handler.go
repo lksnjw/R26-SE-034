@@ -185,7 +185,7 @@ func (h *Handler) SendChatMessage(c *fiber.Ctx) error {
 		generateCount = h.Cfg.CandidateCount
 	}
 	dryRun, _ := body["dry_run"].(bool)
-	response, err := h.Orchestrator.HandleChatMessage(c.Context(), orchestrator.ChatRequest{
+	chatReq := orchestrator.ChatRequest{
 		SessionID:     c.Params("id"),
 		UserText:      message,
 		UserRole:      userRole,
@@ -197,9 +197,18 @@ func (h *Handler) SendChatMessage(c *fiber.Ctx) error {
 		TopKExamples:  toInt(body["top_k_examples"], h.Cfg.SemanticSearchTopKExamples),
 		GenerateCount: generateCount,
 		DryRun:        dryRun,
-	})
+	}
+	started := time.Now()
+	response, err := h.Orchestrator.HandleChatMessage(c.Context(), chatReq)
+	elapsed := time.Since(started)
 	if err != nil {
+		if h.Cfg.ChatTraceBoxes {
+			fmt.Print(orchestrator.RenderTerminalError(chatReq, elapsed, err))
+		}
 		return fiber.NewError(fiber.StatusBadGateway, "workflow orchestration failed: "+err.Error())
+	}
+	if h.Cfg.ChatTraceBoxes {
+		fmt.Print(orchestrator.RenderTerminalTrace(chatReq, response, elapsed))
 	}
 
 	artifacts := map[string]interface{}{

@@ -24,16 +24,74 @@ def default_max_items(profile: str) -> str:
     return "0"
 
 
-DATASET_ROOT = Path(os.getenv("DATASET_ROOT", "../dataset")).resolve()
+SERVICE_DIR = Path(__file__).resolve().parent
+BACKEND_ROOT = SERVICE_DIR.parent
+
+
+def load_env_files() -> None:
+    candidates = [
+        SERVICE_DIR / ".env.local",
+        SERVICE_DIR / ".env",
+        BACKEND_ROOT / ".env.local",
+        BACKEND_ROOT / ".env.development",
+        BACKEND_ROOT / ".env",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+def resolve_dataset_root(value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path.resolve()
+    candidates = [
+        Path.cwd() / path,
+        BACKEND_ROOT / path,
+        SERVICE_DIR / path,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return (BACKEND_ROOT / path).resolve()
+
+
+def int_env(name: str, fallback: Any) -> int:
+    try:
+        return int(os.getenv(name, str(fallback)))
+    except ValueError:
+        return int(fallback)
+
+
+load_env_files()
+
+DATASET_ROOT = resolve_dataset_root(os.getenv("DATASET_ROOT", "../dataset"))
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama").strip().lower()
 MODEL_NAME = os.getenv("EMBEDDING_MODEL", os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_EMBEDDING_BASE_URL", "http://localhost:11434").rstrip("/")
 RETRIEVAL_METHOD = f"embedding_faiss_{EMBEDDING_PROVIDER}_{MODEL_NAME.replace('/', '_')}"
 INDEX_PROFILE = os.getenv("INDEX_PROFILE", "dev").strip().lower()
-MAX_ITEMS_PER_FILE = int(os.getenv("INDEX_MAX_ITEMS_PER_FILE", default_max_items(INDEX_PROFILE)))
-EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
-EMBEDDING_TEXT_MAX_CHARS = int(os.getenv("EMBEDDING_TEXT_MAX_CHARS", "2000"))
-OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_EMBEDDING_TIMEOUT_SECONDS", "60"))
+MAX_ITEMS_PER_FILE = int_env("INDEX_MAX_ITEMS_PER_FILE", default_max_items(INDEX_PROFILE))
+MAX_ITEMS_BY_KIND = {
+    "tool": int_env("INDEX_MAX_TOOLS_PER_FILE", 0),
+    "rule": int_env("INDEX_MAX_RULES_PER_FILE", 0),
+    "template": int_env("INDEX_MAX_TEMPLATES_PER_FILE", MAX_ITEMS_PER_FILE),
+    "example": int_env("INDEX_MAX_EXAMPLES_PER_FILE", MAX_ITEMS_PER_FILE),
+}
+EMBED_BATCH_SIZE = int_env("EMBED_BATCH_SIZE", 32)
+EMBEDDING_TEXT_MAX_CHARS = int_env("EMBEDDING_TEXT_MAX_CHARS", 2000)
+OLLAMA_TIMEOUT_SECONDS = int_env("OLLAMA_EMBEDDING_TIMEOUT_SECONDS", 60)
 REBUILD_SEMANTIC_INDEX = os.getenv("REBUILD_SEMANTIC_INDEX", "false").lower() in {"1", "true", "yes"}
 INDEX_INCLUDE_TOOLS = os.getenv("INDEX_INCLUDE_TOOLS", "true").lower() in {"1", "true", "yes"}
 INDEX_INCLUDE_RULES = os.getenv("INDEX_INCLUDE_RULES", "true").lower() in {"1", "true", "yes"}
@@ -80,8 +138,8 @@ index_dimensions: int = 0
 def startup() -> None:
     global embedder, index, documents, cache_hit, fingerprint, startup_seconds, index_dimensions
     started = time.perf_counter()
-    log.info("semantic search startup: dataset_root=%s provider=%s model=%s profile=%s max_items_per_file=%s text_max_chars=%d",
-             DATASET_ROOT, EMBEDDING_PROVIDER, MODEL_NAME, INDEX_PROFILE, MAX_ITEMS_PER_FILE or "full", EMBEDDING_TEXT_MAX_CHARS)
+    log.info("semantic search startup: dataset_root=%s provider=%s model=%s profile=%s max_items_per_file=%s max_items_by_kind=%s text_max_chars=%d",
+             DATASET_ROOT, EMBEDDING_PROVIDER, MODEL_NAME, INDEX_PROFILE, MAX_ITEMS_PER_FILE or "full", MAX_ITEMS_BY_KIND, EMBEDDING_TEXT_MAX_CHARS)
     documents = load_documents(DATASET_ROOT)
     log.info("loaded %d search documents", len(documents))
     embedder = build_embedder()
@@ -125,6 +183,7 @@ def health() -> Dict[str, Any]:
         "method": RETRIEVAL_METHOD,
         "index_profile": INDEX_PROFILE,
         "max_items_per_file": MAX_ITEMS_PER_FILE,
+        "max_items_by_kind": MAX_ITEMS_BY_KIND,
         "cache_enabled": True,
         "cache_hit": cache_hit,
         "fingerprint": fingerprint,
@@ -140,6 +199,7 @@ def index_status() -> Dict[str, Any]:
         "retrieval_method": RETRIEVAL_METHOD,
         "document_count": len(documents),
         "index_profile": INDEX_PROFILE,
+        "max_items_by_kind": MAX_ITEMS_BY_KIND,
         "cache_enabled": True,
         "cache_hit": cache_hit,
         "fingerprint": fingerprint,
@@ -335,9 +395,10 @@ def load_documents(root: Path) -> List[SearchDocument]:
                 continue
             if not isinstance(items, list):
                 continue
-            if MAX_ITEMS_PER_FILE > 0:
+            limit = max_items_for_kind(kind)
+            if limit > 0:
                 original_count = len(items)
-                items = balanced_sample(items, MAX_ITEMS_PER_FILE)
+                items = balanced_sample(items, limit)
                 log.info("loaded %s kind=%s sampled=%d/%d", file.name, kind, len(items), original_count)
             else:
                 log.info("loaded %s kind=%s count=%d", file.name, kind, len(items))
@@ -351,6 +412,10 @@ def load_documents(root: Path) -> List[SearchDocument]:
                 source = file.relative_to(root).as_posix()
                 docs.append(SearchDocument(kind, doc_id, name, source, item, builder(item)))
     return dedupe(docs)
+
+
+def max_items_for_kind(kind: str) -> int:
+    return MAX_ITEMS_BY_KIND.get(kind, MAX_ITEMS_PER_FILE)
 
 
 def balanced_sample(items: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
@@ -477,6 +542,7 @@ def compute_fingerprint(root: Path) -> str:
         "dataset_root": str(root.resolve()),
         "index_profile": INDEX_PROFILE,
         "max_items_per_file": MAX_ITEMS_PER_FILE,
+        "max_items_by_kind": MAX_ITEMS_BY_KIND,
         "embedding_provider": EMBEDDING_PROVIDER,
         "embedding_model": MODEL_NAME,
         "include_tools": INDEX_INCLUDE_TOOLS,
@@ -555,6 +621,7 @@ def save_cache(fp: str, vectors: np.ndarray) -> None:
         "document_count": len(documents),
         "index_profile": INDEX_PROFILE,
         "max_items_per_file": MAX_ITEMS_PER_FILE,
+        "max_items_by_kind": MAX_ITEMS_BY_KIND,
         "embedding_provider": EMBEDDING_PROVIDER,
         "embedding_model": MODEL_NAME,
         "index_dimensions": int(vectors.shape[1]),

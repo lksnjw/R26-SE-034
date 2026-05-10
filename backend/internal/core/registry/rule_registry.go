@@ -74,7 +74,9 @@ func sameRef(a, b string) bool {
 func mandatoryGlobalRuleID(ruleID string) bool {
 	switch strings.ToUpper(strings.TrimSpace(ruleID)) {
 	case "GLOBAL-SAFETY-001",
+		"GLOBAL-SAFETY-002",
 		"GLOBAL-SAFETY-003",
+		"GLOBAL-AUDIT-001",
 		"GLOBAL-SAFETY-008",
 		"GLOBAL-SAFETY-009",
 		"GLOBAL-SAFETY-010",

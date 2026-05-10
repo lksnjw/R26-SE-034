@@ -44,14 +44,16 @@ type Config struct {
 	GeminiAPIKey                       string
 	GeminiModel                        string
 	CandidateCount                     int
+	ChatTraceBoxes                     bool
 }
 
 func Load() Config {
 	_ = godotenv.Load(".env.local", ".env.development", ".env")
+	environment := getEnv("APP_ENV", "development")
 
 	return Config{
 		AppName:                            getEnv("APP_NAME", "Agentic Workflow Engine"),
-		Environment:                        getEnv("APP_ENV", "development"),
+		Environment:                        environment,
 		Host:                               getEnv("APP_HOST", "0.0.0.0"),
 		Port:                               getEnv("APP_PORT", "8080"),
 		APIBasePath:                        getEnv("API_BASE_PATH", "/api"),
@@ -80,6 +82,7 @@ func Load() Config {
 		GeminiAPIKey:                       getEnv("GEMINI_API_KEY", ""),
 		GeminiModel:                        getEnv("GEMINI_MODEL", "gemini-1.5-flash"),
 		CandidateCount:                     getEnvInt("CANDIDATE_COUNT", 5),
+		ChatTraceBoxes:                     getEnvBool("CHAT_TRACE_BOXES", strings.EqualFold(environment, "development")),
 	}
 }
 

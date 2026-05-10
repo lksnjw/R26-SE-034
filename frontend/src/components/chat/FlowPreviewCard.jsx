@@ -1,13 +1,26 @@
 import Card from "../shared/ui/Card";
-import FlowCanvas from "../canvas/FlowCanvas";
+import Badge from "../shared/ui/Badge";
 
-function FlowPreviewCard() {
+function FlowPreviewCard({ artifact }) {
+  const summary = artifact?.validation_summary;
+  const canExecute = artifact?.can_execute;
+
   return (
     <Card>
-      <h3 className="mb-4 text-base font-bold text-gray-950 dark:text-white">Flow Preview</h3>
-      <div className="h-80 overflow-hidden rounded-2xl">
-        <FlowCanvas />
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h3 className="text-base font-bold text-gray-950 dark:text-white">Validation</h3>
+        <Badge tone={canExecute ? "success" : "warning"}>{canExecute ? "Executable" : "Blocked"}</Badge>
       </div>
+      {summary ? (
+        <div className="space-y-3 text-sm text-gray-700 dark:text-gray-200">
+          <p>Passed candidates: {summary.passed_candidates}</p>
+          <p>Blocked candidates: {summary.blocked_candidates}</p>
+          <p>Best score: {summary.best_score}</p>
+          {artifact?.selected_candidate_id ? <p>Selected: {artifact.selected_candidate_id}</p> : null}
+        </div>
+      ) : (
+        <p className="text-sm text-gray-500">Send a request to validate generated workflow candidates.</p>
+      )}
     </Card>
   );
 }

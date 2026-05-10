@@ -3,10 +3,10 @@ APP=agentic-orchestrator
 .PHONY: run build test tidy fmt
 
 run:
-	go run ./cmd/server
+	go run -buildvcs=false ./cmd/server
 
 build:
-	go build -o bin/$(APP) ./cmd/server
+	go build -buildvcs=false -o bin/$(APP) ./cmd/server
 
 test:
 	go test ./...

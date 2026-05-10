@@ -41,8 +41,12 @@ func addTokenVariant(out map[string]bool, token string) {
 }
 
 func lexicalScore(query, document string) (float64, []string) {
+	return lexicalScoreWithDocument(query, searchDocument{Text: document, Tokens: tokenSet(document)})
+}
+
+func lexicalScoreWithDocument(query string, document searchDocument) (float64, []string) {
 	querySet := tokenSet(query)
-	docSet := tokenSet(document)
+	docSet := document.Tokens
 	if len(querySet) == 0 || len(docSet) == 0 {
 		return 0, nil
 	}
@@ -56,7 +60,7 @@ func lexicalScore(query, document string) (float64, []string) {
 	sort.Strings(matches)
 
 	score := float64(len(matches)) / float64(len(querySet))
-	lowerDoc := strings.ToLower(document)
+	lowerDoc := strings.ToLower(document.Text)
 	lowerQuery := strings.ToLower(query)
 	if strings.Contains(lowerDoc, lowerQuery) {
 		score += 0.35
