@@ -11,6 +11,11 @@ build:
 test:
 	go test ./...
 
+test-report:
+	go install github.com/vakenbolt/go-test-report@latest
+	go test -json ./... | go-test-report
+	@echo "Test report generated at test_report.html"
+
 tidy:
 	go mod tidy
 
