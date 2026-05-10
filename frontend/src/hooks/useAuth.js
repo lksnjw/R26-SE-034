@@ -1,17 +1,11 @@
-import { useState } from "react";
+/**
+ * useAuth — thin wrapper around AuthContext for components
+ * that only need user/isAuthenticated without the full context.
+ */
+import { useAuthContext } from "../context/AuthContext";
 
 export function useAuth() {
-  const [user, setUser] = useState({
-    name: "Lakshan Jay",
-    role: "Platform Admin",
-  });
-
-  return {
-    user,
-    isAuthenticated: Boolean(user),
-    login: setUser,
-    logout: () => setUser(null),
-  };
+  return useAuthContext();
 }
 
 export default useAuth;

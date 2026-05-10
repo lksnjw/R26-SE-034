@@ -1,26 +1,61 @@
 import ChatSessionItem from "./ChatSessionItem";
 import Button from "../shared/ui/Button";
+import { Icon } from "@iconify/react";
 
-function ChatHistory({ sessions, activeSessionId, onSelect, onCreate, loading, error }) {
+function ChatHistory({
+  sessions,
+  activeSessionId,
+  onSelect,
+  onCreate,
+  onDelete,
+  onRename,
+  loading,
+  error,
+}) {
   return (
     <aside className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-darkBackground">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-base font-bold text-gray-950 dark:text-white">Sessions</h2>
-        <Button variant="secondary" className="px-3 py-1 text-xs" onClick={() => onCreate?.()}>
+        <button
+          id="new-chat-session-btn"
+          type="button"
+          onClick={() => onCreate?.()}
+          className="flex items-center gap-1 rounded-lg bg-primary/10 px-2.5 py-1.5 text-xs font-semibold text-primary transition hover:bg-primary/20"
+        >
+          <Icon icon="mdi:plus" className="h-3.5 w-3.5" />
           New
-        </Button>
+        </button>
       </div>
+
       {error ? <p className="mt-3 text-xs font-medium text-red-600">{error}</p> : null}
-      <div className="mt-4 space-y-2">
-        {loading ? <p className="text-sm text-gray-500">Loading sessions...</p> : null}
-        {sessions.map((session) => (
-          <ChatSessionItem
-            key={session.id}
-            title={session.title}
-            active={session.id === activeSessionId}
-            onClick={() => onSelect?.(session.id)}
-          />
-        ))}
+
+      <div className="mt-4 space-y-1.5">
+        {loading ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="h-8 animate-pulse rounded-xl bg-gray-100 dark:bg-darkBackgroundVery"
+              />
+            ))}
+          </div>
+        ) : sessions.length === 0 ? (
+          <p className="py-4 text-center text-xs text-gray-400">
+            No sessions yet. Start a conversation!
+          </p>
+        ) : (
+          sessions.map((session) => (
+            <ChatSessionItem
+              key={session.id}
+              id={session.id}
+              title={session.title}
+              active={session.id === activeSessionId}
+              onClick={() => onSelect?.(session.id)}
+              onDelete={onDelete}
+              onRename={onRename}
+            />
+          ))
+        )}
       </div>
     </aside>
   );

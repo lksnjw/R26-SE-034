@@ -1,23 +1,62 @@
-import Select from "../shared/ui/Select";
+import { useState } from "react";
+import { Icon } from "@iconify/react";
 
-function ChatToolbar() {
+const GEMINI_MODELS = [
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+];
+
+const MODES = [
+  { value: "generate_workflow", label: "Generate Workflow" },
+  { value: "validate_only", label: "Validate Only" },
+  { value: "dry_run", label: "Dry Run" },
+];
+
+function SelectPill({ value, onChange, options, icon }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 p-4 dark:border-gray-800">
-      <div>
-        <h2 className="text-base font-bold text-gray-950 dark:text-white">Workflow Synthesis</h2>
-        <p className="text-xs text-gray-500 dark:text-gray-400">
+    <label className="relative flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-200 bg-backgroundLight px-2.5 py-1.5 text-xs font-semibold text-gray-700 transition hover:border-primary/40 dark:border-gray-700 dark:bg-darkBackgroundVery dark:text-gray-200">
+      {icon && <Icon icon={icon} className="h-3.5 w-3.5 text-primary" />}
+      <span>{options.find((o) => o.value === value)?.label ?? value}</span>
+      <Icon icon="mdi:chevron-down" className="h-3.5 w-3.5 text-gray-400" />
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="absolute inset-0 cursor-pointer opacity-0"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function ChatToolbar({ model, onModelChange, mode, onModeChange }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
+      <div className="min-w-0">
+        <h2 className="text-sm font-bold text-gray-950 dark:text-white">Workflow Synthesis</h2>
+        <p className="truncate text-xs text-gray-500 dark:text-gray-400">
           Natural language to YAML with policy validation.
         </p>
       </div>
-      <div className="flex gap-2">
-        <Select defaultValue="gpt-5.4">
-          <option value="gpt-5.4">GPT-5.4</option>
-          <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
-        </Select>
-        <Select defaultValue="balanced">
-          <option value="balanced">Balanced</option>
-          <option value="strict">Strict YAML</option>
-        </Select>
+
+      <div className="flex shrink-0 items-center gap-2">
+        {/* Gemini model selector */}
+        <SelectPill
+          value={model}
+          onChange={onModelChange}
+          options={GEMINI_MODELS}
+          icon="simple-icons:googlegemini"
+        />
+        {/* Mode selector */}
+        <SelectPill
+          value={mode}
+          onChange={onModeChange}
+          options={MODES}
+          icon="mdi:cog-outline"
+        />
       </div>
     </div>
   );

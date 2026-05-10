@@ -30,6 +30,29 @@ export function useChatSessions() {
     return session;
   }, []);
 
+  const deleteSession = useCallback(
+    async (sessionId) => {
+      await chatService.deleteSession(sessionId);
+      setSessions((items) => items.filter((s) => s.id !== sessionId));
+      if (selectedSessionId === sessionId) {
+        setSessions((items) => {
+          const remaining = items.filter((s) => s.id !== sessionId);
+          setSelectedSessionId(remaining[0]?.id ?? "");
+          return remaining;
+        });
+      }
+    },
+    [selectedSessionId]
+  );
+
+  const renameSession = useCallback(async (sessionId, title) => {
+    const updated = await chatService.updateSession(sessionId, title);
+    setSessions((items) =>
+      items.map((s) => (s.id === sessionId ? { ...s, title: updated.title ?? title } : s))
+    );
+    return updated;
+  }, []);
+
   useEffect(() => {
     loadSessions();
   }, [loadSessions]);
@@ -39,6 +62,8 @@ export function useChatSessions() {
     selectedSessionId,
     setSelectedSessionId,
     createSession,
+    deleteSession,
+    renameSession,
     reload: loadSessions,
     loading,
     error,
