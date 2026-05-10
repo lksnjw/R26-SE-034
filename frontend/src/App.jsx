@@ -24,6 +24,9 @@ import { RouteProvider, useRoute } from "./context/RouteContext";
 import { NotificationProvider } from "./context/NotificationContext";
 import { useState } from "react";
 
+import PipelineConfigPage from "./pages/datafeed/PipelineConfigPage";
+import VectorMetricsPage from "./pages/datafeed/VectorMetricsPage";
+
 const routeComponents = {
   "dashboard.overview": DashboardPage,
   "dashboard.activity": DashboardPage,
@@ -49,6 +52,8 @@ const routeComponents = {
   "profile.security": ProfilePage,
   "mcp_bridge.overview": McpBridgePage,
   "datafeed.overview": DatafeedPage,
+  "datafeed.metrics": VectorMetricsPage,
+  "datafeed.config": PipelineConfigPage,
   "finetune.overview": FinetunePage,
 };
 
