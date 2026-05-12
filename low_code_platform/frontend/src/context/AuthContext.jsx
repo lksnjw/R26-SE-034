@@ -1,25 +1,108 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { authService } from "../services/auth.service";
 
 const AuthContext = createContext(null);
 
-const initialUser = {
-  id: "usr_admin",
-  name: "Lakshan Jay",
-  email: "admin@workflow.local",
-  role: "Platform Admin",
-};
+function loadStoredUser() {
+  try {
+    const raw = localStorage.getItem("workflow.user");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(initialUser);
+  const [user, setUser] = useState(loadStoredUser);
+  const [loading, setLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  // On mount, validate the stored token via /auth/me
+  useEffect(() => {
+    const token = localStorage.getItem("workflow.authToken");
+    if (!token) return;
+    let cancelled = false;
+    authService
+      .me()
+      .then((me) => {
+        if (!cancelled) {
+          setUser(me);
+          localStorage.setItem("workflow.user", JSON.stringify(me));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          localStorage.removeItem("workflow.authToken");
+          localStorage.removeItem("workflow.user");
+          setUser(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Listen for token expiry events from the axios interceptor
+  useEffect(() => {
+    const handleExpired = () => {
+      setUser(null);
+    };
+    window.addEventListener("auth:expired", handleExpired);
+    return () => window.removeEventListener("auth:expired", handleExpired);
+  }, []);
+
+  const login = useCallback(async (credentials) => {
+    setLoading(true);
+    setAuthError("");
+    try {
+      const session = await authService.login(credentials);
+      setUser(session.user ?? session);
+      return session;
+    } catch (err) {
+      const msg = err?.response?.data?.message ?? "Login failed. Please check your credentials.";
+      setAuthError(msg);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const register = useCallback(async (payload) => {
+    setLoading(true);
+    setAuthError("");
+    try {
+      const session = await authService.register(payload);
+      setUser(session.user ?? session);
+      return session;
+    } catch (err) {
+      const msg = err?.response?.data?.message ?? "Registration failed. Please try again.";
+      setAuthError(msg);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const logout = useCallback(async () => {
+    await authService.logout();
+    setUser(null);
+    setAuthError("");
+  }, []);
+
+  const clearError = useCallback(() => setAuthError(""), []);
 
   const value = useMemo(
     () => ({
       user,
       isAuthenticated: Boolean(user),
-      login: () => setUser(initialUser),
-      logout: () => setUser(null),
+      loading,
+      authError,
+      login,
+      register,
+      logout,
+      clearError,
     }),
-    [user]
+    [user, loading, authError, login, register, logout, clearError]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

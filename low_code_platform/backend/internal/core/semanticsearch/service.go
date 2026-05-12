@@ -22,20 +22,31 @@ type Service struct {
 	ExternalURL          string
 	AllowLexicalFallback bool
 	HTTP                 *http.Client
+	toolDocs             map[string]searchDocument
+	ruleDocs             map[string]searchDocument
+	templateDocs         map[string]searchDocument
+	exampleDocs          map[string]searchDocument
+}
+
+type searchDocument struct {
+	Text   string
+	Tokens map[string]bool
 }
 
 func NewService(tools *registry.ToolRegistry, rules *registry.RuleRegistry, defaultMode string) *Service {
 	if defaultMode == "" {
 		defaultMode = "go_lexical"
 	}
-	return &Service{Tools: tools, Rules: rules, DefaultMode: defaultMode, AllowLexicalFallback: true, HTTP: &http.Client{Timeout: 30 * time.Second}}
+	service := &Service{Tools: tools, Rules: rules, DefaultMode: defaultMode, AllowLexicalFallback: true, HTTP: &http.Client{Timeout: 30 * time.Second}}
+	service.buildLexicalCache()
+	return service
 }
 
 func NewServiceFromDataset(bundle *registry.Bundle, defaultMode, externalURL string, allowLexicalFallback bool) *Service {
 	if defaultMode == "" {
 		defaultMode = "external_embedding"
 	}
-	return &Service{
+	service := &Service{
 		Tools:                bundle.Tools,
 		Rules:                bundle.Rules,
 		Templates:            bundle.Templates,
@@ -45,6 +56,8 @@ func NewServiceFromDataset(bundle *registry.Bundle, defaultMode, externalURL str
 		AllowLexicalFallback: allowLexicalFallback,
 		HTTP:                 &http.Client{Timeout: 30 * time.Second},
 	}
+	service.buildLexicalCache()
+	return service
 }
 
 func (s *Service) SearchContext(ctx context.Context, query, userRole string, options Options) (Result, error) {
@@ -189,10 +202,8 @@ func (s *Service) externalToResult(query, userRole string, payload externalRespo
 		if tool.SourceFile == "" {
 			tool.SourceFile = item.SourceFile
 		}
-		if tool.Name == "" {
-			if found, ok := s.Tools.FindToolByID(tool.ToolID); ok {
-				tool = found
-			}
+		if found, ok := s.findAuthoritativeTool(tool); ok {
+			tool = found
 		}
 		result.Tools = append(result.Tools, ToolResult{Tool: tool, Score: item.Score, MatchReason: firstNonEmpty(item.MatchReason, "Embedding similarity match")})
 	}
@@ -207,6 +218,9 @@ func (s *Service) externalToResult(query, userRole string, payload externalRespo
 		}
 		if rule.SourceFile == "" {
 			rule.SourceFile = item.SourceFile
+		}
+		if found, ok := s.findAuthoritativeRule(rule); ok {
+			rule = found
 		}
 		result.Rules = append(result.Rules, RuleResult{Rule: rule, Score: item.Score, MatchReason: firstNonEmpty(item.MatchReason, "Embedding similarity match")})
 	}
@@ -238,11 +252,41 @@ func (s *Service) externalToResult(query, userRole string, payload externalRespo
 	return result
 }
 
+func (s *Service) findAuthoritativeTool(candidate registry.Tool) (registry.Tool, bool) {
+	if s == nil || s.Tools == nil {
+		return registry.Tool{}, false
+	}
+	for _, ref := range []string{candidate.Name, candidate.MCPToolName} {
+		if strings.TrimSpace(ref) == "" {
+			continue
+		}
+		if found, ok := s.Tools.FindToolByName(ref); ok {
+			return found, true
+		}
+	}
+	if strings.TrimSpace(candidate.ToolID) != "" {
+		return s.Tools.FindToolByID(candidate.ToolID)
+	}
+	return registry.Tool{}, false
+}
+
+func (s *Service) findAuthoritativeRule(candidate registry.Rule) (registry.Rule, bool) {
+	if s == nil || s.Rules == nil || strings.TrimSpace(candidate.RuleID) == "" {
+		return registry.Rule{}, false
+	}
+	for _, rule := range s.Rules.GetAllRules() {
+		if strings.EqualFold(rule.RuleID, candidate.RuleID) {
+			return rule, true
+		}
+	}
+	return registry.Rule{}, false
+}
+
 func (s *Service) rankTools(query, userRole string) []ToolResult {
 	out := []ToolResult{}
 	for _, tool := range s.Tools.GetAllTools() {
-		score, matches := lexicalScore(query, toolDocument(tool))
-		if strings.Contains(strings.ToLower(query), strings.ToLower(tool.Name)) {
+		score, matches := s.lexicalScoreForTool(query, tool)
+		if queryMentionsTool(query, tool) {
 			score += 0.25
 		}
 		if roleAllowed(userRole, tool.AllowedRoles) {
@@ -278,7 +322,7 @@ func (s *Service) rankRules(query string, tools []ToolResult) []RuleResult {
 		if strings.EqualFold(rule.Domain, "global") || strings.HasPrefix(strings.ToUpper(rule.RuleID), "GLOBAL-") {
 			continue
 		}
-		score, matches := lexicalScore(query, ruleDocument(rule))
+		score, matches := s.lexicalScoreForRule(query, rule)
 		for _, ref := range rule.AppliesToTools {
 			if toolRefs[strings.ToLower(ref)] {
 				score += 0.35
@@ -316,7 +360,7 @@ func (s *Service) rankRules(query string, tools []ToolResult) []RuleResult {
 func (s *Service) rankTemplates(query string) []TemplateResult {
 	out := []TemplateResult{}
 	for _, template := range s.Templates {
-		score, matches := lexicalScore(query, templateDocument(template))
+		score, matches := s.lexicalScoreForTemplate(query, template)
 		if score <= 0 {
 			continue
 		}
@@ -331,7 +375,7 @@ func (s *Service) rankTemplates(query string) []TemplateResult {
 func (s *Service) rankExamples(query string) []ExampleResult {
 	out := []ExampleResult{}
 	for _, example := range s.Examples {
-		score, matches := lexicalScore(query, exampleDocument(example))
+		score, matches := s.lexicalScoreForExample(query, example)
 		if score <= 0 {
 			continue
 		}
@@ -346,7 +390,7 @@ func (s *Service) rankExamples(query string) []ExampleResult {
 func (s *Service) globalRules(query string) []RuleResult {
 	out := []RuleResult{}
 	for _, rule := range s.Rules.GetGlobalSafetyRules() {
-		score, matches := lexicalScore(query, ruleDocument(rule))
+		score, matches := s.lexicalScoreForRule(query, rule)
 		if score < 0.65 {
 			score = 0.65
 		}
@@ -362,17 +406,97 @@ func roleAllowed(userRole string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return true
 	}
-	role := strings.ToLower(strings.TrimSpace(userRole))
-	if role == "platform admin" {
-		role = "admin"
-	}
+	role := normalizeRole(userRole)
 	for _, item := range allowed {
-		allowedRole := strings.ToLower(strings.TrimSpace(item))
+		allowedRole := normalizeRole(item)
 		if allowedRole == role || allowedRole == "admin" && role == "admin" {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeRole(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, " ", "_")
+	value = strings.ReplaceAll(value, "-", "_")
+	if value == "platform_admin" {
+		return "admin"
+	}
+	return value
+}
+
+func queryMentionsTool(query string, tool registry.Tool) bool {
+	normalizedQuery := normalizedSearchPhrase(query)
+	for _, value := range []string{tool.Name, tool.DisplayName, tool.BusinessCapability} {
+		normalized := normalizedSearchPhrase(value)
+		if normalized != "" && strings.Contains(normalizedQuery, normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedSearchPhrase(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer(".", " ", "_", " ", "-", " ").Replace(value)
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func (s *Service) buildLexicalCache() {
+	s.toolDocs = map[string]searchDocument{}
+	s.ruleDocs = map[string]searchDocument{}
+	s.templateDocs = map[string]searchDocument{}
+	s.exampleDocs = map[string]searchDocument{}
+	if s.Tools != nil {
+		for _, tool := range s.Tools.GetAllTools() {
+			text := toolDocument(tool)
+			s.toolDocs[strings.ToLower(firstNonEmpty(tool.ToolID, tool.Name))] = searchDocument{Text: text, Tokens: tokenSet(text)}
+		}
+	}
+	if s.Rules != nil {
+		for _, rule := range s.Rules.GetAllRules() {
+			text := ruleDocument(rule)
+			s.ruleDocs[strings.ToLower(rule.RuleID)] = searchDocument{Text: text, Tokens: tokenSet(text)}
+		}
+	}
+	for _, template := range s.Templates {
+		text := templateDocument(template)
+		s.templateDocs[strings.ToLower(template.TemplateID)] = searchDocument{Text: text, Tokens: tokenSet(text)}
+	}
+	for _, example := range s.Examples {
+		key := strings.ToLower(firstNonEmpty(example.ScenarioID, example.UserRequest))
+		text := exampleDocument(example)
+		s.exampleDocs[key] = searchDocument{Text: text, Tokens: tokenSet(text)}
+	}
+}
+
+func (s *Service) lexicalScoreForTool(query string, tool registry.Tool) (float64, []string) {
+	if doc, ok := s.toolDocs[strings.ToLower(firstNonEmpty(tool.ToolID, tool.Name))]; ok {
+		return lexicalScoreWithDocument(query, doc)
+	}
+	return lexicalScore(query, toolDocument(tool))
+}
+
+func (s *Service) lexicalScoreForRule(query string, rule registry.Rule) (float64, []string) {
+	if doc, ok := s.ruleDocs[strings.ToLower(rule.RuleID)]; ok {
+		return lexicalScoreWithDocument(query, doc)
+	}
+	return lexicalScore(query, ruleDocument(rule))
+}
+
+func (s *Service) lexicalScoreForTemplate(query string, template registry.ProcessTemplate) (float64, []string) {
+	if doc, ok := s.templateDocs[strings.ToLower(template.TemplateID)]; ok {
+		return lexicalScoreWithDocument(query, doc)
+	}
+	return lexicalScore(query, templateDocument(template))
+}
+
+func (s *Service) lexicalScoreForExample(query string, example registry.FewShotExample) (float64, []string) {
+	if doc, ok := s.exampleDocs[strings.ToLower(firstNonEmpty(example.ScenarioID, example.UserRequest))]; ok {
+		return lexicalScoreWithDocument(query, doc)
+	}
+	return lexicalScore(query, exampleDocument(example))
 }
 
 func firstNonEmpty(values ...string) string {

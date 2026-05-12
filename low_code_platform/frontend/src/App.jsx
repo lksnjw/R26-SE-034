@@ -15,9 +15,17 @@ import McpBridgePage from "./pages/mcp_bridge/McpBridgePage";
 import DatafeedPage from "./pages/datafeed/DatafeedPage";
 import FinetunePage from "./pages/finetune/FinetunePage";
 import NotFoundPage from "./pages/errors/NotFoundPage";
+import LoginPage from "./pages/auth/LoginPage";
+import RegisterPage from "./pages/auth/RegisterPage";
+import ForgotPasswordPage from "./pages/auth/ForgotPasswordPage";
 import { ThemeProvider } from "./context/ThemeContext";
+import { AuthProvider, useAuthContext } from "./context/AuthContext";
 import { RouteProvider, useRoute } from "./context/RouteContext";
 import { NotificationProvider } from "./context/NotificationContext";
+import { useState } from "react";
+
+import PipelineConfigPage from "./pages/datafeed/PipelineConfigPage";
+import VectorMetricsPage from "./pages/datafeed/VectorMetricsPage";
 
 const routeComponents = {
   "dashboard.overview": DashboardPage,
@@ -44,25 +52,62 @@ const routeComponents = {
   "profile.security": ProfilePage,
   "mcp_bridge.overview": McpBridgePage,
   "datafeed.overview": DatafeedPage,
+  "datafeed.metrics": VectorMetricsPage,
+  "datafeed.config": PipelineConfigPage,
   "finetune.overview": FinetunePage,
 };
 
 function ActivePage() {
   const { activeMain, activeSub } = useRoute();
   const Page = routeComponents[`${activeMain}.${activeSub}`] ?? NotFoundPage;
-
   return <Page />;
+}
+
+// Auth routing: login | register | forgot-password
+const AUTH_SCREENS = {
+  login: LoginPage,
+  register: RegisterPage,
+  "forgot-password": ForgotPasswordPage,
+};
+
+function AuthRouter() {
+  const [screen, setScreen] = useState("login");
+  const Screen = AUTH_SCREENS[screen] ?? LoginPage;
+  return <Screen onNavigate={setScreen} />;
+}
+
+function AppRouter() {
+  const { isAuthenticated, loading } = useAuthContext();
+
+  // While validating stored token, show nothing (or a spinner)
+  if (loading) {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-backgroundLight dark:bg-darkBackgroundVery">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <AuthRouter />;
+  }
+
+  return (
+    <RouteProvider>
+      <AppLayout>
+        <ActivePage />
+      </AppLayout>
+    </RouteProvider>
+  );
 }
 
 function App() {
   return (
     <ThemeProvider>
       <NotificationProvider>
-        <RouteProvider>
-          <AppLayout>
-            <ActivePage />
-          </AppLayout>
-        </RouteProvider>
+        <AuthProvider>
+          <AppRouter />
+        </AuthProvider>
       </NotificationProvider>
     </ThemeProvider>
   );

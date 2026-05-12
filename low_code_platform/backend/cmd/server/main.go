@@ -35,6 +35,7 @@ func main() {
 	_ = config.NewRedisCache(cfg, zapLogger)
 
 	store := repository.NewStore()
+	repository.ApplyDevUserRole(store, cfg.DevUserRole)
 	synth := synthesizer.NewServiceWithProvider(cfg.OllamaBaseURL, cfg.OllamaModel, cfg.OllamaEnabled, cfg.WorkflowGenerationProvider, cfg.GeminiAPIKey, cfg.GeminiModel)
 	validator := workflowvalidator.NewWorkflowValidator()
 	var registryBundle *coreregistry.Bundle

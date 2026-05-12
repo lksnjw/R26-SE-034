@@ -455,7 +455,9 @@ func ruleAppliesToCandidate(rule registry.Rule, usedTools []registry.Tool, userR
 func mandatoryGlobalRule(rule registry.Rule) bool {
 	switch strings.ToUpper(strings.TrimSpace(rule.RuleID)) {
 	case "GLOBAL-SAFETY-001",
+		"GLOBAL-SAFETY-002",
 		"GLOBAL-SAFETY-003",
+		"GLOBAL-AUDIT-001",
 		"GLOBAL-SAFETY-008",
 		"GLOBAL-SAFETY-009",
 		"GLOBAL-SAFETY-010",

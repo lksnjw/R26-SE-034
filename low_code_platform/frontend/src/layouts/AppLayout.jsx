@@ -16,8 +16,10 @@ function AppLayout({ children }) {
       <div className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden">
         <Topbar />
         <MobileNav />
-        <main className="h-0 min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-white p-4 transition-colors duration-200 dark:bg-darkBackgroundVery sm:p-6">
-          {children}
+        <main className="h-0 min-h-0 flex-1 overflow-hidden bg-white p-4 transition-colors duration-200 dark:bg-darkBackgroundVery sm:p-6">
+          <div className="h-full overflow-y-auto">
+            {children}
+          </div>
         </main>
       </div>
     </div>

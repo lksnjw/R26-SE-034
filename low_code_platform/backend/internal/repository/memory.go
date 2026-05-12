@@ -177,6 +177,34 @@ steps:
 	return store
 }
 
+func ApplyDevUserRole(store *Store, roleName string) {
+	roleName = strings.TrimSpace(roleName)
+	if store == nil || roleName == "" {
+		return
+	}
+
+	permissions := []string{"workflow:read", "workflow:write", "workflow:run", "audit:read"}
+	roleID := "role_dataset_override"
+
+	store.Mu.Lock()
+	defer store.Mu.Unlock()
+
+	store.Roles[roleID] = &models.Role{
+		ID:          roleID,
+		Name:        roleName,
+		Description: "Dataset role override for local development",
+		Permissions: permissions,
+		CreatedAt:   time.Now().UTC(),
+	}
+
+	user := store.Users["usr_001"]
+	if user == nil {
+		return
+	}
+	user.Role = models.RoleRef{ID: roleID, Name: roleName}
+	user.Permissions = permissions
+}
+
 func (s *Store) NextID(prefix string) string {
 	s.Counter++
 	return fmt.Sprintf("%s_%d", prefix, s.Counter)

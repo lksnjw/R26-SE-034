@@ -34,6 +34,10 @@ import {
   Warehouse,
   Zap,
 } from "lucide-react";
+import {
+  takeWorkflowForCanvas,
+  workflowYamlToCanvas,
+} from "../../utils/workflowCanvas.utils";
 
 const iconMap = {
   AlertCircle,
@@ -235,6 +239,28 @@ const initialEdges = [
   },
 ];
 
+function getInitialCanvasState() {
+  const pendingWorkflow = takeWorkflowForCanvas();
+  if (pendingWorkflow?.canExecute && pendingWorkflow.yaml) {
+    const canvas = workflowYamlToCanvas(pendingWorkflow.yaml, {
+      candidateId: pendingWorkflow.candidateId,
+    });
+    if (canvas.nodes.length > 0) {
+      return canvas;
+    }
+  }
+
+  return {
+    nodes: initialNodes,
+    edges: initialEdges,
+    workflow: {
+      name: "Agentic Workflow Builder",
+      description: "Drag tools into the canvas and connect them into governed execution flows.",
+      yaml: "",
+    },
+  };
+}
+
 function WorkflowToolNode({ data, selected }) {
   const Icon = iconMap[data.iconKey] ?? Database;
   const meta = statusMeta[data.status ?? "idle"] ?? statusMeta.idle;
@@ -352,7 +378,7 @@ function BuilderSidebar() {
   );
 }
 
-function BuilderHeader({ executionState, isExecuting, onRun, onDeploy, statusCounts }) {
+function BuilderHeader({ executionState, isExecuting, onRun, onDeploy, statusCounts, workflow }) {
   const stateCopy = {
     idle: "Ready",
     running: "Running workflow",
@@ -368,7 +394,9 @@ function BuilderHeader({ executionState, isExecuting, onRun, onDeploy, statusCou
             <Zap className="h-5 w-5" />
           </span>
           <div>
-            <h1 className="text-lg font-black text-slate-950">Agentic Workflow Builder</h1>
+            <h1 className="max-w-[520px] truncate text-lg font-black text-slate-950">
+              {workflow?.name || "Agentic Workflow Builder"}
+            </h1>
             <p className="mt-0.5 text-xs font-semibold text-slate-500">
               {stateCopy[executionState]} · {statusCounts.running} running · {statusCounts.success} success ·{" "}
               {statusCounts.error} error
@@ -403,8 +431,10 @@ function WorkflowBuilderSurface() {
   const reactFlowWrapper = useRef(null);
   const nodeIdRef = useRef(4);
   const { screenToFlowPosition, fitView } = useReactFlow();
-  const [nodes, setNodes] = useState(initialNodes);
-  const [edges, setEdges] = useState(initialEdges);
+  const [initialCanvasState] = useState(getInitialCanvasState);
+  const [nodes, setNodes] = useState(initialCanvasState.nodes);
+  const [edges, setEdges] = useState(initialCanvasState.edges);
+  const [workflow] = useState(initialCanvasState.workflow);
   const [executionState, setExecutionState] = useState("idle");
   const [isExecuting, setIsExecuting] = useState(false);
 
@@ -530,7 +560,7 @@ function WorkflowBuilderSurface() {
   }, [fitView]);
 
   return (
-    <div className="fixed inset-0 z-50 flex h-screen w-screen overflow-hidden bg-slate-100 text-slate-950">
+    <div className="fixed inset-y-0 right-0 left-0 z-50 flex overflow-hidden bg-slate-100 text-slate-950 md:left-16">
       <BuilderSidebar />
       <section className="flex min-w-0 flex-1 flex-col">
         <BuilderHeader
@@ -539,6 +569,7 @@ function WorkflowBuilderSurface() {
           onRun={simulateExecution}
           onDeploy={deployWorkflow}
           statusCounts={statusCounts}
+          workflow={workflow}
         />
         <div className="min-h-0 flex-1 bg-slate-100 p-4">
           <div

@@ -54,10 +54,27 @@ func (o *ChatOrchestrator) HandleChatMessage(ctx context.Context, req ChatReques
 		return ChatResponse{}, err
 	}
 
-	retrieval.Tools = o.backfillExecutableToolResults(req.UserText, req.UserRole, retrieval.Tools, 3)
+	if blocked, errors := destructiveIdentityRequestErrors(req.UserText); blocked {
+		return ChatResponse{
+			SessionID:         req.SessionID,
+			Retrieval:         retrieval,
+			CanExecute:        false,
+			NextAction:        "blocked_sensitive_destructive_request",
+			AssistantMessage:  "I blocked this request before workflow generation because it targets a destructive identity or administrator action.",
+			BlockingErrors:    errors,
+			Candidates:        []CandidateReport{},
+			RawCandidates:     []synthesizer.WorkflowCandidate{},
+			ValidationSummary: ValidationSummary{},
+		}, nil
+	}
+
 	retrievedTools := toolsFromResults(retrieval.Tools)
-	executableTools, schemaMissingTools, futureCapabilities := splitToolsByStatus(retrievedTools)
 	domain := detectRequestDomain(req.UserText, retrievedTools, rulesFromResults(retrieval.Rules))
+	retrieval.Tools = o.backfillExecutableToolResults(req.UserText, req.UserRole, retrieval.Tools, domain, 5)
+	retrievedTools = toolsFromResults(retrieval.Tools)
+	executableTools, schemaMissingTools, futureCapabilities := splitToolsByStatus(retrievedTools)
+	executableTools = filterExecutableToolsForDomain(executableTools, domain)
+	executableTools = o.ensureControlTools(req.UserText, executableTools)
 	filteredRules := filterPromptRules(rulesFromResults(retrieval.Rules), executableTools, domain, req.UserRole)
 	filteredGlobalRules := filterGlobalPromptRules(rulesFromResults(retrieval.GlobalRules))
 
@@ -149,7 +166,54 @@ func (o *ChatOrchestrator) HandleChatMessage(ctx context.Context, req ChatReques
 	return response, nil
 }
 
-func (o *ChatOrchestrator) backfillExecutableToolResults(query, userRole string, current []semanticsearch.ToolResult, max int) []semanticsearch.ToolResult {
+func destructiveIdentityRequestErrors(query string) (bool, []string) {
+	normalized := normalizeIntentText(query)
+	if normalized == "" {
+		return false, nil
+	}
+
+	destructive := containsAnyPhrase(normalized, []string{
+		"delete", "remove", "erase", "destroy", "wipe", "terminate", "deactivate", "disable",
+		"suspend", "lock", "revoke", "drop", "purge",
+	})
+	identityTarget := containsAnyPhrase(normalized, []string{
+		"admin", "administrator", "platform admin", "super admin", "superuser", "root",
+		"user", "users", "employee", "employees", "role", "roles", "permission", "permissions",
+		"access", "account", "accounts",
+	})
+	if !destructive || !identityTarget {
+		return false, nil
+	}
+
+	return true, []string{
+		"Destructive identity/admin action was blocked before workflow generation.",
+		"No workflow can be generated for deleting, removing, disabling, terminating, or revoking admins, users, employees, roles, permissions, access, or accounts unless a dedicated active tool and explicit governance rule allow it.",
+		"Change DEV_USER_ROLE or CHAT_USER_ROLE_OVERRIDE to test normal dataset roles; do not use natural-language deletion for privileged identities.",
+	}
+}
+
+func normalizeIntentText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	replacer := strings.NewReplacer("_", " ", "-", " ", ".", " ", "/", " ", "\n", " ", "\t", " ")
+	value = replacer.Replace(value)
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func containsAnyPhrase(text string, phrases []string) bool {
+	padded := " " + text + " "
+	for _, phrase := range phrases {
+		phrase = strings.TrimSpace(strings.ToLower(phrase))
+		if phrase == "" {
+			continue
+		}
+		if strings.Contains(padded, " "+phrase+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *ChatOrchestrator) backfillExecutableToolResults(query, userRole string, current []semanticsearch.ToolResult, domain string, max int) []semanticsearch.ToolResult {
 	if o == nil || o.Search == nil || o.Search.Tools == nil || max <= 0 {
 		return current
 	}
@@ -162,6 +226,9 @@ func (o *ChatOrchestrator) backfillExecutableToolResults(query, userRole string,
 	for _, tool := range o.Search.Tools.GetAllTools() {
 		key := strings.ToLower(firstNonEmpty(tool.ToolID, tool.Name, tool.MCPToolName))
 		if key == "" || seen[key] || !toolIsExecutable(tool) {
+			continue
+		}
+		if domain != "" && !strings.EqualFold(strings.TrimSpace(tool.Module), domain) && !isControlModule(tool.Module) {
 			continue
 		}
 		if !toolRoleAllowed(userRole, tool.AllowedRoles) || !toolMatchesRequest(query, tool) {
@@ -179,6 +246,15 @@ func (o *ChatOrchestrator) backfillExecutableToolResults(query, userRole string,
 		}
 	}
 	return current
+}
+
+func isControlModule(module string) bool {
+	switch strings.ToLower(strings.TrimSpace(module)) {
+	case "global", "approval", "audit", "policy":
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *ChatOrchestrator) executableCapabilityRequestTool() (registry.Tool, bool) {
@@ -222,6 +298,77 @@ func toolIsExecutable(tool registry.Tool) bool {
 	default:
 		return false
 	}
+}
+
+func filterExecutableToolsForDomain(tools []registry.Tool, domain string) []registry.Tool {
+	if strings.TrimSpace(domain) == "" {
+		return tools
+	}
+	out := []registry.Tool{}
+	for _, tool := range tools {
+		module := strings.ToLower(strings.TrimSpace(tool.Module))
+		if module == domain || isControlModule(module) {
+			out = append(out, tool)
+		}
+	}
+	if len(out) == 0 {
+		return tools
+	}
+	return out
+}
+
+func (o *ChatOrchestrator) ensureControlTools(query string, tools []registry.Tool) []registry.Tool {
+	if o == nil || o.Validator == nil || o.Validator.Tools == nil {
+		return tools
+	}
+	needed := []string{"audit.write_audit_log", "policy.check_policy_limit"}
+	lower := strings.ToLower(query)
+	if strings.Contains(lower, "purchase order") || hasToolNamed(tools, "procurement.create_purchase_order") {
+		needed = append([]string{"procurement.validate_vendor"}, needed...)
+	}
+	if strings.Contains(lower, "approval") || strings.Contains(lower, "approve") || firstNumberInText(lower) > 100 {
+		needed = append(needed, "approval.request_human_approval")
+	}
+	out := append([]registry.Tool{}, tools...)
+	seen := map[string]bool{}
+	for _, tool := range out {
+		seen[strings.ToLower(strings.TrimSpace(tool.Name))] = true
+	}
+	for _, name := range needed {
+		if seen[name] {
+			continue
+		}
+		tool, ok := o.Validator.Tools.FindToolByName(name)
+		if !ok || !toolIsExecutable(tool) {
+			continue
+		}
+		out = append(out, tool)
+		seen[name] = true
+	}
+	return out
+}
+
+func hasToolNamed(tools []registry.Tool, name string) bool {
+	for _, tool := range tools {
+		if strings.EqualFold(strings.TrimSpace(tool.Name), name) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNumberInText(value string) int {
+	current := 0
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			current = current*10 + int(r-'0')
+			continue
+		}
+		if current > 0 {
+			return current
+		}
+	}
+	return current
 }
 
 func toolRoleAllowed(userRole string, allowed []string) bool {
@@ -270,6 +417,8 @@ func significantTokens(value string) []string {
 	stop := map[string]bool{
 		"api": true, "erp": true, "mcp": true, "tool": true, "workflow": true,
 		"finance": true, "procurement": true, "inventory": true, "travel": true, "hr": true,
+		"create": true, "get": true, "list": true, "update": true, "delete": true,
+		"send": true, "record": true, "write": true, "request": true, "submit": true,
 	}
 	tokens := []string{}
 	for _, token := range strings.Fields(value) {
@@ -296,6 +445,18 @@ func allTokensPresent(text string, tokens []string) bool {
 
 func detectRequestDomain(query string, tools []registry.Tool, rules []registry.Rule) string {
 	lower := strings.ToLower(query)
+	switch {
+	case strings.Contains(lower, "purchase order") || strings.Contains(lower, "po ") || strings.Contains(lower, "vendor"):
+		return "procurement"
+	case strings.Contains(lower, "invoice") || strings.Contains(lower, "payment") || strings.Contains(lower, "finance"):
+		return "finance"
+	case strings.Contains(lower, "stock") || strings.Contains(lower, "inventory") || strings.Contains(lower, "goods receipt"):
+		return "inventory"
+	case strings.Contains(lower, "leave") || strings.Contains(lower, "attendance") || strings.Contains(lower, "employee"):
+		return "hr"
+	case strings.Contains(lower, "travel") || strings.Contains(lower, "reimbursement"):
+		return "travel"
+	}
 	for _, domain := range []string{"procurement", "finance", "inventory", "hr", "travel"} {
 		if strings.Contains(lower, domain) || strings.Contains(lower, strings.ReplaceAll(domain, "_", " ")) {
 			return domain

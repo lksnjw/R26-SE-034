@@ -1,19 +1,102 @@
+import { useState, useRef } from "react";
 import { Icon } from "@iconify/react";
 import Breadcrumb from "./Breadcrumb";
 import CommandPalette from "./CommandPalette";
 import { appConfig } from "../../config/app";
 import { useTheme } from "../../context/ThemeContext";
 import { useNotifications } from "../../context/NotificationContext";
+import { useAuthContext } from "../../context/AuthContext";
+import { useClickOutside } from "../../hooks/useClickOutside";
+
+function UserMenu({ user, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useClickOutside(ref, () => setOpen(false));
+
+  const initials = user?.name
+    ? user.name
+        .split(" ")
+        .slice(0, 2)
+        .map((w) => w[0])
+        .join("")
+        .toUpperCase()
+    : "?";
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        id="user-menu-button"
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 transition hover:border-gray-200 hover:bg-gray-50 dark:hover:border-gray-800 dark:hover:bg-darkBackground"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label="User menu"
+      >
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-bold text-white shadow">
+          {initials}
+        </div>
+        <div className="hidden flex-col items-start sm:flex">
+          <span className="text-xs font-semibold leading-tight text-gray-900 dark:text-white">
+            {user?.name ?? "User"}
+          </span>
+          <span className="text-[10px] text-gray-400 dark:text-gray-500">
+            {typeof user?.role === 'object' ? user?.role?.name : (user?.role ?? "")}
+          </span>
+        </div>
+        <Icon
+          icon={open ? "mdi:chevron-up" : "mdi:chevron-down"}
+          className="h-4 w-4 text-gray-400"
+        />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-2 w-48 rounded-xl border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-800 dark:bg-darkBackground">
+          <div className="border-b border-gray-100 px-4 py-3 dark:border-gray-800">
+            <p className="truncate text-xs font-semibold text-gray-900 dark:text-white">
+              {user?.name}
+            </p>
+            <p className="truncate text-[11px] text-gray-400">{user?.email}</p>
+          </div>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-4 py-2.5 text-xs text-gray-600 transition hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
+            onClick={() => {
+              setOpen(false);
+              // Navigate to profile — use a small timeout to allow menu close
+              window.dispatchEvent(new CustomEvent("nav:profile"));
+            }}
+          >
+            <Icon icon="mdi:account-outline" className="h-4 w-4" />
+            Profile
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-4 py-2.5 text-xs text-red-500 transition hover:bg-red-50 dark:hover:bg-red-900/20"
+            onClick={() => {
+              setOpen(false);
+              onLogout();
+            }}
+          >
+            <Icon icon="mdi:logout" className="h-4 w-4" />
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Topbar() {
   const { isDarkMode, toggleTheme } = useTheme();
   const { notify } = useNotifications();
+  const { user, logout } = useAuthContext();
 
   return (
-    <header className="flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-4 transition-colors duration-200 dark:border-darkBackgroundVery dark:bg-darkBackground sm:px-6">
+    <header className="flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3 transition-colors duration-200 dark:border-darkBackgroundVery dark:bg-darkBackground sm:px-6">
       <div className="min-w-0 flex-1 sm:flex-none">
         <div className="flex items-center gap-4">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-panel">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-panel">
             <Icon icon="tabler:git-branch" className="h-5 w-5" />
           </div>
           <div className="min-w-0">
@@ -33,22 +116,16 @@ function Topbar() {
       <CommandPalette />
 
       <div className="flex shrink-0 items-center gap-3">
-        <button type="button" onClick={toggleTheme} className="icon-button" aria-label="Toggle theme">
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="icon-button"
+          aria-label="Toggle theme"
+        >
           <Icon
             icon={isDarkMode ? "mdi:weather-sunny" : "mdi:weather-night"}
             className="h-5 w-5"
           />
-        </button>
-        <button
-          type="button"
-          className="icon-button relative hidden sm:flex"
-          aria-label="Run history"
-          onClick={() => notify("Run history panel is ready for API connection.")}
-        >
-          <Icon icon="mdi:history" className="h-5 w-5" />
-          <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border-2 border-white bg-green-500 text-[10px] font-bold text-white dark:border-gray-900">
-            8
-          </span>
         </button>
         <button
           type="button"
@@ -61,6 +138,8 @@ function Topbar() {
             3
           </span>
         </button>
+
+        <UserMenu user={user} onLogout={logout} />
       </div>
     </header>
   );
