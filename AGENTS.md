@@ -1,56 +1,61 @@
-# AI Agent Integration Guide
+# ERPBridge: Agent Integration & Development
 
-This middleware exposes ERP functionality via the **Model Context Protocol (MCP)**.
-It supports multiple transport layers.
+This repository is an ERP middleware exposing functionality via the **Model Context Protocol (MCP)**. 
 
-## MCP Endpoints
+**Branching**: If you are connecting to this server to _use_ its tools, read **Usage**. If you are modifying this codebase, read **Development**.
 
-### 1. Streamable HTTP (for Postman and remote clients)
+---
 
-- **Base URL**: `http://localhost:8080/mcp/`
-- **Transport**: MCP 2025-03-26 (negotiation supports newer versions)
+## Usage (Consuming Tools)
 
-### 2. Stdio (for Claude and Cursor)
+Agents acting as MCP clients can consume ERPBridge via two transport layers. 
 
-- **Method**: Run the server binary with the `--stdio` flag.
-- **Transport**: Standard Input/Output.
+### Endpoints
+- **Stdio**: Run `erpbridge-server --stdio`. (Use for local agents).
+- **HTTP**: Connect to `http://localhost:8080/mcp/`. (Use for remote agents/Postman).
 
-## Connectivity Guide
+### Execution
+1. **Discover**: Standard MCP `initialize` and `tools/list` lifecycle.
+2. **Invoke**: Send tool calls. ERPBridge handles downstream ERP routing, resilience, and caching automatically.
 
-For detailed configuration, session management, and Postman setup, see the [Connectivity & Transport Guide](./docs/connectivity.md).
+_See [`docs/connectivity.md`](./docs/connectivity.md) for full session and auth configuration._
 
-## Integration Patterns
+---
 
-1. **Transport Selection**: Use **Stdio** for local agents. Use **Streamable HTTP** for remote or web-based agents.
-2. **Tool Discovery**: After the connection is established, request the tool list via the standard MCP `initialize` and `tools/list` lifecycle.
-3. **Execution**: The middleware routes tool calls to the underlying ERP systems. It handles resilience and caching automatically.
+## Development (Modifying Code)
 
-## Example Discovery
+### Goals
+- **Security**: Never leak downstream ERP credentials.
+- **Resilience**: Handle upstream timeouts and errors gracefully.
+- **Protocol Adherence**: Strictly follow the MCP specification.
 
-Run the server binary in Stdio mode when you use an MCP Stdio client:
+### 1. Planning (Mandatory)
+- **Check**: Read `.agents/plans/` for active plans before modifying code.
+- **Create**: If no plan covers your task, use the `plan` skill or `/plan` slash command to create one in `.agents/plans/`. 
+- **Execute**: Complete tasks sequentially. A task is done only when its `Verify:` command is green.
+- **Close**: Prefix completed plan filenames with `[COMPLETED]` so other agents ignore them.
 
-```bash
-erpbridge-server --stdio
-```
+### 2. Commits
+- **Atomic**: One plan task = one commit. 
+- **Format**: Use Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`).
+- **Exclude**: Never commit generated schemas or binaries unless explicitly planned.
 
-Modern HTTP clients (like Postman) use:
+### 3. Testing (TDD)
+- **Workflow**: Red (write failing test) → Green (implement minimum code) → Refactor.
+- **Location**: Place `*_test.go` beside the code it covers.
+- **Patterns**: Use `httptest` servers for HTTP, `miniredis` for Redis, and `:memory:` SQLite for stores. 
+- **Coverage**: Every behavior change requires a test.
 
-```bash
-http://localhost:8080/mcp/
-```
+### 4. Quality Gates
+- **Fast Lint**: Only run `make lint` or `golangci-lint` on directories containing your changes. Do not run global lint sweeps unless tasked.
+- **Pre-commit**: Run `make test` before finishing. Lefthook enforces this on commit.
+- **Docs Sync**: Behavior changes must update the relevant `docs/` guide and `CHANGELOG.md` (Unreleased) in the same commit.
 
-## CLI Access
+### 5. Secrets
+- **Environment Only**: Resolve credentials via environment variables (e.g., `credentialRef`, `API_AUTH_TOKEN`).
+- **Redaction**: Use `logger.RedactArgs` and the `masq` redaction layer to keep secrets out of logs and context.
 
-Agents can also use the `bridgectl` binary for local or containerized execution:
-
-```bash
-./bridgectl tool get
-```
-
-To call a tool directly, use the REST endpoint:
-
-```bash
-curl -X POST http://localhost:8080/api/tools/invoke \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "erp.list_employees", "arguments": {}}'
-```
+### 6. Public Documentation
+- **Repo**: [nmdra/erpbridge-docs](https://github.com/nmdra/erpbridge-docs) (local path: `~/Documents/Projects/erpbridge-docs`).
+- **Truth**: In-repo `docs/` is the developer source of truth. The Docusaurus site is the user-facing truth. Keep them synced.
+- **Action**: When adding features, updating CLI, or changing APIs, open a corresponding commit in the `erpbridge-docs` repository to reflect the change.
