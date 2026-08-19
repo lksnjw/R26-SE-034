@@ -1,4 +1,4 @@
-// internal/logger/level.go
+// Package logger provides structured logging, context propagation, and RFC 5424 / MCP logging handlers.
 package logger
 
 import (

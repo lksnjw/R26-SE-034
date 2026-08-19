@@ -1,4 +1,4 @@
-// internal/types/sensitive.go
+// Package types defines sensitive domain primitives and custom redacted types for ERPBridge.
 package types
 
 // APIToken represents a sensitive API credential.

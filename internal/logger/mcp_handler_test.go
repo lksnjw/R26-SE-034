@@ -129,8 +129,8 @@ func (h *mockHandler) Handle(context.Context, slog.Record) error {
 	}
 	return nil
 }
-func (h *mockHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
-func (h *mockHandler) WithGroup(name string) slog.Handler       { return h }
+func (h *mockHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *mockHandler) WithGroup(_ string) slog.Handler       { return h }
 
 type mockFullSession struct {
 	server.ClientSession
@@ -147,7 +147,6 @@ func (s *mockFullSession) NotificationChannel() chan<- mcp.JSONRPCNotification {
 func (s *mockFullSession) SessionID() string { return "test-session" }
 
 func TestMCPHandler_Enabled(t *testing.T) {
-
 	// This test is harder because server.ClientSessionFromContext depends on internal mcp-go state.
 	// But we can at least verify it returns true when no session is present.
 	srv := server.NewMCPServer("test", "1.0.0")

@@ -1,4 +1,4 @@
-// internal/logger/mcp_handler.go
+// Package logger provides structured logging, context propagation, and RFC 5424 / MCP logging handlers.
 package logger
 
 import (
@@ -145,6 +145,7 @@ func (h *MCPHandler) WithGroup(name string) slog.Handler {
 // MultiHandler fans out each log record to multiple handlers.
 type MultiHandler []slog.Handler
 
+// Enabled reports whether any underlying handler handles records at the given level.
 func (m MultiHandler) Enabled(ctx context.Context, l slog.Level) bool {
 	for _, h := range m {
 		if h.Enabled(ctx, l) {
@@ -154,6 +155,7 @@ func (m MultiHandler) Enabled(ctx context.Context, l slog.Level) bool {
 	return false
 }
 
+// Handle fans out the record to all underlying handlers whose Enabled method returns true.
 func (m MultiHandler) Handle(ctx context.Context, r slog.Record) error {
 	for _, h := range m {
 		// Note: We MUST NOT check Enabled here again because slog already checked it
@@ -166,6 +168,7 @@ func (m MultiHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 
+// WithAttrs returns a new MultiHandler whose handlers have the given attributes.
 func (m MultiHandler) WithAttrs(a []slog.Attr) slog.Handler {
 	hs := make(MultiHandler, len(m))
 	for i, h := range m {
@@ -174,6 +177,7 @@ func (m MultiHandler) WithAttrs(a []slog.Attr) slog.Handler {
 	return hs
 }
 
+// WithGroup returns a new MultiHandler whose handlers have the given group name.
 func (m MultiHandler) WithGroup(n string) slog.Handler {
 	hs := make(MultiHandler, len(m))
 	for i, h := range m {

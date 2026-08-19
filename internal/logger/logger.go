@@ -1,4 +1,4 @@
-// internal/logger/logger.go
+// Package logger provides structured logging, context propagation, and RFC 5424 / MCP logging handlers.
 package logger
 
 import (
@@ -18,6 +18,7 @@ var (
 	bufferSize   = 1000
 )
 
+// Subscribe adds a new log channel subscriber to receive raw JSON log lines.
 func Subscribe() chan []byte {
 	listenersMu.Lock()
 	defer listenersMu.Unlock()
@@ -26,6 +27,7 @@ func Subscribe() chan []byte {
 	return ch
 }
 
+// Unsubscribe removes and closes a registered log channel subscriber.
 func Unsubscribe(ch chan []byte) {
 	listenersMu.Lock()
 	defer listenersMu.Unlock()
@@ -38,6 +40,7 @@ func Unsubscribe(ch chan []byte) {
 	}
 }
 
+// GetRecentLogs returns a snapshot copy of recently buffered log messages.
 func GetRecentLogs() [][]byte {
 	listenersMu.RLock()
 	defer listenersMu.RUnlock()
@@ -161,6 +164,7 @@ func Component(root *slog.Logger, name string) *slog.Logger {
 	return root.With(slog.String("component", name))
 }
 
+// NewRequestID generates a randomized request identifier string.
 func NewRequestID() string {
 	b := make([]byte, 4)
 	rand.Read(b)
@@ -181,6 +185,6 @@ type componentHandler struct {
 	level slog.Level
 }
 
-func (h *componentHandler) Enabled(ctx context.Context, level slog.Level) bool {
+func (h *componentHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.level
 }
