@@ -15,9 +15,9 @@ var docCmd = &cobra.Command{
 available commands, flags, and usage examples for bridgectl. 
 The files are saved to the docs/cli directory by default.`,
 	Example: `  bridgectl doc`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		dir := "docs/cli"
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0750); err != nil {
 			return fmt.Errorf("failed to create docs directory: %w", err)
 		}
 

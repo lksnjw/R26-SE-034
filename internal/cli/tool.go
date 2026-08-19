@@ -27,7 +27,7 @@ var toolApplyCmd = &cobra.Command{
 	Short: "Apply a tool schema to the registry (declarative)",
 	Example: `  bridgectl tool apply -f list_employees.yaml
   bridgectl tool apply -f schemas/hr/`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		filePath, _ := cmd.Flags().GetString("file")
 		if filePath == "" {
 			return fmt.Errorf("file path is required")
@@ -49,7 +49,8 @@ var toolApplyCmd = &cobra.Command{
 				return nil
 			}
 
-			data, err := os.ReadFile(path)
+			// #nosec G304 -- path is provided via CLI flag or directory traversal
+			data, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				return err
 			}
@@ -108,7 +109,7 @@ var toolGetCmd = &cobra.Command{
 	Short: "Display one or many tool resources",
 	Example: `  bridgectl tool get
   bridgectl tool get list_employees -o yaml`,
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	ValidArgsFunction: func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) != 0 {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
@@ -118,6 +119,7 @@ var toolGetCmd = &cobra.Command{
 		}
 		url := ctx.MCPServer + "/apis/erpbridge.io/v1/tools"
 
+		// #nosec G107 -- URL is dynamically constructed from configured server context
 		resp, err := http.Get(url)
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveError
@@ -144,6 +146,7 @@ var toolGetCmd = &cobra.Command{
 		}
 		url := ctx.MCPServer + "/apis/erpbridge.io/v1/tools"
 
+		// #nosec G107 -- URL is dynamically constructed from configured server context
 		resp, err := http.Get(url)
 		if err != nil {
 			return err
@@ -172,11 +175,11 @@ var toolGetCmd = &cobra.Command{
 			}
 
 			switch outputFormat {
-			case "yaml":
+			case string(output.FormatYAML):
 				y, _ := yaml.Marshal(target)
 				fmt.Println(string(y))
 				return nil
-			case "json":
+			case string(output.FormatJSON):
 				j, _ := json.MarshalIndent(target, "", "  ")
 				fmt.Println(string(j))
 				return nil
@@ -189,10 +192,12 @@ var toolGetCmd = &cobra.Command{
 	},
 }
 
+// ToolListResponse wraps a slice of MCP tools for table formatting.
 type ToolListResponse struct {
 	Tools []*mcp.Tool `json:"tools"`
 }
 
+// RenderTable implements the output.TableRenderer interface.
 func (r *ToolListResponse) RenderTable(w io.Writer) error {
 	tw := output.NewTabWriter(w)
 	_, _ = fmt.Fprintln(tw, "NAME\tMODULE\tVERSION\tSTATUS")
@@ -203,16 +208,17 @@ func (r *ToolListResponse) RenderTable(w io.Writer) error {
 		} else if status == "" {
 			status = "READY"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-			t.Metadata.Name, t.Metadata.Module, t.Metadata.Version, status)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", t.Metadata.Name, t.Metadata.Module, t.Metadata.Version, status)
 	}
 	return tw.Flush()
 }
 
 var toolDescribeCmd = &cobra.Command{
-	Use:   "describe [name]",
-	Short: "Show details of a specific tool resource",
-	Args:  cobra.ExactArgs(1),
+	Use:     "describe [name]",
+	Short:   "Describe a tool in human-readable detail",
+	Long:    `Fetch a tool definition from the server and render its parameters, execution method, endpoint, and description.`,
+	Example: `  bridgectl tool describe get_customer_balance`,
+	Args:    cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return toolGetCmd.ValidArgsFunction(cmd, args, toComplete)
 	},
@@ -225,6 +231,7 @@ var toolDescribeCmd = &cobra.Command{
 		name, version := mcp.ParseToolIdentifier(args[0])
 		url := fmt.Sprintf("%s/apis/erpbridge.io/v1/tools", ctx.MCPServer)
 
+		// #nosec G107 -- URL is dynamically constructed from configured server context
 		resp, err := http.Get(url)
 		if err != nil {
 			return err
@@ -276,9 +283,10 @@ var toolDescribeCmd = &cobra.Command{
 var toolValidateCmd = &cobra.Command{
 	Use:   "validate -f [file]",
 	Short: "Locally validate a tool schema",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		filePath, _ := cmd.Flags().GetString("file")
-		data, err := os.ReadFile(filePath)
+		// #nosec G304 -- filePath is supplied via CLI file flag
+		data, err := os.ReadFile(filepath.Clean(filePath))
 		if err != nil {
 			return err
 		}
@@ -305,7 +313,7 @@ var toolValidateCmd = &cobra.Command{
 var toolGenerateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Auto-generate an MCP tool schema from a registered API or OpenAPI spec",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		apiName, _ := cmd.Flags().GetString("api")
 		openapiURL, _ := cmd.Flags().GetString("openapi")
 

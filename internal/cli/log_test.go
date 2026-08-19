@@ -68,16 +68,16 @@ func TestShouldPrint(t *testing.T) {
 }
 
 func TestLogStatsCmd(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`[{"level":"INFO", "tool_name":"tool1"}]`))
 	}))
 	defer ts.Close()
 
 	cfg = &config.Config{
-		CurrentContext: "test",
+		CurrentContext: testContextName,
 		Contexts: map[string]config.Context{
-			"test": {Server: ts.URL},
+			testContextName: {Server: ts.URL},
 		},
 	}
 
@@ -100,7 +100,7 @@ func TestLogTailCmd(t *testing.T) {
 	logLevel = ""
 	logRequestID = ""
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data: {\"level\":\"INFO\"}\n\n"))

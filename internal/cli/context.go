@@ -24,7 +24,7 @@ var contextListCmd = &cobra.Command{
 	Short:   "List saved contexts",
 	Long:    `Display a table of all configured contexts from your ~/.bridgectl/config.yaml.`,
 	Example: `  bridgectl context list`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		var items []ContextItem
 		for name := range cfg.Contexts {
 			current := name == cfg.CurrentContext
@@ -71,7 +71,7 @@ var contextSetCmd = &cobra.Command{
 	Long:    `Update the active context in your configuration file. All subsequent commands will use this context unless overridden by the --context flag.`,
 	Example: `  bridgectl context set production`,
 	Args:    cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		name := args[0]
 		if _, ok := cfg.Contexts[name]; !ok {
 			return fmt.Errorf("context %s not found", name)
@@ -89,7 +89,7 @@ func saveConfig() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 func init() {

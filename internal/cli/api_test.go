@@ -12,15 +12,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	testAPIName      = "test-api"
+	testURL          = "http://test"
+	testActiveStatus = "active"
+)
+
 func TestAPIRegistrationResponse_RenderTable(t *testing.T) {
 	resp := &APIRegistrationResponse{
 		API: idp.API{
-			Name:   "test-api",
+			Name:   testAPIName,
 			ID:     "123",
 			Module: "finance",
-			Method: "GET",
-			URL:    "http://test",
-			Status: "active",
+			Method: http.MethodGet,
+			URL:    testURL,
+			Status: testActiveStatus,
 		},
 	}
 	var buf bytes.Buffer
@@ -29,7 +35,7 @@ func TestAPIRegistrationResponse_RenderTable(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := buf.String()
-	if !bytes.Contains([]byte(out), []byte("test-api")) {
+	if !bytes.Contains([]byte(out), []byte(testAPIName)) {
 		t.Errorf("expected output to contain 'test-api'")
 	}
 }
@@ -37,7 +43,7 @@ func TestAPIRegistrationResponse_RenderTable(t *testing.T) {
 func TestAPIListResponse_RenderTable(t *testing.T) {
 	resp := &APIListResponse{
 		Items: []idp.API{
-			{ID: "1", Name: "api1", Module: "hr", Method: "POST", Status: "active"},
+			{ID: "1", Name: "api1", Module: "hr", Method: http.MethodPost, Status: testActiveStatus},
 		},
 	}
 	var buf bytes.Buffer
@@ -54,9 +60,9 @@ func TestAPIListResponse_RenderTable(t *testing.T) {
 func TestAPITestResponse_RenderTable(t *testing.T) {
 	resp := &APITestResponse{
 		API: idp.API{
-			Name:       "test-api",
-			Method:     "GET",
-			URL:        "http://test",
+			Name:       testAPIName,
+			Method:     http.MethodGet,
+			URL:        testURL,
 			AuthType:   "api-key",
 			AuthHeader: "X-Api-Key",
 		},
@@ -70,7 +76,7 @@ func TestAPITestResponse_RenderTable(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := buf.String()
-	if !bytes.Contains([]byte(out), []byte("test-api")) {
+	if !bytes.Contains([]byte(out), []byte(testAPIName)) {
 		t.Errorf("expected output to contain 'test-api'")
 	}
 
@@ -97,7 +103,7 @@ func TestApiListCmd(t *testing.T) {
 func TestApiTestCmd(t *testing.T) {
 	setupTest()
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"success": true}`))
 	}))
@@ -107,7 +113,7 @@ func TestApiTestCmd(t *testing.T) {
 	require.NoError(t, err)
 	api := &idp.API{
 		Name:   "testapi",
-		Method: "GET",
+		Method: http.MethodGet,
 		URL:    ts.URL,
 	}
 	require.NoError(t, reg.Register(api))

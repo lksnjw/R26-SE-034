@@ -34,7 +34,7 @@ Once registered, you can generate an MCP tool schema from this API definition.`,
     --description "Fetch all invoices" \
     --auth-type api-key \
     --auth-key "secret-abc-123"`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		reg, err := idp.NewRegistry("", RootLog)
 		if err != nil {
 			return err
@@ -93,7 +93,7 @@ var apiListCmd = &cobra.Command{
 	Long:  `Display a table of all ERP API endpoints currently registered in the local registry.`,
 	Example: `  bridgectl api list
   bridgectl api list -o json`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		reg, err := idp.NewRegistry("", RootLog)
 		if err != nil {
 			return err

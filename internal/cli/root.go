@@ -44,7 +44,7 @@ health through real-time log streaming and cache analytics.
 
 The CLI interacts with the ERPBridge middleware via a REST API 
 and supports multiple output formats including Table, JSON, and YAML.`,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 		// Initialize Logger for CLI
 		if verbose {
 			_ = os.Setenv("LOG_LEVEL", "debug")

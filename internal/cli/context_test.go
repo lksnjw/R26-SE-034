@@ -35,7 +35,7 @@ func TestContextListCmd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("test")) {
+	if !bytes.Contains(buf.Bytes(), []byte(testContextName)) {
 		t.Errorf("expected output to contain 'test'")
 	}
 }
@@ -43,7 +43,7 @@ func TestContextListCmd(t *testing.T) {
 func TestContextSetCmd(t *testing.T) {
 	setupTest()
 
-	err := contextSetCmd.RunE(contextSetCmd, []string{"test"})
+	err := contextSetCmd.RunE(contextSetCmd, []string{testContextName})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

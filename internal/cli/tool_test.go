@@ -19,10 +19,10 @@ func TestToolListResponse_RenderTable(t *testing.T) {
 		Tools: []*mcp.Tool{
 			{
 				Metadata: mcp.Metadata{
-					Name:    "tool1",
+					Name:    testToolName,
 					Module:  "hr",
-					Version: "1.0",
-					Status:  "active",
+					Version: testToolVersion,
+					Status:  testStatusActive,
 				},
 			},
 		},
@@ -33,22 +33,22 @@ func TestToolListResponse_RenderTable(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := buf.String()
-	if !bytes.Contains([]byte(out), []byte("tool1")) {
+	if !bytes.Contains([]byte(out), []byte(testToolName)) {
 		t.Errorf("expected output to contain 'tool1'")
 	}
 }
 
 func TestToolGetCmd(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`[{"metadata":{"name":"tool1","version":"1.0"}}]`))
 	}))
 	defer ts.Close()
 
 	cfg = &config.Config{
-		CurrentContext: "test",
+		CurrentContext: testContextName,
 		Contexts: map[string]config.Context{
-			"test": {MCPServer: ts.URL},
+			testContextName: {MCPServer: ts.URL},
 		},
 	}
 	var buf bytes.Buffer
@@ -58,7 +58,7 @@ func TestToolGetCmd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("tool1")) {
+	if !bytes.Contains(buf.Bytes(), []byte(testToolName)) {
 		t.Errorf("expected output to contain tool1")
 	}
 }
@@ -68,28 +68,28 @@ func TestToolDeleteCmd_Errors(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "missing required arguments")
 
-	err = toolDeleteCmd.Args(toolDeleteCmd, []string{"tool1"})
+	err = toolDeleteCmd.Args(toolDeleteCmd, []string{testToolName})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "missing required arguments")
 }
 
 func TestToolDeleteCmd(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer ts.Close()
 
 	cfg = &config.Config{
-		CurrentContext: "test",
+		CurrentContext: testContextName,
 		Contexts: map[string]config.Context{
-			"test": {MCPServer: ts.URL},
+			testContextName: {MCPServer: ts.URL},
 		},
 	}
 
 	t.Run("SoftDelete", func(t *testing.T) {
 		toolDeleteCmd.SetContext(context.Background())
 		_ = toolDeleteCmd.Flags().Set("hard", "false")
-		err := toolDeleteCmd.RunE(toolDeleteCmd, []string{"tool1", "1.0"})
+		err := toolDeleteCmd.RunE(toolDeleteCmd, []string{testToolName, testToolVersion})
 		require.NoError(t, err)
 	})
 
@@ -97,14 +97,14 @@ func TestToolDeleteCmd(t *testing.T) {
 		toolDeleteCmd.SetContext(context.Background())
 		_ = toolDeleteCmd.Flags().Set("hard", "true")
 		_ = toolDeleteCmd.Flags().Set("yes", "true")
-		err := toolDeleteCmd.RunE(toolDeleteCmd, []string{"tool1", "1.0"})
+		err := toolDeleteCmd.RunE(toolDeleteCmd, []string{testToolName, testToolVersion})
 		require.NoError(t, err)
 	})
 }
 
 func TestToolValidateCmd(t *testing.T) {
 	content := `{"metadata":{"name":"t","version":"1"}}`
-	err := os.WriteFile("test_tool.json", []byte(content), 0644)
+	err := os.WriteFile("test_tool.json", []byte(content), 0600)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,4 @@
-// internal/cli/log.go
+// Package cli implements the command line interface commands for bridgectl.
 package cli
 
 import (
@@ -33,7 +33,7 @@ var logStatsCmd = &cobra.Command{
 	Long: `Fetch the most recent logs from the middleware and perform a basic 
 frequency analysis of log levels and tool invocations.`,
 	Example: `  bridgectl log stats`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx := cfg.ActiveContext()
 		if err := ValidateServerURL(ctx.Server, "BRIDGE", cfg.CurrentContext); err != nil {
 			return err
@@ -94,7 +94,7 @@ log level, or a specific request ID.`,
   bridgectl log tail --level error
   bridgectl log tail --tool finance.get-invoices
   bridgectl log tail --component mcp`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx := cfg.ActiveContext()
 		if err := ValidateServerURL(ctx.Server, "BRIDGE", cfg.CurrentContext); err != nil {
 			return err

@@ -1,4 +1,4 @@
-// internal/cli/cache.go
+// Package cli implements the command line interface commands for bridgectl.
 package cli
 
 import (
@@ -25,7 +25,7 @@ var cacheStatsCmd = &cobra.Command{
 	Long: `Display high-level statistics for the tool cache, 
 including total key counts and memory usage in Redis.`,
 	Example: `  bridgectl cache stats`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, ok := cfg.Contexts[cfg.CurrentContext]
 		if !ok {
 			return NewError(CodePrecondFail, "NO_CONTEXT",
