@@ -1,4 +1,4 @@
-// internal/cache/exact.go
+// Package cache provides exact-match Redis caching and cache invalidation.
 package cache
 
 import (

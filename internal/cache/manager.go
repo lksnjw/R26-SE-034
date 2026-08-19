@@ -1,4 +1,4 @@
-// internal/cache/manager.go
+// Package cache provides exact-match Redis caching and cache invalidation.
 package cache
 
 import (
@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// Config configures caching behavior, TTL, and cache invalidation rules for a tool.
 type Config struct {
 	Enabled    bool     `json:"enabled"`
 	TTLSeconds int      `json:"ttlSeconds"`
@@ -22,17 +23,20 @@ type Config struct {
 	FlushOn    []string `json:"flushOn"`
 }
 
+// Entry represents a cached response and metadata.
 type Entry struct {
 	Response json.RawMessage
 	CachedAt time.Time
 	HitType  string // "exact" | "miss"
 }
 
+// Manager coordinates Redis exact-match caching and invalidations.
 type Manager struct {
 	rdb *redis.Client
 	log *slog.Logger
 }
 
+// NewManager creates a new cache Manager backed by Redis.
 func NewManager(rdb *redis.Client, rootLog *slog.Logger) *Manager {
 	return &Manager{
 		rdb: rdb,
@@ -41,7 +45,7 @@ func NewManager(rdb *redis.Client, rootLog *slog.Logger) *Manager {
 }
 
 // EnsureIndex is a no-op since semantic caching is removed.
-func (m *Manager) EnsureIndex(ctx context.Context) error {
+func (m *Manager) EnsureIndex(_ context.Context) error {
 	return nil
 }
 
@@ -127,11 +131,13 @@ func roleScope(role string, isReadOnly bool) string {
 	return role
 }
 
+// Stats holds metrics on total cached exact keys and Redis memory usage.
 type Stats struct {
 	ExactKeys   int64  `json:"exactKeys"`
 	RedisMemory string `json:"redisMemory"`
 }
 
+// Stats returns current exact key count and used memory from Redis.
 func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 	exact, _ := m.rdb.Do(ctx, "DBSIZE").Int64()
 
