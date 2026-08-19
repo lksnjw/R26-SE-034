@@ -1,3 +1,4 @@
+// Package idp provides API registration and OpenAPI-to-MCP tool schema generation.
 package idp
 
 import (
@@ -16,11 +17,13 @@ import (
 	"github.com/nimendra/ERPBridge/internal/mcp"
 )
 
+// Generator transforms API definitions and OpenAPI specs into declarative MCP tools.
 type Generator struct {
 	SchemasDir string
 	log        *slog.Logger
 }
 
+// NewGenerator creates a new Generator instance with the given schema directory.
 func NewGenerator(schemasDir string, rootLog *slog.Logger) *Generator {
 	if schemasDir == "" {
 		schemasDir = "schemas"
@@ -31,6 +34,7 @@ func NewGenerator(schemasDir string, rootLog *slog.Logger) *Generator {
 	}
 }
 
+// Generate creates a basic MCP Tool from a registered API definition.
 func (g *Generator) Generate(api API) (*mcp.Tool, error) {
 	name := api.Name
 	// Simple intent-based naming heuristic if not already provided
@@ -60,8 +64,9 @@ func (g *Generator) Generate(api API) (*mcp.Tool, error) {
 				Endpoint: api.URL,
 			},
 			Security: mcp.Security{
-				AuthType:      api.AuthType,
-				CredentialRef: "ERP_PRIMARY_KEY", // Default ref
+				AuthType: api.AuthType,
+				// #nosec G101 -- CredentialRef specifies an env var name, not hardcoded credentials
+				CredentialRef: "ERP_PRIMARY_KEY",
 			},
 		},
 	}
@@ -78,7 +83,7 @@ func (g *Generator) Generate(api API) (*mcp.Tool, error) {
 	return tool, g.Save(tool)
 }
 
-// Task 2: OpenAPI Integration
+// GenerateFromOpenAPI parses an OpenAPI 3.0 specification from a URL or file path and generates MCP tools.
 func (g *Generator) GenerateFromOpenAPI(ctx context.Context, api API, openapiURL string) ([]*mcp.Tool, error) {
 	loader := openapi3.NewLoader()
 	var doc *openapi3.T
@@ -163,7 +168,7 @@ func (g *Generator) GenerateFromOpenAPI(ctx context.Context, api API, openapiURL
 						} else if strings.HasSuffix(safePath, "y") {
 							safePath = strings.TrimSuffix(safePath, "y") + "ies"
 						} else {
-							safePath = safePath + "s"
+							safePath += "s"
 						}
 					}
 				}
@@ -206,7 +211,8 @@ func (g *Generator) GenerateFromOpenAPI(ctx context.Context, api API, openapiURL
 						ResponsePath: "data",
 					},
 					Security: mcp.Security{
-						AuthType:      api.AuthType,
+						AuthType: api.AuthType,
+						// #nosec G101 -- CredentialRef specifies an env var name, not hardcoded credentials
 						CredentialRef: "ERP_PRIMARY_KEY",
 					},
 				},
@@ -277,9 +283,10 @@ func (g *Generator) GenerateFromOpenAPI(ctx context.Context, api API, openapiURL
 	return tools, nil
 }
 
+// Save writes the MCP tool definition to disk as formatted JSON.
 func (g *Generator) Save(tool *mcp.Tool) error {
 	dir := filepath.Join(g.SchemasDir, tool.Metadata.Module)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return err
 	}
 
@@ -288,5 +295,5 @@ func (g *Generator) Save(tool *mcp.Tool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }

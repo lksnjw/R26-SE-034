@@ -36,19 +36,20 @@ func TestNewRegistry(t *testing.T) {
 		tmpDir := t.TempDir()
 		tmpPath := filepath.Join(tmpDir, "existing.json")
 
+		const testAPIName = "test-api"
 		initialData := Registry{
 			APIs: map[string]API{
-				"test-api": {ID: "1", Name: "test-api"},
+				testAPIName: {ID: "1", Name: testAPIName},
 			},
 		}
 		data, _ := json.Marshal(initialData)
-		err := os.WriteFile(tmpPath, data, 0644)
+		err := os.WriteFile(tmpPath, data, 0600)
 		require.NoError(t, err)
 
 		reg, err := NewRegistry(tmpPath, log)
 		require.NoError(t, err)
 		assert.Len(t, reg.APIs, 1)
-		assert.Equal(t, "1", reg.APIs["test-api"].ID)
+		assert.Equal(t, "1", reg.APIs[testAPIName].ID)
 	})
 }
 
@@ -68,7 +69,7 @@ func TestRegistry_Load(t *testing.T) {
 	})
 
 	t.Run("invalid json", func(t *testing.T) {
-		err := os.WriteFile(tmpPath, []byte("{invalid-json"), 0644)
+		err := os.WriteFile(tmpPath, []byte("{invalid-json"), 0600)
 		require.NoError(t, err)
 
 		err = reg.load()
@@ -93,7 +94,8 @@ func TestRegistry_Save(t *testing.T) {
 		err := reg.save()
 		assert.NoError(t, err)
 
-		data, err := os.ReadFile(tmpPath)
+		// #nosec G304 -- test file path is within temporary test directory
+		data, err := os.ReadFile(filepath.Clean(tmpPath))
 		assert.NoError(t, err)
 		assert.Contains(t, string(data), "api1")
 	})

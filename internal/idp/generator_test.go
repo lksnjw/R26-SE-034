@@ -42,7 +42,7 @@ paths:
                   foo: {type: string}
 `
 	specPath := filepath.Join(tempDir, "spec.yaml")
-	err = os.WriteFile(specPath, []byte(spec), 0644)
+	err = os.WriteFile(specPath, []byte(spec), 0600)
 	assert.NoError(t, err)
 
 	api := API{
