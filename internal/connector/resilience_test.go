@@ -17,7 +17,7 @@ func TestClient_Call_Retry(t *testing.T) {
 	client := NewClient(log)
 
 	var attempts int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		count := atomic.AddInt32(&attempts, 1)
 		if count < 3 {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -29,7 +29,7 @@ func TestClient_Call_Retry(t *testing.T) {
 	defer server.Close()
 
 	ep := EndpointConfig{
-		Method:  "GET",
+		Method:  http.MethodGet,
 		Path:    "",
 		BaseURL: server.URL,
 	}
@@ -53,13 +53,13 @@ func TestClient_Call_CircuitBreaker(t *testing.T) {
 		},
 	})
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 
 	ep := EndpointConfig{
-		Method:  "GET",
+		Method:  http.MethodGet,
 		Path:    "",
 		BaseURL: server.URL,
 	}

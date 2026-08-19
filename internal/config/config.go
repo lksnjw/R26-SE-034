@@ -1,3 +1,4 @@
+// Package config provides configuration parsing, context definitions, and environment variable overrides.
 package config
 
 import (
@@ -8,6 +9,10 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+// DefaultContextName is the default context identifier.
+const DefaultContextName = "local"
+
+// AuthConfig defines the authentication parameters for communicating with an ERP or bridge server.
 type AuthConfig struct {
 	Type     string `yaml:"type"` // api-key | basic | bearer
 	Header   string `yaml:"header"`
@@ -16,6 +21,7 @@ type AuthConfig struct {
 	Username string `yaml:"username"`
 }
 
+// Context defines connection and authentication settings for a specific target environment.
 type Context struct {
 	Server    string     `yaml:"server"`
 	MCPServer string     `yaml:"mcp-server"`
@@ -23,6 +29,7 @@ type Context struct {
 	Auth      AuthConfig `yaml:"auth"`
 }
 
+// Config represents the complete CLI configuration containing multiple contexts.
 type Config struct {
 	CurrentContext string             `yaml:"current-context"`
 	Contexts       map[string]Context `yaml:"contexts"`
@@ -39,7 +46,8 @@ func Load() (*Config, error) {
 }
 
 func loadFile() (*Config, error) {
-	path := configPath()
+	path := filepath.Clean(configPath())
+	// #nosec G304 -- config path is resolved within user's home directory
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -91,6 +99,7 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Contexts[cfg.CurrentContext] = ctx
 }
 
+// ActiveContext returns the currently active context from the configuration.
 func (c *Config) ActiveContext() Context {
 	ctx, ok := c.Contexts[c.CurrentContext]
 	if !ok {
@@ -106,8 +115,8 @@ func configPath() string {
 
 func defaultConfig() *Config {
 	return &Config{
-		CurrentContext: "local",
-		Contexts:       map[string]Context{"local": defaultContext()},
+		CurrentContext: DefaultContextName,
+		Contexts:       map[string]Context{DefaultContextName: defaultContext()},
 	}
 }
 

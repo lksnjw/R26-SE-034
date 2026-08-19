@@ -26,8 +26,8 @@ func TestLoad_Defaults(t *testing.T) {
 		t.Fatalf("Load() failed: %v", err)
 	}
 
-	if cfg.CurrentContext != "local" {
-		t.Errorf("expected current context 'local', got '%s'", cfg.CurrentContext)
+	if cfg.CurrentContext != DefaultContextName {
+		t.Errorf("expected current context '%s', got '%s'", DefaultContextName, cfg.CurrentContext)
 	}
 
 	ctx := cfg.ActiveContext()

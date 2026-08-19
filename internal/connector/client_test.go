@@ -19,7 +19,7 @@ func TestClient_Call_APIKey(t *testing.T) {
 
 	client := NewClient(slog.Default())
 	ep := EndpointConfig{
-		Method:  "GET",
+		Method:  http.MethodGet,
 		Path:    "/test",
 		BaseURL: ts.URL,
 		Auth: AuthConfig{
