@@ -27,7 +27,7 @@ type NonTableData struct {
 }
 
 func TestFormatter_Print(t *testing.T) {
-	data := &MockData{Name: "Test"}
+	data := &MockData{Name: testName}
 
 	t.Run("JSON", func(t *testing.T) {
 		buf := &bytes.Buffer{}
@@ -35,10 +35,7 @@ func TestFormatter_Print(t *testing.T) {
 		if err := f.Print(data); err != nil {
 			t.Fatal(err)
 		}
-		expected := `{
-  "name": "Test"
-}
-`
+		expected := "{\n  \"name\": \"" + testName + "\"\n}\n"
 		if buf.String() != expected {
 			t.Errorf("expected %q, got %q", expected, buf.String())
 		}
@@ -50,7 +47,7 @@ func TestFormatter_Print(t *testing.T) {
 		if err := f.Print(data); err != nil {
 			t.Fatal(err)
 		}
-		expected := "name: Test\n"
+		expected := "name: " + testName + "\n"
 		if buf.String() != expected {
 			t.Errorf("expected %q, got %q", expected, buf.String())
 		}
@@ -62,7 +59,7 @@ func TestFormatter_Print(t *testing.T) {
 		if err := f.Print(data); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(buf.String(), "NAME") || !strings.Contains(buf.String(), "Test") {
+		if !strings.Contains(buf.String(), "NAME") || !strings.Contains(buf.String(), testName) {
 			t.Errorf("unexpected table output: %q", buf.String())
 		}
 	})
@@ -83,14 +80,14 @@ func TestFormatter_Print(t *testing.T) {
 
 func TestRawResponse(t *testing.T) {
 	t.Run("RenderTable Success", func(t *testing.T) {
-		jsonData := `{"name": "Test"}`
+		jsonData := testNameJSON
 		target := &MockData{}
 		rr := NewRawResponse(strings.NewReader(jsonData), target)
 		buf := &bytes.Buffer{}
 		if err := rr.RenderTable(buf); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(buf.String(), "NAME") || !strings.Contains(buf.String(), "Test") {
+		if !strings.Contains(buf.String(), "NAME") || !strings.Contains(buf.String(), testName) {
 			t.Errorf("unexpected table output: %q", buf.String())
 		}
 	})
@@ -109,7 +106,7 @@ func TestRawResponse(t *testing.T) {
 	})
 
 	t.Run("RenderTable Decode Error", func(t *testing.T) {
-		invalidJSON := `{invalid}`
+		invalidJSON := testInvalidJSON
 		target := &MockData{}
 		rr := NewRawResponse(strings.NewReader(invalidJSON), target)
 		buf := &bytes.Buffer{}
@@ -119,7 +116,7 @@ func TestRawResponse(t *testing.T) {
 	})
 
 	t.Run("MarshalJSON Success", func(t *testing.T) {
-		jsonData := `{"name": "Test"}`
+		jsonData := testNameJSON
 		target := &MockData{}
 		rr := NewRawResponse(strings.NewReader(jsonData), target)
 		b, err := rr.MarshalJSON()
@@ -130,13 +127,13 @@ func TestRawResponse(t *testing.T) {
 		if err := json.Unmarshal(b, &decoded); err != nil {
 			t.Fatal(err)
 		}
-		if decoded.Name != "Test" {
-			t.Errorf("expected Test, got %s", decoded.Name)
+		if decoded.Name != testName {
+			t.Errorf("expected %s, got %s", testName, decoded.Name)
 		}
 	})
 
 	t.Run("MarshalJSON Decode Error", func(t *testing.T) {
-		invalidJSON := `{invalid}`
+		invalidJSON := testInvalidJSON
 		target := &MockData{}
 		rr := NewRawResponse(strings.NewReader(invalidJSON), target)
 		if _, err := rr.MarshalJSON(); err == nil {
@@ -145,7 +142,7 @@ func TestRawResponse(t *testing.T) {
 	})
 
 	t.Run("MarshalYAML Success", func(t *testing.T) {
-		jsonData := `{"name": "Test"}`
+		jsonData := testNameJSON
 		target := &MockData{}
 		rr := NewRawResponse(strings.NewReader(jsonData), target)
 		y, err := rr.MarshalYAML()
@@ -156,13 +153,13 @@ func TestRawResponse(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected *MockData, got %T", y)
 		}
-		if data.Name != "Test" {
-			t.Errorf("expected Test, got %s", data.Name)
+		if data.Name != testName {
+			t.Errorf("expected %s, got %s", testName, data.Name)
 		}
 	})
 
 	t.Run("MarshalYAML Decode Error", func(t *testing.T) {
-		invalidJSON := `{invalid}`
+		invalidJSON := testInvalidJSON
 		target := &MockData{}
 		rr := NewRawResponse(strings.NewReader(invalidJSON), target)
 		if _, err := rr.MarshalYAML(); err == nil {
@@ -171,11 +168,17 @@ func TestRawResponse(t *testing.T) {
 	})
 }
 
+const (
+	testNameJSON    = `{"name": "Test"}`
+	testInvalidJSON = `{invalid}`
+	testName        = "Test"
+)
+
 type ErrorWriter struct {
 	Called bool
 }
 
-func (e *ErrorWriter) Write(p []byte) (n int, err error) {
+func (e *ErrorWriter) Write(_ []byte) (n int, err error) {
 	e.Called = true
 	return 0, errors.New("write error")
 }

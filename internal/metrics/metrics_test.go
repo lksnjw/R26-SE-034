@@ -28,12 +28,12 @@ func TestMetricsRegistration(t *testing.T) {
 	}
 }
 
-func TestMetricsUsage(t *testing.T) {
+func TestMetricsUsage(_ *testing.T) {
 	// Test that we can use the metrics without panic
-	ERPRequestsTotal.With(prometheus.Labels{"method": "GET", "path": "/test", "status": "200"}).Inc()
-	ERPLatency.With(prometheus.Labels{"method": "GET", "path": "/test"}).Observe(0.1)
-	ToolInvocationsTotal.With(prometheus.Labels{"tool": "test-tool", "cache_status": "hit"}).Inc()
-	ToolLatency.With(prometheus.Labels{"tool": "test-tool"}).Observe(0.5)
+	ERPRequestsTotal.With(prometheus.Labels{labelMethod: "GET", labelPath: "/test", labelStatus: "200"}).Inc()
+	ERPLatency.With(prometheus.Labels{labelMethod: "GET", labelPath: "/test"}).Observe(0.1)
+	ToolInvocationsTotal.With(prometheus.Labels{labelTool: "test-tool", labelCacheStatus: "hit"}).Inc()
+	ToolLatency.With(prometheus.Labels{labelTool: "test-tool"}).Observe(0.5)
 	CacheHitsTotal.With(prometheus.Labels{"type": "exact"}).Inc()
 	CacheMissesTotal.Inc()
 }

@@ -1,3 +1,4 @@
+// Package banner provides ASCII logo and version banner printing for ERPBridge.
 package banner
 
 import (
@@ -5,6 +6,7 @@ import (
 	"io"
 )
 
+// Logo contains the ASCII art logo for ERPBridge.
 const Logo = `
  _____ ____  ____  ____       _     _            
 | ____|  _ \|  _ \| __ ) _ __(_)___| | __ _  ___ 
