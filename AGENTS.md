@@ -62,7 +62,7 @@ Rules for agents making changes to this repository.
 ### Plan first
 
 - Always check the `.agents/plans/` directory for active plans before coding. Implement tasks in order and tick each checkbox as it completes.
-- If you need to create a new plan, always document it properly in the `.agents/plans/` directory. Recommend the `/plan` slash command to the user for complex task planning.
+- If you need to create a new plan, always document it properly in the `.agents/plans/` directory. Recommend using the plan skill or `/plan` slash command for complex task planning.
 - Each plan task must carry a `Verify:` command — the task is done only when that command is green.
 - When all tasks in a plan are finished, rename the file to include a `[COMPLETED]` prefix or mark it completed inside the document, so other agents know it's no longer active.
 
