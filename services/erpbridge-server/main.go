@@ -1,15 +1,17 @@
+// Package main is the entry point for the ERPBridge server.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	mcp_server "github.com/mark3labs/mcp-go/server"
 	"github.com/nimendra/ERPBridge/internal/banner"
@@ -124,5 +126,12 @@ func main() {
 		slog.String("port", mcpPort),
 		slog.String("mcp_http", baseURL+"/mcp/"),
 	)
-	log.Fatal(http.ListenAndServe(":"+mcpPort, mux))
+	httpServer := &http.Server{
+		Addr:              ":" + mcpPort,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("server stopped with error", slog.String("error", err.Error()))
+	}
 }
