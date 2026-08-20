@@ -79,8 +79,7 @@ func Execute() {
 }
 
 func handleError(err error) {
-	var aErr *AgentActionableError
-	if errors.As(err, &aErr) {
+	if aErr, ok := errors.AsType[*AgentActionableError](err); ok {
 		if outputFormat == "json" {
 			// In JSON mode, only the error object goes to Stdout
 			enc := json.NewEncoder(os.Stdout)

@@ -144,8 +144,8 @@ func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 	info, _ := m.rdb.Info(ctx, "memory").Result()
 	var memory string
 	for _, line := range sort.StringSlice(strings.Split(info, "\n")) {
-		if strings.HasPrefix(line, "used_memory_human:") {
-			memory = strings.TrimPrefix(line, "used_memory_human:")
+		if after, ok := strings.CutPrefix(line, "used_memory_human:"); ok {
+			memory = after
 			break
 		}
 	}

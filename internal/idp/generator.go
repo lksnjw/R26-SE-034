@@ -38,8 +38,8 @@ func NewGenerator(schemasDir string, rootLog *slog.Logger) *Generator {
 func (g *Generator) Generate(api API) (*mcp.Tool, error) {
 	name := api.Name
 	// Simple intent-based naming heuristic if not already provided
-	if strings.HasPrefix(strings.ToLower(name), "get-") {
-		name = "get_" + strings.TrimPrefix(strings.ToLower(name), "get-")
+	if after, ok := strings.CutPrefix(strings.ToLower(name), "get-"); ok {
+		name = "get_" + after
 	}
 
 	tool := &mcp.Tool{
@@ -165,8 +165,8 @@ func (g *Generator) GenerateFromOpenAPI(ctx context.Context, api API, openapiURL
 						}
 						if p, ok := entities[safePath]; ok {
 							safePath = p
-						} else if strings.HasSuffix(safePath, "y") {
-							safePath = strings.TrimSuffix(safePath, "y") + "ies"
+						} else if before, ok0 := strings.CutSuffix(safePath, "y"); ok0 {
+							safePath = before + "ies"
 						} else {
 							safePath += "s"
 						}

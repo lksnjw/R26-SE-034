@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -115,10 +116,7 @@ func (s *Server) RegisterBuiltinTools() {
 	)
 
 	progressHandler := mcp.NewStructuredToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, input ProgressTestInput) (*mcp.CallToolResult, error) {
-		steps := input.Steps
-		if steps > 100 {
-			steps = 100
-		}
+		steps := min(input.Steps, 100)
 
 		for i := 1; i <= steps; i++ {
 			select {
@@ -133,8 +131,8 @@ func (s *Server) RegisterBuiltinTools() {
 	})
 
 	// Apply global middlewares
-	for i := len(s.toolMiddlewares) - 1; i >= 0; i-- {
-		progressHandler = s.toolMiddlewares[i](progressHandler)
+	for _, v := range slices.Backward(s.toolMiddlewares) {
+		progressHandler = v(progressHandler)
 	}
 
 	s.mcpServer.AddTool(progressTool, progressHandler)
@@ -165,8 +163,8 @@ func (s *Server) RegisterBuiltinTools() {
 	})
 
 	// Apply global middlewares
-	for i := len(s.toolMiddlewares) - 1; i >= 0; i-- {
-		sensitiveLogHandler = s.toolMiddlewares[i](sensitiveLogHandler)
+	for _, v := range slices.Backward(s.toolMiddlewares) {
+		sensitiveLogHandler = v(sensitiveLogHandler)
 	}
 
 	s.mcpServer.AddTool(sensitiveLogTool, sensitiveLogHandler)
@@ -416,8 +414,8 @@ func (s *Server) RegisterTool(t *Tool) {
 	handler = s.CacheMiddleware(t)(handler)
 
 	// Apply global middlewares
-	for i := len(s.toolMiddlewares) - 1; i >= 0; i-- {
-		handler = s.toolMiddlewares[i](handler)
+	for _, v := range slices.Backward(s.toolMiddlewares) {
+		handler = v(handler)
 	}
 
 	s.mcpServer.AddTool(mcpTool, handler)
@@ -499,8 +497,8 @@ func (s *Server) ServeHTTP(mux *http.ServeMux, _ string) {
 		var finalBody bytes.Buffer
 
 		for _, line := range lines {
-			if bytes.HasPrefix(line, []byte("data: ")) {
-				jsonData := bytes.TrimPrefix(line, []byte("data: "))
+			if after, ok := bytes.CutPrefix(line, []byte("data: ")); ok {
+				jsonData := after
 
 				// Try to parse the JSON to see if it's a tools/list result
 				var jsonResp struct {
@@ -710,10 +708,13 @@ func (s *Server) handleDirectInvoke(w http.ResponseWriter, r *http.Request) {
 
 	// Base handler for direct invoke
 	handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args, _ := request.Params.Arguments.(map[string]any)
+		args, ok := request.Params.Arguments.(map[string]any)
+		if !ok && request.Params.Arguments != nil {
+			return nil, fmt.Errorf("invalid arguments format")
+		}
 		result, err := t.Execute(ctx, args, s.connector)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, err
 		}
 		resultJSON, _ := json.Marshal(result.Result)
 		return mcp.NewToolResultText(string(resultJSON)), nil
@@ -723,8 +724,8 @@ func (s *Server) handleDirectInvoke(w http.ResponseWriter, r *http.Request) {
 	handler = s.CacheMiddleware(t)(handler)
 
 	// Apply global middlewares
-	for i := len(s.toolMiddlewares) - 1; i >= 0; i-- {
-		handler = s.toolMiddlewares[i](handler)
+	for _, v := range slices.Backward(s.toolMiddlewares) {
+		handler = v(handler)
 	}
 
 	// Execute through the middleware chain

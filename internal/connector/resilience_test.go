@@ -16,9 +16,9 @@ func TestClient_Call_Retry(t *testing.T) {
 	log := logger.Init()
 	client := NewClient(log)
 
-	var attempts int32
+	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		count := atomic.AddInt32(&attempts, 1)
+		count := attempts.Add(1)
 		if count < 3 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -37,7 +37,7 @@ func TestClient_Call_Retry(t *testing.T) {
 	resp, err := client.Call(context.Background(), ep, nil, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, int32(3), atomic.LoadInt32(&attempts))
+	assert.Equal(t, int32(3), attempts.Load())
 }
 
 func TestClient_Call_CircuitBreaker(t *testing.T) {

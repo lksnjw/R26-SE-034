@@ -127,8 +127,8 @@ log level, or a specific request ID.`,
 				return err
 			}
 
-			if strings.HasPrefix(line, "data: ") {
-				msg := strings.TrimPrefix(line, "data: ")
+			if after, ok := strings.CutPrefix(line, "data: "); ok {
+				msg := after
 				msg = strings.TrimSpace(msg)
 
 				// For simplicity, we'll just print it.

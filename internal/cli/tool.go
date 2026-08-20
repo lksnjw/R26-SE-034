@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/goccy/go-yaml"
@@ -263,11 +264,8 @@ var toolDescribeCmd = &cobra.Command{
 		_, _ = fmt.Fprintf(out, "\nInput Parameters:\n")
 		for propName, prop := range target.Spec.InputSchema.Properties {
 			required := ""
-			for _, r := range target.Spec.InputSchema.Required {
-				if r == propName {
-					required = "*"
-					break
-				}
+			if slices.Contains(target.Spec.InputSchema.Required, propName) {
+				required = "*"
 			}
 			_, _ = fmt.Fprintf(out, "  %-12s [%s]%s %s\n", propName, prop.Type, required, prop.Description)
 		}
