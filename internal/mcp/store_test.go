@@ -19,8 +19,8 @@ func TestStore(t *testing.T) {
 
 	tool1 := &Tool{
 		Metadata: Metadata{
-			Name:     "tool1",
-			Version:  "1.0.0",
+			Name:     testTool1,
+			Version:  testVersion100,
 			Module:   "mod1",
 			IsActive: true,
 		},
@@ -28,8 +28,8 @@ func TestStore(t *testing.T) {
 
 	tool2 := &Tool{
 		Metadata: Metadata{
-			Name:     "tool1",
-			Version:  "1.1.0",
+			Name:     testTool1,
+			Version:  testVersion110,
 			Module:   "mod1",
 			IsActive: true,
 		},
@@ -49,13 +49,13 @@ func TestStore(t *testing.T) {
 	})
 
 	t.Run("Get", func(t *testing.T) {
-		res, err := store.Get("tool1", "1.0.0")
+		res, err := store.Get(testTool1, testVersion100)
 		require.NoError(t, err)
-		assert.Equal(t, "tool1", res.Metadata.Name)
+		assert.Equal(t, testTool1, res.Metadata.Name)
 		assert.Equal(t, "mod1-updated", res.Metadata.Module)
 
 		// Not found
-		_, err = store.Get("tool1", "9.9.9")
+		_, err = store.Get(testTool1, "9.9.9")
 		assert.Error(t, err)
 	})
 
@@ -64,8 +64,8 @@ func TestStore(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, tools, 2)
 		// Should be ordered by name, version DESC
-		assert.Equal(t, "1.1.0", tools[0].Metadata.Version)
-		assert.Equal(t, "1.0.0", tools[1].Metadata.Version)
+		assert.Equal(t, testVersion110, tools[0].Metadata.Version)
+		assert.Equal(t, testVersion100, tools[1].Metadata.Version)
 	})
 
 	t.Run("GetStateHash", func(t *testing.T) {
@@ -75,14 +75,14 @@ func TestStore(t *testing.T) {
 	})
 
 	t.Run("Delete", func(t *testing.T) {
-		err := store.Delete("tool1", "1.0.0")
+		err := store.Delete(testTool1, testVersion100)
 		require.NoError(t, err)
 
 		tools, err := store.List()
 		require.NoError(t, err)
 		assert.Len(t, tools, 2) // Remains in DB (soft-delete)
 
-		res, err := store.Get("tool1", "1.0.0")
+		res, err := store.Get(testTool1, testVersion100)
 		require.NoError(t, err)
 		assert.False(t, res.Metadata.IsActive)
 
@@ -92,16 +92,15 @@ func TestStore(t *testing.T) {
 	})
 
 	t.Run("HardDelete", func(t *testing.T) {
-		err := store.HardDelete("tool1", "1.0.0")
+		err := store.HardDelete(testTool1, testVersion100)
 		require.NoError(t, err)
 
 		tools, err := store.List()
 		require.NoError(t, err)
 		assert.Len(t, tools, 1) // Physically removed
 
-		_, err = store.Get("tool1", "1.0.0")
+		_, err = store.Get(testTool1, testVersion100)
 		assert.Error(t, err) // Not found
-
 		hash, err := store.GetStateHash()
 		require.NoError(t, err)
 		assert.Contains(t, hash, "1-") // Count is now 1
@@ -114,7 +113,7 @@ func TestStore_NewStore_Errors(t *testing.T) {
 
 	// Create a read-only directory to force an error on MkdirAll
 	readOnlyDir := filepath.Join(tempDir, "readonly")
-	err := os.MkdirAll(readOnlyDir, 0555)
+	err := os.MkdirAll(readOnlyDir, 0500)
 	require.NoError(t, err)
 
 	dbPath := filepath.Join(readOnlyDir, "subdir", "test.db")

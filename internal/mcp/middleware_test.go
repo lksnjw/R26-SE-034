@@ -11,13 +11,13 @@ import (
 func TestRateLimitMiddleware(t *testing.T) {
 	// 2 req/s, burst 1
 	m := NewRateLimitMiddleware(2, 1)
-	handler := m.Handle()(func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	handler := m.Handle()(func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText("ok"), nil
 	})
 
 	ctx := context.Background()
 	req := mcp.CallToolRequest{}
-	req.Params.Name = "test"
+	req.Params.Name = testString
 
 	// First request - allowed
 	res, err := handler(ctx, req)

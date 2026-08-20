@@ -20,8 +20,8 @@ func TestServer_RegisterTool(t *testing.T) {
 
 	tool := &Tool{
 		Metadata: Metadata{
-			Name:    "test-tool",
-			Version: "1.0.0",
+			Name:    testToolName,
+			Version: testVersion100,
 		},
 		Spec: ToolSpec{
 			Description: Description{Short: "A test tool"},
@@ -36,15 +36,15 @@ func TestServer_RegisterTool(t *testing.T) {
 
 	s.RegisterTool(tool)
 
-	registered, err := s.registry.Resolve("test-tool", "")
+	registered, err := s.registry.Resolve(testToolName, "")
 	assert.NoError(t, err)
 	assert.NotNil(t, registered)
-	assert.Equal(t, "test-tool", registered.Metadata.Name)
+	assert.Equal(t, testToolName, registered.Metadata.Name)
 }
 
 func TestTool_Execute(t *testing.T) {
 	mockConn := &MockConnector{
-		CallFunc: func(ctx context.Context, ep connector.EndpointConfig, queryParams url.Values, body io.Reader) (*http.Response, error) {
+		CallFunc: func(_ context.Context, _ connector.EndpointConfig, _ url.Values, _ io.Reader) (*http.Response, error) {
 			respBody := `{"status": "success"}`
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -54,11 +54,11 @@ func TestTool_Execute(t *testing.T) {
 	}
 
 	tool := &Tool{
-		Metadata: Metadata{Name: "test-tool"},
+		Metadata: Metadata{Name: testToolName},
 		Spec: ToolSpec{
 			Execution: Execution{
-				Method:   "GET",
-				Endpoint: "/test",
+				Method:   http.MethodGet,
+				Endpoint: testEndpoint,
 			},
 		},
 	}
@@ -77,7 +77,7 @@ func TestTool_Execute(t *testing.T) {
 
 func TestTool_Execute_Error(t *testing.T) {
 	mockConn := &MockConnector{
-		CallFunc: func(ctx context.Context, ep connector.EndpointConfig, queryParams url.Values, body io.Reader) (*http.Response, error) {
+		CallFunc: func(_ context.Context, _ connector.EndpointConfig, _ url.Values, _ io.Reader) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusInternalServerError,
 				Body:       io.NopCloser(bytes.NewBufferString(`{"error": "internal server error"}`)),
@@ -86,11 +86,11 @@ func TestTool_Execute_Error(t *testing.T) {
 	}
 
 	tool := &Tool{
-		Metadata: Metadata{Name: "test-tool"},
+		Metadata: Metadata{Name: testToolName},
 		Spec: ToolSpec{
 			Execution: Execution{
-				Method:   "POST",
-				Endpoint: "/test",
+				Method:   http.MethodPost,
+				Endpoint: testEndpoint,
 			},
 		},
 	}

@@ -38,6 +38,8 @@ type Server struct {
 	toolMiddlewares []server.ToolHandlerMiddleware
 }
 
+const statusKey = "status"
+
 // RateLimitConfig defines the configuration for the tool rate limiter.
 type RateLimitConfig struct {
 	RequestsPerSecond float64
@@ -112,7 +114,7 @@ func (s *Server) RegisterBuiltinTools() {
 		}),
 	)
 
-	progressHandler := mcp.NewStructuredToolHandler(func(ctx context.Context, request mcp.CallToolRequest, input ProgressTestInput) (*mcp.CallToolResult, error) {
+	progressHandler := mcp.NewStructuredToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, input ProgressTestInput) (*mcp.CallToolResult, error) {
 		steps := input.Steps
 		if steps > 100 {
 			steps = 100
@@ -152,7 +154,7 @@ func (s *Server) RegisterBuiltinTools() {
 		}),
 	)
 
-	sensitiveLogHandler := mcp.NewStructuredToolHandler(func(ctx context.Context, request mcp.CallToolRequest, input SensitiveLogTestInput) (*mcp.CallToolResult, error) {
+	sensitiveLogHandler := mcp.NewStructuredToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, input SensitiveLogTestInput) (*mcp.CallToolResult, error) {
 		// Log using the composite logger which includes MCPHandler
 		s.log.InfoContext(ctx, "Sensitive data received",
 			slog.String("token", input.Token),
@@ -174,7 +176,7 @@ func (s *Server) RegisterBuiltinTools() {
 type ResourceCompletionProvider struct{}
 
 // CompleteResourceArgument provides suggestions for resource URIs.
-func (p *ResourceCompletionProvider) CompleteResourceArgument(ctx context.Context, uri string, argument mcp.CompleteArgument, context mcp.CompleteContext) (*mcp.Completion, error) {
+func (p *ResourceCompletionProvider) CompleteResourceArgument(_ context.Context, _ string, _ mcp.CompleteArgument, _ mcp.CompleteContext) (*mcp.Completion, error) {
 	return &mcp.Completion{
 		Values: []string{"recent-item-1", "recent-item-2"},
 	}, nil
@@ -184,7 +186,7 @@ func (p *ResourceCompletionProvider) CompleteResourceArgument(ctx context.Contex
 type PromptCompletionProvider struct{}
 
 // CompletePromptArgument provides suggestions for prompt arguments.
-func (p *PromptCompletionProvider) CompletePromptArgument(ctx context.Context, name string, argument mcp.CompleteArgument, context mcp.CompleteContext) (*mcp.Completion, error) {
+func (p *PromptCompletionProvider) CompletePromptArgument(_ context.Context, _ string, _ mcp.CompleteArgument, _ mcp.CompleteContext) (*mcp.Completion, error) {
 	return &mcp.Completion{
 		Values: []string{"suggested-value-A", "suggested-value-B"},
 	}, nil
@@ -248,7 +250,7 @@ func (s *Server) handleMCPResourceRead(ctx context.Context, request mcp.ReadReso
 	}, nil
 }
 
-func (s *Server) handleMCPPromptGet(ctx context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+func (s *Server) handleMCPPromptGet(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 	s.mu.RLock()
 	p, ok := s.prompts[request.Params.Name]
 	s.mu.RUnlock()
@@ -296,7 +298,7 @@ func (s *Server) StartController(ctx context.Context) {
 }
 
 // Reconcile ensures the MCP runtime matches the desired state in the SQLite store.
-func (s *Server) Reconcile(ctx context.Context) {
+func (s *Server) Reconcile(_ context.Context) {
 	if s.store == nil {
 		return
 	}
@@ -459,7 +461,7 @@ func (s *Server) MCPServer() *server.MCPServer {
 }
 
 // ServeHTTP handles the various MCP transports and management endpoints.
-func (s *Server) ServeHTTP(mux *http.ServeMux, baseURL string) {
+func (s *Server) ServeHTTP(mux *http.ServeMux, _ string) {
 	// 1. Streamable HTTP Transport (Modern clients, Postman)
 	// MUST strip prefix so the server sees "/" internally
 	streamableServer := server.NewStreamableHTTPServer(s.mcpServer,
@@ -551,7 +553,7 @@ func (s *Server) ServeHTTP(mux *http.ServeMux, baseURL string) {
 	mux.Handle("/mcp/", http.StripPrefix("/mcp", filteredStreamable))
 
 	// 3. Management & Utility Endpoints
-	mux.HandleFunc("/mcp/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/mcp/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
@@ -611,13 +613,13 @@ func (s *Server) handleToolApply(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":  "applied",
+		statusKey: "applied",
 		"name":    t.Metadata.Name,
 		"version": t.Metadata.Version,
 	})
 }
 
-func (s *Server) handleToolList(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleToolList(w http.ResponseWriter, _ *http.Request) {
 	tools, err := s.store.List()
 	if err != nil {
 		http.Error(w, "failed to list tools: "+err.Error(), http.StatusInternalServerError)
@@ -765,13 +767,14 @@ func (s *Server) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 	var count int
 	var err error
 
-	if all {
+	switch {
+	case all:
 		count, err = s.cache.FlushModule(r.Context(), "") // Empty matches all exact
-	} else if tool != "" {
+	case tool != "":
 		count, err = s.cache.FlushTool(r.Context(), tool)
-	} else if module != "" {
+	case module != "":
 		count, err = s.cache.FlushModule(r.Context(), module)
-	} else {
+	default:
 		http.Error(w, "missing tool, module or all parameter", http.StatusBadRequest)
 		return
 	}
@@ -784,7 +787,7 @@ func (s *Server) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"deleted": count,
-		"status":  "ok",
+		statusKey: "ok",
 	})
 }
 
@@ -804,16 +807,16 @@ func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"apiVersion": "v1",
 		"kind":       "CacheStats",
-		"status":     "active",
+		statusKey:    "active",
 		"stats":      stats,
 	})
 }
 
-func (s *Server) handleCacheList(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCacheList(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-func (s *Server) handleCacheInspect(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCacheInspect(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -841,7 +844,7 @@ func (s *Server) handleLogStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleLogRecent(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLogRecent(w http.ResponseWriter, _ *http.Request) {
 	logs := logger.GetRecentLogs()
 	w.Header().Set("Content-Type", "application/json")
 

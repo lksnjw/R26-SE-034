@@ -14,8 +14,8 @@ import (
 
 func TestResource_Execute(t *testing.T) {
 	mockConn := &MockConnector{
-		CallFunc: func(ctx context.Context, ep connector.EndpointConfig, queryParams url.Values, body io.Reader) (*http.Response, error) {
-			assert.Equal(t, "GET", ep.Method)
+		CallFunc: func(_ context.Context, ep connector.EndpointConfig, _ url.Values, _ io.Reader) (*http.Response, error) {
+			assert.Equal(t, http.MethodGet, ep.Method)
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(bytes.NewBufferString(`{"stock": 100}`)),
@@ -29,7 +29,7 @@ func TestResource_Execute(t *testing.T) {
 		URITemplate: "erp://inventory/stock",
 		MimeType:    "application/json",
 		Execution: Execution{
-			Method:   "GET",
+			Method:   http.MethodGet,
 			Endpoint: "/inventory/stock",
 		},
 	}

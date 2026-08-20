@@ -22,13 +22,13 @@ func TestToolRegistry_Add(t *testing.T) {
 
 	// Valid add
 	err := registry.Add(&Tool{
-		Metadata: Metadata{Name: "tool1", Version: "1.0.0", IsActive: true},
+		Metadata: Metadata{Name: testTool1, Version: testVersion100, IsActive: true},
 	})
 	assert.NoError(t, err)
 
 	// Invalid version
 	err = registry.Add(&Tool{
-		Metadata: Metadata{Name: "tool2", Version: "invalid"},
+		Metadata: Metadata{Name: testTool2, Version: "invalid"},
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid semver version")
@@ -38,11 +38,11 @@ func TestToolRegistry_Resolve(t *testing.T) {
 	registry := NewToolRegistry()
 
 	tools := []*Tool{
-		{Metadata: Metadata{Name: "tool1", Version: "1.0.0", IsActive: true}},
-		{Metadata: Metadata{Name: "tool1", Version: "1.1.0", IsActive: true}},
-		{Metadata: Metadata{Name: "tool1", Version: "2.0.0-beta.1", IsActive: true}}, // prerelease
-		{Metadata: Metadata{Name: "tool2", Version: "1.0.0-rc.1", IsActive: true}},   // only prerelease
-		{Metadata: Metadata{Name: "tool2", Version: "1.0.0-rc.2", IsActive: true}},   // higher prerelease
+		{Metadata: Metadata{Name: testTool1, Version: testVersion100, IsActive: true}},
+		{Metadata: Metadata{Name: testTool1, Version: testVersion110, IsActive: true}},
+		{Metadata: Metadata{Name: testTool1, Version: "2.0.0-beta.1", IsActive: true}}, // prerelease
+		{Metadata: Metadata{Name: testTool2, Version: "1.0.0-rc.1", IsActive: true}},   // only prerelease
+		{Metadata: Metadata{Name: testTool2, Version: "1.0.0-rc.2", IsActive: true}},   // higher prerelease
 	}
 
 	for _, tool := range tools {
@@ -50,13 +50,13 @@ func TestToolRegistry_Resolve(t *testing.T) {
 	}
 
 	t.Run("Exact version", func(t *testing.T) {
-		tool, err := registry.Resolve("tool1", "1.0.0")
+		tool, err := registry.Resolve(testTool1, testVersion100)
 		require.NoError(t, err)
-		assert.Equal(t, "1.0.0", tool.Metadata.Version)
+		assert.Equal(t, testVersion100, tool.Metadata.Version)
 	})
 
 	t.Run("Semver constraint", func(t *testing.T) {
-		tool, err := registry.Resolve("tool1", "^1.0.0")
+		tool, err := registry.Resolve(testTool1, "^1.0.0")
 		require.NoError(t, err)
 		assert.Equal(t, "1.1.0", tool.Metadata.Version)
 	})
@@ -92,8 +92,8 @@ func TestToolRegistry_Resolve(t *testing.T) {
 func TestToolRegistry_ListStable(t *testing.T) {
 	registry := NewToolRegistry()
 
-	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: "b_tool", Version: "1.0.0", IsActive: true}}))
-	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: "b_tool", Version: "1.1.0", IsActive: true}}))
+	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: "b_tool", Version: testVersion100, IsActive: true}}))
+	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: "b_tool", Version: testVersion110, IsActive: true}}))
 	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: "a_tool", Version: "2.0.0", IsActive: true}}))
 
 	stable := registry.ListStable()
@@ -101,14 +101,14 @@ func TestToolRegistry_ListStable(t *testing.T) {
 	assert.Equal(t, "a_tool", stable[0].Metadata.Name)
 	assert.Equal(t, "2.0.0", stable[0].Metadata.Version)
 	assert.Equal(t, "b_tool", stable[1].Metadata.Name)
-	assert.Equal(t, "1.1.0", stable[1].Metadata.Version)
+	assert.Equal(t, testVersion110, stable[1].Metadata.Version)
 }
 
 func TestToolRegistry_ListAll(t *testing.T) {
 	registry := NewToolRegistry()
 
-	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: "tool1", Version: "1.0.0", IsActive: true}}))
-	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: "tool1", Version: "1.1.0", IsActive: true}}))
+	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: testTool1, Version: testVersion100, IsActive: true}}))
+	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: testTool1, Version: testVersion110, IsActive: true}}))
 
 	all := registry.ListAll()
 	assert.Len(t, all, 2)
@@ -117,20 +117,21 @@ func TestToolRegistry_ListAll(t *testing.T) {
 func TestToolRegistry_Remove(t *testing.T) {
 	registry := NewToolRegistry()
 
-	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: "tool1", Version: "1.0.0", IsActive: true}}))
-	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: "tool1", Version: "1.1.0", IsActive: true}}))
+	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: testTool1, Version: testVersion100, IsActive: true}}))
+	require.NoError(t, registry.Add(&Tool{Metadata: Metadata{Name: testTool1, Version: testVersion110, IsActive: true}}))
 
-	registry.Remove("tool1", "1.0.0")
+	// Remove one version
+	registry.Remove(testTool1, testVersion100)
 
-	// Try resolving 1.0.0
-	_, err := registry.Resolve("tool1", "1.0.0")
+	_, err := registry.Resolve(testTool1, testVersion100)
 	assert.Error(t, err)
 
-	// Try removing the last version
-	registry.Remove("tool1", "1.1.0")
+	_, err = registry.Resolve(testTool1, testVersion110)
+	assert.NoError(t, err)
 
-	// The whole tool1 should be gone
-	_, err = registry.Resolve("tool1", "")
+	// Remove remaining version
+	registry.Remove(testTool1, testVersion110)
+	_, err = registry.Resolve(testTool1, "")
 	assert.Error(t, err)
 
 	// Safe to remove non-existent

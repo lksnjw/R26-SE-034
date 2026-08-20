@@ -49,7 +49,7 @@ func TestCustomNotifier(t *testing.T) {
 		assert.Equal(t, "high", n.Params.AdditionalFields["severity"])
 	})
 
-	t.Run("BroadcastSystemMessage", func(t *testing.T) {
+	t.Run("BroadcastSystemMessage", func(_ *testing.T) {
 		// Mock session isn't added to the server's client map in a simple way.
 		// Sending broadcast uses SendNotificationToAllClients, but since no clients are registered normally,
 		// we just call it to ensure it doesn't panic.

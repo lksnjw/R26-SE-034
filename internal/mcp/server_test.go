@@ -19,28 +19,45 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	testVersion100  = "1.0.0"
+	testVersion110  = "1.1.0"
+	testTool1       = "tool1"
+	testTool2       = "tool2"
+	testToolName    = "test-tool"
+	testToolJSON    = `{"metadata":{"name":"test-tool","version":"1.0.0"},"spec":{"description":{"short":"test"}}}`
+	testDescShort   = "Test"
+	testStatusOk    = "ok"
+	testStatusField = "status"
+	testEndpoint    = "/test"
+	testURITemplate = "erp://test"
+	testPromptName  = "test-prompt"
+	testFieldName   = "name"
+	testString      = "test"
+)
+
 func TestServer_RegisterResource(t *testing.T) {
 	log := logger.Init()
 	s := NewServer(nil, nil, log, RateLimitConfig{RequestsPerSecond: 100, Burst: 100}, ":memory:")
 
 	r := &Resource{
 		Name:        "test-resource",
-		Description: "Test",
-		URITemplate: "erp://test",
+		Description: testDescShort,
+		URITemplate: testURITemplate,
 		MimeType:    "text/plain",
 	}
 
 	s.RegisterResource(r)
 
-	assert.NotNil(t, s.resources["erp://test"])
-	assert.Equal(t, "test-resource", s.resources["erp://test"].Name)
+	assert.NotNil(t, s.resources[testURITemplate])
+	assert.Equal(t, "test-resource", s.resources[testURITemplate].Name)
 }
 
 func TestServer_HandleResourceRead(t *testing.T) {
 	log := logger.Init()
 
 	mockConn := &MockConnector{
-		CallFunc: func(ctx context.Context, ep connector.EndpointConfig, queryParams url.Values, body io.Reader) (*http.Response, error) {
+		CallFunc: func(_ context.Context, _ connector.EndpointConfig, _ url.Values, _ io.Reader) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: 200,
 				Body:       io.NopCloser(bytes.NewBufferString("resource content")),
@@ -51,14 +68,14 @@ func TestServer_HandleResourceRead(t *testing.T) {
 
 	r := &Resource{
 		Name:        "test-resource",
-		URITemplate: "erp://test",
+		URITemplate: testURITemplate,
 		MimeType:    "text/plain",
-		Execution:   Execution{Endpoint: "/test"},
+		Execution:   Execution{Endpoint: testEndpoint},
 	}
 	s.RegisterResource(r)
 
 	req := mcp.ReadResourceRequest{}
-	req.Params.URI = "erp://test"
+	req.Params.URI = testURITemplate
 
 	res, err := s.handleMCPResourceRead(context.Background(), req)
 	assert.NoError(t, err)
@@ -78,7 +95,7 @@ func TestServer_RegisterPrompt(t *testing.T) {
 	s := NewServer(nil, nil, log, RateLimitConfig{RequestsPerSecond: 100, Burst: 100}, ":memory:")
 
 	p := &Prompt{
-		Name:        "test-prompt",
+		Name:        testPromptName,
 		Description: "Test prompt",
 		Template:    "Do something",
 		Arguments: []PromptArgument{
@@ -88,8 +105,8 @@ func TestServer_RegisterPrompt(t *testing.T) {
 
 	s.RegisterPrompt(p)
 
-	assert.NotNil(t, s.prompts["test-prompt"])
-	assert.Equal(t, "test-prompt", s.prompts["test-prompt"].Name)
+	assert.NotNil(t, s.prompts[testPromptName])
+	assert.Equal(t, testPromptName, s.prompts[testPromptName].Name)
 }
 
 func TestServer_HandlePromptGet(t *testing.T) {
@@ -97,14 +114,14 @@ func TestServer_HandlePromptGet(t *testing.T) {
 	s := NewServer(nil, nil, log, RateLimitConfig{RequestsPerSecond: 100, Burst: 100}, ":memory:")
 
 	p := &Prompt{
-		Name:     "test-prompt",
+		Name:     testPromptName,
 		Template: "Hello {{name}}",
 	}
 	s.RegisterPrompt(p)
 
 	req := mcp.GetPromptRequest{}
-	req.Params.Name = "test-prompt"
-	req.Params.Arguments = map[string]string{"name": "world"}
+	req.Params.Name = testPromptName
+	req.Params.Arguments = map[string]string{testFieldName: "world"}
 
 	res, err := s.handleMCPPromptGet(context.Background(), req)
 	assert.NoError(t, err)
@@ -140,23 +157,23 @@ func TestServer_RegisterToolMarshaling(t *testing.T) {
 	schema := InputSchema{
 		Type: "object",
 		Properties: map[string]Property{
-			"test": {Type: "string"},
+			testString: {Type: "string"},
 		},
 	}
 
 	s.RegisterTool(&Tool{
 		Metadata: Metadata{
-			Name:    "test-tool",
-			Version: "1.0.0",
+			Name:    testToolName,
+			Version: testVersion100,
 		},
 		Spec: ToolSpec{
-			Description: Description{Short: "Test"},
+			Description: Description{Short: testDescShort},
 			InputSchema: schema,
 		},
 	})
 
 	// Access the registered tool from the registry
-	tool, err := s.registry.Resolve("test-tool", "")
+	tool, err := s.registry.Resolve(testToolName, "")
 	assert.NoError(t, err)
 	assert.NotNil(t, tool)
 
@@ -265,22 +282,22 @@ func TestServer_DirectInvoke(t *testing.T) {
 	s.RegisterTool(&Tool{
 		Metadata: Metadata{
 			Name:    "test-invoke",
-			Version: "1.0.0",
+			Version: testVersion100,
 		},
-		Handler: func(ctx context.Context, args map[string]any) (*ToolResult, error) {
+		Handler: func(_ context.Context, _ map[string]any) (*ToolResult, error) {
 			return &ToolResult{Result: map[string]any{"ok": true}}, nil
 		},
 	})
 
 	// GET not allowed
-	req := httptest.NewRequest("GET", "/api/tools/invoke", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/tools/invoke", nil)
 	w := httptest.NewRecorder()
 	s.handleDirectInvoke(w, req)
 	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 
 	// Valid POST
 	body := `{"name":"test-invoke","arguments":{}}`
-	req = httptest.NewRequest("POST", "/api/tools/invoke", bytes.NewBufferString(body))
+	req = httptest.NewRequest(http.MethodPost, "/api/tools/invoke", bytes.NewBufferString(body))
 	w = httptest.NewRecorder()
 	s.handleDirectInvoke(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)

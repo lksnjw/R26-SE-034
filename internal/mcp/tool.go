@@ -156,18 +156,16 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any, conn ERPConnect
 	queryParams := url.Values{}
 	var body io.Reader
 
-	if t.Spec.Execution.Method == "GET" {
+	if t.Spec.Execution.Method == http.MethodGet {
 		for k, v := range erpArgs {
 			queryParams.Set(k, fmt.Sprintf("%v", v))
 		}
-	} else {
-		if len(erpArgs) > 0 {
-			data, err := json.Marshal(erpArgs)
-			if err != nil {
-				return nil, fmt.Errorf("marshal arguments: %w", err)
-			}
-			body = strings.NewReader(string(data))
+	} else if len(erpArgs) > 0 {
+		data, err := json.Marshal(erpArgs)
+		if err != nil {
+			return nil, fmt.Errorf("marshal arguments: %w", err)
 		}
+		body = strings.NewReader(string(data))
 	}
 
 	envBaseURL := os.Getenv("ERP_BASE_URL")

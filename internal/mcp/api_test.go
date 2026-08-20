@@ -19,7 +19,7 @@ func TestServer_ToolAPI(t *testing.T) {
 	s := NewServer(nil, nil, log, RateLimitConfig{RequestsPerSecond: 100, Burst: 100}, ":memory:")
 
 	t.Run("Apply Valid Tool", func(t *testing.T) {
-		toolJSON := `{"metadata":{"name":"test-tool","version":"1.0.0"},"spec":{"description":{"short":"test"}}}`
+		toolJSON := testToolJSON
 		req := httptest.NewRequest(http.MethodPost, "/apis/erpbridge.io/v1/tools", bytes.NewBufferString(toolJSON))
 		w := httptest.NewRecorder()
 		s.handleToolAPI(w, req)
@@ -110,8 +110,8 @@ func TestServer_Reconcile_And_Deregister(t *testing.T) {
 
 	// Add a tool to the store
 	tool := &Tool{
-		Metadata: Metadata{Name: "recon-tool", Version: "1.0.0", IsActive: true},
-		Spec:     ToolSpec{Description: Description{Short: "Test"}},
+		Metadata: Metadata{Name: "recon-tool", Version: testVersion100, IsActive: true},
+		Spec:     ToolSpec{Description: Description{Short: testDescShort}},
 	}
 	err := s.store.Save(tool)
 	assert.NoError(t, err)
@@ -120,7 +120,7 @@ func TestServer_Reconcile_And_Deregister(t *testing.T) {
 	s.Reconcile(context.Background())
 
 	// Ensure tool is registered
-	regTool, err := s.registry.Resolve("recon-tool", "1.0.0")
+	regTool, err := s.registry.Resolve("recon-tool", testVersion100)
 	assert.NoError(t, err)
 	assert.NotNil(t, regTool)
 
@@ -128,7 +128,7 @@ func TestServer_Reconcile_And_Deregister(t *testing.T) {
 	s.Reconcile(context.Background())
 
 	// Now delete from store and Reconcile, should deregister
-	err = s.store.Delete("recon-tool", "1.0.0")
+	err = s.store.Delete("recon-tool", testVersion100)
 	assert.NoError(t, err)
 
 	// Force hash change by waiting a bit
@@ -137,14 +137,14 @@ func TestServer_Reconcile_And_Deregister(t *testing.T) {
 	s.Reconcile(context.Background())
 
 	// Ensure tool is deregistered
-	_, err = s.registry.Resolve("recon-tool", "1.0.0")
+	_, err = s.registry.Resolve("recon-tool", testVersion100)
 	assert.Error(t, err)
 
 	// Call Deregister explicitly
-	s.DeregisterTool("nonexistent", "1.0.0")
+	s.DeregisterTool("nonexistent", testVersion100)
 }
 
-func TestServer_StartController(t *testing.T) {
+func TestServer_StartController(_ *testing.T) {
 	log := logger.Init()
 	s := NewServer(nil, nil, log, RateLimitConfig{RequestsPerSecond: 100, Burst: 100}, ":memory:")
 
@@ -165,10 +165,10 @@ func TestServer_HandleMCPToolCall(t *testing.T) {
 
 	// Register a tool directly via registry to simulate
 	tool := &Tool{
-		Metadata: Metadata{Name: "mcp-tool", Version: "1.0.0"},
-		Spec:     ToolSpec{Description: Description{Short: "Test"}},
-		Handler: func(ctx context.Context, args map[string]any) (*ToolResult, error) {
-			return &ToolResult{Result: map[string]any{"status": "ok"}}, nil
+		Metadata: Metadata{Name: "mcp-tool", Version: testVersion100},
+		Spec:     ToolSpec{Description: Description{Short: testDescShort}},
+		Handler: func(_ context.Context, _ map[string]any) (*ToolResult, error) {
+			return &ToolResult{Result: map[string]any{testStatusField: testStatusOk}}, nil
 		},
 	}
 	s.RegisterTool(tool)
@@ -206,9 +206,9 @@ func TestServer_HandleMCPToolCall_ExecuteError(t *testing.T) {
 	s := NewServer(nil, nil, log, RateLimitConfig{RequestsPerSecond: 100, Burst: 100}, ":memory:")
 
 	tool := &Tool{
-		Metadata: Metadata{Name: "err-tool", Version: "1.0.0"},
-		Spec:     ToolSpec{Description: Description{Short: "Test"}},
-		Handler: func(ctx context.Context, args map[string]any) (*ToolResult, error) {
+		Metadata: Metadata{Name: "err-tool", Version: testVersion100},
+		Spec:     ToolSpec{Description: Description{Short: testDescShort}},
+		Handler: func(_ context.Context, _ map[string]any) (*ToolResult, error) {
 			return nil, fmt.Errorf("execute error")
 		},
 	}
@@ -233,7 +233,7 @@ func TestServer_ToolAPINoStore(t *testing.T) {
 	s.store = nil // forcibly set nil to test nil store conditions
 
 	t.Run("Apply Tool - No Store", func(t *testing.T) {
-		toolJSON := `{"metadata":{"name":"test-tool","version":"1.0.0"},"spec":{"description":{"short":"test"}}}`
+		toolJSON := testToolJSON
 		req := httptest.NewRequest(http.MethodPost, "/apis/erpbridge.io/v1/tools", bytes.NewBufferString(toolJSON))
 		w := httptest.NewRecorder()
 		s.handleToolAPI(w, req)
@@ -241,7 +241,7 @@ func TestServer_ToolAPINoStore(t *testing.T) {
 		assert.Contains(t, w.Body.String(), `store not available`)
 	})
 
-	t.Run("Reconcile - No Store", func(t *testing.T) {
+	t.Run("Reconcile - No Store", func(_ *testing.T) {
 		// Should not panic
 		s.Reconcile(context.Background())
 	})
@@ -255,7 +255,7 @@ func TestServer_StoreErrors(t *testing.T) {
 	_ = s.store.Close()
 
 	t.Run("Apply Tool - DB Error", func(t *testing.T) {
-		toolJSON := `{"metadata":{"name":"test-tool","version":"1.0.0"},"spec":{"description":{"short":"test"}}}`
+		toolJSON := testToolJSON
 		req := httptest.NewRequest(http.MethodPost, "/apis/erpbridge.io/v1/tools", bytes.NewBufferString(toolJSON))
 		w := httptest.NewRecorder()
 		s.handleToolAPI(w, req)
@@ -276,7 +276,7 @@ func TestServer_StoreErrors(t *testing.T) {
 		assert.Equal(t, http.StatusInternalServerError, w.Code)
 	})
 
-	t.Run("Reconcile - DB Error", func(t *testing.T) {
+	t.Run("Reconcile - DB Error", func(_ *testing.T) {
 		// Should return early due to GetStateHash error
 		s.Reconcile(context.Background())
 	})

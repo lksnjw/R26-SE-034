@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	// Register pure Go SQLite driver
 	_ "modernc.org/sqlite"
 )
 
@@ -19,7 +20,7 @@ type Store struct {
 func NewStore(dbPath string) (*Store, error) {
 	// Ensure directory exists
 	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return nil, fmt.Errorf("create directory: %w", err)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 
@@ -27,13 +28,13 @@ type Resource struct {
 }
 
 // Execute fetches the resource content from the underlying ERP system.
-func (r *Resource) Execute(ctx context.Context, uri string, conn ERPConnector) (string, error) {
+func (r *Resource) Execute(ctx context.Context, _ string, conn ERPConnector) (string, error) {
 	if r.Execution.Endpoint == "" {
 		return "", fmt.Errorf("resource %s has no endpoint configuration", r.Name)
 	}
 
 	ep := connector.EndpointConfig{
-		Method:  "GET",
+		Method:  http.MethodGet,
 		Path:    r.Execution.Endpoint,
 		BaseURL: "",
 		Auth: connector.AuthConfig{
