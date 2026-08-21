@@ -12,7 +12,14 @@ This transport is the MCP streamable HTTP specification. It suits stateless or w
 - **Features:**
     - Request and response via standard POST.
     - Session management via the `Mcp-Session-Id` header.
-    - Full CORS support for browser and desktop clients.
+    - Browser CORS support for the `/mcp/` endpoint. Preflight requests may
+      include `Content-Type`, `Mcp-Session-Id`, and `MCP-Protocol-Version`;
+      responses expose `Mcp-Session-Id` so browser clients can maintain the
+      stateful session.
+
+The CORS policy applies to the MCP endpoint only. The management, direct
+invoke, cache, logs, metrics, and health endpoints are not part of the
+cross-origin browser contract.
 
 ### Postman Configuration
 

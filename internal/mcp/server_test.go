@@ -204,6 +204,25 @@ func TestServer_ServeHTTP(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"status":"ok"`)
 }
 
+func TestServer_MCPBrowserCORS(t *testing.T) {
+	log := logger.Init()
+	s := NewServer(nil, nil, log, RateLimitConfig{RequestsPerSecond: 100, Burst: 100}, ":memory:")
+	mux := http.NewServeMux()
+	s.ServeHTTP(mux, "http://localhost:8080")
+
+	req := httptest.NewRequest(http.MethodOptions, "/mcp/", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type, Mcp-Session-Id, MCP-Protocol-Version")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	assert.Less(t, w.Code, http.StatusMultipleChoices)
+	assert.Contains(t, w.Header().Get("Access-Control-Allow-Headers"), "MCP-Protocol-Version")
+	assert.Contains(t, w.Header().Get("Access-Control-Allow-Headers"), "Mcp-Session-Id")
+	assert.Contains(t, w.Header().Get("Access-Control-Expose-Headers"), "Mcp-Session-Id")
+}
+
 func TestServer_LogStream(t *testing.T) {
 	log := logger.Init()
 	s := NewServer(nil, nil, log, RateLimitConfig{RequestsPerSecond: 100, Burst: 100}, ":memory:")

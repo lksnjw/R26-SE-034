@@ -469,7 +469,7 @@ func (s *Server) ServeHTTP(mux *http.ServeMux, _ string) {
 		server.WithStreamableHTTPCORS(
 			server.WithCORSAllowedOrigins("*"),
 			server.WithCORSAllowedMethods("POST", "GET", "OPTIONS"),
-			server.WithCORSAllowedHeaders("Content-Type", "Mcp-Session-Id", "Last-Event-ID", "Authorization"),
+			server.WithCORSAllowedHeaders("Content-Type", "Mcp-Session-Id", "Last-Event-ID", "Authorization", "MCP-Protocol-Version"),
 			server.WithCORSExposedHeaders("Mcp-Session-Id"),
 		),
 	)
