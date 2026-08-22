@@ -148,7 +148,7 @@ func main() {
 		stdioServer := mcp_server.NewStdioServer(server.MCPServer())
 		filteredWriter := mcp.NewToolListFilterWriter(os.Stdout, server.FilterToolsList)
 		if err := stdioServer.Listen(context.Background(), os.Stdin, filteredWriter); err != nil {
-			slog.Error("stdio server failed", slog.String("error", err.Error()))
+			slog.Error("stdio server failed")
 		}
 		return
 	}
@@ -166,14 +166,11 @@ func main() {
 	}
 	listener, err := net.Listen("tcp", httpServer.Addr)
 	if err != nil {
-		slog.Error("server stopped with error", slog.String("error", err.Error()))
+		slog.Error("server stopped with error")
 		return
 	}
-	slog.Info("ERPBridge Server listening",
-		slog.String("port", mcpPort),
-		slog.String("mcp_http", baseURL+"/mcp/"),
-	)
+	slog.Info("ERPBridge Server listening")
 	if err := serveHTTP(ctx, httpServer, listener); err != nil {
-		slog.Error("server stopped with error", slog.String("error", err.Error()))
+		slog.Error("server stopped with error")
 	}
 }
