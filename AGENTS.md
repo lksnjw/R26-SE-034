@@ -30,8 +30,9 @@ _See [`docs/connectivity.md`](./docs/connectivity.md) for full session and auth 
 - **Protocol Adherence**: Strictly follow the MCP specification.
 
 ### 1. Planning (Mandatory)
-- **Check**: Read `.agents/plans/` for active plans before modifying code.
-- **Create**: If no plan covers your task, use the `plan` skill or `/plan` slash command to create one in `.agents/plans/`. 
+- **Check**: Read `.agents/plans/README.md`, then inspect `active/`, `upcoming/`, and `stalled/` before modifying code. Ignore `completed/` unless historical context is required.
+- **Create**: If no plan covers your task, use the `plan` skill or `/plan` slash command to create one in `.agents/plans/upcoming/`.
+- **Promote**: Move an approved plan to `.agents/plans/active/` before execution.
 - **Execute**: Complete tasks sequentially. A task is done only when its `Verify:` command is green.
 - **Close**: Prefix completed plan filenames with `[COMPLETED]` so other agents ignore them.
 
