@@ -12,6 +12,7 @@ Welcome to the ERPBridge documentation. This wiki-style guide helps you understa
 - **[AI Agent Integration](../AGENTS.md)**: Specific patterns for connecting Claude, Cursor, and other agents.
 - **[Environment Variables Reference](./environment-variables.md)**: All server and CLI environment variables.
 - **[REST API Reference](./api.md)**: Direct HTTP endpoints of the server.
+- **[API Token Guide](./tokens.md)**: Configure bearer authentication and manage scoped tokens.
 
 ## 🛠 Developer Resources
 
@@ -19,6 +20,7 @@ Welcome to the ERPBridge documentation. This wiki-style guide helps you understa
 - **[CLI API Management](./cli/bridgectl_api.md)**: How to register and test ERP endpoints.
 - **[CLI Tool Management](./cli/bridgectl_tool.md)**: Managing the live tool registry using `apply`, `get`, and `validate`.
 - **[CLI Cache Management](./cli/bridgectl_cache.md)**: Monitoring and flushing the exact match cache.
+- **[Public Documentation Site](https://blog.nimendra.xyz/erpbridge-docs/)**: Published Server, Bridgectl, and SDK guides.
 
 ## 🔌 Integration Guides
 
@@ -30,7 +32,7 @@ Welcome to the ERPBridge documentation. This wiki-style guide helps you understa
 ## 🛡 System Features
 
 - **Resilience**: Circuit breakers and retry logic (see [Architecture](./architecture.md#security-design)).
-- **[Exact Match Caching](./caching.md)**: High-speed Redis-based storage for ERP responses.
+- **[Exact Match Caching](./caching.md)**: Backend-independent caching for ERP responses.
 - **Secure Logging**: Real-time log streaming with automatic PII/Secret redaction and RFC 5424 level control.
 - **Rate Limiting**: Per-session request throttling for infrastructure protection.
 - **Declarative Management**: Versioned tool registry with background reconciliation (no restarts needed).

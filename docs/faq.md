@@ -8,7 +8,10 @@ Set the environment variables listed in the [Environment Variables Reference](./
 
 ### How do I configure the CLI?
 
-The CLI reads `~/.bridgectl/config.yaml`. The file holds named contexts. Each context has a `server`, `mcp-server`, and `erp-base` URL.
+The CLI reads `~/.bridgectl/config.yaml`. The file holds named contexts. Each context has `server`, `mcp-server`, `erp-base`, and an optional `api-token` value.
+
+For HTTP authentication, the CLI uses the `--token` flag first, then
+`BRIDGE_API_TOKEN`, and then the active context's `api-token`.
 
 To switch contexts:
 
@@ -107,7 +110,9 @@ See the [Mock ERP README](../mock-erp/README.md) for details.
 2. Rebuild the binaries: `make build`
 3. Restart the containers: `docker compose up -d --build`
 
-The SQLite registry keeps its data. The server runs a startup migration. Errors are logged but do not stop the server.
+The SQLite registry keeps its data when the migration succeeds. If the server
+cannot initialize the registry, inspect the startup error and correct the
+database path or permissions before you restart the server.
 
 ### Where do I find release notes?
 
@@ -127,7 +132,7 @@ Common causes:
 
 - The ERP service is unreachable. Make sure `ERP_BASE_URL` uses `http://mock-erp:8081` inside Docker.
 - The tool endpoint path contains a secret pattern and was rejected.
-- The MCP role of the session has no cache scope.
+- The selected Redis or in-memory cache backend is unavailable. Inspect the server logs and run `bridgectl cache stats`.
 
 ### Where do I get help?
 

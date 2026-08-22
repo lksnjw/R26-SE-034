@@ -1,6 +1,6 @@
 # Exact Match Caching
 
-ERPBridge has a caching layer that reduces latency and load on legacy ERP systems. It serves repetitive queries from Redis when configured, or from a bounded in-memory LRU when Redis is not configured.
+ERPBridge has a caching layer that reduces latency and load on legacy ERP systems. It uses Redis when configured, or a bounded in-memory LRU when Redis is not configured.
 
 ## 🚀 Overview
 
@@ -43,8 +43,8 @@ Caching is opt-in. It is configured per tool in the `spec.cache` section of the 
 | Field | Description |
 | :--- | :--- |
 | `enabled` | Enables or disables the cache middleware for this tool. |
-| `ttlSeconds` | How long the entry stays in Redis. |
-| `isReadOnly` | If `true`, the cache is shared globally (`role: shared`). If `false`, entries are isolated by the MCP role of the user. |
+| `ttlSeconds` | How long the entry stays in the selected cache backend. A value of `0` means no expiry. |
+| `isReadOnly` | If `true`, the cache uses the shared `role: shared` scope. If `false`, entries use the verified caller role. |
 | `flushOn` | An array of tool names. When the current tool runs, it flushes the cache of the listed tools. |
 
 ## 🧹 Cache Invalidation (Auto-Flush)

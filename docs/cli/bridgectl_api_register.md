@@ -22,7 +22,7 @@ bridgectl api register [flags]
     --module finance \
     --description "Fetch all invoices" \
     --auth-type api-key \
-    --auth-key "secret-abc-123"
+    --auth-key "$ERP_API_KEY"
 ```
 
 ### Options

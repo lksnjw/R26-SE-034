@@ -33,7 +33,7 @@ Once registered, you can generate an MCP tool schema from this API definition.`,
     --module finance \
     --description "Fetch all invoices" \
     --auth-type api-key \
-    --auth-key "secret-abc-123"`,
+    --auth-key "$ERP_API_KEY"`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		reg, err := idp.NewRegistry("", RootLog)
 		if err != nil {
