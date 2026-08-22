@@ -68,7 +68,7 @@ func main() {
 	// Initialize Logger
 	rootLog := logger.Init()
 
-	slog.Info("Starting ERPBridge Server", slog.String("version", version), slog.Bool("stdio", useStdio))
+	slog.Info("Starting ERPBridge Server", slog.Bool("stdio", useStdio))
 
 	mcpPort := os.Getenv("MCP_PORT")
 	if mcpPort == "" {
@@ -85,13 +85,13 @@ func main() {
 	rateRPS := 5.0
 	if v := os.Getenv("RATE_LIMIT_RPS"); v != "" {
 		if _, err := fmt.Sscanf(v, "%f", &rateRPS); err != nil {
-			slog.Warn("failed to parse RATE_LIMIT_RPS", slog.String("value", v), slog.String("error", err.Error()))
+			slog.Warn("failed to parse RATE_LIMIT_RPS")
 		}
 	}
 	rateBurst := 10
 	if v := os.Getenv("RATE_LIMIT_BURST"); v != "" {
 		if _, err := fmt.Sscanf(v, "%d", &rateBurst); err != nil {
-			slog.Warn("failed to parse RATE_LIMIT_BURST", slog.String("value", v), slog.String("error", err.Error()))
+			slog.Warn("failed to parse RATE_LIMIT_BURST")
 		}
 	}
 
