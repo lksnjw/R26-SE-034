@@ -130,6 +130,7 @@ release:
   github:
     owner: nmdra
     name: ERPBridge
+  replace_existing_artifacts: true
   draft: false
   prerelease: auto
   name_template: "ERPBridge {{.Tag}}"
