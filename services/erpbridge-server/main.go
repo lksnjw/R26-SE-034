@@ -68,7 +68,7 @@ func main() {
 	// Initialize Logger
 	rootLog := logger.Init()
 
-	slog.Info("Starting ERPBridge Server", slog.Bool("stdio", useStdio))
+	slog.Info("Starting ERPBridge Server")
 
 	mcpPort := os.Getenv("MCP_PORT")
 	if mcpPort == "" {
@@ -106,7 +106,7 @@ func main() {
 	if redisURL != "" {
 		opt, err := redis.ParseURL(redisURL)
 		if err != nil {
-			slog.Error("failed to parse redis url", slog.String("error", err.Error()))
+			slog.Error("failed to parse redis url")
 		} else {
 			rdb := redis.NewClient(opt)
 			cacheMgr = cache.NewManager(rdb, rootLog)
@@ -117,7 +117,7 @@ func main() {
 		if value := os.Getenv("CACHE_MEMORY_MAX_ENTRIES"); value != "" {
 			parsed, err := strconv.Atoi(value)
 			if err != nil || parsed < 0 {
-				slog.Warn("invalid CACHE_MEMORY_MAX_ENTRIES; using default", slog.String("value", value), slog.Int("default", maxEntries))
+				slog.Warn("invalid CACHE_MEMORY_MAX_ENTRIES; using default")
 			} else {
 				maxEntries = parsed
 			}
