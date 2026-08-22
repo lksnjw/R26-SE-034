@@ -1,9 +1,13 @@
 package logger
 
 import (
+	"encoding/json"
 	"log/slog"
+	"strings"
 	"testing"
 )
+
+const testSafeString = "safe"
 
 func TestParseLevel(t *testing.T) {
 	tests := []struct {
@@ -97,5 +101,63 @@ func TestComponent(t *testing.T) {
 	compOverride := Component(root, "override")
 	if compOverride == nil {
 		t.Fatal("Component with override returned nil logger")
+	}
+}
+
+func TestRedactArgs(t *testing.T) {
+	input := map[string]any{
+		"username":          "alice",
+		redactedPasswordKey: "p123",
+		"nested": map[string]any{
+			"access_token": "bearer-secret",
+			testSafeString: "value",
+		},
+		"items": []any{map[string]any{redactedAPIKey: "key-secret"}},
+	}
+
+	redacted, ok := RedactArgs(input).(map[string]any)
+	if !ok {
+		t.Fatalf("RedactArgs returned %T, want map[string]any", RedactArgs(input))
+	}
+
+	assertRedacted := func(value any, name string) {
+		if value != "[REDACTED]" {
+			t.Errorf("%s = %v, want [REDACTED]", name, value)
+		}
+	}
+	assertRedacted(redacted[redactedPasswordKey], redactedPasswordKey)
+	assertRedacted(redacted["nested"].(map[string]any)["access_token"], "nested access_token")
+	assertRedacted(redacted["items"].([]any)[0].(map[string]any)[redactedAPIKey], "items api_key")
+	if redacted["username"] != "alice" {
+		t.Errorf("safe value changed: %v", redacted["username"])
+	}
+}
+
+func TestBroadcastHandlerRedactsSensitiveValues(t *testing.T) {
+	listenersMu.Lock()
+	logListeners = nil
+	logBuffer = nil
+	listenersMu.Unlock()
+
+	log := Init()
+	log.Info("sensitive event", slog.Any("arguments", map[string]any{
+		redactedPasswordKey: "p123",
+		testSafeString:      "ok",
+	}))
+
+	recent := GetRecentLogs()
+	if len(recent) == 0 {
+		t.Fatal("expected a buffered log record")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recent[len(recent)-1], &payload); err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(recent[len(recent)-1])
+	if strings.Contains(encoded, "p123") {
+		t.Fatalf("broadcast log contains unredacted secret: %s", encoded)
+	}
+	if payload["msg"] != "sensitive event" {
+		t.Fatalf("unexpected log payload: %v", payload)
 	}
 }

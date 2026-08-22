@@ -41,7 +41,7 @@ services:
       - ERP_BASE_URL=http://mock-erp:8081
       - REDIS_URL=redis://redis:6379
       - DATABASE_PATH=/app/data/erpbridge.db
-      - ERP_PRIMARY_KEY=token adm_key_001:adm_sec_stu901
+      - ERP_PRIMARY_KEY=${ERP_PRIMARY_KEY:-}
       - RATE_LIMIT_RPS=10
       - RATE_LIMIT_BURST=20
     volumes:

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/nimendra/ERPBridge/internal/connector"
+	"github.com/nmdra/ERPBridge/internal/connector"
 )
 
 // MockConnector is a manual mock for the ERPConnector interface.

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -17,8 +18,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/nimendra/ERPBridge/internal/cache"
-	"github.com/nimendra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/cache"
+	"github.com/nmdra/ERPBridge/internal/logger"
 )
 
 // Server is the primary MCP server implementation for ERPBridge.
@@ -39,7 +40,10 @@ type Server struct {
 	toolMiddlewares []server.ToolHandlerMiddleware
 }
 
-const statusKey = "status"
+const (
+	statusKey          = "status"
+	toolNameQueryParam = "name"
+)
 
 // RateLimitConfig defines the configuration for the tool rate limiter.
 type RateLimitConfig struct {
@@ -49,12 +53,19 @@ type RateLimitConfig struct {
 
 // NewServer creates a new Server instance with the provided connector, cache manager, and logger.
 func NewServer(connector ERPConnector, cacheMgr *cache.Manager, rootLog *slog.Logger, rateCfg RateLimitConfig, dbPath string) *Server {
+	var bridgeServer *Server
 	s := server.NewMCPServer("ERPBridge", "1.0.0",
 		server.WithLogging(),
 		server.WithResourceCompletionProvider(&ResourceCompletionProvider{}),
 		server.WithPromptCompletionProvider(&PromptCompletionProvider{}),
 		server.WithOutputSchemaValidation(),
 		server.WithHooks(&server.Hooks{}),
+		server.WithToolFilter(func(_ context.Context, tools []mcp.Tool) []mcp.Tool {
+			if bridgeServer == nil {
+				return tools
+			}
+			return bridgeServer.filterToolsList(tools)
+		}),
 	)
 
 	mcpHandler := logger.NewMCPHandler(s, "mcp")
@@ -79,12 +90,14 @@ func NewServer(connector ERPConnector, cacheMgr *cache.Manager, rootLog *slog.Lo
 		prompts:   make(map[string]*Prompt),
 		Notifier:  NewCustomNotifier(s),
 	}
+	bridgeServer = srv
 
 	srv.TelemetryHooks = NewTelemetryHooks(mcpLog)
 	srv.TelemetryHooks.Register(s)
 
 	srv.BusinessHooks = NewBusinessHooks(srv.Notifier, mcpLog)
 	srv.BusinessHooks.Register(s)
+	srv.warnUnresolvedCredentials()
 
 	// Initialize global tool middlewares
 	rateLimiter := NewRateLimitMiddleware(rateCfg.RequestsPerSecond, rateCfg.Burst)
@@ -202,6 +215,43 @@ func (s *Server) RegisterResource(r *Resource) {
 	)
 	s.mcpServer.AddResource(mcpResource, s.handleMCPResourceRead)
 	s.log.Info("registered MCP resource", slog.String("name", r.Name), slog.String("uri", r.URITemplate))
+	s.warnUnresolvedCredentials()
+}
+
+func (s *Server) warnUnresolvedCredentials() {
+	s.mu.RLock()
+	resources := make([]*Resource, 0, len(s.resources))
+	for _, resource := range s.resources {
+		resources = append(resources, resource)
+	}
+	s.mu.RUnlock()
+
+	if s.store != nil {
+		tools, err := s.store.List()
+		if err != nil {
+			s.log.Warn("could not inspect tool credentials", slog.String("error", err.Error()))
+		} else {
+			for _, tool := range tools {
+				if !credentialConfigured(tool.Spec.Security.CredentialRef) {
+					s.log.Warn("tool credential reference is unresolved", slog.String("tool_name", tool.Metadata.Name), slog.String("credential_ref", tool.Spec.Security.CredentialRef))
+				}
+			}
+		}
+	}
+
+	for _, resource := range resources {
+		if !credentialConfigured(resource.Security.CredentialRef) {
+			s.log.Warn("resource credential reference is unresolved", slog.String("resource_name", resource.Name), slog.String("credential_ref", resource.Security.CredentialRef))
+		}
+	}
+}
+
+func credentialConfigured(ref string) bool {
+	if ref == "" {
+		return true
+	}
+	value, ok := os.LookupEnv(ref)
+	return ok && value != ""
 }
 
 // RegisterPrompt adds a prompt template to the server.
@@ -323,6 +373,7 @@ func (s *Server) Reconcile(_ context.Context) {
 		s.log.Error("failed to list desired tools", slog.String("error", err.Error()))
 		return
 	}
+	s.warnUnresolvedCredentials()
 
 	desiredMap := make(map[string]bool)
 	for _, dt := range desiredTools {
@@ -367,9 +418,7 @@ func (s *Server) DeregisterTool(name, version string) {
 
 	s.registry.Remove(name, version)
 
-	s.log.Warn("tool removed from registry but requires filtering layer to hide from mcp-go's advertised list",
-		slog.String("tool_name", name),
-		slog.String("version", version))
+	s.log.Info("tool removed from active registry", slog.String("tool_name", name), slog.String("version", version))
 
 	// Notify clients that tools have changed
 	s.mcpServer.SendNotificationToAllClients("notifications/tools/list_changed", nil)
@@ -378,6 +427,28 @@ func (s *Server) DeregisterTool(name, version string) {
 	if s.Notifier != nil {
 		s.Notifier.SendToolDeleted(name, version)
 	}
+}
+
+func (s *Server) filterToolsList(tools []mcp.Tool) []mcp.Tool {
+	filtered := make([]mcp.Tool, 0, len(tools))
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, tool := range tools {
+		if strings.HasPrefix(tool.Name, "system.") {
+			filtered = append(filtered, tool)
+			continue
+		}
+		entry, err := s.registry.Resolve(tool.Name, "")
+		if err == nil && entry.Metadata.IsActive {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
+
+// FilterToolsList exposes the active-tool filter to the Stdio transport adapter.
+func (s *Server) FilterToolsList(tools []mcp.Tool) []mcp.Tool {
+	return s.filterToolsList(tools)
 }
 
 // RegisterTool adds a tool to the server's registry and active MCP server.
@@ -510,22 +581,7 @@ func (s *Server) ServeHTTP(mux *http.ServeMux, _ string) {
 				}
 
 				if err := json.Unmarshal(jsonData, &jsonResp); err == nil && len(jsonResp.Result.Tools) > 0 {
-					// Filter the tools based on our active registry
-					filteredTools := make([]mcp.Tool, 0)
-					s.mu.RLock()
-					for _, t := range jsonResp.Result.Tools {
-						// Builtin tools (module=system) are always active
-						if strings.HasPrefix(t.Name, "system.") {
-							filteredTools = append(filteredTools, t)
-							continue
-						}
-
-						// Check if the tool is active in our registry
-						if entry, err := s.registry.Resolve(t.Name, ""); err == nil && entry.Metadata.IsActive {
-							filteredTools = append(filteredTools, t)
-						}
-					}
-					s.mu.RUnlock()
+					filteredTools := s.filterToolsList(jsonResp.Result.Tools)
 
 					// Update the result and re-marshal
 					jsonResp.Result.Tools = filteredTools
@@ -559,8 +615,6 @@ func (s *Server) ServeHTTP(mux *http.ServeMux, _ string) {
 	mux.HandleFunc("/api/tools/invoke", s.handleDirectInvoke)
 	mux.HandleFunc("/api/cache/stats", s.handleCacheStats)
 	mux.HandleFunc("/api/cache/flush", s.handleCacheFlush)
-	mux.HandleFunc("/api/cache/list", s.handleCacheList)
-	mux.HandleFunc("/api/cache/inspect", s.handleCacheInspect)
 	mux.HandleFunc("/api/logs/stream", s.handleLogStream)
 	mux.HandleFunc("/api/logs/recent", s.handleLogRecent)
 
@@ -608,20 +662,36 @@ func (s *Server) handleToolApply(w http.ResponseWriter, r *http.Request) {
 
 	// Immediate reconciliation for responsiveness
 	s.RegisterTool(&t)
+	s.warnUnresolvedCredentials()
 
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		statusKey: "applied",
-		"name":    t.Metadata.Name,
-		"version": t.Metadata.Version,
+		statusKey:          "applied",
+		toolNameQueryParam: t.Metadata.Name,
+		"version":          t.Metadata.Version,
 	})
 }
 
-func (s *Server) handleToolList(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleToolList(w http.ResponseWriter, r *http.Request) {
 	tools, err := s.store.List()
 	if err != nil {
 		http.Error(w, "failed to list tools: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	nameFilter := r.URL.Query().Get(toolNameQueryParam)
+	versionFilter := r.URL.Query().Get("version")
+	if nameFilter != "" || versionFilter != "" {
+		filtered := make([]*Tool, 0, len(tools))
+		for _, tool := range tools {
+			if nameFilter != "" && tool.Metadata.Name != nameFilter {
+				continue
+			}
+			if versionFilter != "" && tool.Metadata.Version != versionFilter {
+				continue
+			}
+			filtered = append(filtered, tool)
+		}
+		tools = filtered
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -629,7 +699,7 @@ func (s *Server) handleToolList(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleToolDelete(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("name")
+	name := r.URL.Query().Get(toolNameQueryParam)
 	version := r.URL.Query().Get("version")
 	hard := r.URL.Query().Get("hard") == "true"
 
@@ -774,7 +844,22 @@ func (s *Server) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 	case tool != "":
 		count, err = s.cache.FlushTool(r.Context(), tool)
 	case module != "":
-		count, err = s.cache.FlushModule(r.Context(), module)
+		if s.store == nil {
+			http.Error(w, "store not available", http.StatusInternalServerError)
+			return
+		}
+		var tools []*Tool
+		tools, err = s.store.ListByModule(module)
+		if err == nil {
+			for _, tool := range tools {
+				var deleted int
+				deleted, err = s.cache.FlushToolInternal(r.Context(), tool.Metadata.Name)
+				count += deleted
+				if err != nil {
+					break
+				}
+			}
+		}
 	default:
 		http.Error(w, "missing tool, module or all parameter", http.StatusBadRequest)
 		return
@@ -811,14 +896,6 @@ func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 		statusKey:    "active",
 		"stats":      stats,
 	})
-}
-
-func (s *Server) handleCacheList(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-func (s *Server) handleCacheInspect(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
 }
 
 func (s *Server) handleLogStream(w http.ResponseWriter, r *http.Request) {

@@ -7,10 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- feat(cache): add bounded in-memory caching when Redis is not configured, with full-hash keys, stored cache timestamps, and backend-aware flushing
+- feat(cli): apply generated YAML sequences and multi-document YAML streams; add exact server-side tool filtering
+
 ### Changed
 - build(deps): bump go-redis to v9.21.0, prometheus client_golang to v1.24.1, modernc.org/sqlite to v1.55.0, miniredis to v2.38.0, masq to v0.2.2
 - build(deps): bump kin-openapi to v0.145.0
 - build(deps): bump mcp-go to v0.57.0
+- docs: document MCP result envelopes, registry-only REST invocation, memory-cache behavior, and the current tool schema template
+
+### Fixed
+- fix(security): fail closed for unresolved credential references and redact tool arguments across log handlers
+- fix(mcp): hide inactive tools on Stdio, harden registry state hashing and migrations, evict idle rate-limit identities, and validate nested response paths
+- fix(idp): dereference generated output schemas and report unresolved OpenAPI references with operation context
 
 ## [v0.2.0-alpha.5] - 2026-05-10
 

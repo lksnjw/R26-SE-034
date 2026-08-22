@@ -6,9 +6,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/nimendra/ERPBridge/internal/connector"
-	"github.com/nimendra/ERPBridge/internal/idp"
-	"github.com/nimendra/ERPBridge/internal/output"
+	"github.com/nmdra/ERPBridge/internal/connector"
+	"github.com/nmdra/ERPBridge/internal/idp"
+	"github.com/nmdra/ERPBridge/internal/output"
 	"github.com/spf13/cobra"
 )
 

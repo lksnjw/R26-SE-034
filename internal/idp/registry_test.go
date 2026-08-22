@@ -2,11 +2,13 @@ package idp
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
-	"github.com/nimendra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,7 +39,9 @@ func TestNewRegistry(t *testing.T) {
 		tmpPath := filepath.Join(tmpDir, "existing.json")
 
 		const testAPIName = "test-api"
-		initialData := Registry{
+		initialData := struct {
+			APIs map[string]API
+		}{
 			APIs: map[string]API{
 				testAPIName: {ID: "1", Name: testAPIName},
 			},
@@ -176,4 +180,30 @@ func TestRegistry_RegisterListDeleteGet(t *testing.T) {
 		_, ok := reg.Get("test-api")
 		assert.False(t, ok)
 	})
+}
+
+func TestRegistry_ConcurrentWritesReloadUnderLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent.json")
+	log := logger.Init()
+	first, err := NewRegistry(path, log)
+	require.NoError(t, err)
+	second, err := NewRegistry(path, log)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	for i, registry := range []*Registry{first, second} {
+		wg.Add(1)
+		go func(i int, registry *Registry) {
+			defer wg.Done()
+			api := &API{Name: fmt.Sprintf("api-%d", i), URL: "http://localhost"}
+			if err := registry.Register(api); err != nil {
+				t.Errorf("register concurrently: %v", err)
+			}
+		}(i, registry)
+	}
+	wg.Wait()
+
+	loaded, err := NewRegistry(path, log)
+	require.NoError(t, err)
+	assert.Len(t, loaded.List(), 2)
 }

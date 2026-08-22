@@ -9,7 +9,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/nimendra/ERPBridge/internal/types"
+	"github.com/nmdra/ERPBridge/internal/types"
 )
 
 func TestMCPHandler_Redaction(t *testing.T) {
@@ -44,7 +44,7 @@ func TestMCPHandler_Redaction(t *testing.T) {
 		Message: "test message",
 	}
 	record.AddAttrs(slog.Any("data", data))
-	record.AddAttrs(slog.String("password", "p123")) // Exact field name redaction
+	record.AddAttrs(slog.String(redactedPasswordKey, "p123")) // Exact field name redaction
 
 	if err := h.Handle(ctx, record); err != nil {
 		t.Fatalf("Handle failed: %v", err)
@@ -79,8 +79,8 @@ func TestMCPHandler_Redaction(t *testing.T) {
 	// Verify map redaction
 	h.buf.Reset()
 	m := map[string]any{
-		"api_key": "key-456",
-		"other":   "safe",
+		redactedAPIKey: "key-456",
+		"other":        testSafeString,
 	}
 	record2 := slog.Record{Level: slog.LevelInfo, Message: "map test"}
 	record2.AddAttrs(slog.Any("map", m))
@@ -130,7 +130,7 @@ func (h *mockHandler) Handle(context.Context, slog.Record) error {
 	return nil
 }
 func (h *mockHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
-func (h *mockHandler) WithGroup(_ string) slog.Handler       { return h }
+func (h *mockHandler) WithGroup(_ string) slog.Handler      { return h }
 
 type mockFullSession struct {
 	server.ClientSession

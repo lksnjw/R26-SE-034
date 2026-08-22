@@ -1,17 +1,17 @@
 # Exact Match Caching
 
-ERPBridge has a caching layer that reduces latency and load on legacy ERP systems. It serves repetitive queries directly from Redis.
+ERPBridge has a caching layer that reduces latency and load on legacy ERP systems. It serves repetitive queries from Redis when configured, or from a bounded in-memory LRU when Redis is not configured.
 
 ## 🚀 Overview
 
-The caching mechanism runs as middleware in the MCP tool execution pipeline. It uses **Redis** as the backend.
+The caching mechanism runs as middleware in the MCP tool execution pipeline. The server selects Redis when `REDIS_URL` is set and the in-memory backend otherwise. A configured but unreachable Redis server is not replaced by memory.
 
 ### Layer 1: Exact Match (SHA256)
 
 The system gives O(1) lookups for identical requests.
 
 - **Key Generation**: A deterministic hash of the tool name, the user role scope, and the JSON-sorted arguments.
-- **TTL**: Configurable per tool (default: 3600s).
+- **TTL**: Configurable per tool. Defaults to `0` (no expiry) when `ttlSeconds` is omitted.
 - **Benefit**: Fast response times for repetitive queries.
 
 ## ⚙️ Configuration
@@ -79,8 +79,8 @@ bridgectl cache stats
 Clears the cache for a specific tool or an entire module.
 
 ```bash
-# Flush specific tool
-bridgectl cache flush --tool list_employees
+# Flush specific tool (positional argument)
+bridgectl cache flush list_employees
 
 # Flush entire module
 bridgectl cache flush --module erp
@@ -91,14 +91,16 @@ bridgectl cache flush --all
 
 ## 🔎 When Redis Is Not Configured
 
-If `REDIS_URL` is not set, the server disables the cache. Tool calls still work. The cache endpoints return HTTP 503:
+If `REDIS_URL` is not set, the server uses the bounded in-memory cache. Set `CACHE_MEMORY_MAX_ENTRIES=0` to disable memory-cache storage while keeping tool calls available. The default capacity is 10,000 entries.
+
+The cache endpoints work with both backends:
 
 - `GET /api/cache/stats`
 - `GET /api/cache/flush`
 
 ## 🏗 System Architecture
 
-1. **ERPBridge Server**: Orchestrates the middleware and talks to Redis.
-2. **Redis**: Stores the hashes and responses for high-speed retrieval.
+1. **ERPBridge Server**: Orchestrates the middleware and selects the configured backend.
+2. **Redis or MemoryBackend**: Stores the hashes and responses for high-speed retrieval.
 
 For deployment details, see the [Docker Guide](./docker.md).

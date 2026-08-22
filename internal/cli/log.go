@@ -144,19 +144,21 @@ log level, or a specific request ID.`,
 }
 
 func shouldPrint(msg string) bool {
-	if logComponent != "" && !strings.Contains(msg, fmt.Sprintf("\"component\":\"%s\"", logComponent)) {
-		return false
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(msg), &fields); err != nil {
+		return true
 	}
-	if logTool != "" && !strings.Contains(msg, fmt.Sprintf("\"tool_name\":\"%s\"", logTool)) {
-		return false
+	fieldMatches := func(name, expected string) bool {
+		if expected == "" {
+			return true
+		}
+		value, ok := fields[name].(string)
+		return ok && value == expected
 	}
-	if logLevel != "" && !strings.Contains(msg, fmt.Sprintf("\"level\":\"%s\"", strings.ToUpper(logLevel))) {
-		return false
-	}
-	if logRequestID != "" && !strings.Contains(msg, fmt.Sprintf("\"request_id\":\"%s\"", logRequestID)) {
-		return false
-	}
-	return true
+	return fieldMatches("component", logComponent) &&
+		fieldMatches("tool_name", logTool) &&
+		fieldMatches("level", strings.ToUpper(logLevel)) &&
+		fieldMatches("request_id", logRequestID)
 }
 
 func init() {

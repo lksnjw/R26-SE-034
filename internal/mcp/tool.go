@@ -9,10 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
-	"github.com/nimendra/ERPBridge/internal/cache"
-	"github.com/nimendra/ERPBridge/internal/connector"
+	"github.com/nmdra/ERPBridge/internal/cache"
+	"github.com/nmdra/ERPBridge/internal/connector"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -193,11 +194,11 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any, conn ERPConnect
 		fullURL = "http://localhost:8081" + "/" + strings.TrimPrefix(fullURL, "/")
 	}
 
-	// Resolve CredentialRef from Environment Variables
-	cred := os.Getenv(t.Spec.Security.CredentialRef)
-	if cred == "" {
-		// Fallback to literal if not found in env (supports local dev/testing)
-		cred = t.Spec.Security.CredentialRef
+	// Resolve CredentialRef from environment variables. A configured but missing
+	// reference must fail closed rather than being sent as a literal credential.
+	cred, err := resolveCredential(t.Spec.Security.CredentialRef)
+	if err != nil {
+		return nil, err
 	}
 
 	ep := connector.EndpointConfig{
@@ -221,12 +222,11 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any, conn ERPConnect
 		return nil, fmt.Errorf("decode erp response: %w", err)
 	}
 
-	// Unwrap response based on ResponsePath (simplistic implementation for top-level keys)
+	// Unwrap response based on ResponsePath.
 	if t.Spec.Execution.ResponsePath != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		if m, ok := resultData.(map[string]any); ok {
-			if val, ok := m[t.Spec.Execution.ResponsePath]; ok {
-				resultData = val
-			}
+		resultData, err = resolveResponsePath(resultData, t.Spec.Execution.ResponsePath)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -244,6 +244,101 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any, conn ERPConnect
 		Result:  resultData,
 		IsError: resp.StatusCode >= 400,
 	}, nil
+}
+
+type responsePathToken struct {
+	key   string
+	index *int
+}
+
+func resolveResponsePath(root any, responsePath string) (any, error) {
+	tokens, err := parseResponsePath(responsePath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid response path %q: %w", responsePath, err)
+	}
+
+	current := root
+	for _, token := range tokens {
+		if token.key != "" {
+			object, ok := current.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("response path %q not found: expected object for %q", responsePath, token.key)
+			}
+			var exists bool
+			current, exists = object[token.key]
+			if !exists {
+				return nil, fmt.Errorf("response path %q not found", responsePath)
+			}
+		}
+		if token.index != nil {
+			items, ok := current.([]any)
+			if !ok || *token.index < 0 || *token.index >= len(items) {
+				return nil, fmt.Errorf("response path %q not found: array index %d is out of bounds", responsePath, *token.index)
+			}
+			current = items[*token.index]
+		}
+	}
+	return current, nil
+}
+
+func parseResponsePath(responsePath string) ([]responsePathToken, error) {
+	if responsePath == "" {
+		return nil, fmt.Errorf("path is empty")
+	}
+
+	var tokens []responsePathToken
+	for position := 0; position < len(responsePath); {
+		if responsePath[position] == '.' {
+			return nil, fmt.Errorf("empty object segment")
+		}
+		if responsePath[position] != '[' {
+			start := position
+			for position < len(responsePath) && responsePath[position] != '.' && responsePath[position] != '[' {
+				position++
+			}
+			if start == position {
+				return nil, fmt.Errorf("empty object segment")
+			}
+			tokens = append(tokens, responsePathToken{key: responsePath[start:position]})
+		}
+
+		for position < len(responsePath) && responsePath[position] == '[' {
+			end := strings.IndexByte(responsePath[position+1:], ']')
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated array index")
+			}
+			end += position + 1
+			index, err := strconv.Atoi(responsePath[position+1 : end])
+			if err != nil || index < 0 {
+				return nil, fmt.Errorf("invalid array index")
+			}
+			tokens = append(tokens, responsePathToken{index: &index})
+			position = end + 1
+		}
+
+		if position < len(responsePath) {
+			if responsePath[position] != '.' {
+				return nil, fmt.Errorf("unexpected character %q", responsePath[position])
+			}
+			position++
+			if position == len(responsePath) {
+				return nil, fmt.Errorf("path ends with a separator")
+			}
+		}
+	}
+	return tokens, nil
+}
+
+func resolveCredential(ref string) (string, error) {
+	if ref == "" {
+		return "", nil
+	}
+
+	value, ok := os.LookupEnv(ref)
+	if !ok || value == "" {
+		return "", fmt.Errorf("credential reference %q is not configured", ref)
+	}
+	return value, nil
 }
 
 func validateResponse(data any, schema any) error {

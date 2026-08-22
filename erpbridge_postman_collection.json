@@ -127,7 +127,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"jsonrpc\": \"2.0\",\n    \"id\": 3,\n    \"method\": \"tools/call\",\n    \"params\": {\n        \"name\": \"finance.list_invoices_api_v1_finance_invoices_get\",\n        \"arguments\": {}\n    }\n}"
+							"raw": "{\n    \"jsonrpc\": \"2.0\",\n    \"id\": 3,\n    \"method\": \"tools/call\",\n    \"params\": {\n        \"name\": \"list_purchase_invoices\",\n        \"arguments\": {}\n    }\n}"
 						},
 						"url": {
 							"raw": "{{base_url}}/mcp/",
@@ -154,7 +154,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"name\": \"finance.list_invoices_api_v1_finance_invoices_get\",\n    \"arguments\": {}\n}",
+							"raw": "{\n    \"name\": \"list_purchase_invoices\",\n    \"arguments\": {}\n}",
 							"options": {
 								"raw": {
 									"language": "json"

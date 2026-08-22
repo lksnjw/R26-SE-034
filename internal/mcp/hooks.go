@@ -10,7 +10,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/nimendra/ERPBridge/internal/metrics"
+	"github.com/nmdra/ERPBridge/internal/metrics"
 )
 
 // TelemetryHooks implements lifecycle callbacks for telemetry and logging.

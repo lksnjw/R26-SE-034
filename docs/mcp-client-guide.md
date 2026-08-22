@@ -215,7 +215,7 @@ call_resp = session.post(
         "id": 3,
         "method": "tools/call",
         "params": {
-            "name": "finance.list_invoices_api_v1_finance_invoices_get",
+            "name": "list_purchase_invoices",
             "arguments": {},
         },
     },
@@ -285,7 +285,7 @@ send({
     "id": 3,
     "method": "tools/call",
     "params": {
-        "name": "finance.list_invoices_api_v1_finance_invoices_get",
+        "name": "list_purchase_invoices",
         "arguments": {},
     },
 })
@@ -364,7 +364,7 @@ async function main() {
       id: 3,
       method: "tools/call",
       params: {
-        name: "finance.list_invoices_api_v1_finance_invoices_get",
+        name: "list_purchase_invoices",
         arguments: {},
       },
     }),
@@ -440,7 +440,7 @@ async function main() {
     id: 3,
     method: "tools/call",
     params: {
-      name: "finance.list_invoices_api_v1_finance_invoices_get",
+      name: "list_purchase_invoices",
       arguments: {},
     },
   });
@@ -597,6 +597,12 @@ JSON-RPC errors are returned inside the response body, not as HTTP error codes. 
 | `-32601` | Method not found | Tool name doesn't exist — check with `tools/list` |
 | `-32602` | Invalid params | Wrong or missing arguments for the tool |
 | `-32603` | Internal error | Server-side error — check server logs |
+
+### 13.3 Preserve the MCP Result Envelope
+
+An MCP `tools/call` response is a JSON-RPC result. Read the `content` array and preserve any structured result fields supplied by the SDK. ERPBridge may place a JSON-encoded ERPBridge compatibility result inside a text content item, so `content[0].text` is not automatically the complete protocol response.
+
+The direct REST endpoint, `/api/tools/invoke`, is a registry-only compatibility endpoint and returns the legacy `ToolResult` shape. MCP built-in tools whose names start with `system.` are available through MCP, not through that REST endpoint.
 
 ---
 

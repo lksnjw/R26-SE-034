@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/nimendra/ERPBridge/internal/config"
-	"github.com/nimendra/ERPBridge/internal/output"
+	"github.com/nmdra/ERPBridge/internal/config"
+	"github.com/nmdra/ERPBridge/internal/output"
 )
 
 const (

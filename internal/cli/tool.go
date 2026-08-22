@@ -3,24 +3,75 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/goccy/go-yaml"
-	"github.com/nimendra/ERPBridge/internal/idp"
-	"github.com/nimendra/ERPBridge/internal/mcp"
-	"github.com/nimendra/ERPBridge/internal/output"
+	"github.com/nmdra/ERPBridge/internal/idp"
+	"github.com/nmdra/ERPBridge/internal/mcp"
+	"github.com/nmdra/ERPBridge/internal/output"
 	"github.com/spf13/cobra"
 )
 
 var toolCmd = &cobra.Command{
 	Use:   "tool",
 	Short: "Manage MCP tool resources (V2 Control Plane)",
+}
+
+func decodeToolDocuments(data []byte, filePath string) ([]mcp.Tool, error) {
+	if strings.HasSuffix(filePath, ".json") {
+		var tools []mcp.Tool
+		if err := json.Unmarshal(data, &tools); err == nil {
+			return tools, nil
+		}
+		var tool mcp.Tool
+		if err := json.Unmarshal(data, &tool); err != nil {
+			return nil, fmt.Errorf("unmarshal json (%s): %w", filePath, err)
+		}
+		return []mcp.Tool{tool}, nil
+	}
+
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var tools []mcp.Tool
+	for {
+		var document any
+		err := decoder.Decode(&document)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("unmarshal yaml (%s): %w", filePath, err)
+		}
+		if document == nil {
+			continue
+		}
+		items := []any{document}
+		if sequence, ok := document.([]any); ok {
+			items = sequence
+		}
+		for _, item := range items {
+			encoded, err := yaml.Marshal(item)
+			if err != nil {
+				return nil, fmt.Errorf("marshal yaml document (%s): %w", filePath, err)
+			}
+			var tool mcp.Tool
+			if err := yaml.Unmarshal(encoded, &tool); err != nil {
+				return nil, fmt.Errorf("unmarshal yaml document (%s): %w", filePath, err)
+			}
+			tools = append(tools, tool)
+		}
+	}
+	if len(tools) == 0 {
+		return nil, fmt.Errorf("unmarshal yaml (%s): no tool documents found", filePath)
+	}
+	return tools, nil
 }
 
 var toolApplyCmd = &cobra.Command{
@@ -56,36 +107,36 @@ var toolApplyCmd = &cobra.Command{
 				return err
 			}
 
-			var tool mcp.Tool
-			if strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yml") {
-				if err := yaml.Unmarshal(data, &tool); err != nil {
-					return fmt.Errorf("unmarshal yaml (%s): %w", path, err)
-				}
-			} else {
-				if err := json.Unmarshal(data, &tool); err != nil {
-					return fmt.Errorf("unmarshal json (%s): %w", path, err)
-				}
-			}
-
-			payload, _ := json.Marshal(tool)
-			req, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost, url, bytes.NewReader(payload))
+			tools, err := decodeToolDocuments(data, path)
 			if err != nil {
 				return err
 			}
-			req.Header.Set("Content-Type", "application/json")
+			for _, tool := range tools {
+				payload, err := json.Marshal(tool)
+				if err != nil {
+					return fmt.Errorf("marshal tool (%s): %w", path, err)
+				}
+				req, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost, url, bytes.NewReader(payload))
+				if err != nil {
+					return err
+				}
+				req.Header.Set("Content-Type", "application/json")
 
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return fmt.Errorf("apply failed (%s): %w", path, err)
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					return fmt.Errorf("apply failed (%s): %w", path, err)
+				}
+				body, readErr := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				if readErr != nil {
+					return fmt.Errorf("read apply response (%s): %w", path, readErr)
+				}
+				if resp.StatusCode >= 400 {
+					return fmt.Errorf("server error (%d) for %s: %s", resp.StatusCode, path, string(body))
+				}
+
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "tool %s@%s applied successfully\n", tool.Metadata.Name, tool.Metadata.Version)
 			}
-			defer func() { _ = resp.Body.Close() }()
-
-			if resp.StatusCode >= 400 {
-				body, _ := io.ReadAll(resp.Body)
-				return fmt.Errorf("server error (%d) for %s: %s", resp.StatusCode, path, string(body))
-			}
-
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "tool %s@%s applied successfully\n", tool.Metadata.Name, tool.Metadata.Version)
 			return nil
 		}
 
@@ -145,10 +196,19 @@ var toolGetCmd = &cobra.Command{
 		if err := ValidateServerURL(ctx.MCPServer, "MCP", cfg.CurrentContext); err != nil {
 			return err
 		}
-		url := ctx.MCPServer + "/apis/erpbridge.io/v1/tools"
+		listURL := ctx.MCPServer + "/apis/erpbridge.io/v1/tools"
+		name, version := "", ""
+		if len(args) > 0 {
+			name, version = mcp.ParseToolIdentifier(args[0])
+			query := url.Values{"name": []string{name}}
+			if version != "" {
+				query.Set("version", version)
+			}
+			listURL += "?" + query.Encode()
+		}
 
 		// #nosec G107 -- URL is dynamically constructed from configured server context
-		resp, err := http.Get(url)
+		resp, err := http.Get(listURL)
 		if err != nil {
 			return err
 		}
@@ -162,7 +222,6 @@ var toolGetCmd = &cobra.Command{
 		outputFormat, _ := cmd.Flags().GetString("output")
 
 		if len(args) > 0 {
-			name, version := mcp.ParseToolIdentifier(args[0])
 			var target *mcp.Tool
 			for _, t := range tools {
 				if t.Metadata.Name == name && (version == "" || t.Metadata.Version == version) {
@@ -230,10 +289,15 @@ var toolDescribeCmd = &cobra.Command{
 		}
 
 		name, version := mcp.ParseToolIdentifier(args[0])
-		url := fmt.Sprintf("%s/apis/erpbridge.io/v1/tools", ctx.MCPServer)
+		listURL := fmt.Sprintf("%s/apis/erpbridge.io/v1/tools", ctx.MCPServer)
+		query := url.Values{"name": []string{name}}
+		if version != "" {
+			query.Set("version", version)
+		}
+		listURL += "?" + query.Encode()
 
 		// #nosec G107 -- URL is dynamically constructed from configured server context
-		resp, err := http.Get(url)
+		resp, err := http.Get(listURL)
 		if err != nil {
 			return err
 		}
@@ -291,9 +355,13 @@ var toolValidateCmd = &cobra.Command{
 
 		var tool mcp.Tool
 		if strings.HasSuffix(filePath, ".yaml") || strings.HasSuffix(filePath, ".yml") {
-			_ = yaml.Unmarshal(data, &tool)
+			if err := yaml.Unmarshal(data, &tool); err != nil {
+				return fmt.Errorf("validation failed: parse YAML: %w", err)
+			}
 		} else {
-			_ = json.Unmarshal(data, &tool)
+			if err := json.Unmarshal(data, &tool); err != nil {
+				return fmt.Errorf("validation failed: parse JSON: %w", err)
+			}
 		}
 
 		if tool.Metadata.Name == "" {

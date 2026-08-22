@@ -6,8 +6,14 @@ metadata:
 spec:
   description:
     short: ""         # ← fill in
-    whenToUse: ""     # ← fill in
-    examples: []      # ← fill in
-  endpoint:
-    ref: <NAME>
+    whenToUse: []      # ← fill in
+    whenNotToUse: []   # ← fill in when similar tools exist
+    examples: []       # ← fill in
+  execution:
+    type: http
     method: <METHOD>
+    endpoint: <PATH>
+    responsePath: data
+  security:
+    authType: api-key
+    credentialRef: ERP_PRIMARY_KEY

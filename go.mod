@@ -1,4 +1,4 @@
-module github.com/nimendra/ERPBridge
+module github.com/nmdra/ERPBridge
 
 go 1.26.2
 

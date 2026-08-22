@@ -60,15 +60,21 @@ Generate the declarative YAML:
 bridgectl tool generate --api <NAME> -o yaml > <NAME>.yaml
 ```
 
+The OpenAPI form emits one YAML sequence containing all generated tools. `bridgectl tool apply` accepts that sequence directly. It also accepts YAML streams with multiple documents, one JSON tool, or a directory of tool files.
+
 **Required Enhancement:** Use the [MCP Tool Template](assets/mcp-tool.yaml) as a reference. You MUST fill in:
 - `spec.description.short`: One concise sentence.
 - `spec.description.whenToUse`: Natural language trigger conditions.
+- `spec.description.whenNotToUse`: Similar cases where another tool is correct.
 - `spec.description.examples`: 2-3 user phrases that trigger this tool.
+- `spec.execution`: The HTTP method, endpoint, and optional response path.
+- `spec.security.credentialRef`: An environment-variable name. Never put a raw secret in the schema.
 
 ### Step 5: Apply & Verify
 ```bash
 bridgectl tool apply -f <NAME>.yaml
 ```
+Apply sends every tool in a generated YAML sequence or YAML document stream.
 Verify the tool is live:
 ```bash
 bridgectl tool get && bridgectl tool describe <NAME>

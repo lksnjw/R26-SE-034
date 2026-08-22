@@ -82,7 +82,7 @@ Convert the OpenAPI spec of your ERP into MCP tool schemas:
 ./bridgectl tool generate --api erp --openapi mock-erp/openapi.yaml -o yaml > schemas/erp/generated.yaml
 ```
 
-The command prints one YAML document per generated tool to stdout. Save each document as a separate file, or keep the output as one manifest file for Step 5.
+The command prints one YAML sequence containing all generated tools to stdout. `bridgectl tool apply` accepts that file directly, so you can keep it as one manifest file.
 
 > **Check the path first** if you are unsure: `ls mock-erp/openapi.yaml`
 
@@ -94,11 +94,13 @@ The command prints one YAML document per generated tool to stdout. Save each doc
 
 Upload your schemas to the ERPBridge server.
 
-**Apply a single tool:**
+**Apply a generated manifest or a single tool:**
 
 ```bash
-./bridgectl tool apply -f schemas/erp/list_employees.json
+./bridgectl tool apply -f schemas/erp/generated.yaml
 ```
+
+The command also accepts one JSON/YAML tool or a directory of tool files. It applies each YAML sequence item and each YAML document separately.
 
 **Apply all tools in a directory (recursive):**
 

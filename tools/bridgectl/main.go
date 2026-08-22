@@ -2,7 +2,7 @@
 package main
 
 import (
-	"github.com/nimendra/ERPBridge/internal/cli"
+	"github.com/nmdra/ERPBridge/internal/cli"
 )
 
 var version = "dev"

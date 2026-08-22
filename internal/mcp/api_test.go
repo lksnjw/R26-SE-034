@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/nimendra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/logger"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -76,6 +76,14 @@ func TestServer_ToolAPI(t *testing.T) {
 
 	t.Run("List Tools", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/apis/erpbridge.io/v1/tools", nil)
+		w := httptest.NewRecorder()
+		s.handleToolAPI(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), `"name":"test-tool"`)
+	})
+
+	t.Run("List Tools with exact filters", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/apis/erpbridge.io/v1/tools?name=test-tool&version=1.0.0", nil)
 		w := httptest.NewRecorder()
 		s.handleToolAPI(w, req)
 		assert.Equal(t, http.StatusOK, w.Code)

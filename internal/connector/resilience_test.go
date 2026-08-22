@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/nimendra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/logger"
 	"github.com/sony/gobreaker"
 	"github.com/stretchr/testify/assert"
 )

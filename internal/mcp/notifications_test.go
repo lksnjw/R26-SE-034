@@ -8,7 +8,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/nimendra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/logger"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -24,7 +24,7 @@ func (m *mockSession) NotificationChannel() chan<- mcp.JSONRPCNotification {
 func (m *mockSession) SessionID() string { return "mock-session" }
 
 func TestCustomNotifier(t *testing.T) {
-	s := server.NewMCPServer("test", "1.0.0")
+	s := server.NewMCPServer("test", testVersion100)
 	notifier := NewCustomNotifier(s)
 
 	mSess := &mockSession{

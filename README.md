@@ -46,7 +46,7 @@ graph TD
 - **Go**: 1.26.2+
 - **Python**: 3.11+ (managed via `uv` is recommended)
 - **Docker & Docker Compose**: For containerized deployment.
-- **Redis**: Optional for the caching layer. The server runs without it. The cache is disabled in that case.
+- **Redis**: Optional for the caching layer. Without it, the server uses a bounded in-memory LRU cache.
 - **SQLite**: (Built-in) used for the Tool Registry.
 
 ### Quick Start (Docker)

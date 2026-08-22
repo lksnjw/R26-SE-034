@@ -9,9 +9,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/nimendra/ERPBridge/internal/config"
-	"github.com/nimendra/ERPBridge/internal/logger"
-	"github.com/nimendra/ERPBridge/internal/output"
+	"github.com/nmdra/ERPBridge/internal/config"
+	"github.com/nmdra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/output"
 	"github.com/spf13/cobra"
 )
 

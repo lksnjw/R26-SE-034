@@ -8,9 +8,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/nimendra/ERPBridge/internal/config"
-	"github.com/nimendra/ERPBridge/internal/mcp"
-	"github.com/nimendra/ERPBridge/internal/output"
+	"github.com/nmdra/ERPBridge/internal/config"
+	"github.com/nmdra/ERPBridge/internal/mcp"
+	"github.com/nmdra/ERPBridge/internal/output"
 	"github.com/stretchr/testify/require"
 )
 
@@ -115,4 +115,36 @@ func TestToolValidateCmd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestToolValidateCmd_ParseErrorsAreVisible(t *testing.T) {
+	path := "invalid_tool.json"
+	require.NoError(t, os.WriteFile(path, []byte(`{"metadata":`), 0600))
+	defer func() { _ = os.Remove(path) }()
+
+	require.NoError(t, toolValidateCmd.Flags().Set("file", path))
+	err := toolValidateCmd.RunE(toolValidateCmd, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "parse JSON")
+}
+
+func TestDecodeToolDocuments_AcceptsGeneratedYAMLSequenceAndDocuments(t *testing.T) {
+	data := []byte(`- apiVersion: erpbridge.io/v1
+  kind: MCPTool
+  metadata:
+    name: first
+    version: 1.0.0
+---
+apiVersion: erpbridge.io/v1
+kind: MCPTool
+metadata:
+  name: second
+  version: 1.0.0
+`)
+
+	tools, err := decodeToolDocuments(data, "tools.yaml")
+	require.NoError(t, err)
+	require.Len(t, tools, 2)
+	require.Equal(t, "first", tools[0].Metadata.Name)
+	require.Equal(t, "second", tools[1].Metadata.Name)
 }

@@ -95,7 +95,7 @@ spec:
     credentialRef: ERP_FINANCE_KEY # Resolves to ENV["ERP_FINANCE_KEY"]
   cache:
     enabled: false # Don't cache write operations
-    invalidateOn: ["list_purchase_invoices"] # Flush list cache when a new one is created
+    flushOn: ["list_purchase_invoices"] # Flush list cache when a new one is created
 ```
 
 ---

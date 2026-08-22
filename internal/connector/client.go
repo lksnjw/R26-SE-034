@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/nimendra/ERPBridge/internal/logger"
-	"github.com/nimendra/ERPBridge/internal/metrics"
+	"github.com/nmdra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/metrics"
 	"github.com/sony/gobreaker"
 )
 

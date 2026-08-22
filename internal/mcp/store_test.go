@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,7 +72,7 @@ func TestStore(t *testing.T) {
 	t.Run("GetStateHash", func(t *testing.T) {
 		hash, err := store.GetStateHash()
 		require.NoError(t, err)
-		assert.Contains(t, hash, "2-") // Count is 2
+		assert.Len(t, hash, 64)
 	})
 
 	t.Run("Delete", func(t *testing.T) {
@@ -88,7 +89,7 @@ func TestStore(t *testing.T) {
 
 		hash, err := store.GetStateHash()
 		require.NoError(t, err)
-		assert.Contains(t, hash, "2-") // Count remains 2
+		assert.Len(t, hash, 64)
 	})
 
 	t.Run("HardDelete", func(t *testing.T) {
@@ -103,7 +104,7 @@ func TestStore(t *testing.T) {
 		assert.Error(t, err) // Not found
 		hash, err := store.GetStateHash()
 		require.NoError(t, err)
-		assert.Contains(t, hash, "1-") // Count is now 1
+		assert.Len(t, hash, 64)
 	})
 }
 
@@ -131,7 +132,55 @@ func TestStore_GetStateHash_Empty(t *testing.T) {
 
 	hash, err := store.GetStateHash()
 	require.NoError(t, err)
-	assert.Equal(t, "0-0-", hash) // 0 rows, 0 sum, empty max(updated_at)
+	assert.Equal(t, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", hash)
+}
+
+func TestStore_NewStore_MigratesMissingActiveColumn(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "legacy.db")
+
+	legacy, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	_, err = legacy.Exec(`CREATE TABLE tools (
+		name TEXT,
+		version TEXT,
+		module TEXT,
+		data TEXT,
+		created_at DATETIME,
+		updated_at DATETIME,
+		PRIMARY KEY (name, version)
+	)`)
+	require.NoError(t, err)
+	_, err = legacy.Exec(`INSERT INTO tools (name, version, module, data) VALUES ('legacy', '1.0.0', 'mod', '{}')`)
+	require.NoError(t, err)
+	require.NoError(t, legacy.Close())
+
+	store, err := NewStore(dbPath)
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+
+	var active int
+	err = store.db.QueryRow(`SELECT is_active FROM tools WHERE name = 'legacy'`).Scan(&active)
+	require.NoError(t, err)
+	assert.Equal(t, 1, active)
+	tools, err := store.List()
+	require.NoError(t, err)
+	assert.Len(t, tools, 1)
+}
+
+func TestStore_GetStateHash_RenameChangesHash(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "state.db"))
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+
+	require.NoError(t, store.Save(&Tool{Metadata: Metadata{Name: "first", Version: testVersion100, IsActive: true}}))
+	first, err := store.GetStateHash()
+	require.NoError(t, err)
+	require.NoError(t, store.HardDelete("first", testVersion100))
+	require.NoError(t, store.Save(&Tool{Metadata: Metadata{Name: "second", Version: testVersion100, IsActive: true}}))
+	second, err := store.GetStateHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, first, second)
 }
 
 func TestStore_DBClosed(t *testing.T) {

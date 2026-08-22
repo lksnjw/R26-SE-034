@@ -37,7 +37,7 @@ Set `APP_ENV=production`.
 
 ### Do I need Redis?
 
-No. The cache is optional. If `REDIS_URL` is empty, the server disables the cache and tool calls still work. The cache endpoints return `503`.
+No. The cache uses a bounded in-memory LRU when `REDIS_URL` is empty. Set `CACHE_MEMORY_MAX_ENTRIES=0` to disable memory-cache storage. If `REDIS_URL` is set, Redis remains the selected backend even when it is unreachable; the server reports the backend error instead of silently using memory.
 
 ## Tools & Schemas
 

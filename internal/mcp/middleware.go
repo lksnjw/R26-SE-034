@@ -10,25 +10,37 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/nimendra/ERPBridge/internal/logger"
-	"github.com/nimendra/ERPBridge/internal/metrics"
+	"github.com/nmdra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/metrics"
 	"golang.org/x/time/rate"
 )
 
 // RateLimitMiddleware provides per-session rate limiting for tool execution.
 type RateLimitMiddleware struct {
-	limiters map[string]*rate.Limiter
-	mutex    sync.RWMutex
+	limiters map[string]*limiterEntry
+	mutex    sync.Mutex
 	rate     rate.Limit
 	burst    int
+	now      func() time.Time
 }
+
+type limiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+const (
+	maxLimiterEntries = 10000
+	limiterIdleTTL    = 15 * time.Minute
+)
 
 // NewRateLimitMiddleware initializes a new RateLimitMiddleware with the given rate and burst.
 func NewRateLimitMiddleware(requestsPerSecond float64, burst int) *RateLimitMiddleware {
 	return &RateLimitMiddleware{
-		limiters: make(map[string]*rate.Limiter),
+		limiters: make(map[string]*limiterEntry),
 		rate:     rate.Limit(requestsPerSecond),
 		burst:    burst,
+		now:      time.Now,
 	}
 }
 
@@ -36,27 +48,49 @@ func (m *RateLimitMiddleware) getLimiter(sessionID string) *rate.Limiter {
 	if sessionID == "" {
 		sessionID = "anonymous"
 	}
-	m.mutex.RLock()
-	limiter, exists := m.limiters[sessionID]
-	m.mutex.RUnlock()
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 
-	if !exists {
-		m.mutex.Lock()
-		limiter = rate.NewLimiter(m.rate, m.burst)
-		m.limiters[sessionID] = limiter
-		m.mutex.Unlock()
+	now := m.now()
+	if entry, exists := m.limiters[sessionID]; exists {
+		entry.lastSeen = now
+		return entry.limiter
 	}
 
+	if len(m.limiters) >= maxLimiterEntries {
+		for key, entry := range m.limiters {
+			if now.Sub(entry.lastSeen) > limiterIdleTTL {
+				delete(m.limiters, key)
+			}
+		}
+	}
+
+	limiter := rate.NewLimiter(m.rate, m.burst)
+	m.limiters[sessionID] = &limiterEntry{limiter: limiter, lastSeen: now}
 	return limiter
+}
+
+type rateLimitPrincipalKey struct{}
+
+// WithRateLimitPrincipal attaches an authenticated identity to the limiter context.
+func WithRateLimitPrincipal(ctx context.Context, principal string) context.Context {
+	return context.WithValue(ctx, rateLimitPrincipalKey{}, principal)
+}
+
+func rateLimitPrincipal(ctx context.Context) string {
+	principal, _ := ctx.Value(rateLimitPrincipalKey{}).(string)
+	return principal
 }
 
 // Handle returns a server.ToolHandlerMiddleware that enforces rate limits.
 func (m *RateLimitMiddleware) Handle() server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			sessionID := ""
+			sessionID := rateLimitPrincipal(ctx)
 			if sess := server.ClientSessionFromContext(ctx); sess != nil {
-				sessionID = sess.SessionID()
+				if sessionID == "" {
+					sessionID = sess.SessionID()
+				}
 			}
 			limiter := m.getLimiter(sessionID)
 
@@ -88,7 +122,7 @@ func LoggingMiddleware(log *slog.Logger) server.ToolHandlerMiddleware {
 
 			ctx = logger.WithLogger(ctx, toolLog)
 
-			toolLog.InfoContext(ctx, "tool execution started", slog.Any("arguments", req.Params.Arguments))
+			toolLog.InfoContext(ctx, "tool execution started", slog.Any("arguments", logger.RedactArgs(req.Params.Arguments)))
 
 			result, err := next(ctx, req)
 
@@ -134,22 +168,27 @@ func MetricsMiddleware() server.ToolHandlerMiddleware {
 func (s *Server) CacheMiddleware(t *Tool) server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			if s.cache == nil || t.Spec.Cache == nil || !t.Spec.Cache.Enabled {
+			if s.cache == nil || t.Spec.Cache == nil {
 				return next(ctx, req)
 			}
 
 			args, _ := req.Params.Arguments.(map[string]any)
 			role := "" // Extract from context if needed in future
 
-			// READ from cache
-			entry, err := s.cache.Get(ctx, t.Metadata.Name, role, args, *t.Spec.Cache)
-			if err == nil && entry != nil && entry.HitType != "miss" {
-				metrics.CacheHitsTotal.WithLabelValues(entry.HitType).Inc()
-				s.log.Debug("cache hit", slog.String("tool", t.Metadata.Name), slog.String("type", entry.HitType))
-				return mcp.NewToolResultText(string(entry.Response)), nil
-			}
+			if t.Spec.Cache.Enabled {
+				// READ from cache
+				entry, err := s.cache.Get(ctx, t.Metadata.Name, role, args, *t.Spec.Cache)
+				if err == nil && entry != nil && entry.HitType != "miss" {
+					var cachedResult mcp.CallToolResult
+					if unmarshalErr := json.Unmarshal(entry.Response, &cachedResult); unmarshalErr == nil {
+						metrics.CacheHitsTotal.WithLabelValues(entry.HitType).Inc()
+						s.log.Debug("cache hit", slog.String("tool", t.Metadata.Name), slog.String("type", entry.HitType))
+						return &cachedResult, nil
+					}
+				}
 
-			metrics.CacheMissesTotal.Inc()
+				metrics.CacheMissesTotal.Inc()
+			}
 
 			// Execute next
 			result, err := next(ctx, req)
@@ -157,10 +196,14 @@ func (s *Server) CacheMiddleware(t *Tool) server.ToolHandlerMiddleware {
 				return result, err
 			}
 
-			// WRITE to cache
-			respJSON, _ := json.Marshal(result.Content)
-			if err := s.cache.Set(ctx, t.Metadata.Name, role, args, respJSON, *t.Spec.Cache); err != nil {
-				s.log.Warn("failed to cache result", slog.String("error", err.Error()))
+			// WRITE to cache only for enabled read caching.
+			if t.Spec.Cache.Enabled {
+				respJSON, marshalErr := json.Marshal(result)
+				if marshalErr != nil {
+					s.log.Warn("failed to marshal cache result", slog.String("error", marshalErr.Error()))
+				} else if cacheErr := s.cache.Set(ctx, t.Metadata.Name, role, args, respJSON, *t.Spec.Cache); cacheErr != nil {
+					s.log.Warn("failed to cache result", slog.String("error", cacheErr.Error()))
+				}
 			}
 
 			// Invalidation (Auto-Flush)

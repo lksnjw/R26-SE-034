@@ -2,11 +2,13 @@ package idp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/nimendra/ERPBridge/internal/logger"
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nmdra/ERPBridge/internal/logger"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -86,4 +88,26 @@ func TestGenerator_Generate(t *testing.T) {
 	toolPath := filepath.Join(tempDir, "hr", "simple-test.json")
 	_, err = os.Stat(toolPath)
 	assert.NoError(t, err)
+}
+
+func TestDereferenceSchema_RemovesRefsAndRejectsUnknownRefs(t *testing.T) {
+	component := openapi3.NewStringSchema()
+	doc := &openapi3.T{Components: &openapi3.Components{
+		Schemas: openapi3.Schemas{
+			"Thing": &openapi3.SchemaRef{Ref: "#/components/schemas/Thing", Value: component},
+		},
+	}}
+	root := openapi3.NewObjectSchema()
+	root.Properties["thing"] = &openapi3.SchemaRef{Ref: "#/components/schemas/Thing", Value: component}
+
+	resolved, err := dereferenceSchema(doc, root)
+	assert.NoError(t, err)
+	data, err := json.Marshal(resolved)
+	assert.NoError(t, err)
+	assert.NotContains(t, string(data), `"$ref"`)
+
+	root.Properties["missing"] = &openapi3.SchemaRef{Ref: "#/components/schemas/Missing"}
+	_, err = dereferenceSchema(doc, root)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unresolved reference")
 }

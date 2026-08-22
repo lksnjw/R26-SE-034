@@ -6,13 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"regexp"
 	"sync"
 
-	"github.com/m-mizutani/masq"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/nimendra/ERPBridge/internal/types"
 )
 
 // MCPHandler is an slog.Handler that forwards redacted log messages to MCP clients.
@@ -28,37 +25,8 @@ type MCPHandler struct {
 func NewMCPHandler(srv *server.MCPServer, loggerName string) *MCPHandler {
 	buf := &bytes.Buffer{}
 	inner := slog.NewJSONHandler(buf, &slog.HandlerOptions{
-		Level: slog.LevelDebug - 8, // Pass all levels to Handle() for per-session filtering
-		ReplaceAttr: masq.New(
-			// Redact by custom types
-			masq.WithType[types.APIToken](),
-			masq.WithType[types.Password](),
-			masq.WithType[types.AuthHeader](),
-			masq.WithType[types.SecretKey](),
-			masq.WithType[types.PII](),
-
-			// Redact by struct tag
-			masq.WithTag("secret"),
-			masq.WithTag("pii"),
-			masq.WithTag("masq"),
-
-			// Redact by field name prefix
-			masq.WithFieldPrefix("Secret"),
-			masq.WithFieldPrefix("Private"),
-
-			// Redact by exact field name (covers map keys too)
-			masq.WithFieldName("password"),
-			masq.WithFieldName("token"),
-			masq.WithFieldName("api_key"),
-			masq.WithFieldName("secret"),
-			masq.WithFieldName("authorization"),
-			masq.WithFieldName("ssn"),
-			masq.WithFieldName("national_id"),
-			masq.WithFieldName("bank_account"),
-
-			// Redact by regex (e.g., Bearer tokens)
-			masq.WithRegex(regexp.MustCompile(`(?i)bearer\s+\S+`)),
-		),
+		Level:       slog.LevelDebug - 8, // Pass all levels to Handle() for per-session filtering
+		ReplaceAttr: RedactAttr,
 	})
 
 	return &MCPHandler{

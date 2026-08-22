@@ -135,5 +135,5 @@ func TestToolRegistry_Remove(t *testing.T) {
 	assert.Error(t, err)
 
 	// Safe to remove non-existent
-	registry.Remove("missing", "1.0.0")
+	registry.Remove("missing", testVersion100)
 }

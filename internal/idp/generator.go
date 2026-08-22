@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/nimendra/ERPBridge/internal/logger"
-	"github.com/nimendra/ERPBridge/internal/mcp"
+	"github.com/nmdra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/mcp"
 )
 
 // Generator transforms API definitions and OpenAPI specs into declarative MCP tools.
@@ -267,9 +267,14 @@ func (g *Generator) GenerateFromOpenAPI(ctx context.Context, api API, openapiURL
 				resp200 = op.Responses.Status(201)
 			}
 			if resp200 != nil && resp200.Value != nil && resp200.Value.Content.Get("application/json") != nil {
-				schema := resp200.Value.Content.Get("application/json").Schema.Value
-				var outputSchema any = schema
-				tool.Spec.OutputSchema = &outputSchema
+				schemaRef := resp200.Value.Content.Get("application/json").Schema
+				if schemaRef != nil && schemaRef.Value != nil {
+					outputSchema, err := dereferenceSchema(doc, schemaRef.Value)
+					if err != nil {
+						return nil, fmt.Errorf("operation %q path %q: dereference output schema: %w", toolName, path, err)
+					}
+					tool.Spec.OutputSchema = &outputSchema
+				}
 			}
 
 			if err := g.Save(tool); err != nil {
@@ -281,6 +286,79 @@ func (g *Generator) GenerateFromOpenAPI(ctx context.Context, api API, openapiURL
 	}
 
 	return tools, nil
+}
+
+func dereferenceSchema(doc *openapi3.T, schema *openapi3.Schema) (any, error) {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, fmt.Errorf("marshal schema: %w", err)
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, fmt.Errorf("decode schema: %w", err)
+	}
+	refs := make(map[string]*openapi3.Schema)
+	if doc.Components != nil {
+		for ref, schemaRef := range doc.Components.Schemas {
+			if schemaRef != nil && schemaRef.Value != nil {
+				refs["#/components/schemas/"+ref] = schemaRef.Value
+			}
+		}
+	}
+	return resolveSchemaValue(value, refs, "output")
+}
+
+func resolveSchemaValue(value any, refs map[string]*openapi3.Schema, location string) (any, error) {
+	switch current := value.(type) {
+	case map[string]any:
+		if ref, ok := current["$ref"].(string); ok {
+			schema, exists := refs[ref]
+			if !exists || schema == nil {
+				return nil, fmt.Errorf("unresolved reference %q at %s", ref, location)
+			}
+			raw, err := json.Marshal(schema)
+			if err != nil {
+				return nil, fmt.Errorf("marshal reference %q: %w", ref, err)
+			}
+			var resolved any
+			if err := json.Unmarshal(raw, &resolved); err != nil {
+				return nil, fmt.Errorf("decode reference %q: %w", ref, err)
+			}
+			resolved, err = resolveSchemaValue(resolved, refs, location+"/"+ref)
+			if err != nil {
+				return nil, err
+			}
+			resolvedMap, ok := resolved.(map[string]any)
+			if !ok {
+				return resolved, nil
+			}
+			for key, child := range current {
+				if key != "$ref" {
+					resolvedMap[key] = child
+				}
+			}
+			current = resolvedMap
+		}
+		for key, child := range current {
+			resolved, err := resolveSchemaValue(child, refs, location+"/"+key)
+			if err != nil {
+				return nil, err
+			}
+			current[key] = resolved
+		}
+		return current, nil
+	case []any:
+		for i, child := range current {
+			resolved, err := resolveSchemaValue(child, refs, fmt.Sprintf("%s[%d]", location, i))
+			if err != nil {
+				return nil, err
+			}
+			current[i] = resolved
+		}
+		return current, nil
+	default:
+		return value, nil
+	}
 }
 
 // Save writes the MCP tool definition to disk as formatted JSON.

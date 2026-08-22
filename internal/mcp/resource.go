@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nimendra/ERPBridge/internal/connector"
+	"github.com/nmdra/ERPBridge/internal/connector"
 )
 
 // Resource represents a read-only data source that can be accessed by an AI agent.
@@ -33,23 +33,28 @@ func (r *Resource) Execute(ctx context.Context, _ string, conn ERPConnector) (st
 		return "", fmt.Errorf("resource %s has no endpoint configuration", r.Name)
 	}
 
+	cred, err := resolveCredential(r.Security.CredentialRef)
+	if err != nil {
+		return "", err
+	}
+
 	ep := connector.EndpointConfig{
 		Method:  http.MethodGet,
 		Path:    r.Execution.Endpoint,
 		BaseURL: "",
 		Auth: connector.AuthConfig{
 			Type: r.Security.AuthType,
-			Key:  os.Getenv(r.Security.CredentialRef),
+			Key:  cred,
 		},
-	}
-
-	if ep.Auth.Key == "" {
-		ep.Auth.Key = r.Security.CredentialRef
 	}
 
 	// Handle relative paths
 	if !strings.HasPrefix(ep.Path, "http") {
-		ep.Path = "http://localhost:8081" + ep.Path
+		baseURL := strings.TrimSuffix(os.Getenv("ERP_BASE_URL"), "/")
+		if baseURL == "" {
+			baseURL = "http://localhost:8081"
+		}
+		ep.Path = baseURL + "/" + strings.TrimPrefix(ep.Path, "/")
 	}
 
 	resp, err := conn.Call(ctx, ep, nil, nil)

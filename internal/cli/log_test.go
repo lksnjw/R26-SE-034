@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/nimendra/ERPBridge/internal/config"
+	"github.com/nmdra/ERPBridge/internal/config"
 )
 
 func TestShouldPrint(t *testing.T) {
@@ -64,6 +64,14 @@ func TestShouldPrint(t *testing.T) {
 	logRequestID = "req-2"
 	if shouldPrint(msg) {
 		t.Errorf("expected false")
+	}
+
+	logComponent = "mcp"
+	if shouldPrint(`{"message":"component\":\"mcp"}`) {
+		t.Errorf("expected substring-only match to be filtered")
+	}
+	if !shouldPrint(`not-json`) {
+		t.Errorf("malformed records should pass through")
 	}
 }
 

@@ -10,15 +10,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	mcp_server "github.com/mark3labs/mcp-go/server"
-	"github.com/nimendra/ERPBridge/internal/banner"
-	"github.com/nimendra/ERPBridge/internal/cache"
-	"github.com/nimendra/ERPBridge/internal/connector"
-	"github.com/nimendra/ERPBridge/internal/logger"
-	"github.com/nimendra/ERPBridge/internal/mcp"
+	"github.com/nmdra/ERPBridge/internal/banner"
+	"github.com/nmdra/ERPBridge/internal/cache"
+	"github.com/nmdra/ERPBridge/internal/connector"
+	"github.com/nmdra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
@@ -84,11 +85,20 @@ func main() {
 		} else {
 			rdb := redis.NewClient(opt)
 			cacheMgr = cache.NewManager(rdb, rootLog)
-			if err := cacheMgr.EnsureIndex(context.Background()); err != nil {
-				slog.Warn("failed to ensure redis index", slog.String("error", err.Error()))
-			}
-			slog.Info("cache initialized", slog.String("redis_url", redisURL))
+			slog.Info("cache initialized", slog.String("backend", "redis"))
 		}
+	} else {
+		maxEntries := 10000
+		if value := os.Getenv("CACHE_MEMORY_MAX_ENTRIES"); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 0 {
+				slog.Warn("invalid CACHE_MEMORY_MAX_ENTRIES; using default", slog.String("value", value), slog.Int("default", maxEntries))
+			} else {
+				maxEntries = parsed
+			}
+		}
+		cacheMgr = cache.NewMemoryManager(maxEntries, rootLog)
+		slog.Info("cache initialized", slog.String("backend", "memory"), slog.Int("max_entries", maxEntries))
 	}
 
 	conn := connector.NewClient(rootLog)
@@ -110,7 +120,9 @@ func main() {
 
 	if useStdio {
 		slog.Info("ERPBridge Server running in STDIO mode")
-		if err := mcp_server.ServeStdio(server.MCPServer()); err != nil {
+		stdioServer := mcp_server.NewStdioServer(server.MCPServer())
+		filteredWriter := mcp.NewToolListFilterWriter(os.Stdout, server.FilterToolsList)
+		if err := stdioServer.Listen(context.Background(), os.Stdin, filteredWriter); err != nil {
 			slog.Error("stdio server failed", slog.String("error", err.Error()))
 		}
 		return

@@ -18,6 +18,12 @@ GET /apis/erpbridge.io/v1/tools
 
 Returns a JSON array of tool definitions.
 
+Use the optional exact-match query parameters `name` and `version` to request a specific tool version:
+
+```http
+GET /apis/erpbridge.io/v1/tools?name=list_employees&version=1.0.0
+```
+
 ### Apply a Tool
 
 ```http
@@ -25,7 +31,7 @@ POST /apis/erpbridge.io/v1/tools
 Content-Type: application/json
 ```
 
-Body: one tool definition (kind `MCPTool`). Returns `201 Created` on success.
+Body: one JSON tool definition (kind `MCPTool`). Returns `201 Created` on success. The `bridgectl tool apply` command also accepts the YAML sequence or multi-document YAML emitted by `bridgectl tool generate` and sends each tool definition separately.
 
 ### Delete a Tool
 
@@ -68,14 +74,16 @@ Body:
 
 The call goes through the middleware chain: rate limiting, cache, and resilience.
 
+This endpoint resolves registered tools only. MCP built-ins such as `system.progress_test` are available through MCP `tools/call`, but not through this REST endpoint.
+
+The REST endpoint returns the legacy `ToolResult` compatibility shape. MCP clients receive the MCP result envelope, including `content` and any structured result fields. SDK clients must preserve that envelope; the text content can contain JSON encoded by the ERPBridge compatibility handler and must not be flattened by assuming it is the whole response.
+
 ## Cache
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/cache/stats` | `GET` | Cache key counts and memory usage. Returns `503` when the cache is disabled. |
-| `/api/cache/flush` | `GET` | Flush cache entries. Query params: `tool`, `module`, `all=true`. Returns `503` when the cache is disabled. |
-| `/api/cache/list` | `GET` | Reserved. Returns `501 Not Implemented`. |
-| `/api/cache/inspect` | `GET` | Reserved. Returns `501 Not Implemented`. |
+| `/api/cache/stats` | `GET` | Cache key counts and memory usage. Works with Redis and the bounded in-memory backend. |
+| `/api/cache/flush` | `GET` | Flush cache entries. Query params: `tool`, `module`, `all=true`. A module flush covers all stored versions, including inactive versions. |
 
 ## Logs
 
@@ -100,4 +108,4 @@ The call goes through the middleware chain: rate limiting, cache, and resilience
 
 ## Error Responses
 
-The server uses standard HTTP status codes. For cache endpoints, `503` means the cache is not enabled.
+The server uses standard HTTP status codes. A configured Redis backend remains the selected backend when Redis is unreachable; the server does not silently fall back to memory in that case.

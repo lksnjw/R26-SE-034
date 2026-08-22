@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"github.com/nimendra/ERPBridge/internal/banner"
+	"github.com/nmdra/ERPBridge/internal/banner"
 	"github.com/spf13/cobra"
 )
 

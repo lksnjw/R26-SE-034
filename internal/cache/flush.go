@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/nimendra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/logger"
 )
 
 // FlushTool removes all exact cache entries for a given tool name.
@@ -32,6 +32,9 @@ func (m *Manager) FlushTool(ctx context.Context, toolName string) (int, error) {
 
 // FlushModule removes all exact cache entries for every tool in a module.
 func (m *Manager) FlushModule(ctx context.Context, module string) (int, error) {
+	if module == "" {
+		return m.backend.FlushAll(ctx)
+	}
 	pattern := fmt.Sprintf("exact:%s.*:*", module)
 	exact, err := m.scanAndDelete(ctx, pattern)
 	if err != nil {
@@ -74,11 +77,19 @@ func (m *Manager) FlushToolInternal(ctx context.Context, toolName string) (int, 
 }
 
 func (m *Manager) scanAndDelete(ctx context.Context, pattern string) (int, error) {
-	var count int
-	iter := m.rdb.Scan(ctx, 0, pattern, 100).Iterator()
-	for iter.Next(ctx) {
-		m.rdb.Del(ctx, iter.Val())
-		count++
+	keys, err := m.backend.Scan(ctx, pattern)
+	if err != nil {
+		return 0, err
 	}
-	return count, iter.Err()
+
+	count := 0
+	for start := 0; start < len(keys); start += 100 {
+		end := min(start+100, len(keys))
+		deleted, err := m.backend.Delete(ctx, keys[start:end]...)
+		if err != nil {
+			return count, err
+		}
+		count += deleted
+	}
+	return count, nil
 }

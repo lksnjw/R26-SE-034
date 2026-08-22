@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -57,8 +58,36 @@ func (s *Store) init() error {
 		return fmt.Errorf("initialize schema: %w", err)
 	}
 
-	// Migration: Add is_active column if it doesn't exist (for existing DBs)
-	_, _ = s.db.Exec("ALTER TABLE tools ADD COLUMN is_active INTEGER DEFAULT 1")
+	rows, err := s.db.Query("PRAGMA table_info(tools)")
+	if err != nil {
+		return fmt.Errorf("inspect tools schema: %w", err)
+	}
+	hasActiveColumn := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan tools schema: %w", err)
+		}
+		if name == "is_active" {
+			hasActiveColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate tools schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close tools schema: %w", err)
+	}
+	if !hasActiveColumn {
+		if _, err := s.db.Exec("ALTER TABLE tools ADD COLUMN is_active INTEGER DEFAULT 1"); err != nil {
+			return fmt.Errorf("migrate tools schema: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -117,18 +146,55 @@ func (s *Store) List() ([]*Tool, error) {
 	return tools, nil
 }
 
+// ListByModule returns every stored tool version in a module, including inactive tools.
+func (s *Store) ListByModule(module string) ([]*Tool, error) {
+	rows, err := s.db.Query(`SELECT data FROM tools WHERE module = ? ORDER BY name, version DESC`, module)
+	if err != nil {
+		return nil, fmt.Errorf("query module tools: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tools []*Tool
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, fmt.Errorf("scan module tool: %w", err)
+		}
+		var tool Tool
+		if err := json.Unmarshal([]byte(data), &tool); err != nil {
+			return nil, fmt.Errorf("unmarshal module tool: %w", err)
+		}
+		tools = append(tools, &tool)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate module tools: %w", err)
+	}
+	return tools, nil
+}
+
 // GetStateHash returns a string representing the current state of the tools table.
 // This is used to short-circuit reconciliation if no changes have occurred.
 func (s *Store) GetStateHash() (string, error) {
-	query := `SELECT COUNT(*), COALESCE(SUM(is_active), 0), COALESCE(MAX(updated_at), '') FROM tools`
-	var count int
-	var activeSum int
-	var maxUpdated string
-	err := s.db.QueryRow(query).Scan(&count, &activeSum, &maxUpdated)
+	rows, err := s.db.Query(`SELECT name, version, is_active, updated_at FROM tools ORDER BY name, version`)
 	if err != nil {
 		return "", fmt.Errorf("get state hash: %w", err)
 	}
-	return fmt.Sprintf("%d-%d-%s", count, activeSum, maxUpdated), nil
+	defer func() { _ = rows.Close() }()
+
+	hash := sha256.New()
+	for rows.Next() {
+		var name, version string
+		var updatedAt sql.NullString
+		var isActive int
+		if err := rows.Scan(&name, &version, &isActive, &updatedAt); err != nil {
+			return "", fmt.Errorf("scan state hash row: %w", err)
+		}
+		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%d\x00%s\x00", name, version, isActive, updatedAt.String)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterate state hash rows: %w", err)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 // Get retrieves a specific version of a tool.

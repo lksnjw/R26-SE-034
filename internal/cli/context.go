@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/goccy/go-yaml"
-	"github.com/nimendra/ERPBridge/internal/output"
+	"github.com/nmdra/ERPBridge/internal/output"
 	"github.com/spf13/cobra"
 )
 

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nimendra/ERPBridge/internal/idp"
+	"github.com/nmdra/ERPBridge/internal/idp"
 	"github.com/stretchr/testify/require"
 )
 

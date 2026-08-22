@@ -8,10 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
-	"github.com/nimendra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/logger"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -32,21 +31,29 @@ type Entry struct {
 
 // Manager coordinates Redis exact-match caching and invalidations.
 type Manager struct {
-	rdb *redis.Client
-	log *slog.Logger
+	backend Backend
+	log     *slog.Logger
 }
 
 // NewManager creates a new cache Manager backed by Redis.
 func NewManager(rdb *redis.Client, rootLog *slog.Logger) *Manager {
-	return &Manager{
-		rdb: rdb,
-		log: logger.Component(rootLog, "cache"),
-	}
+	return NewManagerWithBackend(NewRedisBackend(rdb), rootLog)
 }
 
-// EnsureIndex is a no-op since semantic caching is removed.
-func (m *Manager) EnsureIndex(_ context.Context) error {
-	return nil
+// NewMemoryManager creates a cache Manager backed by a bounded in-memory LRU.
+func NewMemoryManager(maxEntries int, rootLog *slog.Logger) *Manager {
+	return NewManagerWithBackend(NewMemoryBackend(maxEntries), rootLog)
+}
+
+// NewManagerWithBackend creates a cache Manager with an explicit backend.
+func NewManagerWithBackend(backend Backend, rootLog *slog.Logger) *Manager {
+	if rootLog == nil {
+		rootLog = slog.Default()
+	}
+	return &Manager{
+		backend: backend,
+		log:     logger.Component(rootLog, "cache"),
+	}
 }
 
 // Get tries exact match.
@@ -82,8 +89,16 @@ func (m *Manager) Set(ctx context.Context, tool, role string, args map[string]an
 
 	// Exact cache
 	key := exactKey(tool, roleKey, args)
-	if err := m.rdb.Set(ctx, key, []byte(response), ttl).Err(); err != nil {
-		log.Error("redis error", slog.String("operation", "SET"), slog.String("error", err.Error()))
+	envelope := cacheEnvelope{
+		Response: append(json.RawMessage(nil), response...),
+		CachedAt: time.Now().UTC(),
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal cache entry: %w", err)
+	}
+	if err := m.backend.Set(ctx, key, payload, ttl); err != nil {
+		log.Error("cache backend error", slog.String("operation", "SET"), slog.String("error", err.Error()))
 		return fmt.Errorf("exact cache set: %w", err)
 	}
 	log.Debug("cache stored", slog.String("key", key), slog.Int("ttl_seconds", cfg.TTLSeconds))
@@ -113,7 +128,7 @@ func argsHash(args map[string]any) string {
 	}
 	b, _ := json.Marshal(ordered)
 	h := sha256.Sum256(b)
-	return fmt.Sprintf("%x", h[:4]) // 8 hex chars
+	return fmt.Sprintf("%x", h[:])
 }
 
 type mapEntry struct {
@@ -139,19 +154,10 @@ type Stats struct {
 
 // Stats returns current exact key count and used memory from Redis.
 func (m *Manager) Stats(ctx context.Context) (Stats, error) {
-	exact, _ := m.rdb.Do(ctx, "DBSIZE").Int64()
-
-	info, _ := m.rdb.Info(ctx, "memory").Result()
-	var memory string
-	for _, line := range sort.StringSlice(strings.Split(info, "\n")) {
-		if after, ok := strings.CutPrefix(line, "used_memory_human:"); ok {
-			memory = after
-			break
-		}
+	stats, err := m.backend.Stats(ctx)
+	if err != nil {
+		return Stats{}, err
 	}
 
-	return Stats{
-		ExactKeys:   exact,
-		RedisMemory: memory,
-	}, nil
+	return Stats(stats), nil
 }

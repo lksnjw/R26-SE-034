@@ -11,15 +11,25 @@ import (
 )
 
 func (m *Manager) exactGet(ctx context.Context, key string) (*Entry, error) {
-	val, err := m.rdb.Get(ctx, key).Bytes()
-	if errors.Is(err, redis.Nil) {
+	val, err := m.backend.Get(ctx, key)
+	if errors.Is(err, redis.Nil) || errors.Is(err, errCacheMiss) {
 		return nil, nil // clean miss
 	}
 	if err != nil {
 		return nil, err
 	}
+
+	var envelope cacheEnvelope
+	if err := json.Unmarshal(val, &envelope); err != nil || len(envelope.Response) == 0 || envelope.CachedAt.IsZero() {
+		return nil, nil // legacy or corrupt entries are misses
+	}
 	return &Entry{
-		Response: json.RawMessage(val),
-		CachedAt: time.Now(), // approximate
+		Response: envelope.Response,
+		CachedAt: envelope.CachedAt,
 	}, nil
+}
+
+type cacheEnvelope struct {
+	Response json.RawMessage `json:"response"`
+	CachedAt time.Time       `json:"cachedAt"`
 }

@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/nimendra/ERPBridge/internal/cache"
-	"github.com/nimendra/ERPBridge/internal/connector"
-	"github.com/nimendra/ERPBridge/internal/logger"
+	"github.com/nmdra/ERPBridge/internal/cache"
+	"github.com/nmdra/ERPBridge/internal/connector"
+	"github.com/nmdra/ERPBridge/internal/logger"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -34,6 +34,7 @@ const (
 	testPromptName  = "test-prompt"
 	testFieldName   = "name"
 	testString      = "test"
+	testValue       = "value"
 )
 
 func TestServer_RegisterResource(t *testing.T) {
@@ -273,17 +274,6 @@ func TestServer_HttpEndpoints(t *testing.T) {
 	s.handleCacheFlush(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 
-	// Test list, inspect (not implemented)
-	req = httptest.NewRequest("GET", "/api/cache/list", nil)
-	w = httptest.NewRecorder()
-	s.handleCacheList(w, req)
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
-
-	req = httptest.NewRequest("GET", "/api/cache/inspect", nil)
-	w = httptest.NewRecorder()
-	s.handleCacheInspect(w, req)
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
-
 	// Test Log recent
 	log.Info("test log msg")
 	time.Sleep(100 * time.Millisecond)
@@ -339,7 +329,7 @@ func TestServer_HandleToolDelete(t *testing.T) {
 	tool := &Tool{
 		Metadata: Metadata{
 			Name:    "delete-me",
-			Version: "1.0.0",
+			Version: testVersion100,
 			Module:  "test",
 		},
 	}
@@ -354,13 +344,13 @@ func TestServer_HandleToolDelete(t *testing.T) {
 	})
 
 	t.Run("SoftDelete", func(t *testing.T) {
-		req := httptest.NewRequest("DELETE", "/apis/erpbridge.io/v1/tools?name=delete-me&version=1.0.0", nil)
+		req := httptest.NewRequest("DELETE", "/apis/erpbridge.io/v1/tools?name=delete-me&version="+testVersion100, nil)
 		w := httptest.NewRecorder()
 		s.handleToolDelete(w, req)
 		assert.Equal(t, http.StatusNoContent, w.Code)
 
 		// Verify soft-deleted in store
-		dbTool, _ := s.store.Get("delete-me", "1.0.0")
+		dbTool, _ := s.store.Get("delete-me", testVersion100)
 		assert.False(t, dbTool.Metadata.IsActive)
 	})
 
@@ -370,13 +360,43 @@ func TestServer_HandleToolDelete(t *testing.T) {
 		s.RegisterTool(tool)
 		_ = s.store.Save(tool)
 
-		req := httptest.NewRequest("DELETE", "/apis/erpbridge.io/v1/tools?name=delete-me&version=1.0.0&hard=true", nil)
+		req := httptest.NewRequest("DELETE", "/apis/erpbridge.io/v1/tools?name=delete-me&version="+testVersion100+"&hard=true", nil)
 		w := httptest.NewRecorder()
 		s.handleToolDelete(w, req)
 		assert.Equal(t, http.StatusNoContent, w.Code)
 
 		// Verify hard-deleted from store
-		_, err := s.store.Get("delete-me", "1.0.0")
+		_, err := s.store.Get("delete-me", testVersion100)
 		assert.Error(t, err)
 	})
+}
+
+func TestServer_HandleCacheFlushModuleIncludesInactiveTools(t *testing.T) {
+	log := logger.Init()
+	s := NewServer(nil, cache.NewMemoryManager(20, log), log, RateLimitConfig{RequestsPerSecond: 100, Burst: 100}, ":memory:")
+
+	for _, tool := range []*Tool{
+		{Metadata: Metadata{Name: "finance-active", Version: testVersion100, Module: "finance", IsActive: true}},
+		{Metadata: Metadata{Name: "finance-inactive", Version: testVersion110, Module: "finance", IsActive: false}},
+		{Metadata: Metadata{Name: "hr-active", Version: testVersion100, Module: "hr", IsActive: true}},
+	} {
+		assert.NoError(t, s.store.Save(tool))
+	}
+	cfg := cache.Config{Enabled: true}
+	assert.NoError(t, s.cache.Set(context.Background(), "finance-active", "", map[string]any{"id": 1}, []byte(`{"ok":true}`), cfg))
+	assert.NoError(t, s.cache.Set(context.Background(), "finance-inactive", "", map[string]any{"id": 1}, []byte(`{"ok":true}`), cfg))
+	assert.NoError(t, s.cache.Set(context.Background(), "hr-active", "", map[string]any{"id": 1}, []byte(`{"ok":true}`), cfg))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cache/flush?module=finance", nil)
+	w := httptest.NewRecorder()
+	s.handleCacheFlush(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"deleted":2`)
+	financeKeys, err := s.cache.Get(context.Background(), "finance-active", "", map[string]any{"id": 1}, cfg)
+	assert.NoError(t, err)
+	assert.Equal(t, "miss", financeKeys.HitType)
+	hrKeys, err := s.cache.Get(context.Background(), "hr-active", "", map[string]any{"id": 1}, cfg)
+	assert.NoError(t, err)
+	assert.Equal(t, "exact", hrKeys.HitType)
 }

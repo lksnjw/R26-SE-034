@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/nimendra/ERPBridge/internal/output"
+	"github.com/nmdra/ERPBridge/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +15,7 @@ var cacheCmd = &cobra.Command{
 	Use:   "cache",
 	Short: "Manage tool cache",
 	Long: `The cache command provides tools to monitor and manage the middleware's 
-Redis-based caching system. You can view real-time statistics 
+	backend-independent caching system. You can view real-time statistics
 and manually flush entries by tool, module, or for the entire system.`,
 }
 
@@ -23,7 +23,7 @@ var cacheStatsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show cache key counts and memory usage",
 	Long: `Display high-level statistics for the tool cache, 
-including total key counts and memory usage in Redis.`,
+including total key counts and backend memory usage when available.`,
 	Example: `  bridgectl cache stats`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, ok := cfg.Contexts[cfg.CurrentContext]
@@ -63,7 +63,7 @@ var (
 var cacheFlushCmd = &cobra.Command{
 	Use:   "flush [tool]",
 	Short: "Delete cache entries",
-	Long: `Manually invalidate cache entries stored in Redis. 
+	Long: `Manually invalidate cache entries stored by the configured cache backend.
 You can target a specific tool by name, an entire module using the --module flag, 
 or clear the entire cache with --all.`,
 	Example: `  bridgectl cache flush finance.get-invoices

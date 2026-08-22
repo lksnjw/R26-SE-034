@@ -62,7 +62,7 @@ func (h *broadcastHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	var buf strings.Builder
 	// Create a JSON handler that already has the attributes from WithAttrs
-	var h2 slog.Handler = slog.NewJSONHandler(&buf, nil)
+	var h2 slog.Handler = slog.NewJSONHandler(&buf, &slog.HandlerOptions{ReplaceAttr: RedactAttr})
 	if len(h.attrs) > 0 {
 		h2 = h2.WithAttrs(h.attrs)
 	}
