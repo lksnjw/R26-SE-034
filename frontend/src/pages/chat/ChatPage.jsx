@@ -1,7 +1,9 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import ChatHistory from "../../components/chat/ChatHistory";
 import ChatWindow from "../../components/chat/ChatWindow";
-import ChatArtifactPanel from "../../components/chat/ChatArtifactPanel";
+import WorkflowWorkspaceCanvas from "../../components/chat/WorkflowWorkspaceCanvas";
+import { useAuthContext } from "../../context/AuthContext";
+import { workspaceKey, writeWorkspaceValue } from "../../utils/workspaceSession";
 import { useChat } from "../../hooks/useChat";
 import { useChatSessions } from "../../hooks/useChatSessions";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -18,6 +20,10 @@ function ChatPage() {
   const navigate = useNavigate();
   const sessions = useChatSessions(sessionId);
   const chat = useChat(sessions.selectedSessionId);
+  const { user } = useAuthContext();
+  const draftKey = workspaceKey(user, `draft.${sessions.selectedSessionId || "new"}`);
+  const [pendingDraftKey, setPendingDraftKey] = useState(null);
+  const composerKey = pendingDraftKey || draftKey;
 
   // Auto-create a new session when redirected from "Edit in Chat"
   useEffect(() => {
@@ -29,8 +35,6 @@ function ChatPage() {
     }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const [showArtifact, setShowArtifact] = useState(true);
 
   const handleCreateSession = async () => {
     const session = await sessions.createSession("Workflow conversation");
@@ -49,22 +53,31 @@ function ChatPage() {
 
   const handleSend = async (text, options = {}) => {
     let sid = sessions.selectedSessionId;
-    if (!sid) {
-      const session = await sessions.createSession(text.slice(0, 64) || "Workflow conversation");
-      sid = session.id;
-      navigate(`/chat/${encodeURIComponent(sid)}`);
+    const creating = !sid;
+    if (creating) setPendingDraftKey(draftKey);
+    try {
+      if (creating) {
+        const session = await sessions.createSession(text.slice(0, 64) || "Workflow conversation");
+        sid = session.id;
+        writeWorkspaceValue(workspaceKey(user, `draft.${sid}`), text);
+        navigate(`/chat/${encodeURIComponent(sid)}`);
+      }
+      const editCtx = peekWorkflowForChatEdit();
+      const sendOptions = editCtx?.yaml
+        ? { ...options, workflowContext: { yaml: editCtx.yaml, name: editCtx.workflowName || "Workflow" } }
+        : options;
+      const result = await chat.send(text, sid, sendOptions);
+      if (result) writeWorkspaceValue(workspaceKey(user, `draft.${sid}`), "");
+      return result;
+    } finally {
+      if (creating) setPendingDraftKey(null);
     }
-    const editCtx = peekWorkflowForChatEdit();
-    const sendOptions = editCtx?.yaml
-      ? { ...options, workflowContext: { yaml: editCtx.yaml, name: editCtx.workflowName || "Workflow" } }
-      : options;
-    return chat.send(text, sid, sendOptions);
   };
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col lg:flex-row">
       {/* Session sidebar */}
-      <div className="w-52 flex-shrink-0 overflow-y-auto border-r border-gray-200 dark:border-gray-700">
+      <div className="hidden w-48 flex-shrink-0 overflow-y-auto border-r border-gray-200 dark:border-gray-700 xl:block">
         <ChatHistory
           sessions={sessions.sessions}
           activeSessionId={sessions.selectedSessionId}
@@ -79,8 +92,10 @@ function ChatPage() {
       </div>
 
       {/* Chat window */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-[420px] min-w-0 flex-1 flex-col lg:min-h-0">
         <ChatWindow
+          key={composerKey || sessions.selectedSessionId || "new"}
+          draftStorageKey={composerKey}
           messages={chat.messages}
           onSend={handleSend}
           loading={chat.loading}
@@ -91,14 +106,9 @@ function ChatPage() {
         />
       </div>
 
-      {/* Artifact panel — only for workflow generation responses */}
-      {showArtifact && chat.artifact?.intent === "WORKFLOW" && (
-        <div className="w-80 flex-shrink-0 border-l border-gray-200 dark:border-gray-700 overflow-y-auto bg-white dark:bg-darkBackground">
-          <div className="p-3">
-            <ChatArtifactPanel artifact={chat.artifact} />
-          </div>
-        </div>
-      )}
+      <div className="min-h-[320px] shrink-0 border-t border-gray-200 dark:border-gray-700 lg:h-full lg:w-[42%] lg:max-w-[640px] lg:border-l lg:border-t-0">
+        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
+      </div>
     </div>
   );
 }

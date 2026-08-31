@@ -5,7 +5,8 @@ import React from "react";
  *
  * Performs the Builder Mode Controls operation on mode controls for the BuilderModeControls module.
  ******************************************************************************/
-export default function BuilderModeControls({ isExecuting, onDeploy, onRun }) {
+export default function BuilderModeControls({ readOnly = false, isExecuting, onDeploy, onRun }) {
+  if (readOnly) return React.createElement("span", { className: "text-xs text-gray-500" }, "Read-only preview");
   return React.createElement(
     "div",
     { className: "flex items-center gap-3" },

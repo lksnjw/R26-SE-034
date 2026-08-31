@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { chatService } from "../services/chat.service";
 
@@ -36,9 +36,8 @@ export function useChat(sessionId) {
   });
 
   // Reset send-error when the active session changes so stale errors don't bleed into other sessions.
-  const resetRef = useRef(sendMutation.reset);
-  resetRef.current = sendMutation.reset;
-  useEffect(() => { resetRef.current(); }, [sessionId]);
+  const resetSend = sendMutation.reset;
+  useEffect(() => { resetSend(); }, [sessionId, resetSend]);
 
   const [loadingMore, setLoadingMore] = useState(false);
 /*******************************************************************************

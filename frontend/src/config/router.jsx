@@ -14,6 +14,7 @@ import { useAuthContext } from "../context/AuthContext";
 import { RouteProvider } from "../context/RouteContext";
 import usePermissions from "../hooks/usePermissions";
 import AppLayout from "../layouts/AppLayout";
+import WorkspaceLayout, { isWorkspacePath } from "../layouts/WorkspaceLayout";
 import { features } from "./features";
 
 /*******************************************************************************
@@ -60,7 +61,7 @@ export const lazyRouteComponents = {
 const C = lazyRouteComponents;
 
 const allProtectedRouteDefinitions = [
-  { id: "dashboard.overview", path: "/", Component: C.DashboardPage, requiredAny: [PERMISSIONS.WORKFLOW_READ], componentProps: { view: "overview" }, feature: "dashboard" },
+  { id: "chat.home", path: "/", Component: C.ChatPage, requiredAny: [PERMISSIONS.CHAT_USE, PERMISSIONS.WORKFLOW_WRITE], feature: "chat" },
   { id: "dashboard.activity", path: "/activity", Component: C.DashboardPage, requiredAny: [PERMISSIONS.WORKFLOW_READ], componentProps: { view: "activity" }, feature: "dashboard" },
   { id: "company.overview", path: "/company", Component: C.CompanyPage, requiredAny: [], feature: "company" },
   { id: "workflows.list", path: "/workflows", Component: C.WorkflowListPage, requiredAny: [PERMISSIONS.WORKFLOW_READ, PERMISSIONS.WORKFLOW_READ_OWN], feature: "workflows" },
@@ -165,11 +166,13 @@ function AuthenticatedRoute() {
  * Performs the App Shell operation on shell for the router module.
  ******************************************************************************/
 function AppShell() {
+  const { pathname } = useLocation();
+  const Layout = isWorkspacePath(pathname) ? WorkspaceLayout : AppLayout;
   return (
     <RouteProvider>
-      <AppLayout>
+      <Layout>
         <Outlet />
-      </AppLayout>
+      </Layout>
     </RouteProvider>
   );
 }

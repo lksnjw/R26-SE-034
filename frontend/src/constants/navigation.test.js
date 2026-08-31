@@ -43,7 +43,7 @@ test("client navigation contains only chat, owned workflows and executions, and 
   );
 });
 
-test("client dashboard request falls back to the first permitted portal route", () => {
+test("legacy client dashboard request falls back to the chat workspace", () => {
   const permissions = [
     "chat:use",
     "workflow:read_own",
@@ -58,5 +58,5 @@ test("client dashboard request falls back to the first permitted portal route", 
       "role_client",
       { main: "dashboard", sub: "overview" }
     )
-  ).toEqual({ main: "workflows", sub: "list" });
+  ).toEqual({ main: "chat", sub: "home" });
 });

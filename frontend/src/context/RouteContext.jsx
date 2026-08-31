@@ -54,7 +54,7 @@ export function RouteProvider({ children }) {
 
   const { hasAny, roleId } = usePermissions();
 
-  // The landing path "/" is the dashboard, which not every role may open. Send
+  // The landing path "/" is the workspace, which not every role may open. Send
   // those roles to their first permitted destination instead of showing them
   // Access denied the moment they sign in. Only the landing is redirected: a
   // directly-typed forbidden URL must still be denied explicitly.
@@ -65,8 +65,8 @@ export function RouteProvider({ children }) {
  *
  * Performs the dashboard operation on the application for the RouteContext module.
  ******************************************************************************/
-    const dashboard = NAVIGATION_GROUPS.find((group) => group.id === DEFAULT_ROUTE.main);
-    if (!dashboard?.requiredAny?.length || hasAny(dashboard.requiredAny)) return;
+    const landing = NAVIGATION_GROUPS.find((group) => group.id === DEFAULT_ROUTE.main);
+    if (!landing?.requiredAny?.length || hasAny(landing.requiredAny)) return;
     const permitted = filterNavigationGroups(NAVIGATION_GROUPS, hasAny, roleId)[0]?.subMenu?.[0]?.path;
     if (permitted && permitted !== "/") navigate(permitted, { replace: true });
   }, [location.pathname, hasAny, roleId, navigate]);

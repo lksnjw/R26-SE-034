@@ -3,6 +3,7 @@ import { Icon } from "@iconify/react";
 import ChatMessage from "./ChatMessage";
 import ChatWelcome from "./ChatWelcome";
 import { settingsService } from "../../services/settings.service";
+import { readWorkspaceValue, writeWorkspaceValue } from "../../utils/workspaceSession";
 import { peekWorkflowForChatEdit, clearWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
 
 /** Animated streaming-style thinking indicator */
@@ -53,6 +54,7 @@ function AutoResizeTextarea({ value, onChange, onKeyDown, disabled, placeholder 
   return (
     <textarea
       ref={ref}
+      aria-label="Message to workflow assistant"
       value={value}
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={onKeyDown}
@@ -66,10 +68,10 @@ function AutoResizeTextarea({ value, onChange, onKeyDown, disabled, placeholder 
 }
 
 const QUICK_PROMPTS = [
-  { icon: "mdi:invoice-text-outline", label: "Invoice exception workflow", text: "Build a workflow that monitors the ERP for invoice exceptions, routes amounts over $5,000 for approval, and auto-approves smaller ones." },
+  { icon: "mdi:invoice-text-outline", label: "Daily invoice report", text: "Draft a daily invoice and order report for my manager. Identify the ERP tools, delivery channel, recipient and timezone needed, and ask me for any missing details before execution." },
   { icon: "mdi:database-search-outline", label: "Query open POs", text: "Show me all open purchase orders from the ERP that are pending approval" },
-  { icon: "mdi:robot-outline", label: "Self-healing retry", text: "Add a self-healing retry loop to the ERP connector that retries 3 times on failure, waits 30s between attempts, and escalates after all retries fail." },
-  { icon: "mdi:account-check-outline", label: "Supplier onboarding", text: "Create a supplier onboarding workflow: verify tax ID, check sanctions list, then approve or reject with an email notification." },
+  { icon: "mdi:robot-outline", label: "Review failure handling", text: "Review this workflow's failure handling. Identify which operations are safe to retry and which require reconciliation or human approval. Do not execute it." },
+  { icon: "mdi:account-check-outline", label: "Supplier onboarding draft", text: "Draft a supplier onboarding workflow using available ERP tools. Identify unsupported capabilities and required approvals; do not execute it." },
 ];
 
 /*******************************************************************************
@@ -77,8 +79,12 @@ const QUICK_PROMPTS = [
  *
  * Performs the Chat Window operation on window for the ChatWindow module.
  ******************************************************************************/
-function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore }) {
-  const [draft, setDraft] = useState("");
+function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey }) {
+  const [draft, setDraft] = useState(() => readWorkspaceValue(draftStorageKey));
+  const [sendError, setSendError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const busy = loading || submitting;
+  useEffect(() => { writeWorkspaceValue(draftStorageKey, draft); }, [draftStorageKey, draft]);
   const [selectedModel, setSelectedModel] = useState("");
   const [availableModels, setAvailableModels] = useState([]);
   const [editContext, setEditContext] = useState(() => peekWorkflowForChatEdit());
@@ -137,12 +143,23 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
  ******************************************************************************/
   const handleSend = useCallback(async () => {
     const text = draft.trim();
-    if (!text || loading) return;
-    setDraft("");
-    await onSend?.(text, { model: selectedModel || undefined });
+    if (!text || loading || submitting) return;
+    setSubmitting(true);
+    setSendError("");
+    try {
+      const result = await onSend?.(text, { model: selectedModel || undefined });
+      if (result) {
+        setDraft("");
+        writeWorkspaceValue(draftStorageKey, "");
+      }
+    } catch {
+      setSendError("Could not send the message. Your draft has been kept; try again.");
+    } finally {
+      setSubmitting(false);
+    }
     // refocus after send
     setTimeout(() => inputRef.current?.focus(), 50);
-  }, [draft, loading, onSend]);
+  }, [draft, loading, submitting, onSend, selectedModel, draftStorageKey]);
 
 /*******************************************************************************
  * Function: handleKeyDown
@@ -159,7 +176,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
   const isEmpty = messages.length === 0 && !loading;
 
   return (
-    <section className="flex h-full flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-darkBackground">
+    <section className="flex h-full flex-col overflow-hidden bg-white dark:bg-darkBackground">
       {/* ── Header ── */}
       <div className="flex items-center gap-3 border-b border-gray-100 px-4 py-3 dark:border-gray-800">
         <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10">
@@ -170,8 +187,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
           <p className="text-[10px] text-gray-400">Generate · Query · Validate · Execute</p>
         </div>
         <div className="ml-auto flex items-center gap-1.5 rounded-full border border-gray-200 px-2.5 py-1 dark:border-gray-700">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-          <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400">Ready</span>
+          <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400">{loading ? "Request in progress" : "Chat"}</span>
         </div>
       </div>
 
@@ -183,7 +199,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
             <p className="text-xs font-semibold text-indigo-700 dark:text-indigo-300">
               Editing: <span className="font-bold">{editContext.workflowName || "Workflow"}</span>
             </p>
-            <p className="text-[10px] text-indigo-500">Describe your changes — the AI will modify the workflow and save it.</p>
+            <p className="text-[10px] text-indigo-500">Describe your changes. Review the returned workflow source before running it.</p>
           </div>
           <button
             type="button"
@@ -224,10 +240,10 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
 
           {loading && <ThinkingIndicator />}
 
-          {error && (
+          {(error || sendError) && (
             <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800/40 dark:bg-red-900/20 dark:text-red-400">
               <Icon icon="mdi:alert-circle" className="mt-0.5 h-4 w-4 shrink-0" />
-              {error}
+              {error || sendError}
             </div>
           )}
 
@@ -248,7 +264,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
                 value={draft}
                 onChange={setDraft}
                 onKeyDown={handleKeyDown}
-                disabled={loading}
+                disabled={busy}
                 placeholder="Describe a workflow, query ERP data, or ask anything… (Enter to send, Shift+Enter for newline)"
               />
             </div>
@@ -259,7 +275,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
                     key={p.label}
                     type="button"
                     onClick={() => setDraft(p.text)}
-                    disabled={loading}
+                    disabled={busy}
                     className="flex items-center gap-1 rounded-full border border-gray-200 px-2.5 py-1 text-[10px] font-semibold text-gray-500 transition hover:border-primary hover:text-primary disabled:opacity-40 dark:border-gray-700 dark:text-gray-400"
                   >
                     <Icon icon={p.icon} className="h-3 w-3" />
@@ -272,9 +288,10 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
                   <div className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 dark:border-gray-700 dark:bg-gray-800/60">
                     <Icon icon="mdi:chip" className="h-3 w-3 shrink-0 text-gray-400" />
                     <select
+                      aria-label="Requested model"
                       value={selectedModel}
                       onChange={(e) => setSelectedModel(e.target.value)}
-                      disabled={loading}
+                      disabled={busy}
                       className="bg-transparent text-[10px] font-semibold text-gray-600 outline-none disabled:opacity-50 dark:text-gray-300"
                     >
                       {availableModels.map((m) => (
@@ -285,8 +302,9 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
                 )}
                 <button
                   type="button"
+                  aria-label="Send message"
                   onClick={handleSend}
-                  disabled={loading || !draft.trim()}
+                  disabled={busy || !draft.trim()}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary text-white transition hover:bg-primary/90 disabled:opacity-40"
                 >
                   {loading
@@ -298,7 +316,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
             </div>
           </div>
           <p className="mt-1.5 text-center text-[10px] text-gray-400">
-            Enter to send · Shift+Enter for newline · Workflows are validated against your policy registry
+            Enter to send · Shift+Enter for newline · A draft is not proof of ERP readiness or safe execution
           </p>
         </div>
       </div>

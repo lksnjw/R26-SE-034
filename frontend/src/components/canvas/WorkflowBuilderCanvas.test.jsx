@@ -4,6 +4,7 @@ import { afterEach, expect, jest, test } from "@jest/globals";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router-dom";
 import { apiClient } from "../../config/axios.js";
 
 jest.unstable_mockModule("@xyflow/react", () => {
@@ -65,7 +66,7 @@ test("writable builder loads and renders the registered tool catalog", async () 
 
   render(
     <QueryClientProvider client={queryClient}>
-      <WorkflowBuilderCanvas readOnly={false} />
+      <MemoryRouter><WorkflowBuilderCanvas readOnly={false} /></MemoryRouter>
     </QueryClientProvider>,
   );
 

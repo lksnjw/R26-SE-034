@@ -2,9 +2,9 @@ import { Icon } from "@iconify/react";
 
 const CAPABILITIES = [
   { icon: "mdi:auto-fix", label: "Generate workflows", desc: "Describe what you need in plain language" },
-  { icon: "mdi:shield-check-outline", label: "Policy validation", desc: "Every workflow is checked against your rules" },
+  { icon: "mdi:shield-check-outline", label: "Review validation", desc: "Inspect returned checks and blocking errors" },
   { icon: "mdi:database-search-outline", label: "Query ERP data", desc: "Ask for live data from connected systems" },
-  { icon: "mdi:graph-outline", label: "Pass to Canvas", desc: "Validated workflows go straight to the executor" },
+  { icon: "mdi:graph-outline", label: "Inspect the draft", desc: "Select steps in the canvas beside this chat" },
 ];
 
 /*******************************************************************************

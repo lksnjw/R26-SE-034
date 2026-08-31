@@ -6,6 +6,9 @@ import React from "react";
 import { apiClient } from "../../config/axios.js";
 
 const notify = jest.fn();
+jest.unstable_mockModule("../../context/RouteContext", () => ({
+  useRoute: () => ({ navigateTo: jest.fn() }),
+}));
 jest.unstable_mockModule("../../context/NotificationContext", () => ({
   useNotifications: () => ({ notify }),
 }));
@@ -56,7 +59,7 @@ test("validates runtime JSON and sends the parsed object to the execution endpoi
   await waitFor(() => {
     expect(post).toHaveBeenCalledWith("/workflows/wf_1/run", {
       input: { message: "hello", amount: 10 },
-    });
+    }, { timeout: 300000 });
   });
   expect(notify).toHaveBeenCalledWith("Execution exec_1 finished with status DONE.", "success");
   expect(onChanged).toHaveBeenCalledTimes(1);

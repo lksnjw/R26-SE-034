@@ -2,14 +2,16 @@ import { features } from "../config/features";
 
 const allNavigationGroups = [
   {
-    id: "dashboard",
-    label: "Dashboard",
-    description: "Operational overview",
-    icon: "mdi:chart-pie",
-    requiredAny: ["workflow:read"],
+    id: "chat",
+    label: "Agent Workspace",
+    clientLabel: "Chat",
+    description: "Chat and workflow canvas",
+    icon: "hugeicons:ai-magic",
+    requiredAny: ["chat:use", "workflow:write"],
     subMenu: [
-      { id: "overview", label: "Overview", path: "/" },
-      { id: "activity", label: "Activity", path: "/activity" },
+      { id: "home", label: "Workspace", path: "/" },
+      { id: "session", label: "Chat", path: "/chat" },
+      { id: "history", label: "Chat History", path: "/chat/history" },
     ],
   },
   {
@@ -33,18 +35,6 @@ const allNavigationGroups = [
     icon: "mdi:office-building-cog-outline",
     subMenu: [
       { id: "overview", label: "Company Profile", path: "/company" },
-    ],
-  },
-  {
-    id: "chat",
-    label: "Agent Chat",
-    description: "Natural language synthesis",
-    icon: "hugeicons:ai-magic",
-		clientLabel: "Chat",
-		requiredAny: ["chat:use", "workflow:write"],
-    subMenu: [
-      { id: "session", label: "Synthesis Chat", path: "/chat" },
-      { id: "history", label: "Chat History", path: "/chat/history" },
     ],
   },
   {
@@ -186,8 +176,8 @@ export const NAVIGATION_GROUPS = allNavigationGroups
   .filter((group) => group.subMenu.length > 0);
 
 export const DEFAULT_ROUTE = {
-  main: "dashboard",
-  sub: "overview",
+  main: "chat",
+  sub: "home",
 };
 
 /*******************************************************************************
