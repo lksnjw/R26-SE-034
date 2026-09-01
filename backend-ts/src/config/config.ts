@@ -498,12 +498,10 @@ function parseRoleMap(value: string | undefined): Record<string, string> {
   try {
     decoded = JSON.parse(raw);
   } catch {
-    console.warn("[config] ERPBRIDGE_ROLE_MAP is not valid JSON — role mapping disabled");
-    return {};
+    throw new Error("ERPBRIDGE_ROLE_MAP must be valid JSON");
   }
   if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
-    console.warn("[config] ERPBRIDGE_ROLE_MAP must be a JSON object — role mapping disabled");
-    return {};
+    throw new Error("ERPBRIDGE_ROLE_MAP must be a JSON object");
   }
   const map: Record<string, string> = {};
   for (const [localRole, remoteRoleValue] of Object.entries(decoded)) {
@@ -516,6 +514,8 @@ function parseRoleMap(value: string | undefined): Record<string, string> {
         `ERPBRIDGE_ROLE_MAP target for ${JSON.stringify(localRole)} must be nonblank`,
       );
     const remoteRole = remoteRoleValue.trim();
+    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(remoteRole))
+      throw new Error("ERPBRIDGE_ROLE_MAP target must match the verified ERPBridge role format");
     if (
       Object.values(map).some(
         (item) => item.toLowerCase() === remoteRole.toLowerCase(),
@@ -544,6 +544,8 @@ function validateRoleMap(map: Record<string, string>): void {
       throw new Error(
         `ERPBRIDGE_ROLE_MAP target for ${JSON.stringify(localRole)} must be nonblank`,
       );
+    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(remoteRole))
+      throw new Error("ERPBRIDGE_ROLE_MAP target must match the verified ERPBridge role format");
   }
   const targets = Object.values(map).map((role) => role.toLowerCase());
   if (new Set(targets).size !== targets.length)

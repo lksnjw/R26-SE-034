@@ -2,7 +2,7 @@ import type { ToolDefinition } from "../registry/schemas.js";
 import type { ProviderRuntime } from "../providers/runtime.js";
 import type { QueryMessage, QueryToolDefinition } from "../analysisprovider/query-types.js";
 import type { GovernanceUser } from "../governance/gate.js";
-import { normalizeToolArguments, validateToolArguments } from "./workflow-runtime-validator.js";
+import { validateToolArguments } from "./workflow-runtime-validator.js";
 
 export type GovernanceCheck = (
   toolName: string,
@@ -171,12 +171,19 @@ export async function runActionLoop(
       const isReadOnly = toolDef?.is_read_only === true;
       const displayName = toolDef?.display_name ?? humanizeName(call.name);
 
-      // Check the payload against the tool's real schema — not just what the
-      // description implies — and silently fix the one shape mistake that's
-      // both common and unambiguous (a scalar wrapped in a single-element
-      // array). Everything below uses this corrected payload, including the
-      // governance check, so a false read from a malformed arg never happens.
-      const { args: normalizedArguments, corrections } = normalizeToolArguments(call.arguments, toolDef);
+      // No guessed names or silent argument coercion. Invalid proposals are
+      // rejected before governance or the dispatch callback is reached.
+      const normalizedArguments = structuredClone(call.arguments);
+      const argIssues = validateToolArguments(call.name, normalizedArguments, toolDef);
+      if (toolDef === undefined || argIssues.missing.length > 0 || argIssues.invalid.length > 0) {
+        const reason = toolDef === undefined ? "Tool is not admitted" : "Tool arguments failed runtime validation";
+        steps.push({ toolName: call.name, displayName, arguments: redactCredentials(normalizedArguments), result: null,
+          isReadOnly, governanceStatus: "blocked", governanceReason: reason, error: reason,
+          startedAt: stepStartedAt, completedAt: new Date().toISOString() });
+        blocked = true;
+        lastText = reason;
+        break;
+      }
 
       // Governance check — required for all write tools
       if (!isReadOnly && toolDef !== undefined) {
@@ -188,7 +195,7 @@ export async function runActionLoop(
           steps.push({
             toolName: call.name,
             displayName,
-            arguments: normalizedArguments,
+            arguments: redactCredentials(normalizedArguments),
             result: null,
             isReadOnly: false,
             governanceStatus: "blocked",
@@ -197,6 +204,7 @@ export async function runActionLoop(
             completedAt: new Date().toISOString(),
           });
           blocked = true;
+          lastText = gov.reason ?? "Blocked by policy";
           messages.push({
             role: "tool",
             tool_call_id: call.id,
@@ -209,11 +217,9 @@ export async function runActionLoop(
       // ── Runtime argument validation ──────────────────────────────────────
       // Validate args against schema BEFORE calling the tool.
       // Feed any issues back in the tool result so the LLM can self-correct.
-      const argIssues = validateToolArguments(call.name, normalizedArguments, toolDef);
       const argWarnings: string[] = [
         ...argIssues.missing.map((m) => `MISSING_REQUIRED_ARG: ${m}`),
         ...argIssues.invalid.map((m) => `INVALID_ARG_VALUE: ${m}`),
-        ...corrections.map((c) => `AUTO_CORRECTED: ${c}`),
       ];
 
       let rawResult: unknown = null;
@@ -261,8 +267,14 @@ export async function runActionLoop(
           tool_call_id: call.id,
           content: `<tool_result id="${escapeAttr(call.id)}" name="${escapeAttr(call.name)}">\n{"error":${JSON.stringify(errMsg)}}${diagBlock}\n</tool_result>`,
         });
+        // A failed callback is not permission to retry or continue. Recovery
+        // requires a separately verified operation, not model self-correction.
+        blocked = true;
+        lastText = "Tool operation failed; review is required";
+        break;
       }
     }
+    if (blocked) break;
   }
   } catch (error) {
     throw attachPartialSteps(error, steps);

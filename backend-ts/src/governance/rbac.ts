@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  POLICY CHECKER TOGGLE
-//  Whether policy / role checks run at all is a runtime setting stored in the
+//  Optional advisory checks are a runtime setting stored in the
 //  database (state.settings.rbac.enabled), controlled from Settings > Policy
 //  Checker in the UI — not a hardcoded constant. Callers resolve the current
 //  value with isPolicyCheckerEnabled(repository) rather than importing a flag.
@@ -13,8 +13,8 @@ import type { Repository } from "../repository/store.js";
  *
  * Reads whether the policy checker is enabled in repository settings.
  ******************************************************************************/
-/** Reads the current policy-checker setting from the database. Defaults to
- *  off (fail-open) until an admin explicitly turns it on in Settings. */
+/** Reads the optional advisory policy setting. This setting never disables
+ * mandatory route authorization or required execution policy decisions. */
 export async function isPolicyCheckerEnabled(repository: Repository): Promise<boolean> {
   return repository.read((state) => {
     const rbac = state.settings.rbac;
@@ -23,8 +23,8 @@ export async function isPolicyCheckerEnabled(repository: Repository): Promise<bo
 }
 
 // ── ERP Bridge policy tools ───────────────────────────────────────────────
-// These are the live ERP Bridge MCP tools used when RBAC is enabled.
-// No env vars or config files — policy lives entirely in the ERP Bridge.
+// Deployment-specific policy tools; not guaranteed ERPBridge built-ins.
+// Required decisions remain mandatory regardless of the advisory toggle.
 
 /** Evaluates a finance request against policy before write operations (TOOL_CALL). */
 export const ERP_POLICY_EVALUATE_TOOL = "policy-gate-evaluate";
@@ -41,13 +41,13 @@ export type ErpBridgeSession = {
 export type ErpPolicyResult = { allowed: boolean; reason?: string };
 
 // ── policy-gate-evaluate call ─────────────────────────────────────────────
-// Called before every TOOL_CALL (write) operation when RBAC is enabled.
+// Used for required TOOL_CALL policy decisions, independently of the toggle.
 //
 // actor  – identity from the authenticated session (id + role)
 // prompt – natural-language description of the action being attempted
 // context – ERP facts known at call time (tool name, arguments, etc.)
 //
-// Returns { allowed, reason? }. Fails-open if the tool errors or is missing.
+// Returns { allowed, reason? }. Required decisions fail closed.
 
 /*******************************************************************************
  * Function: checkErpPolicy
@@ -64,7 +64,7 @@ export async function checkErpPolicy(
     context?: Record<string, unknown>;       // ERP facts (args, amount, etc.)
   },
 ): Promise<ErpPolicyResult> {
-  if (bridgeSession === undefined) return { allowed: true };
+  if (bridgeSession === undefined) return { allowed: false, reason: "ERP policy service is not connected" };
 
   const actor = { id: params.userId, role: params.userRole };
   const prompt = params.prompt ?? `Execute operation: ${params.action}`;
@@ -78,8 +78,7 @@ export async function checkErpPolicy(
 
     return interpretPolicyResponse(raw);
   } catch {
-    // Tool not found or network error → fail-open so ERP outages don't lock users out.
-    return { allowed: true };
+    return { allowed: false, reason: "ERP policy decision is unavailable; execution is blocked" };
   }
 }
 
@@ -130,36 +129,50 @@ export async function assistQueryPlan(
  * Normalizes supported ERP policy response shapes into an access decision.
  ******************************************************************************/
 function interpretPolicyResponse(raw: unknown): ErpPolicyResult {
-  if (raw === null || typeof raw !== "object") return { allowed: true };
-
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return invalidPolicyResponse();
   const r = raw as Record<string, unknown>;
+  if (r.isError === true || ("isError" in r && typeof r.isError !== "boolean")) return invalidPolicyResponse();
+  if (!("content" in r) && !("structuredContent" in r)) return interpretDecision(r);
+  // Never accept decision fields outside a protocol envelope's payload.
+  if (["allowed", "decision", "result"].some((key) => key in r)) return invalidPolicyResponse();
+  if (!Array.isArray(r.content) || r.content.length > 1) return invalidPolicyResponse();
+  let textPayload: unknown;
+  if (r.content.length === 1) {
+    const block = r.content[0];
+    if (block === null || typeof block !== "object" || block.type !== "text" || typeof block.text !== "string") return invalidPolicyResponse();
+    try { textPayload = JSON.parse(block.text); } catch { /* Structured payload may have a human-readable summary. */ }
+  }
+  if ("structuredContent" in r) {
+    const structured = interpretDecision(r.structuredContent);
+    // A second machine-readable payload must not contradict the authority.
+    if (textPayload !== undefined && interpretDecision(textPayload).allowed !== structured.allowed) return invalidPolicyResponse();
+    return structured;
+  }
+  return interpretDecision(textPayload);
+}
 
-  // Shape: { allowed: boolean, reason?: string }
+function interpretDecision(raw: unknown): ErpPolicyResult {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return invalidPolicyResponse();
+  const r = raw as Record<string, unknown>;
+  const decisions: boolean[] = [];
+  if ("content" in r || "structuredContent" in r || "isError" in r) return invalidPolicyResponse();
   if ("allowed" in r) {
-    return {
-      allowed: Boolean(r.allowed),
-      ...(typeof r.reason === "string" ? { reason: r.reason } : {}),
-    };
+    if (typeof r.allowed !== "boolean") return invalidPolicyResponse();
+    decisions.push(r.allowed);
   }
-
-  // Shape: { decision: "approved" | "denied" | "conditional", reason?: string }
-  if ("decision" in r) {
-    const decision = String(r.decision).toLowerCase();
-    const allowed = decision === "approved" || decision === "allow" || decision === "permitted";
-    const reason =
-      typeof r.reason === "string"
-        ? r.reason
-        : Array.isArray(r.conditions)
-          ? (r.conditions as string[]).join("; ")
-          : undefined;
-    return { allowed, ...(reason !== undefined ? { reason } : {}) };
+  for (const key of ["decision", "result"]) {
+    if (!(key in r)) continue;
+    if (typeof r[key] !== "string") return invalidPolicyResponse();
+    const value = r[key].toLowerCase();
+    if (["allow", "approved", "permitted"].includes(value)) decisions.push(true);
+    else if (["deny", "denied", "blocked", "conditional"].includes(value)) decisions.push(false);
+    else return invalidPolicyResponse();
   }
+  if (decisions.length === 0 || decisions.some((value) => value !== decisions[0])) return invalidPolicyResponse();
+  if ("conditions" in r && (!Array.isArray(r.conditions) || r.conditions.length > 0)) return { allowed: false, reason: "ERP policy requires unresolved conditions" };
+  return { allowed: decisions[0]!, ...(typeof r.reason === "string" ? { reason: r.reason } : {}) };
+}
 
-  // Shape: { result: "allow" | "deny" }
-  if ("result" in r) {
-    const allowed = String(r.result).toLowerCase() !== "deny" && String(r.result).toLowerCase() !== "denied";
-    return { allowed };
-  }
-
-  return { allowed: true }; // unknown shape → fail-open
+function invalidPolicyResponse(): ErpPolicyResult {
+  return { allowed: false, reason: "ERP policy returned no valid authorization decision" };
 }

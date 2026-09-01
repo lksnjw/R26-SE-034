@@ -15,9 +15,9 @@ import { runActionLoop } from "../../agent/action-loop.js";
 import { discoverTools } from "../../agent/tool-discovery.js";
 import { validateSemantics } from "../../governance/semantic-validator.js";
 import { isPolicyCheckerEnabled, checkErpPolicy } from "../../governance/rbac.js";
+import { dispatchReadTool } from "../../tools/read-tool-broker.js";
 import { modifyWorkflow } from "../../agent/workflow-modifier.js";
 import { parseWorkflowYAMLStrict } from "../../parser/workflow.js";
-import { correctToolNamesInYaml } from "../../synthesis/service.js";
 import { stringify as yamlStringify } from "yaml";
 
 /*******************************************************************************
@@ -473,6 +473,22 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     }
   }
   const intent = classifyIntent(content);
+  if (["QUERY", "AUDIT", "TOOL_CALL"].includes(intent) &&
+      (services.erpbridgeSession === undefined || services.providerRuntime?.configured !== true)) {
+    const code = services.erpbridgeSession === undefined ? "ERPBRIDGE_NOT_CONNECTED" : "PROVIDER_NOT_CONFIGURED";
+    const text = code === "ERPBRIDGE_NOT_CONNECTED"
+      ? "ERPBridge is not connected. I cannot retrieve ERP data or execute tools for this request. No ERP operation was performed."
+      : "The agent provider is not configured. I cannot plan this request. No ERP operation was performed.";
+    const assistantMessage = await services.repository.mutate((state) => {
+      const chat = state.chats[requestParam(request, "id")];
+      if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
+      const message = { id: nextID(state, "msg"), role: "assistant", text, artifacts: { intent, blocked: true, code }, createdAt: now(), traceId };
+      chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
+      return message;
+    });
+    return reply.send(ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage, answer: text,
+      intent, blocked: true, operation: { success: false, code } }, "Message processed; ERP operation unavailable", null));
+  }
   if (intent === "CAPABILITIES") {
     const liveCapTools = await discoverTools(services.erpbridgeSession ?? null, services.registries);
     const capText = buildCapabilitiesResponse(liveCapTools);
@@ -486,23 +502,12 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     return reply.send(ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage, answer: capText, intent }, "Message processed", null));
   }
   if ((intent === "QUERY" || intent === "AUDIT") && services.providerRuntime?.configured === true) {
-    // Gather ERP tools if bridge is available; fall back to empty (pure conversational)
+    // Offer only registered, role-granted read contracts. Optional advisory
+    // settings cannot broaden the dispatchable tool pool.
     let readOnlyTools: readonly import("../../registry/schemas.js").ToolDefinition[] = [];
     if (services.erpbridgeSession !== undefined) {
-      // ── Policy Checker toggle — controls whether QUERY is restricted to read-only tools.
-      // Always pass the model the FULL live tool list, never a keyword-filtered
-      // subset — a truncated list is how the LLM ends up not knowing a real
-      // tool exists (e.g. "send-email") and inventing a plausible-looking but
-      // fake name instead. The tool pool here is small (tens of tools), well
-      // within normal function-calling limits, so there's no reason to cap it.
-      if (policyCheckerEnabled) {
-        const staticReadOnly = services.registries.readOnlyTools();
-        readOnlyTools = staticReadOnly.length > 0
-          ? staticReadOnly
-          : (await discoverTools(services.erpbridgeSession, services.registries)).filter((t) => t.is_read_only === true);
-      } else {
-        readOnlyTools = await discoverTools(services.erpbridgeSession, services.registries);
-      }
+      readOnlyTools = (await discoverTools(services.erpbridgeSession, services.registries))
+        .filter((tool) => tool.is_read_only && tool.allowed_roles.includes(user.role));
     }
     const sessionId = requestParam(request, "id");
     const chatHistory = augmentedPriorMessages.map((line) => {
@@ -511,13 +516,12 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     });
     let loopResult;
     try {
-      const bridgeSession = services.erpbridgeSession;
       loopResult = await runQueryLoop(
         { userMessage: content, chatHistory, sessionId, actorId: user.id, actorRole: user.role, signal: request.signal, traceId },
         readOnlyTools,
-        async (toolName, args) => bridgeSession !== undefined ? bridgeSession.callToolDirect(toolName, args) : {},
+        async (toolName, args) => dispatchReadTool(services, user.id, toolName, args, { signal: request.signal, traceId, sessionId }),
         services.providerRuntime,
-        policyCheckerEnabled,
+        true,
       );
     } catch (error) {
       throw new HandlerFailure(502, `Query agent failed: ${errorText(error)}`);
@@ -569,21 +573,16 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       actionResult = await runActionLoop(
         { userMessage: content, chatHistory, sessionId: requestParam(request, "id"), actorId: user.id, actorRole: user.role, user: governanceUser, signal: request.signal, traceId },
         allTools,
-        async (toolName, args) => bridgeSession.callToolDirect(toolName, args),
-        // ── Policy Checker toggle (Settings > Policy Checker) — controls
-        // operation-level governance for TOOL_CALL. When on, calls
-        // policy-gate-evaluate in ERP Bridge (not env/config). When off,
-        // all tool calls are allowed through.
-        policyCheckerEnabled
-          ? async (toolName, toolDef, args, govUser) =>
+        async (toolName, args) => dispatchReadTool(services, user.id, toolName, args, { signal: request.signal, traceId, sessionId: requestParam(request, "id") }),
+        // Required write authorization cannot be disabled by an advisory toggle.
+        async (toolName, toolDef, args, govUser) =>
               checkErpPolicy(bridgeSession, {
                 userId: govUser.id,
                 userRole: govUser.role,
                 action: toolName,
                 prompt: `User "${govUser.id}" (${govUser.role}) wants to execute: ${toolDef.display_name ?? toolName}`,
                 context: { tool: toolName, arguments: args },
-              })
-          : async () => ({ allowed: true }),
+              }),
         services.providerRuntime,
       );
     } catch (error) {
@@ -699,68 +698,26 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     });
     return reply.send(ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage: errMessage, answer: friendlyText, intent: "WORKFLOW_ERROR" }, "Message processed", null));
   }
-  // LLM self-correction pass: re-prompt the model to fix any tool names it got wrong.
-  try {
-    if (services.providerRuntime === undefined) throw new Error("no runtime");
-    const correction = await correctToolNamesInYaml(result.yaml, liveToolsForSynthesis, services.providerRuntime, request.signal);
-    if (correction.corrected) {
-      result = { ...result, yaml: correction.yaml, selected_workflow_yaml: correction.yaml };
-    }
-  } catch { /* non-fatal — post-processing normalization below catches remaining issues */ }
-
-  // Correct hallucinated/misnamed tool names in generated YAML.
-  // The LLM may generate snake_case when the real tool uses kebab-case (e.g. send_email → send-email).
-  // 1. Try normalising hyphens↔underscores to find a real match and rewrite the action.
-  // 2. Only flag as truly missing if no normalisation variant exists.
-  const liveToolNameSet = new Set(liveToolsForSynthesis.map((t) => t.name));
+  // Preserve the proposed program exactly. Unknown actions are reported, not
+  // renamed by heuristics or silently removed along with their business intent.
+  const liveToolNameSet = new Set(liveToolsForSynthesis.flatMap((tool) => [tool.name, tool.mcp_tool_name]));
   let missingTools: string[] = [];
   try {
-    const bp = parseWorkflowYAMLStrict(result.yaml);
-    let rewritten = false;
-    const correctedSteps = bp.steps.map((s) => {
-      const action = s.action;
-      if (typeof action !== "string") return s;
-      if (liveToolNameSet.has(action)) return s;
-      // Try hyphen/underscore normalisation variants
-      const hyphenated = action.replace(/_/g, "-");
-      if (liveToolNameSet.has(hyphenated)) { rewritten = true; return { ...s, action: hyphenated }; }
-      const underscored = action.replace(/-/g, "_");
-      if (liveToolNameSet.has(underscored)) { rewritten = true; return { ...s, action: underscored }; }
-      // Strip LLM hallucination prefixes (dynamic_, static_, auto_) and retry
-      const stripped = action.replace(/^(dynamic|static|auto)_/, "");
-      if (stripped !== action) {
-        if (liveToolNameSet.has(stripped)) { rewritten = true; return { ...s, action: stripped }; }
-        const sh = stripped.replace(/_/g, "-");
-        if (liveToolNameSet.has(sh)) { rewritten = true; return { ...s, action: sh }; }
-        const su = stripped.replace(/-/g, "_");
-        if (liveToolNameSet.has(su)) { rewritten = true; return { ...s, action: su }; }
-      }
-      // Truly missing — record it and strip the step
-      missingTools.push(action);
-      return null;
-    }).filter((s): s is NonNullable<typeof s> => s !== null);
-
-    if (rewritten || missingTools.length > 0) {
-      if (correctedSteps.length > 0) {
-        const cleanedYaml = yamlStringify({ ...bp, steps: correctedSteps }).trim();
-        result = { ...result, yaml: cleanedYaml, selected_workflow_yaml: cleanedYaml };
-      }
-    }
-  } catch { /* ignore parse errors — validation will catch them */ }
-
-  // Auto-save the generated workflow immediately — no validation gate, always creates.
+    missingTools = parseWorkflowYAMLStrict(result.yaml).steps
+      .filter((step) => (step.kind === undefined || step.kind === "" || step.kind === "tool") && !liveToolNameSet.has(step.action ?? ""))
+      .map((step) => step.action ?? "");
+  } catch { /* Invalid proposals remain visible as drafts, never published. */ }
+  // Autosave a draft only. Verification and publication are separate actions.
   const chatSessionId = requestParam(request, "id");
   const chatMessageId = stringValue(stored.userMessage.id);
   let autoSavedWorkflowId: string | null = null;
-  // When the generated workflow contains `kind: approval` checkpoint(s), resolve
-  // them here in chat — NOT at run time. Once approved, the checkpoint steps are
-  // stripped from the saved YAML so the workflow runs straight through on every
-  // future execution ("solved once at generation, never asked again").
+  // Build acceptance and runtime transaction checkpoints are separate. Saving
+  // or accepting this draft never removes or authorizes runtime approval nodes.
   let pendingGenerationApproval: { steps: Array<{ stepId: string; description: string }>; requestedAt: string } | null = null;
   try {
     let blueprint;
     try { blueprint = parseWorkflowYAMLStrict(result.yaml); } catch { blueprint = null; }
-    if (blueprint !== null) {
+    if (blueprint !== null && user.permissions.includes("workflow:write")) {
       const approvalSteps = blueprint.steps
         .filter((s) => s.kind === "approval")
         .map((s) => ({ stepId: s.id, description: (s.description ?? "").trim() || `Approval required for step ${s.id}` }));
@@ -780,11 +737,11 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
           steps: blueprint!.steps.length,
           successRate: 0,
           lastRunAt: null,
-          publishedVersion: 1,
+          publishedVersion: 0,
           draftVersion: 1,
           tags: [],
           domainTags: [],
-          canRun: true,
+          canRun: false,
           createdAt: nowTs,
           updatedAt: nowTs,
           yaml: result.yaml,
@@ -801,8 +758,13 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     }
   } catch { /* non-fatal — workflow shown in chat even if save fails */ }
 
-  // Generate Claude Code-style narrative response
-  const assistantText = await generateWorkflowNarrative(content, result, stored.priorMessages, services.providerRuntime, request.signal);
+  // State claims come from persistence/validation, not an additional model.
+  const assistantText = [
+    autoSavedWorkflowId ? "Workflow draft saved. It has not been published or executed." : "Workflow proposal prepared, but no saved draft was acknowledged.",
+    result.validation.passed ? "Structural and registry validation passed; this is not execution readiness." : "Validation failed; review the reported issues before publishing.",
+    missingTools.length ? "Some requested actions have no admitted live ERPBridge contract. The original proposal was preserved." : "",
+    pendingGenerationApproval ? "Build acceptance is pending. Runtime approval checkpoints remain required for each transaction." : "",
+  ].filter(Boolean).join("\n\n");
   const artifacts = compactWorkflowArtifacts(result, chatSessionId, chatMessageId, traceId, autoSavedWorkflowId, missingTools, pendingGenerationApproval);
   const assistantMessage = await services.repository.mutate((state) => {
     const chat = state.chats[requestParam(request, "id")];
@@ -854,13 +816,14 @@ function compactWorkflowArtifacts(
     chatMessageId,
     traceId,
     validation: result.validation,
-    can_execute: result.can_execute,
+    can_execute: false,
+    validation_passed: result.validation.passed,
     selected_candidate_id: result.selected_candidate_id,
     selected_workflow_yaml: result.selected_workflow_yaml,
     ...(result.can_execute ? {} : { yaml: result.yaml }),
     validation_summary: result.validation_summary,
     blocking_errors: result.blocking_errors,
-    next_action: result.next_action,
+    next_action: "REVIEW_DRAFT",
     candidates: result.candidates.map((candidate) => ({
       id: candidate.id,
       candidate_id: candidate.candidate_id,
@@ -907,67 +870,6 @@ function pickArtifactRecords(values: unknown[] | undefined, keys: readonly strin
   });
 }
 
-/*******************************************************************************
- * Function: generateWorkflowNarrative
- *
- * Builds a chat explanation of workflow generation and validation results.
- ******************************************************************************/
-async function generateWorkflowNarrative(
-  userMessage: string,
-  result: import("../../synthesis/service.js").SynthesisResult,
-  priorMessages: string[],
-  providerRuntime: import("../../providers/runtime.js").ProviderRuntime | undefined,
-  signal?: AbortSignal,
-): Promise<string> {
-  const passed = result.can_execute;
-  const failedRules: string[] = Array.isArray(result.validation.failed_rules) ? result.validation.failed_rules as string[] : [];
-  const errors: string[] = result.blocking_errors.slice(0, 4);
-
-  // Fallback: deterministic markdown when no LLM is available
-  if (providerRuntime === undefined || !providerRuntime.configured) {
-    return passed
-      ? `## Workflow Generated ✓\n\nI've generated a workflow that passed all policy checks and is ready to execute.\n\nClick **Pass to Canvas** in the panel to review and run it.`
-      : `## Workflow Blocked\n\nI generated a workflow, but the validator blocked it.\n\n**Failed rules:** ${failedRules.length ? failedRules.map((r) => `\`${r}\``).join(", ") : "see errors below"}\n\n${errors.length ? "**Errors:**\n" + errors.map((e) => `- ${e}`).join("\n") + "\n\n" : ""}Ask me to fix these issues and I'll regenerate.`;
-  }
-
-  const historySection = priorMessages.slice(-6).join("\n");
-  const prompt = [
-    "You are an AI workflow assistant. The user asked you to build an automation workflow, you generated it, and it was validated.",
-    "Respond in clear markdown — like a senior engineer explaining what they built.",
-    "",
-    historySection.length > 0 ? `CONVERSATION HISTORY:\n${historySection}\n` : "",
-    `USER REQUEST: ${userMessage}`,
-    "",
-    "GENERATED YAML:",
-    "```yaml",
-    result.yaml,
-    "```",
-    "",
-    `VALIDATION: ${passed ? "PASSED ✓ — the workflow cleared all policy rules" : "BLOCKED ✗"}`,
-    !passed && failedRules.length > 0 ? `Failed rules: ${failedRules.join(", ")}` : "",
-    !passed && errors.length > 0 ? `Errors:\n${errors.map((e) => `- ${e}`).join("\n")}` : "",
-    "",
-    "Write a concise markdown response (under 300 words) that:",
-    "- Starts with a ## heading naming the workflow",
-    "- Explains what it does in 1-2 sentences",
-    "- Lists the key steps as short bullets in PLAIN ENGLISH (e.g. 'Fetch all warehouses from ERP', NOT internal function names like list_warehouses_api_resource_warehouse_get)",
-    passed
-      ? "- Confirms it passed validation and is ready to execute"
-      : "- Clearly explains what failed (name the rule IDs with `backticks`) and gives 1-2 concrete fixes",
-    "- Ends with a brief next-step line",
-    "IMPORTANT: NEVER show internal function names, API paths, or technical identifiers. Describe every action in plain English a business user would understand.",
-    "Do NOT include the full YAML. Use `code spans` only for governance rule IDs (e.g. `GLOBAL-AUDIT-001`).",
-  ].filter((l) => l !== "").join("\n");
-
-  try {
-    const response = await providerRuntime.generate(prompt, "prompt/workflow-narrative/v1", signal);
-    return response.text.trim();
-  } catch {
-    return passed
-      ? `## Workflow Generated ✓\n\nI've generated a workflow that passed all policy checks.\n\nClick **Pass to Canvas** in the artifact panel to run it.`
-      : `## Workflow Blocked\n\nThe validator blocked the generated workflow.\n\n**Failed rules:** ${failedRules.map((r) => `\`${r}\``).join(", ") || "see panel"}\n\nAsk me to fix these issues.`;
-  }
-}
 
 /*******************************************************************************
  * Function: requirePlatformAdmin

@@ -33,6 +33,7 @@ import { type Executor } from "../runner/executor.js";
 import { generateExecutionAnalysis, type ExecutionAnalysisInput } from "../agent/execution-analyst.js";
 import type { RegistryValidator } from "../validator/registry-validator.js";
 import { createDispatchIdentity } from "../tools/registry.js";
+import { dispatchReadTool } from "../tools/read-tool-broker.js";
 import { routeTable, type RouteDefinition } from "./generated-routes.js";
 import { isPolicyCheckerEnabled, checkErpPolicy } from "../governance/rbac.js";
 import {
@@ -55,6 +56,7 @@ import {
   handleAnalyticsCatalogRoute,
 } from "./handlers/analytics-catalog.js";
 import { runActionLoop, partialActionSteps } from "../agent/action-loop.js";
+import { projectActionOutcome } from "../agent/execution-outcome.js";
 import { discoverTools } from "../agent/tool-discovery.js";
 import { validateWorkflowStatically, analyzeDataFlow } from "../agent/workflow-runtime-validator.js";
 import {
@@ -422,21 +424,12 @@ async function handleRoute(
   if (!publicRoutes.has(routeKey) && auth === null) return;
   const current = auth?.user ?? null;
   if (current !== null) {
-    // Policy Checker toggle (Settings > Policy Checker) — controls
-    // route-level permission enforcement.
-    if (await isPolicyCheckerEnabled(services.repository)) {
-      const policy = routePolicy(route);
-      if (
-        policy !== null &&
-        !policy.required.some((permission) =>
-          current.permissions.includes(permission),
-        )
-      ) {
-        const meta = policy.any
-          ? { requiredAny: policy.required }
-          : { required: policy.required[0] };
-        return reply.status(403).send(fail("Permission denied", meta));
-      }
+    // Authentication/authorization is mandatory, independent of optional
+    // advisory policy checks. Disabling the UI toggle cannot grant access.
+    const policy = routePolicy(route);
+    if (policy !== null && !policy.required.some((permission) => current.permissions.includes(permission))) {
+      const meta = policy.any ? { requiredAny: policy.required } : { required: policy.required[0] };
+      return reply.status(403).send(fail("Permission denied", meta));
     }
   }
 
@@ -1063,11 +1056,11 @@ async function createWorkflow(
       steps: blueprint.steps.length,
       successRate: 0,
       lastRunAt: null,
-      publishedVersion: fromCandidate ? 1 : 0,
+      publishedVersion: 0,
       draftVersion: 1,
       tags: parsed.data.tags ?? [],
       domainTags: [],
-      canRun: true,
+      canRun: false,
       createdAt: now,
       updatedAt: now,
       yaml: rawYAML,
@@ -1085,6 +1078,7 @@ async function createWorkflow(
           id: `ver_${state.counter}_${randomBytes(4).toString("hex")}`,
           workflowId: id,
           version: 1,
+          artifactState: "DRAFT",
           versionNote: "Validated generated candidate",
           yaml: rawYAML,
           sourceCandidateId:
@@ -1203,10 +1197,11 @@ export async function runWorkflowFor(
   if (!parsed.success)
     return reply.status(400).send(fail("Invalid request body", null));
   const traceId = requestTraceId(request, workflow.traceId);
-  // Policy Checker toggle (Settings > Policy Checker) — controls workflow
-  // ownership / assignment enforcement.
+  // Shared by run and retry: permissions and assignment never depend on an
+  // optional policy toggle, and must be checked before any external work.
+  if (!user.permissions.some((permission) => ["workflow:run", "workflow:run_own"].includes(permission)))
+    return reply.status(403).send(fail("Permission denied", { requiredAny: ["workflow:run", "workflow:run_own"] }));
   if (
-    (await isPolicyCheckerEnabled(services.repository)) &&
     !user.permissions.includes("workflow:run") &&
     workflow.owner.id !== user.id &&
     !(workflow.assignedUserIds ?? []).includes(user.id)
@@ -1214,18 +1209,26 @@ export async function runWorkflowFor(
     return reply
       .status(403)
       .send(fail("Workflow is not assigned to the current user", null));
-  // Approval checkpoints are resolved once in chat at generation time — see
-  // approveWorkflowGeneration in handlers/workflows.ts. Until that happens,
-  // running would either bypass the checkpoint or (with the old runtime-pause
-  // design) ask again on every run, which is exactly what this flow avoids.
+  // Accepting the build proposal does not authorize runtime transactions.
   if (workflow.pendingGenerationApproval && workflow.pendingGenerationApproval.steps.length > 0)
     return reply.status(409).send(
       fail("This workflow has a pending approval — resolve it in chat before running", {
         pendingGenerationApproval: workflow.pendingGenerationApproval,
       }),
     );
-  // Governance validation is intentionally skipped for workflow runs.
-  // The LLM agent is the executor and ERP Bridge enforces RBAC via ERPBRIDGE_ROLE_MAP.
+  const gate = await validateWithGovernance(services, "RunWorkflow", workflow.yaml, user, { traceId, workflowId: workflow.id });
+  if (!gate.result.passed)
+    return reply.status(422).send(fail("Workflow validation failed", { ...gate.result, traceId }));
+  // The legacy agent cannot enforce transaction approval boundaries.
+  const checkedBlueprint = parseWorkflowYAMLStrict(workflow.yaml);
+  if (checkedBlueprint.steps.some((step) => step.kind === "approval"))
+    return reply.status(409).send(fail("Runtime approval checkpoints require the safe checkpoint executor; this legacy run is blocked", { code: "RUNTIME_APPROVAL_EXECUTOR_REQUIRED", traceId }));
+  if (workflow.publishedVersion < 1)
+    return reply.status(409).send(fail("Publish the validated draft before execution", { code: "WORKFLOW_NOT_PUBLISHED", traceId }));
+  const publication = await services.repository.read((state) => (state.versions[workflow.id] ?? [])
+    .findLast((version) => version.version === workflow.publishedVersion && version.artifactState === "PUBLISHED"));
+  if (publication === undefined || typeof publication.yaml !== "string" || publication.yaml !== workflow.yaml)
+    return reply.status(409).send(fail("A current verified publication snapshot is required; legacy or edited drafts need explicit publication", { code: "PUBLISHED_SNAPSHOT_REQUIRED", traceId }));
   if (services.providerRuntime?.configured !== true)
     return reply.status(503).send(fail("LLM provider is not configured — cannot run workflow", null));
 
@@ -1297,10 +1300,8 @@ export async function runWorkflowFor(
     return item;
   });
   try {
-    // All workflows run through the LLM agent. The LLM reads the workflow steps (using
-    // their plain-English descriptions) and calls the real ERP Bridge tools dynamically.
-    // No governance gate — ERP Bridge enforces RBAC via ERPBRIDGE_ROLE_MAP.
-    // Self-healing retries (up to MAX_HEAL_ATTEMPTS) on any failure.
+    // Legacy model-driven path is contained by verification and the read-only
+    // broker. It does not provide a deterministic control-flow executor yet.
     const bridgeSession = bridgeSessionEarly;
     const liveTools = liveToolsEarly;
     const dataFlowPlan = await dataFlowPlanPromise;
@@ -1317,34 +1318,11 @@ export async function runWorkflowFor(
       workflow,
       services,
     );
-    const nowIso = new Date().toISOString();
-    const result: Awaited<ReturnType<typeof services.executor.run>> = {
-      state: Object.fromEntries(
-        actionResult.steps.map((s, i) => [`step_${i + 1}_${s.toolName}`, s.result]),
-      ),
-      timeline: actionResult.steps.map((s, i) => ({
-        id: `tl_${i + 1}`,
-        nodeId: `step_${i + 1}`,
-        label: s.toolName,
-        status: "DONE" as const,
-        startedAt: nowIso,
-        completedAt: nowIso,
-        durationMs: 0,
-        output: s.result,
-      })),
-      logs: actionResult.steps.map((s, i) => ({
-        level: "info" as const,
-        nodeId: `step_${i + 1}`,
-        timestamp: nowIso,
-        message: `${s.toolName}: completed`,
-        metadata: null,
-      })),
-      tokens: {
-        input: actionResult.totalTokens.input,
-        output: actionResult.totalTokens.output,
-        total: actionResult.totalTokens.input + actionResult.totalTokens.output,
-      },
-    };
+    const outcome = projectActionOutcome(actionResult, workflowStepsEarly.map((step) => {
+      const resolution = preValidation.toolResolutions.find((item) => item.stepId === step.id);
+      return { id: step.id, names: resolution ? [resolution.tool.name, resolution.tool.mcp_tool_name] : [] };
+    }));
+    const result = outcome.result;
     await attachDispatchAuditTrace(services.repository, execution.id, {
       traceId,
       workflowId: workflow.id,
@@ -1353,11 +1331,11 @@ export async function runWorkflowFor(
     });
     let blueprintStepsForApproval: Array<{ id: string; kind?: string | undefined; description?: string | undefined }> = [];
     try { blueprintStepsForApproval = parseWorkflowYAMLStrict(workflow.yaml ?? "").steps; } catch { /* no approval gate if unparsable */ }
-    const pendingApproval = findPendingApproval(blueprintStepsForApproval, new Set(), actionResult.steps.length);
+    const pendingApproval = outcome.failed ? null : findPendingApproval(blueprintStepsForApproval, new Set(), actionResult.steps.length);
 
     const completed = await services.repository.mutate((state) => {
       const item = state.executions[execution.id]!;
-      item.status = pendingApproval ? "AWAITING_APPROVAL" : "DONE";
+      item.status = outcome.failed ? "FAILED" : pendingApproval ? "AWAITING_APPROVAL" : "DONE";
       item.completedAt = new Date().toISOString();
       item.durationMs = Date.now() - new Date(item.startedAt).getTime();
       item.tokens = result.tokens;
@@ -1368,8 +1346,9 @@ export async function runWorkflowFor(
       // When it stopped without calling any tool (a checkpoint reached, not a
       // failure), this is the ONLY explanation of what happened, so surface
       // it as the finalOutput rather than leaving the run looking empty.
-      item.agentSummary = actionResult.text;
-      item.finalOutput = result.timeline.at(-1)?.output ?? actionResult.text;
+      item.agentSummary = outcome.failed ? outcome.reason! : actionResult.text;
+      item.finalOutput = outcome.failed ? outcome.reason : result.timeline.at(-1)?.output;
+      if (outcome.failed) item.failure = { failureCategory: "ACTION_EXECUTION_FAILURE", reason: outcome.reason };
       if (pendingApproval) {
         item.pendingApproval = { ...pendingApproval, requestedAt: new Date().toISOString() };
       } else {
@@ -1392,6 +1371,7 @@ export async function runWorkflowFor(
     if (completed.chatSessionId && services.providerRuntime?.configured) {
       void postExecutionAnalysis(completed, result.timeline, services);
     }
+    if (outcome.failed) return reply.status(422).send(fail(outcome.reason!, { executionId: completed.id, status: completed.status, traceId }));
     return reply.send(
       ok(
         completed,
@@ -1432,7 +1412,7 @@ export async function runWorkflowFor(
         failureCategory: "AGENT_FAILURE",
         failedStepId: partialSteps.at(-1)?.toolName ?? "unknown",
         failedToolName: partialSteps.at(-1)?.toolName ?? "unknown",
-        toolWasCalled: partialSteps.length !== 0,
+        dispatchEvidence: "Remote dispatch cannot be inferred from an action attempt",
       };
       state.executionLogs[item.id] = partialSteps.map((s, index) => ({
         id: `log_${index + 1}`,
@@ -1474,148 +1454,21 @@ export async function runWorkflowFor(
   }
 }
 
-// Resumes a workflow that stopped at a human approval checkpoint. Re-invokes
-// the self-healing agent with the prior results and the new approval as
-// context, so it continues the remaining steps rather than starting over or
-// asking again — "the LLM handles it, it knows it was approved."
-/*******************************************************************************
- * Function: resumeWorkflowApproval
- *
- * Resumes an execution paused for a pending human approval.
- ******************************************************************************/
+// Legacy records may still contain pending approvals. Do not resume them via
+// a model prompt: there is no durable, exact-transaction approval executor yet.
 export async function resumeWorkflowApproval(
   execution: Execution,
-  note: string,
-  request: FastifyRequest,
+  _note: string,
+  _request: FastifyRequest,
   reply: FastifyReply,
-  user: User & { role: string; permissions: string[] },
-  services: ApplicationServices,
+  _user: User & { role: string; permissions: string[] },
+  _services: ApplicationServices,
 ): Promise<unknown> {
   if (execution.status !== "AWAITING_APPROVAL" || !execution.pendingApproval)
     return reply.status(409).send(fail("This execution is not awaiting approval", null));
-  const workflow = await services.repository.read((state) => state.workflows[execution.workflowId] ?? null);
-  if (workflow === null) return reply.status(404).send(fail("Workflow not found", null));
-
-  const pending = execution.pendingApproval;
-  if (await isPolicyCheckerEnabled(services.repository)) {
-    const gov = await checkErpPolicy(services.erpbridgeSession, {
-      userId: user.id,
-      userRole: user.role,
-      action: "approve_workflow_step",
-      prompt: `User "${user.id}" (${user.role}) wants to approve: ${pending.description}`,
-      context: { stepId: pending.stepId, workflowId: workflow.id, executionId: execution.id },
-    });
-    if (!gov.allowed)
-      return reply.status(403).send(fail(gov.reason ?? "You are not authorized to approve this step", null));
-  }
-  if (services.providerRuntime?.configured !== true)
-    return reply.status(503).send(fail("LLM provider is not configured — cannot resume workflow", null));
-
-  const traceId = requestTraceId(request, execution.traceId);
-  const approvedAt = new Date().toISOString();
-  const priorApprovals = [
-    ...(execution.approvals ?? []),
-    { stepId: pending.stepId, approvedBy: { id: user.id, name: user.name }, approvedAt, ...(note ? { note } : {}) },
-  ];
-  const approvedStepIds = new Set(priorApprovals.map((a) => a.stepId));
-  const priorStepCount = Object.keys(execution.stepOutputs ?? {}).length;
-
-  const bridgeSession = services.erpbridgeSession ?? null;
-  const liveTools = await discoverTools(bridgeSession, services.registries);
-  const baseTask = buildWorkflowTaskMessage(workflow);
-  const continuationMessage = [
-    baseTask,
-    "",
-    "APPROVAL UPDATE:",
-    "The following checkpoint(s) have been approved by a human and are now authorized — do NOT ask about them again, proceed past them:",
-    ...priorApprovals.map((a) => `- "${a.stepId}" approved by ${a.approvedBy.name} at ${a.approvedAt}${a.note ? ` (note: ${a.note})` : ""}`),
-    "",
-    "PRIOR STEP RESULTS (already completed in an earlier turn — do not repeat these calls, reuse this data):",
-    JSON.stringify(execution.stepOutputs ?? {}),
-    "",
-    "Continue executing the remaining steps now that the approval above has been granted.",
-  ].join("\n");
-
-  const governanceUser = { id: user.id, role: user.role, department: user.departmentId ?? null };
-  const actionResult = await runWorkflowWithHealing(
-    continuationMessage,
-    liveTools,
-    bridgeSession,
-    { chatHistory: [], sessionId: execution.id, actorId: user.id, actorRole: user.role, user: governanceUser, signal: request.signal, traceId },
-    services.providerRuntime,
-    execution.id,
-    workflow,
-    services,
-  );
-
-  let blueprintSteps: Array<{ id: string; kind?: string | undefined; description?: string | undefined }> = [];
-  try { blueprintSteps = parseWorkflowYAMLStrict(workflow.yaml ?? "").steps; } catch { /* no approval gate if unparsable */ }
-  const nextPending = findPendingApproval(blueprintSteps, approvedStepIds, priorStepCount + actionResult.steps.length);
-
-  const nowIso = new Date().toISOString();
-  const newStepOutputs = Object.fromEntries(
-    actionResult.steps.map((s, i) => [`step_${priorStepCount + i + 1}_${s.toolName}`, s.result]),
-  );
-  const newTimeline = actionResult.steps.map((s, i) => ({
-    id: `tl_${priorStepCount + i + 1}`,
-    nodeId: `step_${priorStepCount + i + 1}`,
-    label: s.toolName,
-    status: "DONE" as const,
-    startedAt: nowIso,
-    completedAt: nowIso,
-    durationMs: 0,
-    output: s.result,
-    traceId,
+  return reply.status(409).send(fail("Runtime approval resume requires the safe checkpoint executor", {
+    code: "RUNTIME_APPROVAL_EXECUTOR_REQUIRED", executionId: execution.id,
   }));
-  const newLogs = actionResult.steps.map((s, i) => ({
-    id: `log_${priorStepCount + i + 1}`,
-    executionId: execution.id,
-    level: "info" as const,
-    nodeId: `step_${priorStepCount + i + 1}`,
-    timestamp: nowIso,
-    message: `${s.toolName}: completed`,
-    metadata: null,
-    traceId,
-  }));
-
-  let mergedTimelineForAnalysis: Array<{ nodeId?: unknown; output?: unknown; durationMs?: unknown }> = [];
-  const completed = await services.repository.mutate((state) => {
-    const item = state.executions[execution.id]!;
-    item.status = nextPending ? "AWAITING_APPROVAL" : "DONE";
-    item.completedAt = nowIso;
-    item.durationMs = Date.now() - new Date(item.startedAt).getTime();
-    item.tokens = {
-      input: (item.tokens?.input ?? 0) + actionResult.totalTokens.input,
-      output: (item.tokens?.output ?? 0) + actionResult.totalTokens.output,
-      total: (item.tokens?.input ?? 0) + (item.tokens?.output ?? 0) + actionResult.totalTokens.input + actionResult.totalTokens.output,
-    };
-    item.stepOutputs = { ...(item.stepOutputs ?? {}), ...newStepOutputs };
-    item.agentSummary = actionResult.text;
-    item.finalOutput = newTimeline.at(-1)?.output ?? actionResult.text;
-    item.approvals = priorApprovals;
-    if (nextPending) item.pendingApproval = { ...nextPending, requestedAt: nowIso };
-    else delete item.pendingApproval;
-    state.executionLogs[item.id] = [...(state.executionLogs[item.id] ?? []), ...newLogs];
-    const mergedTimeline = [...(state.timelines[item.id] ?? []), ...newTimeline];
-    state.timelines[item.id] = mergedTimeline;
-    mergedTimelineForAnalysis = mergedTimeline;
-    appendAudit(state, user, "execution.approved", "execution", item.id, null, { stepId: pending.stepId, status: item.status }, request);
-    const storedWorkflow = state.workflows[workflow.id];
-    if (storedWorkflow !== undefined && !nextPending) storedWorkflow.status = "DONE";
-    return structuredClone(item);
-  });
-  if (completed.chatSessionId && services.providerRuntime?.configured) {
-    void postExecutionAnalysis(completed, mergedTimelineForAnalysis, services);
-  }
-  return reply.send(
-    ok(
-      completed,
-      nextPending
-        ? `Approved "${pending.stepId}" — workflow paused again: ${nextPending.description}`
-        : `Approved "${pending.stepId}" — workflow ${workflow.name} completed`,
-      null,
-    ),
-  );
 }
 
 /*******************************************************************************
@@ -1712,6 +1565,11 @@ function routePolicy(
   route: RouteDefinition,
 ): { required: string[]; any: boolean } | null {
   const path = route.path;
+  if (path.startsWith("/api/import"))
+    return { required: ["registry:write"], any: false };
+  // Must precede the general profile self-service exemption.
+  if (path.startsWith("/api/profile/api-keys"))
+    return { required: ["settings:manage"], any: false };
   if (
     path.startsWith("/ws/") ||
     path.startsWith("/api/auth/") ||
@@ -1769,7 +1627,9 @@ function routePolicy(
     return route.method === "GET"
       ? { required: ["workflow:read", "workflow:read_own"], any: true }
       : { required: ["workflow:write"], any: false };
-  return null;
+  // A newly registered protected route without an access policy must not
+  // silently become accessible to every authenticated account.
+  return { required: [], any: true };
 }
 
 /*******************************************************************************
@@ -1959,7 +1819,9 @@ async function markAllNotificationsRead(
   return reply.send(ok({ markedRead: count }, "All notifications marked as read", null));
 }
 
-const MAX_HEAL_ATTEMPTS = 2;
+// Recovery must be a verified proposal with known checkpoints. Never replay a
+// workflow automatically after an uncertain tool/provider failure.
+const MAX_HEAL_ATTEMPTS = 0;
 
 /*******************************************************************************
  * Function: buildHealingPrompt
@@ -2024,10 +1886,13 @@ async function runWorkflowWithHealing(
       const result = await runActionLoop(
         { userMessage: message, ...ctx },
         liveTools,
-        bridgeSession != null
-          ? async (toolName, args) => bridgeSession.callToolDirect(toolName, args)
-          : async (toolName) => ({ error: `ERP Bridge not connected — cannot call tool "${toolName}"` }),
-        async () => ({ allowed: true }),
+        async (toolName, args) => dispatchReadTool(services, ctx.actorId, toolName, args, { signal: ctx.signal, traceId: ctx.traceId, sessionId: ctx.sessionId, workflowId: workflow.id, executionId }),
+        async (toolName, toolDef, args, govUser) => checkErpPolicy(bridgeSession ?? undefined, {
+          userId: govUser.id,
+          userRole: govUser.role,
+          action: toolName,
+          context: { tool: toolDef.name, arguments: args, workflowId: workflow.id, executionId },
+        }),
         providerRuntime,
       );
       if (attempt > 0) {

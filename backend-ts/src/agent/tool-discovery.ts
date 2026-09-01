@@ -1,11 +1,16 @@
 import type { ToolDefinition } from "../registry/schemas.js";
 import type { ErpbridgeMcpSession } from "../tools/erpbridge-mcp-client.js";
 import type { RegistryService } from "../registry/service.js";
+import { canonicalJSONBytes } from "../core/canonical-json.js";
 
 const CACHE_TTL_MS = 60_000;
 
-let cachedTools: readonly ToolDefinition[] | null = null;
-let cacheExpiresAt = 0;
+type DiscoveryCache = { registryHash: string; expiresAt: number; result: Promise<readonly ToolDefinition[]> };
+let sessionCaches = new WeakMap<ErpbridgeMcpSession, DiscoveryCache>();
+
+export class ToolDiscoveryError extends Error {
+  constructor() { super("ERPBridge tool discovery failed; no tools have been authorized"); this.name = "ToolDiscoveryError"; }
+}
 
 /*******************************************************************************
  * Function: discoverTools
@@ -17,49 +22,39 @@ export async function discoverTools(
   session: ErpbridgeMcpSession | null,
   registries: RegistryService,
 ): Promise<readonly ToolDefinition[]> {
-  const now = Date.now();
-  if (cachedTools !== null && now < cacheExpiresAt) return cachedTools;
-
-  const byMcpName = new Map(registries.snapshot().tools.map((t) => [t.mcp_tool_name, t]));
-
-  if (session === null) {
-    cachedTools = Object.freeze([]);
-    cacheExpiresAt = now + CACHE_TTL_MS;
-    return cachedTools;
+  if (session === null) return Object.freeze([]);
+  const registryHash = registries.hash();
+  const cached = sessionCaches.get(session);
+  if (cached !== undefined && cached.registryHash === registryHash && cached.expiresAt > Date.now()) return cached.result;
+  const byMcpName = new Map<string, ToolDefinition>();
+  for (const tool of registries.snapshot().tools) {
+    // Discovery is not admission. Legacy entries without identity, role
+    // grants, or an explicit usable schema remain unavailable to agents.
+    if (!tool.tool_id.trim() || !tool.mcp_tool_name.trim() || tool.allowed_roles.length === 0 || tool.input_schema.type !== "object") continue;
+    if (byMcpName.has(tool.mcp_tool_name)) throw new ToolDiscoveryError();
+    byMcpName.set(tool.mcp_tool_name, tool);
   }
-
-  try {
+  const result = (async () => {
+    try {
     const liveMcpTools = await session.listTools();
     const merged: ToolDefinition[] = [];
-
+    const names = new Set<string>();
     for (const liveT of liveMcpTools) {
+      if (names.has(liveT.name)) throw new ToolDiscoveryError();
+      names.add(liveT.name);
       const existing = byMcpName.get(liveT.name);
-      if (existing !== undefined) {
+      if (existing !== undefined && canonicalJSONBytes(existing.input_schema).equals(canonicalJSONBytes(liveT.inputSchema))) {
         merged.push(existing);
-      } else {
-        merged.push({
-          tool_id: `dynamic_${liveT.name}`,
-          name: liveT.name,
-          mcp_tool_name: liveT.name,
-          display_name: humanizeName(liveT.name),
-          description: (liveT as unknown as { description?: string }).description ?? "",
-          is_read_only: false,
-          allowed_roles: [],
-          input_schema: (liveT as unknown as { inputSchema?: unknown }).inputSchema ?? { type: "object", properties: {} },
-          module: "dynamic",
-          risk_level: "medium",
-          erp_system: "erpbridge",
-        } as unknown as ToolDefinition);
       }
     }
-
-    cachedTools = Object.freeze(merged);
-    cacheExpiresAt = now + CACHE_TTL_MS;
-    return cachedTools;
-  } catch {
-    cachedTools = Object.freeze([]);
-    cacheExpiresAt = now + CACHE_TTL_MS;
-    return cachedTools;
+    return Object.freeze(merged);
+    } catch { throw new ToolDiscoveryError(); }
+  })();
+  const entry = { registryHash, expiresAt: Date.now() + CACHE_TTL_MS, result };
+  sessionCaches.set(session, entry);
+  try { return await result; } catch (error) {
+    if (sessionCaches.get(session) === entry) sessionCaches.delete(session);
+    throw error;
   }
 }
 
@@ -69,15 +64,5 @@ export async function discoverTools(
  * Clears the cached tool list so discovery reloads it.
  ******************************************************************************/
 export function invalidateToolDiscoveryCache(): void {
-  cachedTools = null;
-  cacheExpiresAt = 0;
-}
-
-/*******************************************************************************
- * Function: humanizeName
- *
- * Converts an underscored name into a readable title.
- ******************************************************************************/
-function humanizeName(name: string): string {
-  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  sessionCaches = new WeakMap();
 }

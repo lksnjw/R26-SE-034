@@ -210,17 +210,15 @@ export class Executor {
       }
 
       if (effectiveStepKind(step) === "approval") {
-        const output = { approved: true, approvedAt: new Date().toISOString(), auto: true, checkpoint: label };
-        state[step.id] = output;
-        result.timeline.push(completeTimeline(index, step.id, label, started, "DONE", false, output));
+        result.timeline.push(completeTimeline(index, step.id, label, started, "FAILED", false));
         result.logs.push({
           timestamp: new Date().toISOString(),
-          level: "info",
+          level: "error",
           nodeId: step.id,
-          message: `Approval checkpoint: ${label} — auto-approved`,
+          message: "Runtime approval checkpoint requires the safe checkpoint executor",
           metadata: { kind: "approval", sideEffect: false },
         });
-        continue;
+        throw attachPartial(new Error("Runtime approval checkpoints cannot be auto-approved"), result);
       }
 
       const parameters = resolveVariables(step.parameters ?? {}, state);

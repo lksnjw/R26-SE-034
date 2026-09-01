@@ -233,20 +233,10 @@ export class RegistryValidator {
       actions.push(action);
       const tool = this.registries.findTool(action);
       if (tool === undefined) {
-        const rule001 = snapshot.rules.find((r) => r.rule_id === "GLOBAL-SAFETY-001");
-        const rule001Enabled = rule001 === undefined || rule001.enabled !== false;
-        if (rule001Enabled) {
-          result.tool_validity_ok = false;
-          failRule(
-            result,
-            "GLOBAL-SAFETY-001",
-            `Unknown or hallucinated tool ${JSON.stringify(action)} in step ${step.id}`,
-          );
-        } else {
-          result.warnings.push(
-            `GLOBAL-SAFETY-001 (rule disabled): tool ${JSON.stringify(action)} in step ${step.id} is not in the registry — step may fail at runtime`,
-          );
-        }
+        // Tool existence is a mandatory execution invariant, not an optional
+        // research/policy rule that can authorize hallucinated tools.
+        result.tool_validity_ok = false;
+        failRule(result, "GLOBAL-SAFETY-001", `Unknown or hallucinated tool ${JSON.stringify(action)} in step ${step.id}`);
         return;
       }
       usedTools.push(tool);

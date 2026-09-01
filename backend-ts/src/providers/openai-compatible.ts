@@ -47,9 +47,9 @@ export class OpenAICompatibleError extends Error {
  * Checks whether a provider failure permits trying the fallback model.
  ******************************************************************************/
 export function isGenerationFallbackEligible(error: unknown): boolean {
-  // "client" (HTTP 4xx) is included so a model-specific 400 (e.g. context-too-long or unsupported params)
-  // triggers the fallback model rather than failing the whole request immediately.
-  return error instanceof OpenAICompatibleError && ["timeout", "rate_limit", "server", "malformed", "client"].includes(error.kind);
+  // Authentication, authorization and malformed client requests are not
+  // repaired by trying another model with the same credentials.
+  return error instanceof OpenAICompatibleError && ["timeout", "rate_limit", "server", "malformed"].includes(error.kind);
 }
 
 export class OpenAICompatibleClient implements AnalysisProvider {

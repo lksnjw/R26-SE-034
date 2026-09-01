@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { constants } from "node:fs";
 import { copyFile, mkdir } from "node:fs/promises";
@@ -20,7 +19,7 @@ import {
   createGovernedMCPClient,
   type GovernedMCPClient,
 } from "../tools/mcp-client.js";
-import { ToolRegistry, createDispatchIdentity } from "../tools/registry.js";
+import { ToolRegistry } from "../tools/registry.js";
 import { RegistryValidator } from "../validator/registry-validator.js";
 import { hashPassword } from "../authn/password.js";
 import { PostgresPersistence } from "../storage/postgres.js";
@@ -35,9 +34,7 @@ import { GovernanceService } from "../governance/service.js";
 import { GovernedValidationGate } from "../governance/gate.js";
 import { LlmPolicyFallback } from "../governance/llm-fallback.js";
 import { PolicyGateClient } from "../governance/policy-gate-client.js";
-import { runActionLoop } from "../agent/action-loop.js";
 import { discoverTools } from "../agent/tool-discovery.js";
-import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 
 // Some external SDKs (the Firestore client, the ERP Bridge MCP client) have no
 // built-in connect timeout — an unresponsive dependency would otherwise hang
@@ -169,21 +166,19 @@ registries.onToolUpsert((definition) => {
   }
 });
 
-// Bootstrap toolRegistry with live ERP Bridge tools discovered at startup.
-// discoverTools() only feeds the synthesis prompt; without this step the executor
-// cannot dispatch workflow steps that call ERP Bridge tools not in the static JSON registry.
+// Discovery may reconcile registered contracts, never invent minimally guarded
+// tool definitions for live-only names. Unknown tools remain unavailable.
 if (erpbridgeSession !== null) {
   try {
-    const liveErpTools = await erpbridgeSession.listTools();
-    for (const liveT of liveErpTools) {
-      if (!toolRegistry.has(liveT.name)) {
-        const minimalDef = { mcp_tool_name: liveT.name, allowed_roles: [] } as unknown as ToolDefinition;
-        const client = clientFor(minimalDef);
+    const liveErpTools = await discoverTools(erpbridgeSession, registries);
+    for (const definition of liveErpTools) {
+      if (!toolRegistry.has(definition.name)) {
+        const client = clientFor(definition);
         if (client !== null)
-          toolRegistry.register(new GenericMCPTool(liveT.name, liveT.description ?? "", client));
+          toolRegistry.register(new GenericMCPTool(definition.name, definition.description, client));
       }
     }
-    console.log(`[erpbridge] Bootstrapped ${liveErpTools.length} live ERP tools into executor`);
+    console.log(`[erpbridge] Reconciled ${liveErpTools.length} registered live contracts`);
   } catch (err) {
     console.warn("[erpbridge] Could not bootstrap live tools into executor:", err instanceof Error ? err.message : String(err));
   }
@@ -261,7 +256,8 @@ const app = await buildApp({
   ...(erpbridgeSession !== null ? { erpbridgeSession } : {}),
 });
 let shuttingDown = false;
-const schedulerInterval = setInterval(() => { void runScheduledWorkflows(); }, 60_000);
+// The legacy scheduler uses a fabricated admin identity and no durable lease,
+// immutable publication binding or transaction recovery. Do not dispatch it.
 /*******************************************************************************
  * Function: shutdown
  *
@@ -270,7 +266,6 @@ const schedulerInterval = setInterval(() => { void runScheduledWorkflows(); }, 6
 const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
-  clearInterval(schedulerInterval);
   await app.close();
   await erpbridgeSession?.close();
   await repository.close();
@@ -285,7 +280,7 @@ process.once("SIGTERM", () => {
   void shutdown();
 });
 await app.listen({ host: "0.0.0.0", port: config.port });
-console.log("[scheduler] Workflow cron scheduler started (60 s tick)");
+console.log("[scheduler] Legacy cron dispatch disabled; safe service-principal scheduler is required");
 
 /*******************************************************************************
  * Function: bootstrapAdministrator
@@ -399,169 +394,5 @@ function staticProviderConfiguration(): RuntimeProviderConfiguration | null {
   };
 }
 
-// ── Cron scheduler ────────────────────────────────────────────────────────────
-/*******************************************************************************
- * Function: cronFieldMatches
- *
- * Matches a cron field containing a wildcard or comma-separated integers.
- ******************************************************************************/
-function cronFieldMatches(field: string, value: number): boolean {
-  if (field === "*") return true;
-  return field.split(",").some((part) => {
-    const n = parseInt(part.trim(), 10);
-    return !Number.isNaN(n) && n === value;
-  });
-}
-
-/*******************************************************************************
- * Function: cronMatches
- *
- * Matches a five-field schedule against the supplied UTC date.
- ******************************************************************************/
-function cronMatches(expr: string, date: Date): boolean {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return false;
-  const [min, hour, dom, mon, dow] = parts as [string, string, string, string, string];
-  return (
-    cronFieldMatches(min, date.getUTCMinutes()) &&
-    cronFieldMatches(hour, date.getUTCHours()) &&
-    cronFieldMatches(dom, date.getUTCDate()) &&
-    cronFieldMatches(mon, date.getUTCMonth() + 1) &&
-    cronFieldMatches(dow, date.getUTCDay())
-  );
-}
-
-/*******************************************************************************
- * Function: runScheduledWorkflows
- *
- * Starts eligible workflows whose schedules match the current UTC tick.
- ******************************************************************************/
-async function runScheduledWorkflows(): Promise<void> {
-  const tick = new Date();
-  const scheduled = await repository.read((state) =>
-    Object.values(state.workflows).filter((wf) => {
-      if (wf.archived) return false;
-      const trig = wf.trigger as Record<string, unknown> | null | undefined;
-      if (!trig || trig.type !== "schedule") return false;
-      const cfg = trig.config as Record<string, unknown> | null | undefined;
-      return typeof cfg?.cron === "string" && (cfg.cron as string).trim() !== "";
-    })
-  );
-  if (scheduled.length === 0) return;
-
-  for (const wf of scheduled) {
-    const trig = wf.trigger as Record<string, unknown>;
-    const cfg = trig.config as Record<string, unknown>;
-    const cronExpr = cfg.cron as string;
-    if (!cronMatches(cronExpr, tick)) continue;
-
-    if (!wf.yaml) {
-      console.warn(`[scheduler] ${wf.id} has no YAML — skipping`);
-      continue;
-    }
-
-    const execId = `run-${randomBytes(4).toString("hex")}`;
-    try {
-      const gate = await validator.validateAndIssueToken("scheduled", wf.yaml, "admin");
-      if (!gate.token) {
-        console.warn(`[scheduler] ${wf.id} blocked by validator — skipping`);
-        continue;
-      }
-      const startedAt = new Date().toISOString();
-      await repository.mutate((state) => {
-        state.executions[execId] = {
-          id: execId,
-          workflowId: wf.id,
-          workflowName: wf.name,
-          status: "RUNNING",
-          startedAt,
-          completedAt: null,
-          durationMs: 0,
-          tokens: { input: 0, output: 0, total: 0 },
-          costUsd: 0,
-          startedBy: { id: "system", name: "Scheduler" },
-        };
-      });
-      const nowIso = new Date().toISOString();
-      let finalState: Record<string, unknown>;
-      let finalTimeline: Array<{ id: string; nodeId: string; label: string; status: string; startedAt: string; completedAt: string; durationMs: number; output: unknown }>;
-      let finalLogs: Array<{ level: string; nodeId: string; timestamp: string; message: string; metadata: unknown }>;
-      let finalTokens: { input: number; output: number; total: number };
-
-      // LLM-driven execution via ERP Bridge when both are available.
-      // Falls back to legacy executor when either is unavailable.
-      if (erpbridgeSession !== null && providerRuntime !== null && providerRuntime.configured) {
-        const liveTools = await discoverTools(erpbridgeSession, registries);
-        const taskLines: string[] = [`Execute workflow: ${wf.name}`];
-        if (wf.description) taskLines.push(`Description: ${wf.description}`);
-        try {
-          const bp = parseWorkflowYAMLStrict(wf.yaml!);
-          if (bp.steps.length > 0) {
-            taskLines.push("Steps to execute in order:");
-            bp.steps.forEach((s, i) => {
-              const paramStr = s.parameters && Object.keys(s.parameters).length > 0
-                ? ` with parameters: ${JSON.stringify(s.parameters)}` : "";
-              taskLines.push(`${i + 1}. ${s.description || s.action} — use tool "${s.action}"${paramStr}`);
-            });
-          }
-        } catch { /* use name/description only */ }
-        taskLines.push("Execute ALL steps in order using the exact tool names listed. If a tool name differs only in hyphens vs underscores, use the closest available tool.");
-        const actionResult = await runActionLoop(
-          { userMessage: taskLines.join("\n"), chatHistory: [], sessionId: execId, actorId: "system", actorRole: "admin", user: { id: "system", role: "admin", department: null } },
-          liveTools,
-          async (toolName, args) => erpbridgeSession.callToolDirect(toolName, args),
-          async () => ({ allowed: true }),
-          providerRuntime,
-        );
-        finalState = Object.fromEntries(actionResult.steps.map((s, i) => [`step_${i + 1}_${s.toolName}`, s.result]));
-        finalTimeline = actionResult.steps.map((s, i) => ({ id: `tl_${i + 1}`, nodeId: `step_${i + 1}`, label: s.toolName, status: "DONE", startedAt: nowIso, completedAt: nowIso, durationMs: 0, output: s.result }));
-        finalLogs = actionResult.steps.map((s, i) => ({ level: "info", nodeId: `step_${i + 1}`, timestamp: nowIso, message: `${s.toolName}: completed`, metadata: null }));
-        finalTokens = { input: actionResult.totalTokens.input, output: actionResult.totalTokens.output, total: actionResult.totalTokens.input + actionResult.totalTokens.output };
-      } else {
-        const dispatchId = createDispatchIdentity({ id: "system", role: "admin" }, config.erpbridgeRoleMap);
-        const result = await executor.run(execId, wf, {}, gate.token, dispatchId, undefined, { traceId: execId, workflowId: wf.id, executionId: execId, actor: { id: "system", role: "admin" } });
-        finalState = result.state;
-        finalTimeline = result.timeline.map((t) => ({ id: (t as { id?: string }).id ?? `tl_0`, nodeId: t.nodeId, label: t.nodeId, status: "DONE", startedAt: nowIso, completedAt: nowIso, durationMs: t.durationMs, output: t.output }));
-        finalLogs = result.logs;
-        finalTokens = result.tokens;
-      }
-
-      const completedAt = new Date().toISOString();
-      await repository.mutate((state) => {
-        const item = state.executions[execId];
-        if (item === undefined) return;
-        item.status = "DONE";
-        item.completedAt = completedAt;
-        item.durationMs = Date.now() - new Date(startedAt).getTime();
-        item.tokens = finalTokens;
-        item.stepOutputs = Object.fromEntries(
-          Object.entries(finalState).filter(([k]) => k !== "input"),
-        );
-        item.finalOutput = finalTimeline.at(-1)?.output;
-        state.executionLogs[execId] = finalLogs.map((log, i) => ({
-          id: `log_${i + 1}`,
-          executionId: execId,
-          ...log,
-          traceId: execId,
-        }));
-        state.timelines[execId] = finalTimeline.map((entry) => ({ ...entry, traceId: execId }));
-        const storedWf = state.workflows[wf.id];
-        if (storedWf !== undefined) {
-          storedWf.lastRunAt = completedAt;
-          storedWf.status = "DONE";
-          storedWf.updatedAt = completedAt;
-        }
-      });
-      console.log(`[scheduler] ${wf.name} → ${execId} DONE`);
-    } catch (err) {
-      console.warn(`[scheduler] ${wf.id} failed:`, err instanceof Error ? err.message : String(err));
-      await repository.mutate((state) => {
-        const item = state.executions[execId];
-        if (item === undefined) return;
-        item.status = "FAILED";
-        item.completedAt = new Date().toISOString();
-        item.durationMs = Date.now() - new Date(item.startedAt).getTime();
-      }).catch(() => {});
-    }
-  }
-}
+// Production scheduling will be implemented with durable occurrences, leases,
+// explicit service principals and the same governed dispatch boundary.

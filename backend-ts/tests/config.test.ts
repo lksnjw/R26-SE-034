@@ -109,4 +109,7 @@ describe("workflow transport configuration", () => {
       }),
     ).toThrow(/duplicate/);
   });
+  test.each(["Admin", "role with spaces", "1role", "a".repeat(65), "role/escape"])("rejects invalid verified bridge role %s", (role) => {
+    expect(() => loadConfig({ ...erpbridgeEnvironment, ERPBRIDGE_ROLE_MAP: JSON.stringify({ Client: role }) })).toThrow(/role format/);
+  });
 });

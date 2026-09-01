@@ -89,8 +89,8 @@ export type Workflow = z.infer<typeof workflowSchema> & {
   // steps that have not yet been resolved in chat. While this is set the
   // workflow cannot be run — see the generation-time approval flow in
   // http/handlers/workflows.ts (approveWorkflowGeneration/rejectWorkflowGeneration).
-  // Resolving it strips the approval steps from the saved YAML so later runs
-  // never pause for human approval again.
+  // Accepting it preserves all runtime checkpoints and does not authorize
+  // the transactions of subsequent runs.
   pendingGenerationApproval?: { steps: Array<{ stepId: string; description: string }>; requestedAt: string } | null;
   generationApprovals?: Array<{ approvedBy: { id: string; name: string }; approvedAt: string; note?: string }>;
 };

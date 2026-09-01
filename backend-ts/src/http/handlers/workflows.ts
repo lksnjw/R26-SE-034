@@ -192,8 +192,8 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
     const item = state.workflows[id];
     if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
     if (workflowContentHash(item.yaml) !== expectedHash) throw new HandlerFailure(409, "Workflow content changed during validation");
-    item.publishedVersion = item.draftVersion; item.updatedAt = now();
-    const value = { id: nextID(state, "ver"), workflowId: id, version: item.publishedVersion, versionNote: stringValue(body.versionNote), yaml: item.yaml, createdAt: now(), createdBy: { id: user.id, name: user.name } };
+    item.publishedVersion = item.draftVersion; item.canRun = true; item.updatedAt = now();
+    const value = { id: nextID(state, "ver"), workflowId: id, version: item.publishedVersion, artifactState: "PUBLISHED", versionNote: stringValue(body.versionNote), yaml: item.yaml, createdAt: now(), createdBy: { id: user.id, name: user.name } };
     const versions = state.versions[id] ?? [];
     versions.push(value); state.versions[id] = versions;
     return value;
@@ -282,10 +282,8 @@ async function putWorkflowYAML(request: FastifyRequest, reply: FastifyReply, use
   return reply.send(ok(yamlRecord(workflow), "Workflow YAML updated", null));
 }
 
-// Resolves a generation-time approval checkpoint IN CHAT, before the workflow
-// is ever run — "solved once at generation, never asked again". Strips the
-// `kind: approval` step(s) out of the saved YAML so every future run of this
-// workflow goes straight through with no human-in-the-loop pause.
+// Generation acceptance records review of the proposal. It never removes
+// executable approval nodes or grants authorization for future transactions.
 /*******************************************************************************
  * Function: approveWorkflowGeneration
  *
@@ -315,8 +313,9 @@ async function approveWorkflowGeneration(request: FastifyRequest, reply: Fastify
   }
 
   let blueprint; try { blueprint = parseWorkflowYAMLStrict(current.yaml); } catch (error) { throw new HandlerFailure(422, "Workflow YAML failed validation", { error: errorText(error) }); }
-  const resolvedSteps = blueprint.steps.filter((s) => s.kind !== "approval");
-  const newYaml = yamlStringify({ ...blueprint, steps: resolvedSteps }).trim();
+  // Generation acceptance is not permission for future transactions.
+  const resolvedSteps = blueprint.steps;
+  const newYaml = current.yaml;
   const traceId = requestTraceId(request, current.traceId);
   const gate = await validateWorkflow(services, "ApproveWorkflowGeneration", newYaml, user, { traceId, workflowId: id });
   if (!gate.result.passed) throw new HandlerFailure(422, "Workflow failed validation after resolving approval", { ...gate.result, traceId });
@@ -325,7 +324,9 @@ async function approveWorkflowGeneration(request: FastifyRequest, reply: Fastify
   const workflow = await services.repository.mutate((state) => {
     const item = state.workflows[id]; if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
     const before = publicWorkflow(item);
-    item.yaml = newYaml; item.steps = resolvedSteps.length; item.draftVersion += 1; item.status = "PENDING"; item.updatedAt = now();
+    if (item.yaml !== current.yaml || item.draftVersion !== current.draftVersion)
+      throw new HandlerFailure(409, "Workflow changed while accepting the proposal; reload and review it again");
+    item.steps = resolvedSteps.length; item.status = "PENDING"; item.updatedAt = now();
     item.canvas = canvasFromBlueprint(id, { ...blueprint, steps: resolvedSteps });
     item.pendingGenerationApproval = null;
     item.generationApprovals = [...(item.generationApprovals ?? []), { approvedBy: { id: user.id, name: user.name }, approvedAt, ...(note ? { note } : {}) }];
@@ -336,7 +337,7 @@ async function approveWorkflowGeneration(request: FastifyRequest, reply: Fastify
         const msg = {
           id: nextID(state, "msg"),
           role: "system",
-          text: `**${item.name}** approved — this workflow is now fully autonomous and will run straight through without pausing for approval again.${note ? `\n\n_Note: ${note}_` : ""}`,
+          text: `**${item.name}** generation proposal accepted. Runtime approval checkpoints remain required for each applicable execution.${note ? `\n\n_Note: ${note}_` : ""}`,
           artifacts: { intent: "GENERATION_APPROVAL_RESOLVED", workflowId: id, resolution: "approved" },
           createdAt: now(),
           traceId,
@@ -346,7 +347,7 @@ async function approveWorkflowGeneration(request: FastifyRequest, reply: Fastify
     }
     return structuredClone(item);
   });
-  return reply.send(ok(publicWorkflow(workflow), "Workflow approved — future runs will not pause for approval", null));
+  return reply.send(ok(publicWorkflow(workflow), "Generation proposal accepted; runtime approval checkpoints are preserved", null));
 }
 
 /*******************************************************************************
