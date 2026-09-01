@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import jwt from "jsonwebtoken";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { hashPassword } from "../src/authn/password.js";
 import { loadConfig, type AppConfig } from "../src/config/config.js";
 import { buildApp } from "../src/http/app.js";
@@ -12,8 +12,7 @@ import { RegistryService } from "../src/registry/service.js";
 import { Repository } from "../src/repository/store.js";
 import { Executor } from "../src/runner/executor.js";
 import { SynthesisService } from "../src/synthesis/service.js";
-import { GenericMCPTool } from "../src/tools/generic-mcp-tool.js";
-import { createGovernedMCPClient } from "../src/tools/mcp-client.js";
+import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { GovernanceAdapter } from "../src/governance/adapter.js";
@@ -43,14 +42,15 @@ describe("chat orchestration", () => {
       method: "POST",
       url: "/api/chat/sessions/chat_demo/messages",
       headers: { authorization: `Bearer ${setup.token}` },
-      payload: { content: "Echo hello" },
+      payload: { content: "Create a workflow to echo hello" },
     });
     expect(response.statusCode).toBe(200);
     const envelope = response.json();
     expect(envelope.message).toBe("Message processed");
     expect(envelope.data.userMessage.role).toBe("user");
     expect(envelope.data.assistantMessage.role).toBe("assistant");
-    expect(envelope.data.assistantMessage.artifacts.can_execute).toBe(true);
+    expect(envelope.data.assistantMessage.artifacts.can_execute).toBe(false);
+    expect(envelope.data.assistantMessage.artifacts.next_action).toBe("REVIEW_DRAFT");
     expect(envelope.data.workflowDraft.validation.passed).toBe(true);
     expect(envelope.data.usage).toEqual({
       inputTokens: 25,
@@ -71,14 +71,14 @@ describe("chat orchestration", () => {
       method: "POST",
       url: "/api/chat/sessions/chat_demo/messages",
       headers: { authorization: `Bearer ${setup.token}` },
-      payload: { content: "Do it again" },
+      payload: { content: "Create a workflow again" },
     });
-    const followupPrompt = prompts.find((prompt) => prompt.includes("USER_REQUEST\nDo it again"));
-    expect(followupPrompt).toContain("user: Echo hello");
+    const followupPrompt = prompts.find((prompt) => prompt.includes("USER_REQUEST\nCreate a workflow again"));
+    expect(followupPrompt).toContain("user: Create a workflow to echo hello");
     expect(followupPrompt).toContain(JSON.stringify(`assistant: ${String(chat.messages[1]?.text)}`));
   });
 
-  test("deploys a generated candidate through the existing workflow route and revalidates before persistence", async () => {
+  test("saves a generated candidate as a draft through the workflow route and revalidates before persistence", async () => {
     const yaml = `name: Echo request\ndescription: Echoes a value through the demo integration.\ntrigger:\n  type: manual\nsteps:\n  - id: echo_value\n    action: demo.echo\n    parameters:\n      value: deployed\n`;
     const setup = await buildTestApplication(async () =>
       Response.json({ choices: [{ message: { content: yaml } }] }),
@@ -87,7 +87,7 @@ describe("chat orchestration", () => {
       method: "POST",
       url: "/api/chat/sessions/chat_deploy/messages",
       headers: { authorization: `Bearer ${setup.token}` },
-      payload: { content: "Echo deployed" },
+      payload: { content: "Create a workflow to echo deployed" },
     });
     const candidate = generated.json().data.workflowDraft;
     const deployed = await setup.app.inject({
@@ -100,7 +100,9 @@ describe("chat orchestration", () => {
     const workflowID = deployed.json().data.id as string;
     const state = await setup.repository.snapshot();
     expect(state.workflows[workflowID]?.yaml).toBe(yaml.trim());
-    expect(state.workflows[workflowID]?.publishedVersion).toBe(1);
+    expect(state.workflows[workflowID]?.publishedVersion).toBe(0);
+    expect(state.workflows[workflowID]?.canRun).toBe(false);
+    expect(state.versions[workflowID]?.[0]?.artifactState).toBe("DRAFT");
     expect(state.workflows[workflowID]?.chatSessionId).toBe("chat_deploy");
     expect(state.workflows[workflowID]?.chatMessageId).toBe(
       generated.json().data.userMessage.id,
@@ -121,7 +123,7 @@ describe("chat orchestration", () => {
     expect(rejected.json().meta.failed_rules).toContain("GLOBAL-SAFETY-001");
   });
 
-  test("completes chat to validated deployment to realistic mock ERP execution and returns the result", async () => {
+  test("completes explicit chat generation, draft acceptance, publication and governed SDK-fixture read", async () => {
     const yaml = `name: Attendance lookup\ndescription: Fetches an employee attendance record from the ERP.\ntrigger:\n  type: manual\nsteps:\n  - id: fetch_employee_attendance\n    action: fetch_attendance\n    parameters:\n      employeeId: EMP-005\n`;
     const setup = await buildTestApplication(
       async () =>
@@ -136,7 +138,7 @@ describe("chat orchestration", () => {
       method: "POST",
       url: "/api/chat/sessions/chat_e2e/messages",
       headers: { authorization: `Bearer ${setup.token}` },
-      payload: { content: "Show attendance for employee EMP-005" },
+      payload: { content: "Create a workflow to show attendance for employee EMP-005" },
     });
     expect(chat.statusCode).toBe(200);
     const candidate = chat.json().data.workflowDraft;
@@ -150,6 +152,7 @@ describe("chat orchestration", () => {
     });
     expect(deploy.statusCode).toBe(201);
     const workflowID = deploy.json().data.id as string;
+    await publish(setup, workflowID);
 
     const run = await setup.app.inject({
       method: "POST",
@@ -160,7 +163,7 @@ describe("chat orchestration", () => {
     expect(run.statusCode).toBe(200);
     expect(run.json().data.status).toBe("DONE");
     expect(run.json().data.chatSessionId).toBe("chat_e2e");
-    expect(run.json().data.finalOutput).toEqual({
+    expect(run.json().data.finalOutput.structuredContent).toEqual({
       attendance: [
         {
           employeeId: "EMP-005",
@@ -171,6 +174,8 @@ describe("chat orchestration", () => {
       ],
       count: 1,
     });
+    expect(setup.callTool).toHaveBeenCalledExactlyOnceWith("fetch_attendance", { employeeId: "EMP-005", role: "admin" });
+    expect(run.json().data.tokens.total).toBe(0);
     const state = await setup.repository.snapshot();
     expect(state.executions[run.json().data.id]?.status).toBe("DONE");
     expect(state.executions[run.json().data.id]?.chatSessionId).toBe(
@@ -231,28 +236,15 @@ describe("chat orchestration", () => {
     const setup = await buildTestApplication(async () =>
       Response.json({ choices: [{ message: { content: yaml } }] }),
     );
-    setup.tools.register({
-      name: "demo.echo",
-      description: "Returns a result containing credential-shaped fields.",
-      /*******************************************************************************
-       * Function: execute
-       *
-       * Returns the stubbed tool result used by the chat test.
-       ******************************************************************************/
-      async execute() {
-        return {
-          value: "safe",
-          api_key: "must-not-escape",
-          nested: { status: "ok", authorization: "Bearer must-not-escape" },
-        };
-      },
-    });
+    setup.callTool.mockResolvedValue({ content: [], structuredContent: {
+      value: "safe", api_key: "must-not-escape", nested: { status: "ok", authorization: "Bearer must-not-escape" },
+    } });
 
     const chat = await setup.app.inject({
       method: "POST",
       url: "/api/chat/sessions/chat_redaction/messages",
       headers: { authorization: `Bearer ${setup.token}` },
-      payload: { content: "Echo a safe value" },
+      payload: { content: "Create a workflow to echo a safe value" },
     });
     const deploy = await setup.app.inject({
       method: "POST",
@@ -260,6 +252,7 @@ describe("chat orchestration", () => {
       headers: { authorization: `Bearer ${setup.token}` },
       payload: { candidate: chat.json().data.workflowDraft },
     });
+    await publish(setup, deploy.json().data.id);
     const run = await setup.app.inject({
       method: "POST",
       url: `/api/workflows/${deploy.json().data.id}/run`,
@@ -268,11 +261,11 @@ describe("chat orchestration", () => {
     });
 
     expect(run.statusCode).toBe(200);
-    expect(run.json().data.stepOutputs.echo_value).toEqual({
+    expect(run.json().data.stepOutputs.echo_value.structuredContent).toEqual({
       value: "safe",
       nested: { status: "ok" },
     });
-    expect(run.json().data.finalOutput).toEqual({
+    expect(run.json().data.finalOutput.structuredContent).toEqual({
       value: "safe",
       nested: { status: "ok" },
     });
@@ -280,7 +273,7 @@ describe("chat orchestration", () => {
 
     const executionID = run.json().data.id as string;
     const persisted = (await setup.repository.snapshot()).executions[executionID]!;
-    expect(persisted.stepOutputs?.echo_value).toEqual({
+    expect((persisted.stepOutputs?.echo_value as { structuredContent: unknown }).structuredContent).toEqual({
       value: "safe",
       nested: { status: "ok" },
     });
@@ -346,27 +339,16 @@ describe("chat orchestration", () => {
     const setup = await buildTestApplication(
       async () =>
         Response.json({ choices: [{ message: { content: yaml } }] }),
-      "tests/fixtures/tools.json",
+      "tests/fixtures/chat-read-tools.json",
       "tests/fixtures/rules.json",
       true,
     );
-    setup.tools.register({
-      name: "demo.echo",
-      description: "Returns trace-test output.",
-      /*******************************************************************************
-       * Function: execute
-       *
-       * Returns the stubbed tool result used by the chat test.
-       ******************************************************************************/
-      async execute() {
-        return { value: "visible", api_key: "must-not-escape" };
-      },
-    });
+    setup.callTool.mockResolvedValue({ content: [], structuredContent: { value: "visible", api_key: "must-not-escape" } });
     const chat = await setup.app.inject({
       method: "POST",
       url: "/api/chat/sessions/chat_trace/messages",
       headers: { authorization: `Bearer ${setup.token}` },
-      payload: { content: "Echo with a trace" },
+      payload: { content: "Create a workflow to echo with a trace" },
     });
     expect(chat.statusCode).toBe(200);
     const traceId = chat.json().data.workflowDraft.traceId as string;
@@ -381,6 +363,7 @@ describe("chat orchestration", () => {
     });
     expect(deploy.statusCode).toBe(201);
     expect(deploy.json().data.traceId).toBe(traceId);
+    await publish(setup, deploy.json().data.id);
     const run = await setup.app.inject({
       method: "POST",
       url: `/api/workflows/${deploy.json().data.id}/run`,
@@ -491,7 +474,7 @@ describe("chat orchestration", () => {
  ******************************************************************************/
 async function buildTestApplication(
   fetchImplementation: typeof fetch,
-  toolPath = "tests/fixtures/tools.json",
+  toolPath = "tests/fixtures/chat-read-tools.json",
   rulePath = "tests/fixtures/rules.json",
   withGovernance = false,
 ) {
@@ -514,7 +497,7 @@ async function buildTestApplication(
     mcpTimeoutMs: 1_000,
     erpbridgeBaseURL: "",
     erpbridgeMcpToken: "",
-    erpbridgeRoleMap: {},
+    erpbridgeRoleMap: { "Platform Admin": "admin" },
     generationTimeoutMs: 1_000,
     governanceFallbackPolicyPath: "",
     governanceFallbackLlmApiKey: "",
@@ -548,15 +531,12 @@ async function buildTestApplication(
     config.ruleRegistryPath,
   );
   const validator = new RegistryValidator(registries, repository);
-  const mcp = createGovernedMCPClient({
-    baseURL: "",
-    timeoutMs: 1_000,
-    mode: "mock",
-    validator,
-  });
   const tools = new ToolRegistry();
-  for (const tool of registries.snapshot().tools)
-    tools.register(new GenericMCPTool(tool.name, tool.description, mcp));
+  // Stub the SDK transport, not the governed dispatch/capability layer.
+  const callTool = vi.fn(async (name: string, args: Record<string, unknown>): Promise<unknown> => ({ content: [], structuredContent:
+    name === "fetch_attendance" ? { attendance: [{ employeeId: args.employeeId, date: "2026-07-15", hours: 8, status: "present" }], count: 1 } : { value: args.value } }));
+  const erpbridgeSession = await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "fixture-only", timeoutMs: 1000, validator,
+    sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => registries.snapshot().tools.map((tool) => ({ name: tool.mcp_tool_name, inputSchema: tool.input_schema })), callTool } });
   const executor = new Executor(tools, validator);
   const providers = new ProviderRuntime(
     repository,
@@ -624,6 +604,7 @@ async function buildTestApplication(
     executor,
     providerRuntime: providers,
     synthesis,
+    erpbridgeSession,
     ...(validationGate === undefined ? {} : { validationGate }),
   });
   apps.push(app);
@@ -633,5 +614,11 @@ async function buildTestApplication(
     subject: user.id,
     expiresIn: 3600,
   });
-  return { app, repository, token, tools, user, config, governanceRequests };
+  return { app, repository, token, callTool, user, config, governanceRequests };
+}
+
+async function publish(setup: Awaited<ReturnType<typeof buildTestApplication>>, workflowId: string): Promise<void> {
+  const response = await setup.app.inject({ method: "POST", url: `/api/workflows/${workflowId}/publish`, headers: { authorization: `Bearer ${setup.token}` }, payload: {} });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.artifactState).toBe("PUBLISHED");
 }

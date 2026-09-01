@@ -6,6 +6,12 @@ import { validateToolArguments } from "../agent/workflow-runtime-validator.js";
 import { createDispatchIdentity } from "./registry.js";
 import { validateToolInput } from "./tool-input-schema.js";
 import { withoutSecretFields } from "../redact/secrets.js";
+import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
+import type { ValidationToken } from "../validator/registry-validator.js";
+import { attachDispatchAuditTrace } from "../trace/audit-trace.js";
+
+export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined;
+  plan?: { yaml: string; stepIndex: number; token: ValidationToken } };
 
 // Phase-0 containment: only explicitly registered, role-granted reads may
 // reach the SDK. Transaction writes await approval/idempotency/recovery.
@@ -14,12 +20,13 @@ export async function dispatchReadTool(
   actorId: string,
   toolName: string,
   args: Record<string, unknown>,
-  context: { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined } = {},
+  context: ReadDispatchContext = {},
 ): Promise<Record<string, unknown>> {
   const actor = await services.repository.effectiveUser(actorId);
   if (actor === null || actor.status.toLowerCase() !== "active" ||
       !actor.permissions.some((permission) => ["chat:use", "workflow:write", "workflow:run", "workflow:run_own"].includes(permission)))
     throw new Error("Tool dispatch denied: current actor is not authorized");
+  await checkWorkflowScope(services, actor, context.workflowId);
   const session = services.erpbridgeSession;
   if (session === undefined) throw new Error("ERPBridge is not connected; tool dispatch is unavailable");
   const tools = await discoverTools(session, services.registries);
@@ -33,12 +40,20 @@ export async function dispatchReadTool(
   if (validateToolInput(tool.input_schema, parameters).length > 0) throw new Error("Tool dispatch denied: unsupported schema or invalid arguments");
   const issues = validateToolArguments(toolName, parameters, tool);
   if (issues.missing.length || issues.invalid.length) throw new Error("Tool dispatch denied: arguments failed runtime validation");
-  const yaml = stringify({ name: "Authorized read", description: "One exact read proposed by the workspace agent", trigger: { type: "manual" }, steps: [{ id: "read", action: tool.name, parameters }] });
-  const { signal, ...metadata } = context;
+  const yaml = context.plan?.yaml ?? stringify({ name: "Authorized read", description: "One exact read proposed by the workspace agent", trigger: { type: "manual" }, steps: [{ id: "read", action: tool.name, parameters }] });
+  const index = context.plan?.stepIndex ?? 0;
+  const authored = parseWorkflowYAMLStrict(yaml).steps[index];
+  if (authored === undefined || ![tool.name, tool.mcp_tool_name].includes(authored.action ?? "")) throw new Error("Tool dispatch denied: authored action does not match requested tool");
+  const { signal, plan, ...metadata } = context;
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
   const identity = createDispatchIdentity(actor, services.config.erpbridgeRoleMap);
-  const resolved = await services.validator.evaluateResolvedStep("ReadToolBroker", yaml, 0, parameters, gate.token, identity);
+  // The original run receipt must remain authentic/current as well as the
+  // fresh governance decision. Registry drift never silently rebinds a run.
+  const resolved = await services.validator.evaluateResolvedStep(context.executionId ?? "ReadToolBroker", yaml, index, parameters, plan?.token ?? gate.token, identity);
+  if (context.executionId !== undefined) await attachDispatchAuditTrace(services.repository, context.executionId, {
+    ...metadata, actor: { id: actor.id, role: actor.role },
+  });
   if (resolved.capability === null || resolved.violation !== null) throw new Error("Tool dispatch denied: no valid exact-argument capability");
   // Validation may await external services. Recheck current authority after
   // those waits; a revoked or changed identity cannot use an older capability.
@@ -46,7 +61,16 @@ export async function dispatchReadTool(
   if (current === null || current.status.toLowerCase() !== "active" || current.role !== actor.role ||
       !current.permissions.some((permission) => ["chat:use", "workflow:write", "workflow:run", "workflow:run_own"].includes(permission)) ||
       !tool.allowed_roles.includes(current.role)) throw new Error("Tool dispatch denied: actor authority changed during verification");
-  const envelope = await session.clientFor(tool).execute(tool.name, resolved.capability, parameters, identity, context.signal);
+  await checkWorkflowScope(services, current, context.workflowId);
+  const envelope = await session.clientFor(tool).execute(authored.action!, resolved.capability, parameters, identity, context.signal);
+  // The first read profile supports JSON/text results only. Unsupported or
+  // malformed MCP envelopes cannot be reported as a completed business read.
+  if (!Array.isArray(envelope.content) || ("isError" in envelope && typeof envelope.isError !== "boolean") ||
+      ("structuredContent" in envelope && (envelope.structuredContent === null || typeof envelope.structuredContent !== "object" || Array.isArray(envelope.structuredContent))) ||
+      envelope.content.length > 128 || envelope.content.some((block: unknown) => block === null || typeof block !== "object" ||
+        (block as Record<string, unknown>).type !== "text" || typeof (block as Record<string, unknown>).text !== "string") ||
+      JSON.stringify(envelope).length > 512_000)
+    throw new Error("ERPBridge read returned an unsupported or malformed result envelope");
   const sanitized = withoutSecretFields(envelope) as Record<string, unknown>;
   // Structured and JSON-text MCP results must not send credential-shaped
   // fields into model context, chat persistence, exports or API responses.
@@ -57,4 +81,12 @@ export async function dispatchReadTool(
     try { return { ...item, text: JSON.stringify(withoutSecretFields(JSON.parse(item.text))) }; } catch { return item; }
   });
   return sanitized;
+}
+
+async function checkWorkflowScope(services: HandlerServices, actor: { id: string; permissions: string[] }, workflowId: string | undefined): Promise<void> {
+  if (workflowId === undefined) return;
+  const workflow = await services.repository.read((state) => state.workflows[workflowId] ?? null);
+  if (workflow === null || workflow.archived || (!actor.permissions.includes("workflow:run") &&
+      (!actor.permissions.includes("workflow:run_own") || (workflow.owner.id !== actor.id && !(workflow.assignedUserIds ?? []).includes(actor.id)))))
+    throw new Error("Tool dispatch denied: workflow execution access was revoked");
 }

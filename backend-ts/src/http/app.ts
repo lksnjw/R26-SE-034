@@ -30,10 +30,7 @@ import type { SynthesisService } from "../synthesis/service.js";
 import type { ValidationGate } from "../governance/gate.js";
 import { AsyncMutex } from "../repository/async-mutex.js";
 import { type Executor } from "../runner/executor.js";
-import { generateExecutionAnalysis, type ExecutionAnalysisInput } from "../agent/execution-analyst.js";
 import type { RegistryValidator } from "../validator/registry-validator.js";
-import { createDispatchIdentity } from "../tools/registry.js";
-import { dispatchReadTool } from "../tools/read-tool-broker.js";
 import { routeTable, type RouteDefinition } from "./generated-routes.js";
 import { isPolicyCheckerEnabled, checkErpPolicy } from "../governance/rbac.js";
 import {
@@ -46,7 +43,6 @@ import {
   isTraceId,
   requestTraceId,
 } from "../trace/request-trace.js";
-import { attachDispatchAuditTrace } from "../trace/audit-trace.js";
 import {
   ADMIN_UNHANDLED,
   handleAdministrationRoute,
@@ -55,10 +51,8 @@ import {
   ANALYTICS_UNHANDLED,
   handleAnalyticsCatalogRoute,
 } from "./handlers/analytics-catalog.js";
-import { runActionLoop, partialActionSteps } from "../agent/action-loop.js";
-import { projectActionOutcome } from "../agent/execution-outcome.js";
-import { discoverTools } from "../agent/tool-discovery.js";
-import { validateWorkflowStatically, analyzeDataFlow } from "../agent/workflow-runtime-validator.js";
+import { inspectReadWorkflow } from "../runner/read-workflow.js";
+import { runVerifiedRead } from "./handlers/read-execution.js";
 import {
   REGISTRY_UNHANDLED,
   handleRegistryRoute,
@@ -1170,6 +1164,8 @@ async function runWorkflow(
   user: User & { role: string; permissions: string[] },
   services: ApplicationServices,
 ): Promise<unknown> {
+  if (!runWorkflowRequestSchema.safeParse(request.body ?? {}).success)
+    return reply.status(400).send(fail("Invalid request body", null));
   const workflow = await services.repository.read(
     (state) => state.workflows[param(request, "id")] ?? null,
   );
@@ -1179,8 +1175,8 @@ async function runWorkflow(
 }
 
 // Shared by POST /workflows/:id/run and POST /executions/:id/retry — the ONLY
-// workflow execution path. No deterministic fallback: every run goes through
-// the self-healing LLM agent loop (runWorkflowWithHealing below).
+// workflow execution path: exact published sequential reads through the
+// governed broker, with no LLM reinterpretation or automatic replay.
 /*******************************************************************************
  * Function: runWorkflowFor
  *
@@ -1209,6 +1205,19 @@ export async function runWorkflowFor(
     return reply
       .status(403)
       .send(fail("Workflow is not assigned to the current user", null));
+  if (workflow.yaml.length > 200_000) return reply.status(422).send(fail("Workflow source exceeds supported limits", { traceId }));
+  if (!["", "execute", "deterministic-read"].includes(parsed.data.mode) || parsed.data.idempotencyKey !== "")
+    return reply.status(422).send(fail("Requested execution mode or idempotency contract is not implemented", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));
+  if (parsed.data.dryRun) {
+    const validation = services.validator.validatePlan("ReadWorkflowSimulation", workflow.yaml, user.role);
+    let issues: string[] = [];
+    try { issues = inspectReadWorkflow(parseWorkflowYAMLStrict(workflow.yaml), services.registries.snapshot().tools, user.role); }
+    catch { issues = ["Workflow could not be parsed"]; }
+    return reply.send(ok({ dry_run: true, simulation: "static-read-plan", can_execute: false,
+      plan_valid: validation.passed && issues.length === 0, validation, issues, live_readiness: "not_checked",
+      planned_steps: (() => { try { return withoutSecretFields(parseWorkflowYAMLStrict(workflow.yaml).steps); } catch { return []; } })() },
+      "Static simulation only; no live discovery or execution was performed", { traceId }));
+  }
   // Accepting the build proposal does not authorize runtime transactions.
   if (workflow.pendingGenerationApproval && workflow.pendingGenerationApproval.steps.length > 0)
     return reply.status(409).send(
@@ -1229,229 +1238,8 @@ export async function runWorkflowFor(
     .findLast((version) => version.version === workflow.publishedVersion && version.artifactState === "PUBLISHED"));
   if (publication === undefined || typeof publication.yaml !== "string" || publication.yaml !== workflow.yaml)
     return reply.status(409).send(fail("A current verified publication snapshot is required; legacy or edited drafts need explicit publication", { code: "PUBLISHED_SNAPSHOT_REQUIRED", traceId }));
-  if (services.providerRuntime?.configured !== true)
-    return reply.status(503).send(fail("LLM provider is not configured — cannot run workflow", null));
-
-  // ── Pre-execution validation ─────────────────────────────────────────────
-  // Discover live tools first so we can validate BEFORE creating the execution record.
-  const bridgeSessionEarly = services.erpbridgeSession ?? null;
-  const liveToolsEarly = await discoverTools(bridgeSessionEarly, services.registries);
-  let workflowStepsEarly: Array<{ id: string; kind?: string; action?: string; parameters?: Record<string, unknown>; description?: string }> = [];
-  try { workflowStepsEarly = parseWorkflowYAMLStrict(workflow.yaml ?? "").steps as typeof workflowStepsEarly; } catch { /* handled below */ }
-
-  const preValidation = validateWorkflowStatically(workflowStepsEarly, liveToolsEarly);
-
-  if (parsed.data.dryRun) {
-    return reply.send(
-      ok(
-        {
-          can_execute: preValidation.valid,
-          dry_run: true,
-          llm_driven: true,
-          planned_steps: workflowStepsEarly,
-          validation: preValidation,
-        },
-        preValidation.valid ? "Dry run validation passed" : "Dry run: validation issues found",
-        { traceId },
-      ),
-    );
-  }
-
-  // Hard-fail on missing tools so the LLM doesn't waste time on an unrunnable workflow.
-  if (!preValidation.valid) {
-    const errors = preValidation.issues.filter((i) => i.severity === "error");
-    console.warn(`[run] ${workflow.id} — pre-run validation FAILED: ${errors.map((e) => e.message).join("; ")}`);
-    return reply.status(422).send(
-      fail(
-        `Workflow cannot run: ${errors.map((e) => e.message).join("; ")}`,
-        { validation: preValidation },
-      ),
-    );
-  }
-
-  // LLM data-flow analysis — runs in parallel with execution record creation.
-  // Non-blocking: if it times out or fails, execution continues without the plan.
-  const dataFlowPlanPromise = workflowStepsEarly.length > 1
-    ? analyzeDataFlow(workflowStepsEarly, preValidation.toolResolutions, services.providerRuntime!, request.signal)
-        .catch(() => "")
-    : Promise.resolve("");
-
-  const execution = await services.repository.mutate((state) => {
-    state.counter += 1;
-    const id = `run-${randomBytes(4).toString("hex")}`;
-    const item = {
-      id,
-      workflowId: workflow.id,
-      workflowName: workflow.name,
-      status: "RUNNING",
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-      durationMs: 0,
-      tokens: { input: 0, output: 0, total: 0 },
-      costUsd: 0,
-      startedBy: { id: user.id, name: user.name },
-      ...(workflow.chatSessionId === undefined
-        ? {}
-        : { chatSessionId: workflow.chatSessionId }),
-      traceId,
-      preValidation,
-    };
-    state.executions[id] = item;
-    return item;
-  });
-  try {
-    // Legacy model-driven path is contained by verification and the read-only
-    // broker. It does not provide a deterministic control-flow executor yet.
-    const bridgeSession = bridgeSessionEarly;
-    const liveTools = liveToolsEarly;
-    const dataFlowPlan = await dataFlowPlanPromise;
-    const taskMessage = buildWorkflowTaskMessage(workflow, preValidation.toolResolutions, dataFlowPlan);
-    console.log(`[run] ${workflow.id} — LLM agent | bridge=${bridgeSession !== null} tools=${liveTools.length} validationWarnings=${preValidation.issues.length}`);
-    const governanceUser = { id: user.id, role: user.role, department: user.departmentId ?? null };
-    const actionResult = await runWorkflowWithHealing(
-      taskMessage,
-      liveTools,
-      bridgeSession,
-      { chatHistory: [], sessionId: execution.id, actorId: user.id, actorRole: user.role, user: governanceUser, signal: request.signal, traceId },
-      services.providerRuntime!,
-      execution.id,
-      workflow,
-      services,
-    );
-    const outcome = projectActionOutcome(actionResult, workflowStepsEarly.map((step) => {
-      const resolution = preValidation.toolResolutions.find((item) => item.stepId === step.id);
-      return { id: step.id, names: resolution ? [resolution.tool.name, resolution.tool.mcp_tool_name] : [] };
-    }));
-    const result = outcome.result;
-    await attachDispatchAuditTrace(services.repository, execution.id, {
-      traceId,
-      workflowId: workflow.id,
-      executionId: execution.id,
-      actor: { id: user.id, role: user.role },
-    });
-    let blueprintStepsForApproval: Array<{ id: string; kind?: string | undefined; description?: string | undefined }> = [];
-    try { blueprintStepsForApproval = parseWorkflowYAMLStrict(workflow.yaml ?? "").steps; } catch { /* no approval gate if unparsable */ }
-    const pendingApproval = outcome.failed ? null : findPendingApproval(blueprintStepsForApproval, new Set(), actionResult.steps.length);
-
-    const completed = await services.repository.mutate((state) => {
-      const item = state.executions[execution.id]!;
-      item.status = outcome.failed ? "FAILED" : pendingApproval ? "AWAITING_APPROVAL" : "DONE";
-      item.completedAt = new Date().toISOString();
-      item.durationMs = Date.now() - new Date(item.startedAt).getTime();
-      item.tokens = result.tokens;
-      item.stepOutputs = Object.fromEntries(
-        Object.entries(result.state).filter(([key]) => key !== "input"),
-      );
-      // The agent's own final narration — e.g. "AWAITING APPROVAL: ...".
-      // When it stopped without calling any tool (a checkpoint reached, not a
-      // failure), this is the ONLY explanation of what happened, so surface
-      // it as the finalOutput rather than leaving the run looking empty.
-      item.agentSummary = outcome.failed ? outcome.reason! : actionResult.text;
-      item.finalOutput = outcome.failed ? outcome.reason : result.timeline.at(-1)?.output;
-      if (outcome.failed) item.failure = { failureCategory: "ACTION_EXECUTION_FAILURE", reason: outcome.reason };
-      if (pendingApproval) {
-        item.pendingApproval = { ...pendingApproval, requestedAt: new Date().toISOString() };
-      } else {
-        delete item.pendingApproval;
-      }
-      state.executionLogs[item.id] = result.logs.map((log, index) => ({
-        id: `log_${index + 1}`,
-        executionId: item.id,
-        ...log,
-        traceId,
-      }));
-      state.timelines[item.id] = result.timeline.map((entry) => ({
-        ...entry,
-        traceId,
-      }));
-      const storedWorkflow = state.workflows[workflow.id];
-      if (storedWorkflow !== undefined && pendingApproval) storedWorkflow.status = "PENDING";
-      return structuredClone(item);
-    });
-    if (completed.chatSessionId && services.providerRuntime?.configured) {
-      void postExecutionAnalysis(completed, result.timeline, services);
-    }
-    if (outcome.failed) return reply.status(422).send(fail(outcome.reason!, { executionId: completed.id, status: completed.status, traceId }));
-    return reply.send(
-      ok(
-        completed,
-        pendingApproval
-          ? `Workflow ${workflow.name} is paused — awaiting approval: ${pendingApproval.description}`
-          : `Workflow ${workflow.name} completed successfully in ${result.timeline.length} steps`,
-        null,
-      ),
-    );
-  } catch (error) {
-    await attachDispatchAuditTrace(services.repository, execution.id, {
-      traceId,
-      workflowId: workflow.id,
-      executionId: execution.id,
-      actor: { id: user.id, role: user.role },
-    });
-    const partialSteps = partialActionSteps(error) ?? [];
-    const nowIso = new Date().toISOString();
-    const partialTimeline = partialSteps.map((s, index) => ({
-      id: `tl_${index + 1}`,
-      nodeId: s.toolName,
-      label: s.displayName,
-      status: (s.error === undefined ? "DONE" : "FAILED") as "DONE" | "FAILED",
-      startedAt: s.startedAt,
-      completedAt: s.completedAt,
-      durationMs: Math.max(0, new Date(s.completedAt).getTime() - new Date(s.startedAt).getTime()),
-      output: s.result,
-    }));
-    const failed = await services.repository.mutate((state) => {
-      const item = state.executions[execution.id]!;
-      item.status = "FAILED";
-      item.completedAt = nowIso;
-      item.durationMs = Date.now() - new Date(item.startedAt).getTime();
-      item.stepOutputs = Object.fromEntries(
-        partialSteps.map((s, i) => [`step_${i + 1}_${s.toolName}`, s.result]),
-      );
-      item.failure = {
-        failureCategory: "AGENT_FAILURE",
-        failedStepId: partialSteps.at(-1)?.toolName ?? "unknown",
-        failedToolName: partialSteps.at(-1)?.toolName ?? "unknown",
-        dispatchEvidence: "Remote dispatch cannot be inferred from an action attempt",
-      };
-      state.executionLogs[item.id] = partialSteps.map((s, index) => ({
-        id: `log_${index + 1}`,
-        executionId: item.id,
-        timestamp: s.completedAt,
-        level: s.error !== undefined ? "error" : "info",
-        nodeId: s.toolName,
-        message: s.error ?? "Step completed",
-        metadata: null,
-        traceId,
-      }));
-      state.timelines[item.id] = partialTimeline.map((entry) => ({ ...entry, traceId }));
-      // runWorkflowWithHealing already records real attempt/event history in
-      // state.healing (HEALING_ATTEMPT_N, INTERVENTION_REQUIRED, etc). Only fall
-      // back to a generic record here if it never got the chance to write one
-      // (e.g. the failure happened before the healing loop started).
-      if (state.healing[item.id] === undefined) {
-        state.healing[item.id] = {
-          executionId: item.id,
-          workflowId: item.workflowId,
-          status: "HEALING_NOT_ATTEMPTED",
-          summary: "Automatic healing was not attempted",
-          events: [],
-          metrics: {},
-        };
-      }
-      return structuredClone(item);
-    });
-    if (failed.chatSessionId && services.providerRuntime?.configured) {
-      void postExecutionAnalysis(failed, partialTimeline, services);
-    }
-    return reply.status(422).send(
-      fail(`Workflow execution failed: ${errorText(error)}`, {
-        executionId: failed.id,
-        status: failed.status,
-        traceId,
-      }),
-    );
-  }
+  if (gate.token === null) return reply.status(422).send(fail("Execution verification receipt is unavailable", { traceId }));
+  return runVerifiedRead(workflow, parsed.data.input ?? {}, gate.token, traceId, request, reply, user, services);
 }
 
 // Legacy records may still contain pending approvals. Do not resume them via
@@ -1794,8 +1582,9 @@ async function deleteNotification(
     delete state.notifications[id];
     return true;
   });
-  if (!existed) return reply.status(404).send(fail("Notification not found", null));
-  return reply.send(ok({ deleted: true }, "Notification deleted", null));
+  // Idempotent deletion keeps the captured API contract, while the data
+  // reports whether a record actually existed.
+  return reply.send(ok({ deleted: existed }, "Notification deleted", null));
 }
 
 /*******************************************************************************
@@ -1816,284 +1605,5 @@ async function markAllNotificationsRead(
     }
     return n;
   });
-  return reply.send(ok({ markedRead: count }, "All notifications marked as read", null));
-}
-
-// Recovery must be a verified proposal with known checkpoints. Never replay a
-// workflow automatically after an uncertain tool/provider failure.
-const MAX_HEAL_ATTEMPTS = 0;
-
-/*******************************************************************************
- * Function: buildHealingPrompt
- *
- * Adds failure details and retry instructions to the workflow task prompt.
- ******************************************************************************/
-function buildHealingPrompt(originalTask: string, error: unknown, attempt: number): string {
-  return [
-    `PREVIOUS ATTEMPT FAILED (attempt ${attempt}): ${errorText(error)}`,
-    "",
-    "Diagnose the failure and retry the workflow. If a tool call failed, adjust parameters or try an alternative approach.",
-    "Do NOT skip steps — complete the full workflow.",
-    "",
-    "ORIGINAL TASK:",
-    originalTask,
-  ].join("\n");
-}
-
-type ActionLoopContext = {
-  chatHistory: Array<{ role: string; text: string }>;
-  sessionId: string;
-  actorId: string;
-  actorRole: string;
-  user: { id: string; role: string; department: string | null };
-  signal?: AbortSignal;
-  traceId?: string;
-};
-
-/*******************************************************************************
- * Function: runWorkflowWithHealing
- *
- * Runs workflow actions with bounded retries and failure feedback.
- ******************************************************************************/
-async function runWorkflowWithHealing(
-  taskMessage: string,
-  liveTools: Awaited<ReturnType<typeof discoverTools>>,
-  bridgeSession: ApplicationServices["erpbridgeSession"] | null,
-  ctx: ActionLoopContext,
-  providerRuntime: NonNullable<ApplicationServices["providerRuntime"]>,
-  executionId: string,
-  workflow: Workflow & { prompt?: string },
-  services: ApplicationServices,
-): Promise<Awaited<ReturnType<typeof runActionLoop>>> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= MAX_HEAL_ATTEMPTS; attempt++) {
-    try {
-      const message = attempt === 0 ? taskMessage : buildHealingPrompt(taskMessage, lastError, attempt);
-      if (attempt > 0) {
-        await services.repository.mutate((state) => {
-          const h = state.healing[executionId] as Record<string, unknown> | undefined ?? {};
-          const events = Array.isArray(h.events) ? h.events : [];
-          state.healing[executionId] = {
-            ...h,
-            executionId,
-            workflowId: workflow.id,
-            status: `HEALING_ATTEMPT_${attempt}`,
-            summary: `Self-healing attempt ${attempt}`,
-            events: [...events, { attempt, timestamp: new Date().toISOString(), error: errorText(lastError) }],
-          };
-        });
-      }
-      const result = await runActionLoop(
-        { userMessage: message, ...ctx },
-        liveTools,
-        async (toolName, args) => dispatchReadTool(services, ctx.actorId, toolName, args, { signal: ctx.signal, traceId: ctx.traceId, sessionId: ctx.sessionId, workflowId: workflow.id, executionId }),
-        async (toolName, toolDef, args, govUser) => checkErpPolicy(bridgeSession ?? undefined, {
-          userId: govUser.id,
-          userRole: govUser.role,
-          action: toolName,
-          context: { tool: toolDef.name, arguments: args, workflowId: workflow.id, executionId },
-        }),
-        providerRuntime,
-      );
-      if (attempt > 0) {
-        await services.repository.mutate((state) => {
-          const h = state.healing[executionId] as Record<string, unknown> | undefined ?? {};
-          state.healing[executionId] = { ...h, status: "HEALED", summary: `Self-healed after ${attempt} attempt(s)` };
-        });
-      }
-      return result;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  // All attempts exhausted — notify human
-  const notifId = `notif_${Date.now()}`;
-  await services.repository.mutate((state) => {
-    state.notifications[notifId] = {
-      id: notifId,
-      type: "human_intervention_required",
-      executionId,
-      workflowId: workflow.id,
-      workflowName: workflow.name,
-      reason: errorText(lastError),
-      createdAt: new Date().toISOString(),
-      read: false,
-      actionRequired: "review",
-    };
-    const h = state.healing[executionId] as Record<string, unknown> | undefined ?? {};
-    const events = Array.isArray(h.events) ? h.events : [];
-    state.healing[executionId] = {
-      ...h,
-      executionId,
-      workflowId: workflow.id,
-      status: "INTERVENTION_REQUIRED",
-      summary: "All self-healing attempts failed — human intervention required",
-      notificationId: notifId,
-      events: [...events, { attempt: MAX_HEAL_ATTEMPTS + 1, timestamp: new Date().toISOString(), error: errorText(lastError), notified: true }],
-    };
-  });
-
-  throw lastError;
-}
-
-export type PendingApproval = { stepId: string; description: string };
-
-// Walks the workflow blueprint in order, counting real (tool) steps as it
-// goes. The first kind:approval step it reaches whose preceding tool steps
-// are all accounted for by completedToolCount — and that isn't already in
-// approvedStepIds — is the checkpoint execution is currently sitting at.
-// Returns null once every approval step has either been approved or the
-// agent has gone on to complete tool steps past it.
-/*******************************************************************************
- * Function: findPendingApproval
- *
- * Finds the next approval checkpoint reached by completed tool steps.
- ******************************************************************************/
-export function findPendingApproval(
-  blueprintSteps: ReadonlyArray<{ id: string; kind?: string | undefined; description?: string | undefined }>,
-  approvedStepIds: ReadonlySet<string>,
-  completedToolCount: number,
-): PendingApproval | null {
-  let toolsSeen = 0;
-  for (const step of blueprintSteps) {
-    const kind = step.kind ?? "tool";
-    if (kind === "tool") {
-      toolsSeen += 1;
-      continue;
-    }
-    if (kind !== "approval") continue;
-    if (approvedStepIds.has(step.id)) continue;
-    if (toolsSeen <= completedToolCount) {
-      return {
-        stepId: step.id,
-        description: (step.description ?? "").trim() || `Approval required for step ${step.id}`,
-      };
-    }
-    break;
-  }
-  return null;
-}
-
-/*******************************************************************************
- * Function: buildWorkflowTaskMessage
- *
- * Builds the agent task message from the workflow and execution inputs.
- ******************************************************************************/
-function buildWorkflowTaskMessage(
-  workflow: Workflow & { prompt?: string },
-  toolResolutions: import("../agent/workflow-runtime-validator.js").ToolResolution[] = [],
-  dataFlowPlan = "",
-): string {
-  const lines: string[] = [];
-  if (workflow.prompt) lines.push(`Original user request: "${workflow.prompt}"`);
-  lines.push(`Workflow: "${workflow.name}"`);
-  if (workflow.description) lines.push(`Goal: ${workflow.description}`);
-  lines.push("");
-
-  // Build a map from originalAction → resolvedAction so we can show correct tool names
-  const resolvedMap = new Map(toolResolutions.map((r) => [r.originalAction, r.resolvedAction]));
-
-  try {
-    const bp = parseWorkflowYAMLStrict(workflow.yaml ?? "");
-    if (bp.steps.length > 0) {
-      lines.push(`This workflow has ${bp.steps.length} step(s). Execute them IN ORDER — do not skip any step.`);
-      lines.push("Runtime validation is ACTIVE: before each tool call verify the tool name is correct and all required arguments are real values.");
-      lines.push("");
-
-      let hasApprovalStep = false;
-      bp.steps.forEach((s, i) => {
-        const desc = (s.description ?? "").trim() || (s.action ?? "").replace(/[_-]/g, " ");
-        if (s.kind === "approval") {
-          hasApprovalStep = true;
-          lines.push(`Step ${i + 1}: [HUMAN APPROVAL CHECKPOINT — no tool] — ${desc}`);
-          lines.push(`   → STOP HERE. Do not call any more tools. End your response by clearly stating this step requires human approval and naming exactly what is being authorized: "${desc}". Do not assume it is approved.`);
-          return;
-        }
-        // Use the validated (resolved) tool name if available
-        const resolvedAction = resolvedMap.get(s.action as string) ?? s.action;
-        const toolHint = resolvedAction !== s.action
-          ? ` [use tool: "${resolvedAction}" — validated name]`
-          : ` [tool: "${resolvedAction}"]`;
-        const params = s.parameters && Object.keys(s.parameters as Record<string, unknown>).length > 0
-          ? `\n   Parameters: ${JSON.stringify(s.parameters)}`
-          : "";
-        const isFirst = i === 0;
-        const isLast = i === bp.steps.length - 1;
-        const hint = isFirst
-          ? "\n   → DATA GATHERING: Call this tool and capture ALL fields from the result — you will need them in later steps."
-          : isLast
-            ? "\n   → ACTION STEP: Use the actual data fetched in earlier steps as the content. Do NOT use placeholders."
-            : "\n   → INTERMEDIATE: Extract needed values from prior step results and pass them here.";
-        lines.push(`Step ${i + 1}:${toolHint} — ${desc}${params}${hint}`);
-      });
-
-      lines.push("");
-      lines.push("EXECUTION RULES:");
-      lines.push("- Use ONLY the validated tool names listed above. Do NOT invent new tool names.");
-      lines.push("- If a tool returns an error, check the <runtime_validation> block in the result and fix the arguments.");
-      lines.push("- Pass REAL field values from prior tool results — never use [PLACEHOLDER], <value>, or 'example'.");
-      lines.push("- After all steps, report each step: DONE / FAILED with exact output or error.");
-      if (hasApprovalStep) {
-        lines.push("- This workflow contains a HUMAN APPROVAL CHECKPOINT. You MUST NOT call any tool listed after that checkpoint until a human has explicitly approved it. Reaching the checkpoint and reporting it is a successful, complete run — it is not a failure and not something to route around.");
-      }
-    }
-  } catch { /* fallback: name/description only */ }
-
-  // Append LLM-generated data-flow plan when available
-  if (dataFlowPlan.trim()) {
-    lines.push("");
-    lines.push("DATA FLOW PLAN (generated by pre-run analysis — follow this):");
-    lines.push(dataFlowPlan);
-  }
-
-  return lines.join("\n");
-}
-
-/*******************************************************************************
- * Function: postExecutionAnalysis
- *
- * Adds a generated execution analysis to the linked chat session.
- ******************************************************************************/
-async function postExecutionAnalysis(
-  execution: { id: string; workflowId: string; workflowName?: string; status: string; startedAt: string; completedAt: string | null; durationMs: number; stepOutputs?: Record<string, unknown>; agentSummary?: string; failure?: Record<string, unknown>; chatSessionId?: string; tokens?: { input: number; output: number; total: number } },
-  timeline: Array<{ nodeId?: unknown; output?: unknown; durationMs?: unknown }>,
-  services: ApplicationServices,
-): Promise<void> {
-  if (!execution.chatSessionId || !services.providerRuntime) return;
-  try {
-    const failedStepId = typeof execution.failure?.failedStepId === "string" ? execution.failure.failedStepId : undefined;
-    const input: ExecutionAnalysisInput = {
-      executionId: execution.id,
-      workflowName: String(execution.workflowName ?? execution.workflowId),
-      status: execution.status === "DONE" || execution.status === "AWAITING_APPROVAL" ? execution.status : "FAILED",
-      startedAt: execution.startedAt,
-      completedAt: execution.completedAt,
-      durationMs: execution.durationMs,
-      ...(execution.agentSummary !== undefined ? { agentSummary: execution.agentSummary } : {}),
-      stepOutputs: execution.stepOutputs ?? {},
-      timeline: timeline.map((t) => ({ nodeId: String(t.nodeId ?? ""), output: t.output, durationMs: typeof t.durationMs === "number" ? t.durationMs : 0 })),
-      ...(failedStepId !== undefined ? { failedStepId } : {}),
-      ...(execution.tokens !== undefined ? { tokens: execution.tokens } : {}),
-    };
-    const analysis = await generateExecutionAnalysis(input, services.providerRuntime);
-    await services.repository.mutate((state) => {
-      const chat = state.chats[execution.chatSessionId!];
-      if (chat === undefined) return;
-      state.counter += 1;
-      const id = `msg_${state.counter}_${randomBytes(4).toString("hex")}`;
-      const message = {
-        id,
-        role: "system",
-        text: analysis.text,
-        createdAt: new Date().toISOString(),
-        ...(analysis.visualisation !== undefined ? { artifacts: { intent: "EXECUTION_ANALYSIS", visualisation: analysis.visualisation, executionId: execution.id } } : { artifacts: { intent: "EXECUTION_ANALYSIS", executionId: execution.id } }),
-      };
-      chat.messages.push(message);
-      chat.messageCount = chat.messages.length;
-      chat.updatedAt = new Date().toISOString();
-    });
-  } catch {
-    // Fire-and-forget: analysis failure must not affect the execution response
-  }
+  return reply.send(ok({ markedRead: count }, "All notifications marked read", null));
 }

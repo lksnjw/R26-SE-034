@@ -113,8 +113,17 @@ describe("complete HTTP route graph", () => {
     await app.close();
   });
 
-  test("registers exactly the 168 Go routes", () => {
-    expect(routeTable).toHaveLength(168);
+  test("preserves every frozen Go route plus only the four explicit approval extensions", async () => {
+    const fixture = (await import("../fixtures/parity/http/route-wire-capture.json", { with: { type: "json" } })).default as WireFixture;
+    const captured = fixture.routes.map((route) => `${route.method} ${route.pattern}`);
+    expect(captured).toHaveLength(168);
+    const actual = routeTable.map((route) => `${route.method} ${route.path}`);
+    expect(new Set(actual).size).toBe(actual.length);
+    expect(captured.filter((route) => !actual.includes(route))).toEqual([]);
+    expect(actual.filter((route) => !captured.includes(route)).sort()).toEqual([
+      "POST /api/executions/:id/approve", "POST /api/executions/:id/reject",
+      "POST /api/workflows/:id/approve-generation", "POST /api/workflows/:id/reject-generation",
+    ].sort());
   });
 
   test("matches every captured missing-auth response", async () => {

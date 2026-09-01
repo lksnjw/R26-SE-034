@@ -122,11 +122,10 @@ test("accepting a valid candidate creates a draft, not an executable publication
   expect(s.listTools).not.toHaveBeenCalled();
 });
 
-test.each(["no-actions", "callback-error", "policy-denial"])("normal run stores FAILED for %s even if the model claims success", async (scenario) => {
-  const queryWithTools = vi.fn(async () => ({ text: "Completed successfully", toolCalls: scenario === "no-actions" ? [] : [{ id: "call1", name: "demo.echo", arguments: { value: "test" } }],
-    stopReason: scenario === "no-actions" ? "stop" : "tool_calls", inputTokens: 2, outputTokens: 3 }));
+test.each(["read-dispatch-error", "write-blocked"])("published run handles %s without asking a model to execute", async (scenario) => {
+  const queryWithTools = vi.fn(async () => { throw new Error("A published read must not ask the model to execute"); });
   const s = await setup(false, { configured: true, queryWithTools } as unknown as ProviderRuntime);
-  const tool = { ...s.registries.snapshot().tools[0]!, allowed_roles: ["Platform Admin"], is_read_only: scenario !== "policy-denial" };
+  const tool = { ...s.registries.snapshot().tools[0]!, allowed_roles: ["Platform Admin"], is_read_only: scenario !== "write-blocked" };
   const snapshot = s.registries.snapshot();
   vi.spyOn(s.registries, "snapshot").mockReturnValue({ ...snapshot, tools: [tool] });
   vi.spyOn(s.registries, "findTool").mockImplementation((name) => name === tool.name ? tool : undefined);
@@ -138,12 +137,18 @@ test.each(["no-actions", "callback-error", "policy-denial"])("normal run stores 
   const response = await s.app.inject({ method: "POST", url: "/api/workflows/other/run", headers: s.headers("admin"), payload: {} });
   expect(response.statusCode, response.body).toBe(422);
   const state = await s.repository.snapshot();
+  expect(queryWithTools).not.toHaveBeenCalled();
+  if (scenario === "write-blocked") {
+    expect(response.json().meta.code).toBe("UNSUPPORTED_EXECUTION_PROFILE");
+    expect(state.executions).toEqual({});
+    expect(s.listTools).not.toHaveBeenCalled();
+    return;
+  }
   const execution = Object.values(state.executions)[0]!;
   expect(execution.status).toBe("FAILED");
   expect(execution.agentSummary).not.toBe("Completed successfully");
   expect(execution.stepOutputs).toEqual({});
-  if (scenario !== "no-actions") expect(state.timelines[execution.id]?.[0]?.status).toBe("FAILED");
-  expect(queryWithTools).toHaveBeenCalledTimes(1);
+  expect(state.timelines[execution.id]?.[0]).toMatchObject({ nodeId: "read", status: "FAILED" });
 });
 
 test("editing a published draft invalidates the runnable snapshot before discovery", async () => {

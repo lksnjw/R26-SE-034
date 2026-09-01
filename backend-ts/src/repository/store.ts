@@ -45,6 +45,7 @@ export type Execution = {
   approvals?: Array<{ stepId: string; approvedBy: { id: string; name: string }; approvedAt: string; note?: string }>;
   chatSessionId?: string;
   traceId?: string;
+  workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1" };
 };
 
 export type Permission = { key: string; name: string; description: string; group: string };
