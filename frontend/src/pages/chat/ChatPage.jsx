@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import ChatHistory from "../../components/chat/ChatHistory";
 import ChatWindow from "../../components/chat/ChatWindow";
 import WorkflowWorkspaceCanvas from "../../components/chat/WorkflowWorkspaceCanvas";
@@ -21,6 +22,7 @@ function ChatPage() {
   const sessions = useChatSessions(sessionId);
   const chat = useChat(sessions.selectedSessionId);
   const { user } = useAuthContext();
+  const queryClient = useQueryClient();
   const draftKey = workspaceKey(user, `draft.${sessions.selectedSessionId || "new"}`);
   const [pendingDraftKey, setPendingDraftKey] = useState(null);
   const composerKey = pendingDraftKey || draftKey;
@@ -107,7 +109,7 @@ function ChatPage() {
       </div>
 
       <div className="min-h-[320px] shrink-0 border-t border-gray-200 dark:border-gray-700 lg:h-full lg:w-[42%] lg:max-w-[640px] lg:border-l lg:border-t-0">
-        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
+        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} sessionId={sessions.selectedSessionId} canEdit={user?.permissions?.includes("workflow:write")} onChatChanged={() => { queryClient.invalidateQueries({ queryKey: ["chat-session", sessions.selectedSessionId] }); queryClient.invalidateQueries({ queryKey: ["chat-sessions"] }); }} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
       </div>
     </div>
   );

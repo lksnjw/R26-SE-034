@@ -1,9 +1,10 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import { parseWorkflowPreview, workflowArtifacts, workflowSource } from "./workflowPreview";
 import { readWorkspaceValue, writeWorkspaceValue } from "../../utils/workspaceSession";
+import WorkflowWorkspaceEditor from "./WorkflowWorkspaceEditor";
 const ChatArtifactPanel = lazy(() => import("./ChatArtifactPanel"));
 
-export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey }) {
+export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey, sessionId, canEdit = false, onChatChanged }) {
   const drafts = useMemo(() => workflowArtifacts(messages), [messages]);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [selection, setSelection] = useState(() => {
@@ -27,7 +28,7 @@ export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey 
       <header className="border-b border-gray-200 px-5 py-3 dark:border-gray-800">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold">Workflow canvas</h2>
-          <span className="text-xs text-gray-500">Draft · not executed</span>
+          <span className="text-xs text-gray-500">{current?.artifact.workflowId ? "Saved workflow" : "Draft · not executed"}</span>
         </div>
         {drafts.length > 0 && (
           <select aria-label="Workflow draft" value={current.key} onChange={(event) => select({ selectedDraft: event.target.value, selectedNode: null })} className="mt-2 w-full rounded border border-gray-200 bg-white p-1 text-xs dark:border-gray-700 dark:bg-darkBackground">
@@ -35,7 +36,7 @@ export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey 
           </select>
         )}
       </header>
-      <div className="flex-1 overflow-y-auto px-5 py-6">
+      {current?.artifact.workflowId ? <WorkflowWorkspaceEditor key={current.artifact.workflowId} workflowId={current.artifact.workflowId} sessionId={sessionId} canEdit={canEdit} selectionStorageKey={selectionStorageKey} onChatChanged={onChatChanged} savedProposals={messages.map((item) => item.artifacts?.proposal).filter(Boolean)} /> : <div className="flex-1 overflow-y-auto px-5 py-6">
         {!current ? (
           <div className="mx-auto max-w-sm py-12 text-center">
             <h3 className="text-lg font-semibold">Your workflow starts here</h3>
@@ -65,7 +66,7 @@ export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey 
             </div>
           </>
         )}
-      </div>
+      </div>}
     </section>
   );
 }

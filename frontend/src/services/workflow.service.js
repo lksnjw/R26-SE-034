@@ -25,6 +25,15 @@ export function normalizeWorkflow(workflow) {
 }
 
 export const workflowService = {
+  async readiness(id) {
+    return unwrap(await apiClient.get(`/workflows/${id}/readiness`));
+  },
+  async command(id, revision, command) {
+    return unwrap(await apiClient.post(`/workflows/${id}/commands`, { baseVersion: revision.version, baseHash: revision.contentHash, command, ...(revision.proposalId ? { proposalId: revision.proposalId } : {}) }));
+  },
+  async proposeNode(id, revision, nodeId, prompt, sessionId) {
+    return unwrap(await apiClient.post(`/workflows/${id}/node-proposals`, { baseVersion: revision.version, baseHash: revision.contentHash, nodeId, prompt, ...(sessionId ? { sessionId } : {}) }, { timeout: 60000 }));
+  },
 /*******************************************************************************
  * Function: list
  *

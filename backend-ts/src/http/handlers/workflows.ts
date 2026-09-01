@@ -7,6 +7,7 @@ import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, publicUser, requestParam, stringValue, validateWorkflow } from "./common.js";
 import { requestTraceId } from "../../trace/request-trace.js";
 import { checkErpPolicy, isPolicyCheckerEnabled } from "../../governance/rbac.js";
+import { handleWorkflowCommand } from "./workflow-commands.js";
 
 export const WORKFLOW_UNHANDLED = Symbol("workflow-unhandled");
 
@@ -25,6 +26,9 @@ export async function handleWorkflowRoute(
   const base = services.config.apiBasePath;
   const path = route.path;
   try {
+    for (const kind of ["commands", "node-proposals", "readiness"] as const) {
+      if (path === `${base}/workflows/:id/${kind}`) return handleWorkflowCommand(kind, request, reply, user, services);
+    }
     if (path === `${base}/workflows/templates` && route.method === "GET") {
       const templates = await services.repository.read((state) => Object.values(state.templates));
       return reply.send(ok(templates, "OK", null));
@@ -479,7 +483,7 @@ function canvasFromBlueprint(workflowID: string, blueprint: ReturnType<typeof pa
  *
  * Builds the response metadata for a workflow's YAML document.
  ******************************************************************************/
-function yamlRecord(workflow: Workflow): Record<string, unknown> { return { workflowId: workflow.id, version: workflow.draftVersion, yaml: workflow.yaml, checksum: checksum(workflow.yaml), updatedAt: workflow.updatedAt }; }
+function yamlRecord(workflow: Workflow): Record<string, unknown> { return { workflowId: workflow.id, version: workflow.draftVersion, publishedVersion: workflow.publishedVersion, contentHash: workflowContentHash(workflow.yaml), yaml: workflow.yaml, checksum: checksum(workflow.yaml), updatedAt: workflow.updatedAt }; }
 /*******************************************************************************
  * Function: publicWorkflow
  *

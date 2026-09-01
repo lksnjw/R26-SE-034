@@ -113,7 +113,7 @@ describe("complete HTTP route graph", () => {
     await app.close();
   });
 
-  test("preserves every frozen Go route plus only the four explicit approval extensions", async () => {
+  test("preserves every frozen Go route plus only named product extensions", async () => {
     const fixture = (await import("../fixtures/parity/http/route-wire-capture.json", { with: { type: "json" } })).default as WireFixture;
     const captured = fixture.routes.map((route) => `${route.method} ${route.pattern}`);
     expect(captured).toHaveLength(168);
@@ -123,6 +123,7 @@ describe("complete HTTP route graph", () => {
     expect(actual.filter((route) => !captured.includes(route)).sort()).toEqual([
       "POST /api/executions/:id/approve", "POST /api/executions/:id/reject",
       "POST /api/workflows/:id/approve-generation", "POST /api/workflows/:id/reject-generation",
+      "POST /api/workflows/:id/commands", "POST /api/workflows/:id/node-proposals", "GET /api/workflows/:id/readiness",
     ].sort());
   });
 

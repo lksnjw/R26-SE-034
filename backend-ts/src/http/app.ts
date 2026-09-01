@@ -28,7 +28,7 @@ import type { Execution, Repository, User } from "../repository/store.js";
 import type { ProviderRuntime } from "../providers/runtime.js";
 import type { SynthesisService } from "../synthesis/service.js";
 import type { ValidationGate } from "../governance/gate.js";
-import { AsyncMutex } from "../repository/async-mutex.js";
+import { ResourceMutations } from "./resource-mutations.js";
 import { type Executor } from "../runner/executor.js";
 import type { RegistryValidator } from "../validator/registry-validator.js";
 import { routeTable, type RouteDefinition } from "./generated-routes.js";
@@ -170,7 +170,7 @@ export async function buildApp(
     logger: process.env.NODE_ENV !== "test",
     bodyLimit: 10 * 1024 * 1024,
   });
-  const mutationMutex = new AsyncMutex();
+  const resourceMutations = new ResourceMutations();
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
     "application/json",
@@ -270,17 +270,19 @@ export async function buildApp(
        *
        * Dispatches the registered HTTP route to its application handler.
        ******************************************************************************/
-      handler: async (request, reply) =>
-        route.method === "GET"
-          ? handleRoute(route, request, reply, services)
-          : mutationMutex.runExclusive(() =>
-              handleRoute(route, request, reply, services),
-            ),
+      handler: async (request, reply) => {
+        if (route.method === "GET" || /\/(commands|node-proposals|run|retry)$/.test(route.path))
+          return handleRoute(route, request, reply, services);
+        const params = request.params as Record<string, unknown>;
+        const family = route.path.split("/")[2] ?? route.path;
+        const key = `${family}:${String(params?.id ?? params?.userId ?? "collection")}`;
+        return resourceMutations.run(key, () => handleRoute(route, request, reply, services));
+      },
     });
   }
-  if (routeTable.length !== 172)
+  if (routeTable.length !== 175)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 172`,
+      `route table has ${routeTable.length} routes, expected 175`,
     );
   return app;
 }

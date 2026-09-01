@@ -1,4 +1,4 @@
-// Generated from the live Go Fiber route graph. Do not hand-edit.
+// Generated from frozen Go routes plus named product extensions. Do not hand-edit.
 export const routeTable = [
   {
     "method": "GET",
@@ -219,14 +219,6 @@ export const routeTable = [
   {
     "method": "POST",
     "path": "/api/executions/:id/retry"
-  },
-  {
-    "method": "POST",
-    "path": "/api/executions/:id/approve"
-  },
-  {
-    "method": "POST",
-    "path": "/api/executions/:id/reject"
   },
   {
     "method": "GET",
@@ -602,14 +594,6 @@ export const routeTable = [
   },
   {
     "method": "POST",
-    "path": "/api/workflows/:id/approve-generation"
-  },
-  {
-    "method": "POST",
-    "path": "/api/workflows/:id/reject-generation"
-  },
-  {
-    "method": "POST",
     "path": "/api/workflows/:id/archive"
   },
   {
@@ -687,6 +671,34 @@ export const routeTable = [
   {
     "method": "GET",
     "path": "/ws/*"
+  },
+  {
+    "method": "POST",
+    "path": "/api/executions/:id/approve"
+  },
+  {
+    "method": "POST",
+    "path": "/api/executions/:id/reject"
+  },
+  {
+    "method": "POST",
+    "path": "/api/workflows/:id/approve-generation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/workflows/:id/reject-generation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/workflows/:id/commands"
+  },
+  {
+    "method": "POST",
+    "path": "/api/workflows/:id/node-proposals"
+  },
+  {
+    "method": "GET",
+    "path": "/api/workflows/:id/readiness"
   }
 ] as const;
 export type RouteDefinition = (typeof routeTable)[number];

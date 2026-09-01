@@ -1,0 +1,6 @@
+.workspace-node { transition: border-color 160ms ease, transform 160ms ease, background-color 160ms ease; }
+.workspace-node:hover { transform: translateY(-1px); }
+.workspace-reveal { animation: workspace-reveal 180ms ease-out; }
+.workspace-flow > li:not(:last-child)::after { content: ""; position: absolute; left: 28px; top: 40px; bottom: -22px; width: 1px; background: #d1d5db; }
+@keyframes workspace-reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .workspace-node { transition: none; } .workspace-node:hover { transform: none; } .workspace-reveal { animation: none; } }
