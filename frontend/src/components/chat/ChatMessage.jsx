@@ -6,6 +6,7 @@ import { saveWorkflowForCanvas, peekWorkflowForChatEdit, clearWorkflowForChatEdi
 import { workflowService } from "../../services/workflow.service";
 import PendingGenerationApprovalCard from "../workflows/PendingGenerationApprovalCard";
 import { workflowArtifactStatus } from "./workflowArtifactStatus";
+import ReadableValue from "./ReadableValue";
 
 // ── Inline validation badge ─────────────────────────────────────────────────
 /*******************************************************************************
@@ -238,11 +239,11 @@ function InlineSources({ sources, boundHit }) {
         <div className="border-t border-blue-100 px-3 pb-2 pt-1.5 dark:border-blue-900/40">
           <div className="space-y-1">
             {sources.map((call, i) => (
-              <div key={i} className="flex items-center gap-2 text-[11px]">
+              <div key={i} className="space-y-2 border-b border-gray-100 py-2 text-[11px] last:border-0 dark:border-gray-800">
                 <Icon icon="mdi:function-variant" className="h-3 w-3 shrink-0 text-blue-400" />
                 <code className="font-mono text-blue-700 dark:text-blue-300">{call.name}</code>
                 {call.arguments && Object.keys(call.arguments).length > 0 && (
-                  <span className="truncate text-gray-400">{JSON.stringify(call.arguments).slice(0, 60)}</span>
+                  <ReadableValue value={call.arguments} />
                 )}
               </div>
             ))}

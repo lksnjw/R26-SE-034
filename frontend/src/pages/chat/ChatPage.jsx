@@ -97,11 +97,7 @@ function ChatPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
-      <div className="min-h-[320px] shrink-0 border-b border-gray-200 dark:border-gray-700 lg:h-full lg:w-[55%] lg:border-b-0 lg:border-r" data-testid="workspace-canvas-pane">
-        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} sessionId={sessions.selectedSessionId} canEdit={user?.permissions?.includes("workflow:write")} onChatChanged={onChatChanged} onNodeContext={onNodeContext} onFocusChat={focusChat} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
-      </div>
-
-      <div ref={chatPaneRef} className="flex min-h-[420px] min-w-0 flex-1 flex-col lg:min-h-0" data-testid="workspace-chat-pane">
+      <div ref={chatPaneRef} className="flex min-h-[420px] min-w-0 flex-col border-b border-gray-200 dark:border-gray-700 lg:h-full lg:min-h-0 lg:w-[45%] lg:shrink-0 lg:border-b-0 lg:border-r" data-testid="workspace-chat-pane">
       <details className="shrink-0 border-b border-gray-200 px-4 py-2 text-xs dark:border-gray-700">
         <summary className="cursor-pointer text-gray-500">Chats · {sessions.sessions.length}</summary>
         <ChatHistory
@@ -129,6 +125,9 @@ function ChatPage() {
           nodeContext={activeNodeContext}
           onClearNodeContext={() => activeNodeContext?.clear()}
         />
+      </div>
+      <div className="min-h-[320px] min-w-0 flex-1 lg:h-full" data-testid="workspace-canvas-pane">
+        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} sessionId={sessions.selectedSessionId} canEdit={user?.permissions?.includes("workflow:write")} onChatChanged={onChatChanged} onNodeContext={onNodeContext} onFocusChat={focusChat} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
       </div>
     </div>
   );

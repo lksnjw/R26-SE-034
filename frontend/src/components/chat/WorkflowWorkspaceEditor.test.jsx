@@ -83,6 +83,8 @@ test("a failed run retrieves actual partial node outputs and does not silently p
   await open(); fireEvent.click(screen.getByRole("button", { name: "Run published version" }));
   await screen.findByText("Node answer · run run-failed");
   expect(screen.getByText(/real answer/)).toBeTruthy();
+  expect(screen.getByText("Value")).toBeTruthy();
+  expect(screen.getByText("Node answer · run run-failed").parentElement.querySelector("pre")).toBeNull();
   expect(executionService.get).toHaveBeenCalledWith("run-failed");
   expect(workflowService.publish).not.toHaveBeenCalled();
 });
@@ -95,4 +97,27 @@ test("a save acknowledgement survives a readiness refresh failure and blocks fur
   expect(screen.queryByRole("region", { name: "Node change preview" })).toBeNull();
   expect(screen.getByRole("button", { name: "Publish reviewed draft" }).disabled).toBe(true);
   expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
+});
+
+test("friendly parameter fields produce the same revision-bound command without a JSON editor", async () => {
+  await open(); await selectNode();
+  fireEvent.change(screen.getByRole("textbox", { name: "Parameters · value" }), { target: { value: "manager report" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview manual edit" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  expect(screen.getByRole("region", { name: "Node change preview" }).querySelector("pre")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: record.contentHash }), expect.objectContaining({ patch: { description: "", action: "demo.echo", parameters: { value: "manager report" } } })));
+});
+
+test("friendly run input fields submit typed values only through explicit Run", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, can_attempt_run: true, bridge: "discovery_available" });
+  await open();
+  fireEvent.change(screen.getByRole("textbox", { name: "Run inputs new field name" }), { target: { value: "limit" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add field" }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Run inputs · limit value type" }), { target: { value: "number" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Run inputs · limit" }), { target: { value: "5" } });
+  expect(workflowService.run).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Run published version" }));
+  await waitFor(() => expect(workflowService.run).toHaveBeenCalledWith("report", { limit: 5 }));
+  expect(workflowService.publish).not.toHaveBeenCalled();
 });

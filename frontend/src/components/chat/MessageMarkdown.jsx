@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import { Icon } from "@iconify/react";
+import ReadableValue, { parseStructuredText } from "./ReadableValue";
 
 // An LLM answer occasionally comes back as an HTML fragment instead of
 // markdown (e.g. a query summary formatted with <h3>/<ul>/<li>) — the
@@ -127,6 +128,7 @@ function InlineContent({ text }) {
  ******************************************************************************/
 function CodeBlock({ lang, code }) {
   const [copied, setCopied] = useState(false);
+  const structured = (!lang || lang.toLowerCase() === "json") ? parseStructuredText(code) : undefined;
 /*******************************************************************************
  * Function: copy
  *
@@ -137,6 +139,7 @@ function CodeBlock({ lang, code }) {
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
   };
+  if (structured !== undefined) return <div className="my-3"><ReadableValue value={structured} /></div>;
   return (
     <div className="group relative my-3 rounded-xl border border-gray-200 bg-gray-900 dark:border-gray-700">
       <div className="flex items-center justify-between border-b border-gray-700 px-3 py-1.5">
@@ -296,6 +299,8 @@ function tokenize(text) {
 function MessageMarkdown({ text }) {
   if (!text) return null;
   const str = String(text);
+  const structured = parseStructuredText(str);
+  if (structured !== undefined) return <ReadableValue value={structured} />;
   if (looksLikeHtml(str)) return <HtmlMessage html={str} />;
   const blocks = tokenize(str);
 

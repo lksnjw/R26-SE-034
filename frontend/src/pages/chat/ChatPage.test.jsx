@@ -19,7 +19,7 @@ jest.unstable_mockModule("../../components/chat/ChatMessage", () => ({ default: 
 const { default: ChatPage } = await import("./ChatPage");
 afterEach(() => { cleanup(); sessionStorage.clear(); jest.restoreAllMocks(); normalSend.mockClear(); });
 
-test("canvas is left of chat; selecting a node routes the main composer to a revision-bound proposal, never direct execution", async () => {
+test("chat is left of canvas and first on mobile; selecting a node routes the main composer to a revision-bound proposal, never direct execution", async () => {
   HTMLElement.prototype.scrollIntoView = jest.fn(); // jsdom has no layout/scroll implementation.
   jest.spyOn(workflowService, "readiness").mockResolvedValue(record);
   jest.spyOn(executionService, "list").mockResolvedValue([]);
@@ -29,7 +29,7 @@ test("canvas is left of chat; selecting a node routes the main composer to a rev
   const run = jest.spyOn(workflowService, "run");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
   render(<QueryClientProvider client={client}><MemoryRouter><ChatPage /></MemoryRouter></QueryClientProvider>);
-  expect(screen.getByTestId("workspace-canvas-pane").compareDocumentPosition(screen.getByTestId("workspace-chat-pane")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByTestId("workspace-chat-pane").compareDocumentPosition(screen.getByTestId("workspace-canvas-pane")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   fireEvent.click(await screen.findByRole("button", { name: /01 invoices/ }));
   await screen.findByText("Editing node · invoices");
   expect(screen.queryByRole("textbox", { name: "Selected node prompt" })).toBeNull();

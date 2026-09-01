@@ -2,6 +2,7 @@ import { lazy, Suspense, useMemo, useState } from "react";
 import { parseWorkflowPreview, workflowArtifacts, workflowSource } from "./workflowPreview";
 import { readWorkspaceValue, writeWorkspaceValue } from "../../utils/workspaceSession";
 import WorkflowWorkspaceEditor from "./WorkflowWorkspaceEditor";
+import ReadableValue from "./ReadableValue";
 const ChatArtifactPanel = lazy(() => import("./ChatArtifactPanel"));
 
 export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey, sessionId, canEdit = false, onChatChanged, onNodeContext, onFocusChat }) {
@@ -58,7 +59,7 @@ export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey,
                 </li>
               ))}
             </ol>
-            {node && <aside aria-label="Selected node details" className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-700"><h4 className="text-sm font-semibold">{node.label}</h4><pre className="mt-3 overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(node.source, null, 2)}</pre><p className="mt-3 text-xs text-gray-500">Read-only preview. Scoped prompt edits will be enabled with validated change previews.</p></aside>}
+            {node && <aside aria-label="Selected node details" className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-700"><h4 className="mb-3 text-sm font-semibold">{node.label}</h4><ReadableValue value={node.source} /><p className="mt-3 text-xs text-gray-500">Read-only preview. Save this workflow before requesting a scoped node change.</p></aside>}
             <details className="mt-6 border-t border-gray-200 pt-4 dark:border-gray-700"><summary className="cursor-pointer text-xs font-medium">Workflow source</summary><pre className="mt-3 overflow-auto whitespace-pre-wrap break-words text-xs">{yaml}</pre></details>
             <div className="mt-4 border-t border-gray-200 pt-4 dark:border-gray-700">
               <button type="button" aria-expanded={showDiagnostics} onClick={() => setShowDiagnostics((value) => !value)} className="text-xs font-medium">{showDiagnostics ? "Hide" : "Show"} generation details</button>

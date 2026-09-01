@@ -5,29 +5,26 @@ import { executionService } from "../../services/execution.service";
 import { parseWorkflowPreview } from "./workflowPreview";
 import { readWorkspaceValue, writeWorkspaceValue } from "../../utils/workspaceSession";
 import "./workflowWorkspace.css";
+import ReadableValue, { ReadableResult } from "./ReadableValue";
+import ValueFields from "./ValueFields";
 
 const button = "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800";
 const input = "w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackground";
 const message = (error) => error?.response?.data?.message || error?.message || "The operation could not be completed.";
-function objectJSON(text) {
-  const value = JSON.parse(text);
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Parameters and run inputs must be JSON objects.");
-  return value;
-}
 function NodeInspector({ node, canEdit, busy, onPreview, onPrompt, sharedChat }) {
   const [description, setDescription] = useState(node.source.description ?? "");
   const [action, setAction] = useState(node.source.action ?? "");
-  const [parameters, setParameters] = useState(JSON.stringify(node.source.parameters ?? {}, null, 2));
+  const [parameters, setParameters] = useState(node.source.parameters ?? {});
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const tool = !node.source.kind || node.source.kind === "tool";
   return <aside aria-label="Selected node details" className="workspace-reveal mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
     <div className="mb-4 flex items-center gap-2"><Icon icon="lucide:sliders-horizontal" className="h-4 w-4 text-gray-400" /><h4 className="text-sm font-semibold">{node.id}</h4><span className="ml-auto text-[10px] text-gray-400">{node.source.kind || "tool"}</span></div>
     {canEdit ? <>
-      <form onSubmit={(event) => { event.preventDefault(); try { onPreview({ description, ...(tool ? { action, parameters: objectJSON(parameters) } : {}) }); setError(""); } catch (cause) { setError(message(cause)); } }} className="space-y-3">
+      <form onSubmit={(event) => { event.preventDefault(); try { onPreview({ description, ...(tool ? { action, parameters } : {}) }); setError(""); } catch (cause) { setError(message(cause)); } }} className="space-y-3">
         <label className="block text-xs text-gray-500">Label<input aria-label="Node label" className={`${input} mt-1`} value={description} onChange={(event) => setDescription(event.target.value)} maxLength={2000} /></label>
         {tool && <><label className="block text-xs text-gray-500">Registered tool<input aria-label="Node tool" className={`${input} mt-1 font-mono`} value={action} onChange={(event) => setAction(event.target.value)} required maxLength={128} /></label>
-          <label className="block text-xs text-gray-500">Parameters · JSON<textarea aria-label="Node parameters" className={`${input} mt-1 min-h-28 font-mono`} value={parameters} onChange={(event) => setParameters(event.target.value)} spellCheck={false} /></label></>}
+          <div className="space-y-2"><p className="text-xs text-gray-500">Parameters</p><ValueFields value={parameters} onChange={setParameters} /></div></>}
         <button disabled={busy} className={`${button} border border-gray-200 dark:border-gray-700`}><Icon icon="lucide:git-compare-arrows" />Preview manual edit</button>
       </form>
       {sharedChat ? <p className="mt-5 border-t border-gray-100 pt-4 text-xs leading-5 text-gray-500 dark:border-gray-800">This node is selected for editing in the main chat. Describe your change there; review the returned proposal before applying it.</p> : <form className="mt-5 border-t border-gray-100 pt-4 dark:border-gray-800" onSubmit={(event) => { event.preventDefault(); onPrompt(prompt); }}>
@@ -35,7 +32,7 @@ function NodeInspector({ node, canEdit, busy, onPreview, onPrompt, sharedChat })
         <button className={`${button} mt-2 bg-primary/10 text-primary`} disabled={busy || !prompt.trim()}><Icon icon="lucide:sparkles" />Propose change</button>
         <p className="mt-2 text-[10px] leading-4 text-gray-500">Only this node is in scope. A proposal is not a save or an execution.</p>
       </form>}
-    </> : <pre className="overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(node.source, null, 2)}</pre>}
+    </> : <ReadableValue value={node.source} />}
     {error && <p role="alert" className="mt-3 text-xs text-red-600">{error}</p>}
   </aside>;
 }
@@ -45,7 +42,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   const [selected, setSelected] = useState(() => readWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, ""));
   const [proposal, setProposal] = useState(null), [undo, setUndo] = useState([]), [redo, setRedo] = useState([]);
   const [resolvedProposals, setResolvedProposals] = useState([]), [notice, setNotice] = useState("");
-  const [run, setRun] = useState(null), [timeline, setTimeline] = useState([]), [runInput, setRunInput] = useState("{}");
+  const [run, setRun] = useState(null), [timeline, setTimeline] = useState([]), [runInput, setRunInput] = useState({});
   const [adding, setAdding] = useState(false), [newId, setNewId] = useState(""), [newAction, setNewAction] = useState("");
   const load = useCallback(async () => { const next = await workflowService.readiness(workflowId); setRecord(next); return next; }, [workflowId]);
   useEffect(() => {
@@ -83,7 +80,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   });
   const attemptRun = () => perform(async () => {
     try {
-      const result = await workflowService.run(workflowId, objectJSON(runInput));
+      const result = await workflowService.run(workflowId, runInput);
       setRun(result); setTimeline(await executionService.getTimeline(result.id));
     } catch (cause) {
       const executionId = cause?.response?.data?.meta?.executionId;
@@ -126,7 +123,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
               {step.source.condition && <span className="text-[9px] text-gray-500">condition</span>}
               <Icon icon="lucide:chevron-right" className="h-3 w-3 text-gray-400" />
             </button>
-            {output !== undefined && <details className="relative z-10 ml-10 mt-2 rounded-md bg-white/80 px-3 py-2 text-[10px] dark:bg-gray-900"><summary className="cursor-pointer">Node answer · run {run.id}</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(output.structuredContent ?? output, null, 2)}</pre></details>}
+            {output !== undefined && <details className="relative z-10 ml-10 mt-2 rounded-md bg-white/80 px-3 py-2 text-[10px] dark:bg-gray-900"><summary className="cursor-pointer">Node answer · run {run.id}</summary><div className="mt-2 max-h-64 overflow-auto"><ReadableResult value={output} /></div></details>}
             {attempt?.status === "FAILED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-red-600">This node failed or was blocked. Following nodes were not executed.</p>}
           </li>;
         })}
@@ -135,12 +132,12 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
         {canEdit && <div className="mt-3 flex flex-wrap gap-1">{onFocusChat && <button className={`${button} text-primary lg:hidden`} onClick={onFocusChat}>Edit this node in chat</button>}<button className={button} disabled={busy || preview.steps.at(-1)?.id === node.id} onClick={() => perform(() => save({ type: "moveNode", nodeId: node.id, beforeNodeId: null }))}>Move to end</button><button className={`${button} text-red-600`} disabled={busy} onClick={() => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "removeNode", nodeId: node.id }, before: node.source, after: null })}>Remove node…</button></div>}</>}
       {canEdit && pendingProposal && <section aria-label="Node change preview" className="workspace-reveal mt-5 border-y border-primary/25 py-4">
         <h4 className="text-xs font-semibold">Review change · {pendingProposal.nodeId}</h4><p className="mt-1 text-[10px] text-gray-500">Based on draft v{pendingProposal.baseVersion}. Unrelated nodes are unchanged.</p>
-        <details className="mt-3 text-[10px]"><summary className="cursor-pointer">Before</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{JSON.stringify(pendingProposal.before, null, 2)}</pre></details>
-        <p className="mt-3 text-[10px] text-gray-500">After</p><pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap text-[10px]">{JSON.stringify(pendingProposal.after, null, 2)}</pre>
+        <details className="mt-3 text-[10px]"><summary className="cursor-pointer">Before</summary><div className="mt-2 max-h-56 overflow-auto"><ReadableValue value={pendingProposal.before} /></div></details>
+        <p className="mt-3 text-[10px] text-gray-500">After{pendingProposal.after === null ? " · node will be removed" : ""}</p><div className="mt-1 max-h-64 overflow-auto"><ReadableValue value={pendingProposal.after} /></div>
         {pendingProposal.validation && <p className="mt-2 text-[10px] text-gray-500">{pendingProposal.validation.passed ? "Proposal validation passed · not published" : "Proposal has validation issues · may only be saved as a blocked draft"}</p>}
         <div className="mt-3 flex gap-2"><button className={`${button} bg-primary text-white hover:bg-primary/90`} disabled={busy} onClick={() => perform(() => save(pendingProposal.command, "edit", { version: pendingProposal.baseVersion, contentHash: pendingProposal.baseHash, proposalId: pendingProposal.id }))}>Apply to draft</button><button className={button} disabled={busy} onClick={() => perform(async () => { if (pendingProposal.id) { await workflowService.command(workflowId, record, { type: "discardProposal", proposalId: pendingProposal.id }); setResolvedProposals((items) => [...items, pendingProposal.id]); onChatChanged?.(); } setProposal(null); setNotice("Proposal discarded. The workflow was not changed."); })}>Discard</button></div>
       </section>}
-      <details className="mt-6 border-t border-gray-200 pt-4 text-xs dark:border-gray-700"><summary className="cursor-pointer">Run published read workflow</summary><p className="mt-2 text-[10px] text-gray-500">Publish explicitly and verify the connection first. Runtime authorization is rechecked for each call.</p><textarea aria-label="Workflow run input" className={`${input} mt-3 font-mono`} value={runInput} onChange={(event) => setRunInput(event.target.value)} /><button className={`${button} mt-2 bg-primary/10 text-primary`} disabled={busy || !record.can_attempt_run} onClick={attemptRun}><Icon icon="lucide:play" />Run published version</button></details>
+      <details className="mt-6 border-t border-gray-200 pt-4 text-xs dark:border-gray-700"><summary className="cursor-pointer">Run published read workflow</summary><p className="mt-2 text-[10px] text-gray-500">Publish explicitly and verify the connection first. Runtime authorization is rechecked for each call.</p><div className="mt-3"><ValueFields label="Run inputs" value={runInput} onChange={setRunInput} /></div><button className={`${button} mt-2 bg-primary/10 text-primary`} disabled={busy || !record.can_attempt_run} onClick={attemptRun}><Icon icon="lucide:play" />Run published version</button></details>
       {run && <div className="mt-4 border-t border-gray-200 pt-3 text-[10px] text-gray-500 dark:border-gray-700"><p>Run {run.id} · {run.status} · published v{run.workflowSnapshot?.version ?? "unknown"}</p><p className="mt-1">Answers belong to this run snapshot, not unsaved edits.</p>{run.agentSummary && <p className="mt-2">{run.agentSummary}</p>}</div>}
       <details className="mt-5 text-xs"><summary className="cursor-pointer">Saved source</summary><pre className="mt-3 overflow-auto whitespace-pre-wrap break-words text-[10px]">{record.yaml}</pre></details>
       {busy && <p role="status" className="mt-4 text-xs text-gray-500">Working… no completed result is assumed.</p>}

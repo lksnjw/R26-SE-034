@@ -16,7 +16,8 @@ test("selects node parameters and retains draft after non-workflow answer", () =
   const messages = [{ id: "one", artifacts: { selected_workflow_yaml: "name: Report\nsteps:\n - id: fetch\n   action: erp.list\n   params:\n     status: open" } }];
   const view = render(<WorkflowWorkspaceCanvas messages={messages} />);
   fireEvent.click(screen.getByRole("button", { name: /fetch/ }));
-  expect(screen.getByRole("complementary", { name: "Selected node details" }).textContent).toContain('"status": "open"');
+  expect(screen.getByRole("complementary", { name: "Selected node details" }).textContent).toContain("Statusopen");
+  expect(screen.getByRole("complementary", { name: "Selected node details" }).querySelector("pre")).toBeNull();
   view.rerender(<WorkflowWorkspaceCanvas messages={[...messages, { id: "two", artifacts: { intent: "QUERY" } }]} />);
   expect(screen.getByRole("button", { name: /fetch/ }).getAttribute("aria-pressed")).toBe("true");
 });

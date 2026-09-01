@@ -4,6 +4,7 @@ import { useRoute } from "../../context/RouteContext";
 import usePermissions from "../../hooks/usePermissions";
 import { saveWorkflowForCanvas } from "../../utils/workflowCanvas.utils";
 import { workflowArtifactStatus } from "./workflowArtifactStatus";
+import ReadableValue from "./ReadableValue";
 
 // ── Risk badge colours ──────────────────────────────────────────────────────
 const RISK_COLORS = {
@@ -366,9 +367,7 @@ function QueryResultPanel({ artifact }) {
               <div key={i} className="rounded-lg border border-gray-100 bg-gray-50 p-2 text-xs dark:border-gray-800 dark:bg-darkBackgroundVery">
                 <p className="font-mono font-semibold text-gray-800 dark:text-white">{call.name}</p>
                 {Object.keys(call.arguments ?? {}).length > 0 && (
-                  <pre className="mt-1 overflow-auto whitespace-pre-wrap break-all text-[10px] text-gray-400 dark:text-gray-500">
-                    {JSON.stringify(call.arguments, null, 2)}
-                  </pre>
+                  <div className="mt-2"><ReadableValue value={call.arguments} /></div>
                 )}
               </div>
             ))}
@@ -407,7 +406,7 @@ function ChatArtifactPanel({ artifact }) {
   }
 
   if (artifact.intent === "NODE_PATCH_PROPOSAL") {
-    return <section className="space-y-2 text-xs"><h3 className="font-semibold">Node proposal · {artifact.proposal?.nodeId}</h3><p>{artifact.proposal?.status ?? "Unknown status"}</p><p className="text-gray-500">Review this change in the workflow workspace. Applying saves a draft; it does not publish or execute.</p><pre className="overflow-auto whitespace-pre-wrap">{JSON.stringify(artifact.proposal?.after, null, 2)}</pre></section>;
+    return <section className="space-y-2 text-xs"><h3 className="font-semibold">Node proposal · {artifact.proposal?.nodeId}</h3><p>{artifact.proposal?.status ?? "Unknown status"}</p><p className="text-gray-500">Review this change in the workflow workspace. Applying saves a draft; it does not publish or execute.</p><ReadableValue value={artifact.proposal?.after} /></section>;
   }
 
   const {
