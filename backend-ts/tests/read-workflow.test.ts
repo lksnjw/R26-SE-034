@@ -3,7 +3,9 @@ import { stringify } from "yaml";
 import { afterEach, expect, test, vi } from "vitest";
 import { loadConfig } from "../src/config/config.js";
 import { buildApp } from "../src/http/app.js";
-import { Repository } from "../src/repository/store.js";
+import { Repository, type PersistenceBackend, type RepositoryState } from "../src/repository/store.js";
+import { ReadCheckpoints, reconcileInterruptedExecutions } from "../src/runner/read-checkpoints.js";
+import type { ApplicationServices } from "../src/http/app.js";
 import { RegistryService } from "../src/registry/service.js";
 import { toolSchema } from "../src/registry/schemas.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
@@ -23,10 +25,10 @@ const yaml = stringify({ name: "Daily read", description: "Read invoice details"
   { id: "details", action: "invoice-read", parameters: { id: "{{lookup.structuredContent.id}}" } },
 ] });
 
-async function setup(options: { noBridge?: boolean; roleId?: string; provider?: boolean; write?: boolean } = {}) {
+async function setup(options: { noBridge?: boolean; roleId?: string; provider?: boolean; write?: boolean; persistence?: PersistenceBackend } = {}) {
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "read-workflow-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }),
     erpbridgeRoleMap: { "Platform Admin": "admin", Client: "client" } };
-  const repository = new Repository(null);
+  const repository = await Repository.open(options.persistence ?? null);
   const tool = toolSchema.parse({ tool_id: "READ-1", name: "finance.read", mcp_tool_name: "invoice-read", allowed_roles: ["Platform Admin", "Client"],
     is_read_only: !options.write, input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
   let hash = "sha256:registry-v1";
@@ -38,7 +40,7 @@ async function setup(options: { noBridge?: boolean; roleId?: string; provider?: 
   const erpbridgeSession = await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "fixture-only", timeoutMs: 1000, validator,
     sdkClient: { connect: async () => {}, close: async () => {}, listTools, callTool } });
   const queryWithTools = vi.fn(async () => { throw new Error("Published reads must never invoke the model"); });
-  const services = { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator),
+  const services: ApplicationServices = { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator),
     ...(options.noBridge ? {} : { erpbridgeSession }), ...(options.provider ? { providerRuntime: { configured: true, queryWithTools } as unknown as ProviderRuntime } : {}) };
   await repository.mutate((state) => {
     state.users.actor = { id: "actor", name: "Actor", email: "actor@example.test", roleId: options.roleId ?? "role_admin", permissionOverrides: [], status: "Active", initials: "A", departmentId: null, lastLoginAt: null, createdAt: new Date().toISOString() };
@@ -130,11 +132,11 @@ test.each(["missing-input", "invalid-input", "missing-output", "mcp-error", "mal
   const response = await s.run({ input: scenario === "missing-input" ? {} : { invoiceId: scenario === "invalid-input" ? 123 : "invoice-1" } });
   expect(response.statusCode, response.body).toBe(422);
   const state = await s.repository.snapshot(), execution = Object.values(state.executions)[0]!;
-  expect(execution.status).toBe("FAILED");
+  expect(execution.status).toBe(scenario === "malformed-output" ? "RECOVERY_REQUIRED" : "FAILED");
   expect(execution.failure?.failedStepId).toBe(scenario === "missing-output" ? "details" : "lookup");
   expect(s.callTool).toHaveBeenCalledTimes(["missing-input", "invalid-input"].includes(scenario) ? 0 : 1);
   expect(JSON.stringify(state.executions)).not.toContain("private-remote-error");
-  expect(state.timelines[execution.id]?.at(-1)?.status).toBe("FAILED");
+  expect(state.timelines[execution.id]?.at(-1)?.status).toBe(scenario === "malformed-output" ? "UNKNOWN" : "FAILED");
   if (scenario === "missing-output") expect(execution.finalOutput).toEqual({ content: [], structuredContent: {} });
   else expect(execution.finalOutput).toBeUndefined();
 });
@@ -195,4 +197,214 @@ test("schema profile rejects ignored constraints, missing types and reserved ref
   expect(inspectReadWorkflow(parseWorkflowYAMLStrict(yaml), [s.tool], "Platform Admin")).not.toEqual([]);
   const blueprint = parseWorkflowYAMLStrict(yaml); blueprint.steps[0]!.parameters = { id: "{{input.__proto__.id}}" };
   expect(inspectReadWorkflow(blueprint, [s.tool], "Platform Admin")).not.toEqual([]);
+});
+
+class ReadPersistence implements PersistenceBackend {
+  payload: Uint8Array | null = null;
+  failWhen: ((state: RepositoryState) => boolean) | undefined;
+  commitBeforeFailure = false;
+  async load() { return this.payload; }
+  async save(payload: Uint8Array) {
+    const state = JSON.parse(Buffer.from(payload).toString("utf8")) as RepositoryState;
+    if (this.failWhen?.(state)) {
+      this.failWhen = undefined;
+      if (this.commitBeforeFailure) this.payload = Buffer.from(payload);
+      throw new Error("fixture storage acknowledgement failure");
+    }
+    this.payload = Buffer.from(payload);
+  }
+  async probe() {}
+  async close() {}
+  state(): RepositoryState { return JSON.parse(Buffer.from(this.payload!).toString("utf8")); }
+}
+function barrier() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+test("dispatch intent is persisted before the SDK; completed output is persisted before the following call", async () => {
+  const persistence = new ReadPersistence(), s = await setup({ persistence }); await s.seed();
+  s.callTool.mockImplementation(async () => {
+    const record = Object.values(persistence.state().executions)[0]!;
+    const nodeId = s.callTool.mock.calls.length === 1 ? "lookup" : "details";
+    expect(record.readProgress?.attempts[nodeId]?.status).toBe("DISPATCH_INTENT");
+    expect(persistence.state().executionEvents[record.id]?.at(-1)?.type).toBe("node.dispatch_intent");
+    if (nodeId === "details") expect(record.stepOutputs?.lookup).toEqual({ content: [], structuredContent: { id: "first-result" } });
+    return { content: [], structuredContent: { id: "first-result" } };
+  });
+  const response = await s.run(); expect(response.statusCode, response.body).toBe(200);
+  const record = response.json().data;
+  expect(record.readProgress).toMatchObject({ persistence: "durable", nextStepIndex: 2, lastSequence: 8 });
+  expect(persistence.state().executionEvents[record.id]?.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
+test("in-flight cancellation is a durable request, not a claim that the transport stopped", async () => {
+  const s = await setup(); await s.seed(); const entered = barrier(), unblock = barrier();
+  s.callTool.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return { content: [], structuredContent: { id: "completed-in-flight" } }; });
+  const running = s.run().then((response) => response); await entered.promise;
+  const record = Object.values((await s.repository.snapshot()).executions)[0]!;
+  expect(record.status).toBe("RUNNING"); expect(record.stepOutputs?.lookup).toBeUndefined();
+  const cancel = () => s.app.inject({ method: "POST", url: `/api/executions/${record.id}/cancel`, headers: s.headers, payload: {} });
+  const accepted = await cancel(); expect(accepted.statusCode, accepted.body).toBe(202);
+  expect(accepted.json()).toMatchObject({ data: { status: "RUNNING" }, meta: { transportInterrupted: false } });
+  expect((await cancel()).statusCode).toBe(202);
+  expect((await s.repository.snapshot()).executionEvents[record.id]?.filter((event) => event.type === "run.cancel_requested")).toHaveLength(1);
+  unblock.release(); const response = await running;
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ status: "CANCELLED", stepOutputs: { lookup: { structuredContent: { id: "completed-in-flight" } } } });
+  expect(s.callTool).toHaveBeenCalledTimes(1);
+  expect((await cancel()).statusCode).toBe(200);
+});
+
+test("cancellation during awaited policy work prevents the first dispatch and is not a failed tool call", async () => {
+  const s = await setup(); await s.seed(); const entered = barrier(), unblock = barrier();
+  s.services.validationGate = { validateAndIssueToken: async (action, source, actor) => {
+    if (action === "ReadToolBroker") { entered.release(); await unblock.promise; }
+    return s.validator.validateAndIssueToken(action, source, actor.role);
+  } };
+  const running = s.run().then((response) => response); await entered.promise;
+  const record = Object.values((await s.repository.snapshot()).executions)[0]!;
+  expect(record.readProgress?.attempts.lookup?.status).toBe("PREPARING");
+  expect((await s.app.inject({ method: "POST", url: `/api/executions/${record.id}/cancel`, headers: s.headers, payload: {} })).statusCode).toBe(202);
+  unblock.release(); const response = await running;
+  expect(response.json().data.status).toBe("CANCELLED"); expect(s.callTool).not.toHaveBeenCalled();
+  expect((await s.repository.snapshot()).timelines[record.id]?.[0]).toMatchObject({ status: "CANCELLED", outcome: "NOT_DISPATCHED" });
+});
+
+test.each(["DISPATCH_INTENT", "DONE"])("a failed %s save stops execution and reconciles without replay", async (phase) => {
+  const persistence = new ReadPersistence(), s = await setup({ persistence }); await s.seed();
+  persistence.failWhen = (state) => Object.values(state.executions).some((item) => item.readProgress?.attempts.lookup?.status === phase);
+  const response = await s.run(); expect(response.statusCode, response.body).toBe(503); expect(response.json().meta.code).toBe("CHECKPOINT_NOT_COMMITTED");
+  expect(s.callTool).toHaveBeenCalledTimes(phase === "DONE" ? 1 : 0);
+  const restored = await Repository.open(persistence); await reconcileInterruptedExecutions(restored);
+  const record = Object.values((await restored.snapshot()).executions)[0]!;
+  expect(record.status).toBe("RECOVERY_REQUIRED");
+  expect(record.readProgress?.attempts.lookup?.status).toBe(phase === "DONE" ? "UNKNOWN" : "FAILED");
+  expect(record.stepOutputs?.lookup).toBeUndefined();
+  expect((await restored.snapshot()).executionEvents[record.id]?.some((event) => event.type === "node.completed")).toBe(false);
+});
+
+test("a committed checkpoint with a lost acknowledgement is reloaded, not overwritten with the rolled-back aggregate", async () => {
+  const persistence = new ReadPersistence(), s = await setup({ persistence }); await s.seed();
+  persistence.commitBeforeFailure = true;
+  persistence.failWhen = (state) => Object.values(state.executions).some((item) => item.readProgress?.attempts.lookup?.status === "DONE");
+  const response = await s.run(); expect(response.statusCode).toBe(503); expect(s.callTool).toHaveBeenCalledTimes(1);
+  const record = Object.values(persistence.state().executions)[0]!;
+  expect(record).toMatchObject({ status: "RECOVERY_REQUIRED", readProgress: { nextStepIndex: 1, attempts: { lookup: { status: "DONE" } } }, stepOutputs: { lookup: { structuredContent: { id: "invoice-actual" } } } });
+  expect(persistence.state().executionEvents[record.id]?.filter((event) => event.type === "node.completed")).toHaveLength(1);
+});
+
+test("event replay is paginated, monotonic and account-scoped; uncertain/running runs cannot be retried", async () => {
+  const s = await setup(); await s.seed(); const response = await s.run(), id = response.json().data.id;
+  const read = (query = "", headers = s.headers) => s.app.inject({ method: "GET", url: `/api/executions/${id}/events${query}`, headers });
+  const first = await read("?after=0&limit=2"); expect(first.statusCode).toBe(200);
+  expect(first.json().data).toMatchObject({ cursor: 2, lastSequence: 8, hasMore: true });
+  const rest = await read("?after=2&limit=100"); expect(rest.json().data.events.map((event: { sequence: number }) => event.sequence)).toEqual([3, 4, 5, 6, 7, 8]);
+  expect(JSON.stringify(rest.json().data.events)).not.toContain("invoice-requested");
+  for (const query of ["?after=-1", "?after=9", "?limit=101", "?after=1.5", "?other=1"]) expect((await read(query)).statusCode).toBe(400);
+  await s.repository.mutate((state) => { state.users.other = { ...state.users.actor!, id: "other", roleId: "role_client" }; state.executions[id]!.status = "RECOVERY_REQUIRED"; });
+  const otherHeaders = { authorization: `Bearer ${jwt.sign({}, s.services.config.jwtSecret, { subject: "other" })}` };
+  expect((await read("", otherHeaders)).statusCode).toBe(404);
+  expect((await s.app.inject({ method: "POST", url: `/api/executions/${id}/cancel`, headers: otherHeaders, payload: {} })).statusCode).toBe(404);
+  expect((await s.app.inject({ method: "POST", url: `/api/executions/${id}/retry`, headers: s.headers, payload: {} })).statusCode).toBe(409);
+  expect(s.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("a draft mutation during run preflight cannot rewrite the pinned source or pass publication checks", async () => {
+  const s = await setup(); await s.seed(); const entered = barrier(), unblock = barrier();
+  s.services.validationGate = { validateAndIssueToken: async (action, source, actor) => {
+    if (action === "RunWorkflow") { entered.release(); await unblock.promise; }
+    return s.validator.validateAndIssueToken(action, source, actor.role);
+  } };
+  const running = s.run().then((response) => response); await entered.promise;
+  await s.repository.mutate((state) => { state.workflows.read!.yaml = yaml.replace("Daily read", "Concurrent draft"); state.workflows.read!.publishedVersion = 2; state.versions.read!.push({ version: 2, artifactState: "PUBLISHED", yaml: state.workflows.read!.yaml }); });
+  unblock.release(); const response = await running;
+  expect(response.statusCode, response.body).toBe(409); expect(s.callTool).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
+test("restart reconciliation preserves completed nodes, marks unacknowledged intent UNKNOWN, and fences stale callbacks", async () => {
+  const persistence = new ReadPersistence(), s = await setup({ persistence }); await s.seed();
+  const secondEntered = barrier(), unblock = barrier();
+  s.callTool.mockImplementationOnce(async () => ({ content: [], structuredContent: { id: "first-durable-answer" } }));
+  s.callTool.mockImplementationOnce(async () => { secondEntered.release(); await unblock.promise; return { content: [], structuredContent: { id: "late-second-answer" } }; });
+  const running = s.run().then((response) => response); await secondEntered.promise;
+  const crashImage = new ReadPersistence(); crashImage.payload = Buffer.from(persistence.payload!);
+  const reopened = await Repository.open(crashImage); await reconcileInterruptedExecutions(reopened);
+  const record = Object.values((await reopened.snapshot()).executions)[0]!;
+  expect(record).toMatchObject({ status: "RECOVERY_REQUIRED", readProgress: { epoch: 2, nextStepIndex: 1, attempts: { lookup: { status: "DONE" }, details: { status: "UNKNOWN" } } }, stepOutputs: { lookup: { structuredContent: { id: "first-durable-answer" } } } });
+  expect((await reopened.snapshot()).timelines[record.id]?.map((entry) => entry.status)).toEqual(["DONE", "UNKNOWN"]);
+  const eventCount = (await reopened.snapshot()).executionEvents[record.id]!.length;
+  await reconcileInterruptedExecutions(reopened);
+  expect((await reopened.snapshot()).executionEvents[record.id]).toHaveLength(eventCount);
+  // Same-repository generation change simulates a stale worker finishing later.
+  await reconcileInterruptedExecutions(s.repository); unblock.release();
+  const response = await running; expect(response.statusCode).toBe(503);
+  const current = (await s.repository.snapshot()).executions[record.id]!;
+  expect(current.stepOutputs?.details).toBeUndefined(); expect(current.readProgress?.epoch).toBe(2);
+  expect(s.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("failed completion of a later node does not discard an earlier saved answer", async () => {
+  const persistence = new ReadPersistence(), s = await setup({ persistence }); await s.seed();
+  persistence.failWhen = (state) => Object.values(state.executions).some((item) => item.readProgress?.attempts.details?.status === "DONE");
+  const response = await s.run(); expect(response.statusCode).toBe(503); expect(s.callTool).toHaveBeenCalledTimes(2);
+  const record = Object.values(persistence.state().executions)[0]!;
+  expect(record.stepOutputs?.lookup).toEqual({ content: [], structuredContent: { id: "invoice-actual" } });
+  expect(record.stepOutputs?.details).toBeUndefined();
+  expect(record.readProgress?.attempts.details?.status).toBe("UNKNOWN");
+  expect(record.finalOutput).toEqual(record.stepOutputs?.lookup);
+});
+
+test("cancellation control rechecks current assignment, and terminal completion is immutable", async () => {
+  const s = await setup({ roleId: "role_client" }); await s.seed();
+  const entered = barrier(), unblock = barrier();
+  s.callTool.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return { content: [], structuredContent: { id: "first" } }; });
+  const running = s.run().then((response) => response); await entered.promise;
+  const record = Object.values((await s.repository.snapshot()).executions)[0]!;
+  await s.repository.mutate((state) => { state.workflows.read!.assignedUserIds = []; });
+  expect((await s.app.inject({ method: "POST", url: `/api/executions/${record.id}/cancel`, headers: s.headers, payload: {} })).statusCode).toBe(404);
+  expect((await s.repository.snapshot()).executions[record.id]!.readProgress?.cancellation).toBeUndefined();
+  unblock.release(); await running; expect(s.callTool).toHaveBeenCalledTimes(1);
+  await s.repository.mutate((state) => { state.workflows.read!.assignedUserIds = ["actor"]; });
+  expect((await s.app.inject({ method: "POST", url: `/api/executions/${record.id}/cancel`, headers: s.headers, payload: {} })).statusCode).toBe(409);
+});
+
+test("a worker cannot declare DONE when node checkpoints are incomplete", async () => {
+  const s = await setup(); await s.seed(); const response = await s.run(), id = response.json().data.id;
+  await s.repository.mutate((state) => { const item = state.executions[id]!; item.status = "RUNNING"; item.readProgress!.nextStepIndex = 0; item.readProgress!.attempts = {}; });
+  await expect(new ReadCheckpoints(s.repository, id, 1, yaml).finish(false)).rejects.toThrow("checkpoint could not be committed");
+  expect((await s.repository.snapshot()).executions[id]!.status).toBe("RUNNING");
+  expect((await s.repository.snapshot()).executionEvents[id]).toHaveLength(8);
+});
+
+test("valid node IDs do not collide with inherited object members in checkpoint storage", async () => {
+  const s = await setup(); await s.seed(stringify({ name: "Read", description: "Read one invoice", trigger: { type: "manual" }, steps: [{ id: "toString", action: "finance.read", parameters: { id: "invoice" } }] }));
+  const response = await s.run(); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.readProgress.attempts.toString.status).toBe("DONE"); expect(s.callTool).toHaveBeenCalledTimes(1);
+});
+
+test("legacy interrupted executions are unknown, not falsely declared failed or safe to replay", async () => {
+  const s = await setup(); await s.seed(); const response = await s.run(), id = response.json().data.id;
+  await s.repository.mutate((state) => { const item = state.executions[id]!; item.status = "RUNNING"; delete item.readProgress; delete state.executionEvents[id]; });
+  await reconcileInterruptedExecutions(s.repository);
+  const state = await s.repository.snapshot();
+  expect(state.executions[id]).toMatchObject({ status: "RECOVERY_REQUIRED", failure: { failureCategory: "LEGACY_OUTCOME_UNKNOWN" } });
+  expect(state.executionEvents[id]).toBeUndefined();
+  expect(state.auditLogs.at(-1)?.actor).toEqual({ id: "system", name: "Restart reconciliation" });
+  expect((await s.app.inject({ method: "POST", url: `/api/executions/${id}/retry`, headers: s.headers, payload: {} })).statusCode).toBe(409);
+  expect(s.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("authority revoked during preflight prevents creating a run, before SDK dispatch", async () => {
+  const s = await setup(); await s.seed(); const entered = barrier(), unblock = barrier();
+  s.services.validationGate = { validateAndIssueToken: async (action, source, actor) => {
+    if (action === "RunWorkflow") { entered.release(); await unblock.promise; }
+    return s.validator.validateAndIssueToken(action, source, actor.role);
+  } };
+  const running = s.run().then((response) => response); await entered.promise;
+  await s.repository.mutate((state) => { state.users.actor!.status = "Disabled"; });
+  unblock.release(); const response = await running;
+  expect(response.statusCode).toBe(403); expect(response.json().meta.code).toBe("EXECUTION_AUTHORITY_CHANGED");
+  expect(s.callTool).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
 });

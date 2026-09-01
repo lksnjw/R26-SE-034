@@ -46,7 +46,16 @@ export type Execution = {
   chatSessionId?: string;
   traceId?: string;
   workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1" };
+  readProgress?: ReadRunProgress;
 };
+
+export type ReadRunAttempt = { id: string; nodeId: string; stepIndex: number; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN" | "CANCELLED";
+  startedAt: string; dispatchIntentAt?: string; completedAt?: string };
+export type ReadRunProgress = { profile: "read-progress-v1"; epoch: number; nextStepIndex: number; lastSequence: number;
+  persistence: "durable" | "memory-only"; attempts: Record<string, ReadRunAttempt>;
+  cancellation?: { requestedAt: string; requestedBy: Principal }; recoveryReason?: string };
+export type ExecutionEvent = { version: 1; executionId: string; workflowId: string; sequence: number; timestamp: string; type: string;
+  traceId?: string; nodeId?: string; attemptId?: string; payload: Record<string, unknown> };
 
 export type Permission = { key: string; name: string; description: string; group: string };
 export type StoredRecord = Record<string, unknown>;
@@ -95,6 +104,7 @@ export type RepositoryState = {
   templates: Record<string, StoredRecord>;
   executions: Record<string, Execution>;
   executionLogs: Record<string, StoredRecord[]>;
+  executionEvents: Record<string, ExecutionEvent[]>;
   timelines: Record<string, StoredRecord[]>;
   healing: Record<string, StoredRecord>;
   chats: Record<string, ChatSessionRecord>;
@@ -128,6 +138,7 @@ export class Repository {
   #state: RepositoryState;
   #committed: RepositoryState;
   #healthy = true;
+  #writeUncertain = false;
 
   /*******************************************************************************
    * Function: constructor
@@ -186,6 +197,7 @@ export class Repository {
    ******************************************************************************/
   async mutate<T>(mutation: (state: RepositoryState) => Promise<T> | T): Promise<T> {
     return this.#mutex.runExclusive(async () => {
+      if (this.#writeUncertain) throw new Error("Persistence outcome is uncertain; reload authoritative storage before further mutations");
       const before = structuredClone(this.#state);
       let persistenceAttempted = false;
       try {
@@ -201,9 +213,24 @@ export class Repository {
       } catch (error) {
         this.#state = before;
         this.#committed = structuredClone(before);
-        if (persistenceAttempted) this.#healthy = false;
+        if (persistenceAttempted) { this.#healthy = false; this.#writeUncertain = true; }
         throw error;
       }
+    });
+  }
+
+  /** A save can commit remotely before its acknowledgement fails. Never write
+   * a rolled-back aggregate over that state. Only a successful authoritative
+   * reload clears the write fence; an ordinary health probe cannot do so. */
+  async recoverPersistenceState(): Promise<void> {
+    await this.#mutex.runExclusive(async () => {
+      if (!this.#writeUncertain) return;
+      if (this.persistence === null) throw new Error("Uncertain persistence has no durable backend");
+      const payload = await this.persistence.load();
+      if (payload === null) throw new Error("Authoritative repository state is unavailable");
+      const restored = restoreState(payload);
+      this.#state = restored; this.#committed = structuredClone(restored);
+      this.#writeUncertain = false; this.#healthy = true;
     });
   }
 
@@ -220,7 +247,7 @@ export class Repository {
     } catch {
       this.#healthy = false;
     }
-    return { durable: true, healthy: this.#healthy };
+    return { durable: true, healthy: this.#healthy && !this.#writeUncertain };
   }
 
   /*******************************************************************************
@@ -272,7 +299,7 @@ function restoreState(payload: Uint8Array): RepositoryState {
   if (source.version !== 1) throw new Error(`unsupported stored repository version ${String(source.version)}`);
   const defaults = initialState();
   const restored: RepositoryState = { ...defaults, ...source } as RepositoryState;
-  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
+  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) restored[key] = defaults[key] as never;
   }
   if (restored.governancePolicy !== null && (typeof restored.governancePolicy !== "object" || Array.isArray(restored.governancePolicy))) restored.governancePolicy = null;
@@ -303,6 +330,7 @@ export function initialState(): RepositoryState {
     templates: {},
     executions: {},
     executionLogs: {},
+    executionEvents: {},
     timelines: {},
     healing: {},
     chats: {},

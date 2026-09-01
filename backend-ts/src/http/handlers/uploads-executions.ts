@@ -343,12 +343,15 @@ async function retryExecution(
     user,
     services,
   );
+  if (["RUNNING", "RECOVERY_REQUIRED"].includes(prior.status)) throw new HandlerFailure(409, "A running or uncertain execution cannot be replayed through Retry; inspect its recorded outcomes first");
   const workflow = await services.repository.read(
     (state) => state.workflows[prior.workflowId] ?? null,
   );
   if (workflow === null) throw new HandlerFailure(404, "Workflow not found");
-  // Retry reuses the exact same self-healing execution path as POST /workflows/:id/run
-  // (runWorkflowFor in app.ts) — there is only one workflow execution implementation.
+  if (prior.workflowSnapshot && (prior.workflowSnapshot.version !== workflow.publishedVersion || prior.workflowSnapshot.yaml !== workflow.yaml))
+    throw new HandlerFailure(409, "The workflow publication changed. Retry cannot silently switch versions; start a separate reviewed run.");
+  // Explicit Retry creates a new run through the same governed read path; it
+  // does not resume/replay an uncertain attempt or grant transaction approval.
   return runWorkflowFor(workflow, request, reply, user, services);
 }
 

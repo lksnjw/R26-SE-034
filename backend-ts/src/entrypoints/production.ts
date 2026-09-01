@@ -35,6 +35,7 @@ import { GovernedValidationGate } from "../governance/gate.js";
 import { LlmPolicyFallback } from "../governance/llm-fallback.js";
 import { PolicyGateClient } from "../governance/policy-gate-client.js";
 import { discoverTools } from "../agent/tool-discovery.js";
+import { reconcileInterruptedExecutions } from "../runner/read-checkpoints.js";
 
 // Some external SDKs (the Firestore client, the ERP Bridge MCP client) have no
 // built-in connect timeout — an unresponsive dependency would otherwise hang
@@ -319,40 +320,6 @@ async function bootstrapAdministrator(
       createdAt: new Date().toISOString(),
     };
     state.passwordHashes[id] = passwordHash;
-  });
-}
-
-/*******************************************************************************
- * Function: reconcileInterruptedExecutions
- *
- * Marks interrupted running executions as failed after a restart.
- ******************************************************************************/
-async function reconcileInterruptedExecutions(
-  repository: Repository,
-): Promise<void> {
-  await repository.mutate((state) => {
-    const completedAt = new Date().toISOString();
-    for (const execution of Object.values(state.executions)) {
-      if (execution.status !== "RUNNING") continue;
-      execution.status = "FAILED";
-      execution.completedAt = completedAt;
-      execution.durationMs = Math.max(
-        0,
-        new Date(completedAt).getTime() -
-          new Date(execution.startedAt).getTime(),
-      );
-      const logs = state.executionLogs[execution.id] ?? [];
-      logs.push({
-        id: `log_${logs.length + 1}`,
-        executionId: execution.id,
-        timestamp: completedAt,
-        level: "error",
-        nodeId: "system",
-        message: "Execution was interrupted by a process restart",
-        metadata: { reason: "process_restarted_mid_run" },
-      });
-      state.executionLogs[execution.id] = logs;
-    }
   });
 }
 

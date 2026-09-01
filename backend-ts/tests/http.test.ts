@@ -124,6 +124,7 @@ describe("complete HTTP route graph", () => {
       "POST /api/executions/:id/approve", "POST /api/executions/:id/reject",
       "POST /api/workflows/:id/approve-generation", "POST /api/workflows/:id/reject-generation",
       "POST /api/workflows/:id/commands", "POST /api/workflows/:id/node-proposals", "GET /api/workflows/:id/readiness",
+      "GET /api/executions/:id/events",
     ].sort());
   });
 
@@ -198,6 +199,16 @@ describe("complete HTTP route graph", () => {
       const actualMessage = isRecord(actualBody)
         ? actualBody.message
         : undefined;
+      // Named product change: cancellation now has a persisted safe boundary.
+      // Keep the frozen wire fixture intact and assert this exact exception,
+      // rather than rebaselining unrelated captures/verdicts.
+      if (route.method === "POST" && route.pattern === "/api/executions/:id/cancel") {
+        expect(scenario.status).toBe(501);
+        expect(expectedMessage).toBe("Cancellation is unavailable while executions run synchronously");
+        expect(response.statusCode).toBe(scenario.id === "authenticated-malformed-json" ? 400 : 404);
+        expect(actualMessage).toBe(scenario.id === "authenticated-malformed-json" ? "Cancellation accepts an empty body" : "Execution not found");
+        continue;
+      }
       if (
         response.statusCode !== scenario.status ||
         actualMessage !== expectedMessage

@@ -699,6 +699,10 @@ export const routeTable = [
   {
     "method": "GET",
     "path": "/api/workflows/:id/readiness"
+  },
+  {
+    "method": "GET",
+    "path": "/api/executions/:id/events"
   }
 ] as const;
 export type RouteDefinition = (typeof routeTable)[number];

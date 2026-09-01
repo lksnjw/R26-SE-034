@@ -11,6 +11,7 @@ import type { ValidationToken } from "../validator/registry-validator.js";
 import { attachDispatchAuditTrace } from "../trace/audit-trace.js";
 
 export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined;
+  beforeDispatch?: ((verifiedRole: string) => Promise<void>) | undefined;
   plan?: { yaml: string; stepIndex: number; token: ValidationToken } };
 
 // Phase-0 containment: only explicitly registered, role-granted reads may
@@ -44,7 +45,7 @@ export async function dispatchReadTool(
   const index = context.plan?.stepIndex ?? 0;
   const authored = parseWorkflowYAMLStrict(yaml).steps[index];
   if (authored === undefined || ![tool.name, tool.mcp_tool_name].includes(authored.action ?? "")) throw new Error("Tool dispatch denied: authored action does not match requested tool");
-  const { signal, plan, ...metadata } = context;
+  const { signal, plan, beforeDispatch, ...metadata } = context;
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
   const identity = createDispatchIdentity(actor, services.config.erpbridgeRoleMap);
@@ -62,6 +63,9 @@ export async function dispatchReadTool(
       !current.permissions.some((permission) => ["chat:use", "workflow:write", "workflow:run", "workflow:run_own"].includes(permission)) ||
       !tool.allowed_roles.includes(current.role)) throw new Error("Tool dispatch denied: actor authority changed during verification");
   await checkWorkflowScope(services, current, context.workflowId);
+  // Server-owned checkpoint hook: cancellation and dispatch intent are checked
+  // after all awaited policy work, immediately before entering the SDK.
+  await beforeDispatch?.(current.role);
   const envelope = await session.clientFor(tool).execute(authored.action!, resolved.capability, parameters, identity, context.signal);
   // The first read profile supports JSON/text results only. Unsupported or
   // malformed MCP envelopes cannot be reported as a completed business read.

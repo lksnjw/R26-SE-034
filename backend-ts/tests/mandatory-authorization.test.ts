@@ -145,10 +145,11 @@ test.each(["read-dispatch-error", "write-blocked"])("published run handles %s wi
     return;
   }
   const execution = Object.values(state.executions)[0]!;
-  expect(execution.status).toBe("FAILED");
+  expect(execution.status).toBe("RECOVERY_REQUIRED");
+  expect(execution.failure?.failureCategory).toBe("READ_OUTCOME_UNKNOWN");
   expect(execution.agentSummary).not.toBe("Completed successfully");
   expect(execution.stepOutputs).toEqual({});
-  expect(state.timelines[execution.id]?.[0]).toMatchObject({ nodeId: "read", status: "FAILED" });
+  expect(state.timelines[execution.id]?.[0]).toMatchObject({ nodeId: "read", status: "UNKNOWN", outcome: "UNKNOWN" });
 });
 
 test("editing a published draft invalidates the runnable snapshot before discovery", async () => {

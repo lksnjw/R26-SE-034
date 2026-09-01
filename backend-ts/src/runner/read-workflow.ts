@@ -6,6 +6,8 @@ import { dispatchReadTool, type ReadDispatchContext } from "../tools/read-tool-b
 import type { HandlerServices } from "../http/handlers/common.js";
 import type { ValidationToken } from "../validator/registry-validator.js";
 import type { RunnerResult } from "./executor.js";
+import { ReadCheckpointFailure, ReadRunCancelled, type ReadExecutionHooks } from "./read-checkpoints.js";
+import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
 
 const supported = new Set(["id", "kind", "action", "parameters", "description"]);
 /** Explicit first execution profile: sequential reads only. Unsupported logic
@@ -36,7 +38,7 @@ export function inspectReadWorkflow(blueprint: WorkflowBlueprint, tools: readonl
 }
 
 export async function executeReadWorkflow(services: HandlerServices, actorId: string, yaml: string, input: Record<string, unknown>, token: ValidationToken,
-  context: Omit<ReadDispatchContext, "plan">): Promise<RunnerResult> {
+  context: Omit<ReadDispatchContext, "plan" | "beforeDispatch">, hooks?: ReadExecutionHooks): Promise<RunnerResult> {
   if (yaml.length > 200_000) throw new Error("Read workflow exceeds supported source size");
   const blueprint = parseWorkflowYAMLStrict(yaml);
   const actor = await services.repository.effectiveUser(actorId);
@@ -46,22 +48,32 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
   for (const [index, step] of blueprint.steps.entries()) {
     const started = new Date();
     try {
-      if (context.signal?.aborted) throw new Error("Read workflow was cancelled before dispatch");
+      if (context.signal?.aborted) throw new ReadRunCancelled();
+      await hooks?.preparing(index, step.id, step.description ?? step.action!, started.toISOString());
       const args = resolveVariables(step.parameters ?? {}, result.state);
       const parameterIssues: string[] = [];
       if (parameterStrings(args, parameterIssues).some((value) => value.includes("{{") || value.includes("}}")) || parameterIssues.length)
         throw new Error("Read arguments contain unresolved references or exceed supported limits");
-      const output = await dispatchReadTool(services, actorId, step.action!, args, { ...context, plan: { yaml, stepIndex: index, token } });
-      result.state[step.id] = output;
+      const output = await dispatchReadTool(services, actorId, step.action!, args, { ...context, plan: { yaml, stepIndex: index, token },
+        ...(hooks === undefined ? {} : { beforeDispatch: (role: string) => hooks.dispatchIntent(index, step.id, role) }) });
       const completed = new Date();
-      result.timeline.push({ id: `tl_${index + 1}`, nodeId: step.id, label: step.description ?? step.action!, status: "DONE", startedAt: started.toISOString(), completedAt: completed.toISOString(), durationMs: completed.getTime() - started.getTime(), sideEffect: false, output });
-      result.logs.push({ timestamp: completed.toISOString(), level: "info", nodeId: step.id, message: "Verified read completed", metadata: { action: step.action!, sideEffect: false } });
+      const entry = { id: `tl_${index + 1}`, nodeId: step.id, label: step.description ?? step.action!, status: "DONE" as const, startedAt: started.toISOString(), completedAt: completed.toISOString(), durationMs: completed.getTime() - started.getTime(), sideEffect: false, output };
+      const log = { timestamp: completed.toISOString(), level: "info" as const, nodeId: step.id, message: "Verified read completed", metadata: { action: step.action!, sideEffect: false } };
+      // A result is not exposed to the next node until its checkpoint commits.
+      await hooks?.completed(index, entry, log);
+      result.state[step.id] = output;
+      result.timeline.push(entry); result.logs.push(log);
     } catch (cause) {
+      if (cause instanceof ReadCheckpointFailure || cause instanceof ReadRunCancelled) {
+        Object.defineProperty(cause, "runnerResult", { value: result }); throw cause;
+      }
       const completed = new Date();
       // Do not reflect arbitrary remote exception strings/credentials to users.
       const error = new Error(`Read step ${step.id} failed or was blocked; no automatic replay was performed`, { cause });
-      result.timeline.push({ id: `tl_${index + 1}`, nodeId: step.id, label: step.description ?? step.action!, status: "FAILED", startedAt: started.toISOString(), completedAt: completed.toISOString(), durationMs: completed.getTime() - started.getTime(), sideEffect: false });
-      result.logs.push({ timestamp: completed.toISOString(), level: "error", nodeId: step.id, message: error.message, metadata: { action: step.action!, sideEffect: false } });
+      const entry = { id: `tl_${index + 1}`, nodeId: step.id, label: step.description ?? step.action!, status: "FAILED" as const, startedAt: started.toISOString(), completedAt: completed.toISOString(), durationMs: completed.getTime() - started.getTime(), sideEffect: false };
+      const log = { timestamp: completed.toISOString(), level: "error" as const, nodeId: step.id, message: error.message, metadata: { action: step.action!, sideEffect: false } };
+      await hooks?.failed(index, entry, log, cause instanceof ErpbridgeMcpToolError);
+      result.timeline.push(entry); result.logs.push(log);
       Object.defineProperty(error, "runnerResult", { value: result });
       throw error;
     }

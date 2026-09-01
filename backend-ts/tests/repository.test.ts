@@ -67,5 +67,22 @@ describe("repository transaction boundary", () => {
     persistence.failNext = true;
     await expect(repository.mutate((state) => { state.counter = 99; state.settings.general = { changed: true }; })).rejects.toThrow("persistence failed");
     expect(await repository.snapshot()).toEqual(before);
+    await expect(repository.mutate((state) => { state.counter = 100; })).rejects.toThrow("Persistence outcome is uncertain");
+    expect(await repository.persistenceStatus()).toEqual({ durable: true, healthy: false });
+    await repository.recoverPersistenceState();
+    await repository.mutate((state) => { state.counter = 2; });
+    expect((await repository.snapshot()).counter).toBe(2);
+  });
+
+  test("recovery reloads an acknowledged-uncertain committed blob rather than overwriting it", async () => {
+    const persistence = new ControlledPersistence(), repository = await Repository.open(persistence);
+    const original = persistence.save.bind(persistence);
+    let fail = true;
+    persistence.save = async (payload) => { await original(payload); if (fail) { fail = false; throw new Error("lost acknowledgement"); } };
+    await expect(repository.mutate((state) => { state.counter = 7; })).rejects.toThrow("lost acknowledgement");
+    expect((await repository.snapshot()).counter).toBe(0);
+    await expect(repository.mutate((state) => { state.counter = 1; })).rejects.toThrow("uncertain");
+    await repository.recoverPersistenceState(); expect((await repository.snapshot()).counter).toBe(7);
+    await repository.mutate((state) => { state.counter += 1; }); expect((await repository.snapshot()).counter).toBe(8);
   });
 });

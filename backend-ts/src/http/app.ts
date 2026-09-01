@@ -53,6 +53,7 @@ import {
 } from "./handlers/analytics-catalog.js";
 import { inspectReadWorkflow } from "../runner/read-workflow.js";
 import { runVerifiedRead } from "./handlers/read-execution.js";
+import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
 import {
   REGISTRY_UNHANDLED,
   handleRegistryRoute,
@@ -280,9 +281,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 175)
+  if (routeTable.length !== 176)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 175`,
+      `route table has ${routeTable.length} routes, expected 176`,
     );
   return app;
 }
@@ -491,15 +492,8 @@ async function handleRoute(
     route.method === "GET"
   )
     return getExecution(request, reply, current!, services);
-  if (route.path.endsWith("/cancel"))
-    return reply
-      .status(501)
-      .send(
-        fail(
-          "Cancellation is unavailable while executions run synchronously",
-          null,
-        ),
-      );
+  const executionControl = await handleExecutionControlRoute(route, request, reply, current!, services);
+  if (executionControl !== EXECUTION_CONTROL_UNHANDLED) return executionControl;
   if (
     route.path === `${services.config.apiBasePath}/notifications/read-all` &&
     route.method === "PATCH"
@@ -1191,6 +1185,9 @@ export async function runWorkflowFor(
   user: User & { role: string; permissions: string[] },
   services: ApplicationServices,
 ): Promise<unknown> {
+  // Repository.read exposes references. Pin before any awaited validation so a
+  // concurrent draft edit cannot mutate this run's source/version in place.
+  workflow = structuredClone(workflow);
   const parsed = runWorkflowRequestSchema.safeParse(request.body ?? {});
   if (!parsed.success)
     return reply.status(400).send(fail("Invalid request body", null));
