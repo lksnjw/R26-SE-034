@@ -74,10 +74,9 @@ export class SynthesisService {
       ...(input.user === undefined ? {} : { actor: { id: input.user.id, role: input.user.role } }),
     }); }
     catch (error) { throw new SynthesisFailure(`Candidate generation failed: ${errorText(error)}`); }
-    // Self-review pass: ask the LLM to verify its own tool names against the live registry.
-    // This catches mismatches (e.g. send_email vs send-email) before governance runs.
-    const initialYaml = generated.text.trim();
-    const yaml = await selfReviewYaml(initialYaml, input.liveTools ?? [], this.providers, input.signal);
+    // Preserve the exact proposal: deterministic verification reports unknown
+    // actions. Renaming/removing steps requires a separate reviewed revision.
+    const yaml = generated.text.trim();
     const candidateID = "candidate_1";
     let gate;
     if (this.validationGate === undefined) {
@@ -138,107 +137,6 @@ export class SynthesisService {
   }
 }
 
-/*******************************************************************************
- * Function: selfReviewYaml
- *
- * Asks the provider to review generated YAML against live tool names.
- ******************************************************************************/
-async function selfReviewYaml(
-  yaml: string,
-  liveTools: readonly ToolDefinition[],
-  providers: ProviderRuntime,
-  signal?: AbortSignal,
-): Promise<string> {
-  if (liveTools.length === 0) return yaml;
-  const toolNames = liveTools.map((t) => t.name);
-  const reviewPrompt = [
-    "You generated the following workflow YAML. Your task is to validate and fix ONLY the tool names.",
-    "",
-    "INSTRUCTIONS:",
-    "1. Read every 'action:' field in the YAML.",
-    "2. Check if it EXACTLY matches a name in AVAILABLE_TOOL_NAMES (character for character, hyphens and underscores matter).",
-    "3. If a name does not match exactly:",
-    "   a. Strip any leading prefix like 'dynamic_', 'static_', 'auto_' — e.g. 'dynamic_send-email' → 'send-email'.",
-    "   b. Try swapping hyphens for underscores or vice-versa — e.g. 'send_email' → 'send-email'.",
-    "   c. Replace the action with the corrected name if found in AVAILABLE_TOOL_NAMES.",
-    "4. If no match exists even after prefix stripping and hyphen/underscore swapping, remove that step entirely.",
-    "5. Do NOT change anything else — keep all other fields, parameters, descriptions, and structure identical.",
-    "6. Return ONLY the corrected YAML. No commentary, no markdown fence.",
-    "",
-    "AVAILABLE_TOOL_NAMES:",
-    JSON.stringify(toolNames),
-    "",
-    "WORKFLOW YAML TO REVIEW:",
-    yaml,
-  ].join("\n");
-
-  try {
-    const reviewed = await providers.generateCandidate(
-      reviewPrompt,
-      CANDIDATE_PROMPT_VERSION,
-      (r) => { parseWorkflowYAMLStrict(r.text.trim()); },
-      signal,
-      { candidateId: "self_review" },
-    );
-    return reviewed.text.trim();
-  } catch {
-    return yaml;
-  }
-}
-
-/*******************************************************************************
- * Function: correctToolNamesInYaml
- *
- * Corrects recognizable tool-name variations in generated workflow YAML.
- ******************************************************************************/
-export async function correctToolNamesInYaml(
-  yaml: string,
-  liveTools: readonly ToolDefinition[],
-  providers: ProviderRuntime,
-  signal?: AbortSignal,
-): Promise<{ yaml: string; corrected: boolean; stillInvalid: string[] }> {
-  const liveNames = liveTools.map((t) => t.name);
-  const liveSet = new Set(liveNames);
-  let parsed;
-  try { parsed = parseWorkflowYAMLStrict(yaml); } catch { return { yaml, corrected: false, stillInvalid: [] }; }
-
-  const invalid = parsed.steps
-    .map((s) => s.action)
-    .filter((a): a is string => typeof a === "string" && !liveSet.has(a));
-  if (invalid.length === 0) return { yaml, corrected: false, stillInvalid: [] };
-
-  const correctionPrompt = [
-    "SYSTEM",
-    "You are a YAML correction assistant. Fix ONLY the tool names listed in INVALID_TOOL_NAMES so they match an entry in VALID_TOOL_NAMES exactly. Return the corrected YAML only — no Markdown fence, no commentary. If no valid replacement exists, remove that step.",
-    "",
-    "INVALID_TOOL_NAMES",
-    JSON.stringify(invalid),
-    "",
-    "VALID_TOOL_NAMES",
-    JSON.stringify(liveNames),
-    "",
-    "ORIGINAL_YAML",
-    yaml,
-  ].join("\n");
-
-  try {
-    const generated = await providers.generateCandidate(
-      correctionPrompt,
-      CANDIDATE_PROMPT_VERSION,
-      (r) => { parseWorkflowYAMLStrict(r.text.trim()); },
-      signal,
-      { candidateId: "correction_pass" },
-    );
-    const correctedYaml = generated.text.trim();
-    const reparsed = parseWorkflowYAMLStrict(correctedYaml);
-    const stillInvalid = reparsed.steps
-      .map((s) => s.action)
-      .filter((a): a is string => typeof a === "string" && !liveSet.has(a));
-    return { yaml: correctedYaml, corrected: true, stillInvalid };
-  } catch {
-    return { yaml, corrected: false, stillInvalid: invalid };
-  }
-}
 
 /*******************************************************************************
  * Function: assembleCandidatePrompt
@@ -264,7 +162,8 @@ export function assembleCandidatePrompt(userText: string, userRole: string, regi
     "  trigger:",
     "    type: <string>         # manual | schedule | event",
     "    config:                # REQUIRED for schedule trigger only",
-    "      cron: <string>       # 5-field UTC cron, e.g. '0 9 * * *' = 9 AM daily",
+    "      cron: <string>       # proposed schedule only; do not invent missing time details",
+    "      timezone: <string>   # explicit intended timezone; otherwise record an unresolved requirement",
     "  steps:                   # at least one step",
     "    - id: <string>         # REQUIRED — unique snake_case id, e.g. step_1",
     "      description: <string> # REQUIRED — short plain-English label, e.g. 'Fetch all warehouses from ERP'",
@@ -286,9 +185,10 @@ export function assembleCandidatePrompt(userText: string, userRole: string, regi
     "- Give it a description that states exactly what is being authorized and why, e.g. 'Manager approval — payment exceeds the $15,000 auto-approval limit'.",
     "- Do not invent thresholds that are not stated in APPLICABLE_RULES_JSON or the user's request. If no rule requires sign-off, do not add an approval step.",
     "- ONLY use tools that appear in TOOL_REGISTRY_JSON. Never add tools based on rule instructions — APPLICABLE_RULES_JSON is for reference only, not a source of tool names.",
-    "- If a rule mentions a tool (e.g. audit.write_audit_log) that is NOT in TOOL_REGISTRY_JSON, IGNORE that rule completely.",
-    "- CRITICAL — DO NOT INVENT TOOL NAMES: If the user requests a capability (e.g. 'send email', 'send SMS', 'notify', 'post to Slack') and NO matching tool exists in TOOL_REGISTRY_JSON, you MUST omit that step entirely. Never create a tool name that is not in TOOL_REGISTRY_JSON. NEVER add prefixes like 'dynamic_', 'static_', or 'auto_' to any tool name — e.g. do NOT write 'dynamic_send-email', write 'send-email' directly. A workflow with fewer steps using real tools is always better than one with invented names.",
-    "- If the user mentions a schedule (e.g. 'every day', 'daily at 9am', 'every hour', 'every Monday'), set trigger.type to 'schedule' and trigger.config.cron to the correct 5-field UTC cron expression. Otherwise use trigger.type: manual.",
+    "- Never ignore a relevant rule because its required tool is unavailable. Record the unmet policy requirement in metadata.unresolved_requirements and do not claim the proposal is ready.",
+    "- Do not invent tool names or silently drop requested outcomes. If a requested capability has no matching registered tool, preserve the supported steps and list the missing outcome in metadata.unresolved_requirements (an array of concise strings). A partial plan is blocked until the missing capability or an explicitly accepted alternative is resolved.",
+    "- Preserve required approvals, recipients, periods, amounts and all other user constraints. Unknown required values belong in metadata.unresolved_requirements, not invented example values or inferred approvals.",
+    "- For schedules, record the intended timezone and reporting period in trigger.config. If timezone/time/period/delivery recipient or channel is required but unknown, record it in metadata.unresolved_requirements. Never silently assume UTC, convert local time without an explicit timezone, or claim a saved schedule is active. Scheduling and live writes are not currently executable.",
     "- Generate the MINIMUM number of steps needed to fulfill the user's request. Do NOT add extra steps for audit, notification, or echo unless the user explicitly asked for them AND the tool exists in TOOL_REGISTRY_JSON.",
     "- No extra top-level keys beyond name, description, trigger, steps, metadata.",
     "",

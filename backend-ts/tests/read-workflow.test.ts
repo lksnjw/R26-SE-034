@@ -135,6 +135,8 @@ test.each(["missing-input", "invalid-input", "missing-output", "mcp-error", "mal
   expect(s.callTool).toHaveBeenCalledTimes(["missing-input", "invalid-input"].includes(scenario) ? 0 : 1);
   expect(JSON.stringify(state.executions)).not.toContain("private-remote-error");
   expect(state.timelines[execution.id]?.at(-1)?.status).toBe("FAILED");
+  if (scenario === "missing-output") expect(execution.finalOutput).toEqual({ content: [], structuredContent: {} });
+  else expect(execution.finalOutput).toBeUndefined();
 });
 
 test.each(["disabled", "assignment", "registry"])("%s revocation after first node prevents second dispatch", async (scenario) => {

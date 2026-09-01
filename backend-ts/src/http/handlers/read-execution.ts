@@ -44,7 +44,7 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
     item.completedAt = new Date().toISOString();
     item.durationMs = Math.max(0, Date.parse(item.completedAt) - Date.parse(item.startedAt));
     item.stepOutputs = Object.fromEntries(Object.entries(result.state).filter(([key]) => key !== "input"));
-    item.finalOutput = failed ? "Read workflow failed or was blocked; inspect the recorded steps" : result.timeline.at(-1)?.output;
+    item.finalOutput = result.timeline.findLast((entry) => entry.status === "DONE")?.output;
     item.agentSummary = failed ? "Read workflow did not complete. No automatic replay was performed." : "Published read workflow completed with deterministic execution.";
     if (failed) item.failure = { failureCategory: "READ_EXECUTION_FAILED", failedStepId: result.timeline.at(-1)?.nodeId ?? "preflight" };
     state.timelines[executionId] = result.timeline.map((entry) => ({ ...entry, traceId }));

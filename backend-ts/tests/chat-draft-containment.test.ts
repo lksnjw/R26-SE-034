@@ -30,7 +30,7 @@ async function setup(response = yaml, roleId = "role_admin") {
   const chat = await app.inject({ method: "POST", url: "/api/chat/sessions", headers, payload: {} });
   expect(chat.statusCode).toBe(201);
   const send = (content: string) => app.inject({ method: "POST", url: `/api/chat/sessions/${chat.json().data.id}/messages`, headers, payload: { content } });
-  return { app, repository, fetchImplementation, send };
+  return { app, repository, fetchImplementation, send, headers };
 }
 
 test("generation saves an acknowledged draft without publishing, executing or spending a narrative call", async () => {
@@ -56,6 +56,23 @@ test("unknown actions remain in the original blocked proposal, never silently re
   expect(data.validation.passed).toBe(false);
   expect(data.assistantMessage.artifacts.missing_tools).toContain("unknown.delivery");
   expect(Object.values((await s.repository.snapshot()).workflows)[0]?.yaml).toContain("unknown.delivery");
+});
+
+test("an explicitly incomplete requested outcome remains in a blocked saved draft and cannot publish or run", async () => {
+  const proposed = yaml + "metadata:\n  unresolved_requirements:\n   - Manager delivery connector is unavailable\n";
+  const s = await setup(proposed);
+  const response = await s.send("Create a workflow to read and deliver daily invoices to the manager");
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.validation.failed_rules).toContain("UNRESOLVED_REQUIREMENTS");
+  expect(response.json().data.assistantMessage.artifacts.can_execute).toBe(false);
+  const draft = Object.values((await s.repository.snapshot()).workflows)[0]!;
+  expect(draft.yaml).toBe(proposed.trim()); expect(draft.publishedVersion).toBe(0);
+  const publish = await s.app.inject({ method: "POST", url: `/api/workflows/${draft.id}/publish`, headers: s.headers, payload: {} });
+  expect(publish.statusCode, publish.body).toBe(422);
+  const run = await s.app.inject({ method: "POST", url: `/api/workflows/${draft.id}/run`, headers: s.headers, payload: {} });
+  expect(run.statusCode, run.body).toBe(422);
+  expect((await s.repository.snapshot()).executions).toEqual({});
+  expect(s.fetchImplementation).toHaveBeenCalledTimes(1);
 });
 
 test("chat-only user cannot acquire workflow write authority through autosave", async () => {

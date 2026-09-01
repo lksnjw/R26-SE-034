@@ -6,7 +6,7 @@ import { isGenerationFallbackEligible, OpenAICompatibleClient, OpenAICompatibleE
 import type { QueryMessage, QueryOptions, QueryToolDefinition, QueryTurnResult } from "../analysisprovider/query-types.js";
 
 export const ANALYSIS_PROMPT_VERSION = "prompt/analysis/v1";
-export const CANDIDATE_PROMPT_VERSION = "prompt/candidate/v1";
+export const CANDIDATE_PROMPT_VERSION = "prompt/candidate/v2";
 
 export type RuntimeProviderConfiguration = {
   id: string;
