@@ -32,7 +32,7 @@ function requireBase(workflow: Workflow, version: number, hash: string): void {
   if (workflow.draftVersion !== version || workflowContentHash(workflow.yaml) !== hash)
     throw new HandlerFailure(409, "This draft changed. Reload before applying the edit", { code: "DRAFT_REVISION_CONFLICT" });
 }
-function currentEditor(state: Readonly<RepositoryState>, workflow: Workflow, user: CurrentUser): CurrentUser {
+export function assertCurrentWorkflowEditor(state: Readonly<RepositoryState>, workflow: Workflow, user: CurrentUser): CurrentUser {
   const account = state.users[user.id], role = account && state.roles[account.roleId];
   if (!account || account.status.toLowerCase() !== "active") throw new HandlerFailure(403, "Editing authority was revoked");
   const current = { ...account, role: role?.name ?? "", permissions: [...new Set([...(role?.permissions ?? []), ...account.permissionOverrides])] };
@@ -129,7 +129,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       const proposal = await services.repository.mutate((state) => {
         const fresh = state.workflows[workflowId];
         if (!fresh || !permitted(fresh, user, true)) throw new HandlerFailure(404, "Workflow not editable");
-        currentEditor(state, fresh, user);
+        assertCurrentWorkflowEditor(state, fresh, user);
         requireBase(fresh, value.baseVersion, value.baseHash);
         const result = { id: nextID(state, "proposal"), workflowId, nodeId: node.id, baseVersion: value.baseVersion, baseHash: value.baseHash, command: change, before: node, after: { ...node, ...proposed }, validation, status: "PROPOSED" };
         if (value.sessionId) {
@@ -152,7 +152,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
     const updated = await services.repository.mutate((state) => {
       const fresh = state.workflows[workflowId];
       if (!fresh || !permitted(fresh, user, true)) throw new HandlerFailure(404, "Workflow not editable");
-      const editor = currentEditor(state, fresh, user);
+      const editor = assertCurrentWorkflowEditor(state, fresh, user);
       requireBase(fresh, parsed.data.baseVersion, parsed.data.baseHash);
       if (parsed.data.command.type === "discardProposal") {
         const { item, chat } = ownedProposal(state, user.id, workflowId, parsed.data.command.proposalId);

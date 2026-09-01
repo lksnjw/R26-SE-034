@@ -3,6 +3,7 @@ import { Icon } from "@iconify/react";
 import { useRoute } from "../../context/RouteContext";
 import usePermissions from "../../hooks/usePermissions";
 import { saveWorkflowForCanvas } from "../../utils/workflowCanvas.utils";
+import { workflowArtifactStatus } from "./workflowArtifactStatus";
 
 // ── Risk badge colours ──────────────────────────────────────────────────────
 const RISK_COLORS = {
@@ -405,6 +406,10 @@ function ChatArtifactPanel({ artifact }) {
     return <QueryResultPanel artifact={artifact} />;
   }
 
+  if (artifact.intent === "NODE_PATCH_PROPOSAL") {
+    return <section className="space-y-2 text-xs"><h3 className="font-semibold">Node proposal · {artifact.proposal?.nodeId}</h3><p>{artifact.proposal?.status ?? "Unknown status"}</p><p className="text-gray-500">Review this change in the workflow workspace. Applying saves a draft; it does not publish or execute.</p><pre className="overflow-auto whitespace-pre-wrap">{JSON.stringify(artifact.proposal?.after, null, 2)}</pre></section>;
+  }
+
   const {
     blocking_errors: rawBlockingErrors,
     can_execute,
@@ -422,6 +427,7 @@ function ChatArtifactPanel({ artifact }) {
 
   const blocking_errors = rawBlockingErrors ?? [];
   const candidates = rawCandidates ?? [];
+  const status = workflowArtifactStatus(artifact);
 
   const tools = retrieval.tools ?? [];
   const rules = [...(retrieval.rules ?? []), ...(retrieval.global_rules ?? [])];
@@ -473,13 +479,14 @@ function ChatArtifactPanel({ artifact }) {
         {/* can_execute badge */}
         <div className="mt-3 flex items-center gap-2">
           <Icon
-            icon={can_execute ? "mdi:check-circle" : "mdi:block-helper"}
-            className={`h-4 w-4 ${can_execute ? "text-emerald-500" : "text-red-500"}`}
+            icon={status.passed === true ? "mdi:check-circle" : "mdi:shield-alert"}
+            className={`h-4 w-4 ${status.passed === true ? "text-emerald-500" : "text-amber-500"}`}
           />
-          <span className={`text-xs font-semibold ${can_execute ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
-            {can_execute ? "Executable candidate available" : "No executable candidate"}
+          <span className={`text-xs font-semibold ${status.passed === true ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+            {status.draft} · {status.label}
           </span>
         </div>
+        <p className="mt-2 text-[10px] text-gray-500">{status.lifecycle}</p>
         {canEditWorkflow && selected_workflow_yaml && (
           <button
             type="button"

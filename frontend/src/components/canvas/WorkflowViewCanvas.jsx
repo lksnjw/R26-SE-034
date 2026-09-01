@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Icon } from "@iconify/react";
-import { takeWorkflowForCanvas, workflowYamlToCanvas, saveWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
+import { peekWorkflowForCanvas, clearWorkflowForCanvas, workflowYamlToCanvas, saveWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
 import { workflowService } from "../../services/workflow.service";
 
 // ── Read-only step node ────────────────────────────────────────────────────────
@@ -88,6 +88,23 @@ function ViewNode({ data }) {
 
 const NODE_TYPES = { erpTool: ViewNode, default: ViewNode };
 
+function initialView() {
+  const payload = peekWorkflowForCanvas();
+  if (!payload?.yaml) return { nodes: [], edges: [], workflow: null, payload };
+  try {
+    const canvas = workflowYamlToCanvas(payload.yaml, payload);
+    // Results without exact authored node IDs cannot be projected by tool name:
+    // the same tool may occur more than once in a workflow.
+    const attempts = new Map((payload.steps ?? []).filter((step) => typeof step.nodeId === "string").map((step) => [step.nodeId, step]));
+    return { ...canvas, payload, nodes: canvas.nodes.map((node) => {
+      const attempt = attempts.get(node.id);
+      return { ...node, draggable: false, selectable: false, data: { ...node.data,
+        executionOutput: attempt?.result ?? null,
+        executionStatus: attempt?.status === "DONE" ? "success" : attempt?.status === "FAILED" ? "error" : undefined } };
+    }) };
+  } catch (error) { return { nodes: [], edges: [], workflow: null, payload, sourceError: error.message }; }
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 /*******************************************************************************
  * Function: WorkflowViewCanvas
@@ -96,46 +113,16 @@ const NODE_TYPES = { erpTool: ViewNode, default: ViewNode };
  ******************************************************************************/
 function WorkflowViewCanvas() {
   const navigate = useNavigate();
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [workflow, setWorkflow] = useState(null);
+  const [initial] = useState(initialView);
+  const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
+  const [workflow, setWorkflow] = useState(initial.workflow);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [rerunStatus, setRerunStatus] = useState(null);
 
-  useEffect(() => {
-    const payload = takeWorkflowForCanvas();
-    if (!payload) return;
-
-    const { yaml, name, description, steps: toolSteps } = payload;
-    if (!yaml) return;
-
-    const canvas = workflowYamlToCanvas(yaml, { name, description });
-    const stepsMap = {};
-    if (Array.isArray(toolSteps)) {
-      for (const s of toolSteps) stepsMap[s.toolName] = s;
-    }
-
-    const enrichedNodes = canvas.nodes.map((node) => {
-      const stepData = stepsMap[node.data.action];
-      return {
-        ...node,
-        type: "erpTool",
-        draggable: false,
-        selectable: false,
-        data: {
-          ...node.data,
-          executionOutput: stepData?.result ?? null,
-          executionStatus: stepData !== undefined ? (stepData.error ? "error" : "success") : undefined,
-        },
-      };
-    });
-
-    setNodes(enrichedNodes);
-    setEdges(canvas.edges);
-    setWorkflow({ ...canvas.workflow, yaml });
-  }, []);
+  useEffect(() => { if (!initial.sourceError) clearWorkflowForCanvas(initial.payload); }, [initial.payload, initial.sourceError]);
 
   const handleSave = useCallback(async () => {
     if (!workflow || saving) return;
@@ -161,7 +148,7 @@ function WorkflowViewCanvas() {
     setWorkflow(null);
     setSaved(false);
     setSaveError(null);
-  }, []);
+  }, [setEdges, setNodes]);
 
   const handleRerun = useCallback(async () => {
     if (!workflow) return;
@@ -186,6 +173,7 @@ function WorkflowViewCanvas() {
           <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">No workflow loaded</p>
           <p className="mt-1 text-xs text-gray-400">Use "View in Canvas" from a chat response to load a workflow here.</p>
         </div>
+        {initial.sourceError && <div role="alert" className="max-w-lg text-xs text-amber-700"><p>Import could not be represented: {initial.sourceError}. Original source and handoff are preserved.</p><details className="mt-2"><summary>Original source</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap">{initial.payload?.yaml}</pre></details></div>}
         <button
           type="button"
           onClick={() => navigate("/chat")}

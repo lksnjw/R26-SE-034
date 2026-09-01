@@ -1,4 +1,5 @@
 import { MarkerType } from "@xyflow/react";
+import { readCanvasBlueprint } from "./builderSerialization";
 
 const CANVAS_WORKFLOW_KEY = "workflow.pendingCanvasWorkflow";
 const CHAT_EDIT_KEY = "workflow.pendingChatEdit";
@@ -111,73 +112,23 @@ export function takeWorkflowForCanvas() {
   }
 }
 
+export function peekWorkflowForCanvas() {
+  try { return JSON.parse(localStorage.getItem(CANVAS_WORKFLOW_KEY) || "null"); } catch { return null; }
+}
+
+export function clearWorkflowForCanvas(expected) {
+  try {
+    if (JSON.stringify(peekWorkflowForCanvas()) === JSON.stringify(expected)) localStorage.removeItem(CANVAS_WORKFLOW_KEY);
+  } catch { /* Disabled storage must not break a read-only preview. */ }
+}
+
 /*******************************************************************************
  * Function: parseWorkflowYaml
  *
  * Parses workflow yaml for the workflowCanvas utils module.
  ******************************************************************************/
 export function parseWorkflowYaml(yaml = "") {
-  const lines = yaml.split(/\r?\n/);
-  const workflow = { name: "", description: "", steps: [] };
-  let inSteps = false;
-  let currentStep = null;
-  let inParameters = false;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    if (!inSteps && line.startsWith("name:")) {
-      workflow.name = cleanYamlValue(line.slice(5));
-      continue;
-    }
-    if (!inSteps && line.startsWith("description:")) {
-      workflow.description = cleanYamlValue(line.slice(12));
-      continue;
-    }
-    if (line === "steps:") {
-      inSteps = true;
-      continue;
-    }
-    if (!inSteps) continue;
-
-    if (line.startsWith("- id:")) {
-      currentStep = {
-        id: cleanYamlValue(line.slice(5)),
-        action: "",
-        description: "",
-        parameters: {},
-      };
-      workflow.steps.push(currentStep);
-      inParameters = false;
-      continue;
-    }
-    if (!currentStep) continue;
-
-    if (line.startsWith("action:")) {
-      currentStep.action = cleanYamlValue(line.slice(7));
-      continue;
-    }
-    if (line.startsWith("description:")) {
-      currentStep.description = cleanYamlValue(line.slice(12));
-      continue;
-    }
-    if (line.startsWith("parameters:")) {
-      inParameters = true;
-      continue;
-    }
-    if (line.includes(":") && !line.startsWith("retryCount:") && !line.startsWith("onError:")) {
-      const [rawKey, ...rawValue] = line.split(":");
-      const key = rawKey.trim();
-      const value = cleanYamlValue(rawValue.join(":"));
-
-      if (inParameters) {
-        currentStep.parameters[key] = coerceYamlValue(value);
-      }
-    }
-  }
-
-  return workflow;
+  return readCanvasBlueprint(yaml);
 }
 
 /*******************************************************************************
@@ -199,14 +150,15 @@ export function workflowYamlToCanvas(yaml, metadata = {}) {
       type: "erpTool",
       position: { x: 120 + index * 330, y: index % 2 === 0 ? 160 : 330 },
       data: {
-        label: meta.label ?? (step.description?.trim() || humanizeAction(step.action)),
-        action: step.action,
-        description: step.description || humanizeAction(step.action),
+        label: meta.label ?? (step.description?.trim() || humanizeAction(step.action ?? step.kind)),
+        action: step.action ?? step.kind ?? "Unsupported node",
+        description: step.description ?? "",
+        source: step,
         iconKey: meta.iconKey ?? "Database",
         role: meta.role ?? "system",
         status: "idle",
         tone: meta.tone ?? "blue",
-        parameters: step.parameters,
+        parameters: step.parameters ?? {},
       },
     };
   });
@@ -262,30 +214,9 @@ export function workflowCreationPayload(workflow, yaml) {
 }
 
 /*******************************************************************************
- * Function: cleanYamlValue
- *
- * Performs the clean Yaml Value operation on yaml value for the workflowCanvas utils module.
- ******************************************************************************/
-function cleanYamlValue(value = "") {
-  return value.trim().replace(/^["']|["']$/g, "");
-}
-
-/*******************************************************************************
- * Function: coerceYamlValue
- *
- * Performs the coerce Yaml Value operation on yaml value for the workflowCanvas utils module.
- ******************************************************************************/
-function coerceYamlValue(value) {
-  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
-  if (value === "true") return true;
-  if (value === "false") return false;
-  return value;
-}
-
-/*******************************************************************************
  * Function: humanizeAction
  *
- * Performs the humanize Action operation on action for the workflowCanvas utils module.
+ * Provides a readable display label without changing executable tool names.
  ******************************************************************************/
 function humanizeAction(action = "") {
   return action

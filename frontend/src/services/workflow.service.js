@@ -122,7 +122,7 @@ export const workflowService = {
  * Function: approveGeneration
  *
  * Resolves a generation-time approval checkpoint for the workflow module.
- * Strips the approval step(s) from the saved YAML so future runs never pause.
+ * Accepts a build proposal only; preserves authored runtime approval nodes.
  ******************************************************************************/
   async approveGeneration(id, note = "") {
     return normalizeWorkflow(unwrap(await apiClient.post(`/workflows/${id}/approve-generation`, { note }, { timeout: 60000 })));
@@ -148,8 +148,8 @@ export const workflowService = {
  *
  * Performs the publish operation on the application for the workflow service module.
  ******************************************************************************/
-  async publish(id, versionNote = "") {
-    return unwrap(await apiClient.post(`/workflows/${id}/publish`, { versionNote }));
+  async publish(id, versionNote = "", revision) {
+    return unwrap(await apiClient.post(`/workflows/${id}/publish`, { versionNote, ...(revision ? { baseVersion: revision.version, baseHash: revision.contentHash } : {}) }));
   },
 /*******************************************************************************
  * Function: run

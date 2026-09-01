@@ -1,7 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { dump as dumpYaml } from "js-yaml";
+import { serializeSourceOrderCanvas, sameWorkflowSource } from "../../utils/builderSerialization";
 import {
   addEdge,
   applyEdgeChanges,
@@ -36,7 +36,8 @@ import {
   Zap,
 } from "lucide-react";
 import {
-  takeWorkflowForCanvas,
+  peekWorkflowForCanvas,
+  clearWorkflowForCanvas,
   workflowCreationPayload,
   workflowYamlToCanvas,
   saveWorkflowForChatEdit,
@@ -113,8 +114,9 @@ const toneClasses = {
  * Gets initial canvas state for the WorkflowBuilderCanvas module.
  ******************************************************************************/
 function getInitialCanvasState() {
-  const pendingWorkflow = takeWorkflowForCanvas();
+  const pendingWorkflow = peekWorkflowForCanvas();
   if (pendingWorkflow?.yaml) {
+    try {
     const canvas = workflowYamlToCanvas(pendingWorkflow.yaml, {
       candidateId: pendingWorkflow.candidateId,
       chatSessionId: pendingWorkflow.chatSessionId,
@@ -122,8 +124,9 @@ function getInitialCanvasState() {
       traceId: pendingWorkflow.traceId,
       workflowId: pendingWorkflow.workflowId,
     });
-    if (canvas.nodes.length > 0) {
-      return canvas;
+    return { ...canvas, payload: pendingWorkflow };
+    } catch (error) {
+      return { nodes: [], edges: [], payload: pendingWorkflow, sourceError: error.message, workflow: { id: pendingWorkflow.workflowId ?? null, name: pendingWorkflow.name || "Unsupported imported draft", description: "Source preserved; no graph semantics inferred.", yaml: pendingWorkflow.yaml } };
     }
   }
 
@@ -435,7 +438,7 @@ function ExecutionResultPanel({ result, onClose }) {
  ******************************************************************************/
 function BuilderHeader({ executionState, isExecuting, onRun, onDeploy, readOnly, statusCounts, workflow, onEditInChat }) {
   const stateCopy = {
-    idle: "Ready",
+    idle: "Draft · readiness not checked",
     running: "Running workflow",
     success: "Last run succeeded",
     error: "Run stopped with error",
@@ -460,7 +463,7 @@ function BuilderHeader({ executionState, isExecuting, onRun, onDeploy, readOnly,
         </div>
       </div>
       <div className="flex items-center gap-2">
-        {readOnly && onEditInChat && (
+        {onEditInChat && (
           <button
             type="button"
             onClick={onEditInChat}
@@ -491,6 +494,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
   const reactFlowWrapper = useRef(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
   const [initialCanvasState] = useState(() => initialState ?? getInitialCanvasState());
+  useEffect(() => { if (initialCanvasState.payload && !initialCanvasState.sourceError) clearWorkflowForCanvas(initialCanvasState.payload); }, [initialCanvasState]);
   const nodeIdRef = useRef(initialCanvasState.nodes.length + 1);
   const [nodes, setNodes] = useState(initialCanvasState.nodes);
   const [edges, setEdges] = useState(initialCanvasState.edges);
@@ -621,44 +625,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
  *
  * Performs the workflow YAML operation on yaml for the WorkflowBuilderCanvas module.
  ******************************************************************************/
-  const workflowYAML = useCallback(() => {
-/*******************************************************************************
- * Function: nodeById
- *
- * Performs the node By Id operation on by id for the WorkflowBuilderCanvas module.
- ******************************************************************************/
-    const nodeById = new Map(nodes.map((node) => [node.id, node]));
-/*******************************************************************************
- * Function: incoming
- *
- * Performs the incoming operation on the application for the WorkflowBuilderCanvas module.
- ******************************************************************************/
-    const incoming = new Map(nodes.map((node) => [node.id, 0]));
-    edges.forEach((edge) => incoming.has(edge.target) && incoming.set(edge.target, incoming.get(edge.target) + 1));
-/*******************************************************************************
- * Function: queue
- *
- * Performs the queue operation on the application for the WorkflowBuilderCanvas module.
- ******************************************************************************/
-    const queue = nodes.filter((node) => incoming.get(node.id) === 0);
-    const ordered = [];
-    while (queue.length) {
-      const node = queue.shift();
-      ordered.push(node);
-      edges.filter((edge) => edge.source === node.id).forEach((edge) => {
-        if (!nodeById.has(edge.target)) return;
-        incoming.set(edge.target, incoming.get(edge.target) - 1);
-        if (incoming.get(edge.target) === 0) queue.push(nodeById.get(edge.target));
-      });
-    }
-    if (ordered.length !== nodes.length) throw new Error("The canvas contains a cycle. Workflows must be acyclic.");
-    return dumpYaml({
-      name: workflow.name.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase() || "workflow",
-      description: workflow.description,
-      trigger: { type: "user.requested", displayName: "Manual request" },
-      steps: ordered.map((node) => ({ id: node.id, action: node.data.action, parameters: node.data.parameters || {}, description: node.data.description })),
-    }, { noRefs: true, lineWidth: 100 });
-  }, [edges, nodes, workflow.description, workflow.name]);
+  const workflowYAML = useCallback(() => serializeSourceOrderCanvas(workflow, nodes, edges), [edges, nodes, workflow]);
 
 /*******************************************************************************
  * Function: deployWorkflow
@@ -669,18 +636,25 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
     if (nodes.length === 0) throw new Error("Add at least one registered tool before deploying.");
     const yaml = workflowYAML();
     let saved = workflow;
+    let reviewed;
     if (workflow.id) {
-      await workflowService.saveYAML(workflow.id, yaml);
+      const revision = await workflowService.readiness(workflow.id);
+      if (!workflow.yaml || !sameWorkflowSource(revision.yaml, workflow.yaml)) throw new Error("Saved draft changed. Reload it in the chat workspace before publishing.");
+      reviewed = await workflowService.command(workflow.id, revision, { type: "restoreDraft", yaml });
     } else {
       saved = await workflowService.create(
         workflowCreationPayload(workflow, yaml),
       );
+      reviewed = await workflowService.readiness(saved.id);
+      if (!sameWorkflowSource(reviewed.yaml, yaml)) throw new Error("Created draft changed. Reload before publishing.");
     }
-    await workflowService.publish(saved.id, "Published from visual builder");
+    // Retain the saved draft even if publication fails; a second attempt must
+    // not create another workflow or forget the acknowledged draft revision.
     saved = { ...saved, id: saved.id, yaml };
     setWorkflow(saved);
+    await workflowService.publish(saved.id, "Published from visual builder", reviewed);
     fitView({ padding: 0.2, duration: 400 });
-    notify(`Workflow ${saved.name} deployed.`, "success");
+    notify(`Workflow ${saved.name} published. It has not been executed.`, "success");
     return saved;
   }, [fitView, nodes.length, notify, workflow, workflowYAML]);
 
@@ -702,8 +676,11 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
     );
 
     try {
-      const saved = workflow.id ? workflow : await deployWorkflow();
-      const execution = await workflowService.run(saved.id, {});
+      if (!workflow.id) throw new Error("Save and explicitly publish this draft before requesting execution. Run does not publish.");
+      const readiness = await workflowService.readiness(workflow.id);
+      if (!sameWorkflowSource(workflowYAML(), readiness.yaml)) throw new Error("Canvas has unsaved changes. Review and publish them explicitly before running.");
+      if (!readiness.can_attempt_run) throw new Error("The saved workflow is not ready: check publication, validation, supported semantics and ERP connection in the chat workspace.");
+      const execution = await workflowService.run(workflow.id, {});
       const timeline = await executionService.getTimeline(execution.id);
 /*******************************************************************************
  * Function: statusByNode
@@ -724,13 +701,22 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
       notify(`Execution ${execution.id} finished with status ${execution.status}.`, succeeded ? "success" : "warning");
     } catch (error) {
       setExecutionState("error");
-      const details = apiErrorDetails(error, "Workflow execution failed.");
+      const details = error?.response ? apiErrorDetails(error, "Workflow execution failed.") : { message: error.message || "Workflow execution failed.", meta: null };
       setRunError(details);
       notify(details.message, "error");
+      const executionId = error?.response?.data?.meta?.executionId;
+      if (executionId) {
+        try {
+          const [execution, timeline] = await Promise.all([executionService.get(executionId), executionService.getTimeline(executionId)]);
+          const statuses = new Map(timeline.map((step) => [step.nodeId, step.status]));
+          setNodes((items) => items.map((node) => ({ ...node, data: { ...node.data, status: statuses.get(node.id) === "DONE" ? "success" : statuses.get(node.id) === "FAILED" ? "error" : "idle" } })));
+          setExecutionResult({ execution, timeline }); setShowResultPanel(true);
+        } catch { notify("The failed run was recorded, but its details could not be loaded.", "warning"); }
+      }
     } finally {
       setIsExecuting(false);
     }
-  }, [deployWorkflow, isExecuting, nodes.length, notify, workflow]);
+  }, [isExecuting, nodes.length, notify, workflow, workflowYAML]);
 
 /*******************************************************************************
  * Function: handleDeploy
@@ -740,7 +726,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
   const handleDeploy = useCallback(async () => {
     setIsExecuting(true);
     try { await deployWorkflow(); }
-    catch (error) { notify(apiErrorMessage(error, "Workflow deployment failed."), "error"); }
+    catch (error) { notify(error?.response ? apiErrorMessage(error, "Workflow publication failed.") : error.message || "Workflow publication failed.", "error"); }
     finally { setIsExecuting(false); }
   }, [deployWorkflow, notify]);
 
@@ -765,9 +751,10 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
           readOnly={readOnly}
           statusCounts={statusCounts}
           workflow={workflow}
-          onEditInChat={nodes.length > 0 ? handleEditInChat : undefined}
+          onEditInChat={nodes.length > 0 || workflow.yaml ? handleEditInChat : undefined}
         />
         {runError ? <div className="shrink-0 bg-white px-6 py-2"><GateRejectionAlert details={runError} /></div> : null}
+        {initialCanvasState.sourceError && <div role="alert" className="shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-3 text-xs text-amber-800"><p>Import cannot be represented: {initialCanvasState.sourceError}. Its source is preserved; nothing was saved or published.</p><details className="mt-2"><summary>Original source</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{workflow.yaml}</pre></details><button className="mt-2 underline" onClick={handleEditInChat}>Review source in chat</button></div>}
         <div className="min-h-0 flex-1 bg-slate-100 p-4">
           <div
             ref={reactFlowWrapper}

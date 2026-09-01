@@ -5,6 +5,7 @@ import MessageMarkdown from "./MessageMarkdown";
 import { saveWorkflowForCanvas, peekWorkflowForChatEdit, clearWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
 import { workflowService } from "../../services/workflow.service";
 import PendingGenerationApprovalCard from "../workflows/PendingGenerationApprovalCard";
+import { workflowArtifactStatus } from "./workflowArtifactStatus";
 
 // ── Inline validation badge ─────────────────────────────────────────────────
 /*******************************************************************************
@@ -12,17 +13,18 @@ import PendingGenerationApprovalCard from "../workflows/PendingGenerationApprova
  *
  * Performs the Validation Badge operation on badge for the ChatMessage module.
  ******************************************************************************/
-function ValidationBadge({ canExecute, failedRules = [] }) {
-  if (canExecute == null) return null;
+function ValidationBadge({ artifact, failedRules = [] }) {
+  const status = workflowArtifactStatus(artifact);
   return (
     <div className={`mt-2 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 text-xs ${
-      canExecute
+      status.passed === true
         ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-300"
         : "border-red-200 bg-red-50 text-red-700 dark:border-red-800/40 dark:bg-red-900/20 dark:text-red-300"
     }`}>
-      <Icon icon={canExecute ? "mdi:shield-check" : "mdi:shield-alert"} className="h-3.5 w-3.5 shrink-0" />
-      <span className="font-semibold">{canExecute ? "Validation passed — ready to execute" : "Validation blocked"}</span>
-      {!canExecute && failedRules.length > 0 && (
+      <Icon icon={status.passed === true ? "mdi:shield-check" : "mdi:shield-alert"} className="h-3.5 w-3.5 shrink-0" />
+      <span className="font-semibold">{status.draft} · {status.label}</span>
+      <span>{status.lifecycle}</span>
+      {status.passed !== true && failedRules.length > 0 && (
         <span className="font-mono text-[10px]">{failedRules.slice(0, 3).join(", ")}</span>
       )}
     </div>
@@ -513,6 +515,10 @@ function ChatMessage({ message }) {
       <div className="max-w-[92%]">
         <MessageMarkdown text={message.text} />
 
+        {intent === "NODE_PATCH_PROPOSAL" && artifacts?.proposal && <p className="mt-2 text-xs text-gray-500">
+          {artifacts.proposal.status === "APPLIED" ? `Applied to draft v${artifacts.proposal.appliedVersion} · not published or executed by this decision.` : artifacts.proposal.status === "DISCARDED" ? "Proposal discarded · workflow unchanged by this decision." : `Pending node proposal · ${artifacts.proposal.nodeId}. Review it in the workflow canvas.`}
+        </p>}
+
         {/* ── Query: inline sources + chart only ── */}
         {isQuery && (
           <>
@@ -540,10 +546,10 @@ function ChatMessage({ message }) {
                     <span key={t} className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">{t}</span>
                   ))}
                 </div>
-                <p className="text-[10px] text-amber-600 dark:text-amber-400">These steps will fail at runtime. Remove them in the canvas or ask for an alternative.</p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">Execution is blocked until required capabilities are available. Keep the requested outcomes visible while resolving them.</p>
               </div>
             )}
-            <ValidationBadge canExecute={artifacts?.can_execute} failedRules={artifacts?.validation?.failed_rules ?? []} />
+            <ValidationBadge artifact={artifacts} failedRules={artifacts?.validation?.failed_rules ?? []} />
             <InlineYamlPreview yaml={artifacts?.yaml || artifacts?.selected_workflow_yaml} />
             {(artifacts?.yaml || artifacts?.selected_workflow_yaml) && peekWorkflowForChatEdit() && (
               <SaveModifiedWorkflowButton

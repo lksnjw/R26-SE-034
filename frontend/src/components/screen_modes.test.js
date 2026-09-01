@@ -7,12 +7,11 @@ import WorkflowActionControls from "./workflows/WorkflowActionControls.js";
 test("canvas read-only mode hides deploy and run controls", () => {
   const clientMarkup = renderToStaticMarkup(React.createElement(BuilderModeControls, { readOnly: true }));
   expect(clientMarkup).toContain("Read-only preview");
-  expect(clientMarkup).not.toContain("Deploy Workflow");
-  expect(clientMarkup).not.toContain("Run Workflow");
+  expect(clientMarkup).not.toContain("<button");
 
   const adminMarkup = renderToStaticMarkup(React.createElement(BuilderModeControls, { readOnly: false }));
-  expect(adminMarkup).toContain("Deploy Workflow");
-  expect(adminMarkup).toContain("Run Workflow");
+  expect(adminMarkup).toContain("Review &amp; publish draft");
+  expect(adminMarkup).toContain("Run published workflow");
 });
 
 test("client workflow actions render Run without export", () => {

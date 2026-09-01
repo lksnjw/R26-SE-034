@@ -7,7 +7,7 @@ import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, publicUser, requestParam, stringValue, validateWorkflow } from "./common.js";
 import { requestTraceId } from "../../trace/request-trace.js";
 import { checkErpPolicy, isPolicyCheckerEnabled } from "../../governance/rbac.js";
-import { handleWorkflowCommand } from "./workflow-commands.js";
+import { handleWorkflowCommand, assertCurrentWorkflowEditor } from "./workflow-commands.js";
 
 export const WORKFLOW_UNHANDLED = Symbol("workflow-unhandled");
 
@@ -187,6 +187,10 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
   const id = requestParam(request, "id");
   const current = await services.repository.read((state) => state.workflows[id] ?? null);
   if (current === null) throw new HandlerFailure(404, "Workflow not found");
+  if (body.baseVersion !== undefined || body.baseHash !== undefined) {
+    if (!Number.isInteger(body.baseVersion) || typeof body.baseHash !== "string" || !/^sha256:[a-f0-9]{64}$/.test(body.baseHash)) throw new HandlerFailure(400, "Invalid publication revision");
+    if (body.baseVersion !== current.draftVersion || body.baseHash !== workflowContentHash(current.yaml)) throw new HandlerFailure(409, "Reviewed draft changed; reload before publishing");
+  }
   if (current.status === "draft-unvalidated") throw new HandlerFailure(422, "Workflow must be validated before publishing", { status: current.status });
   const expectedHash = workflowContentHash(current.yaml);
   const traceId = requestTraceId(request, current.traceId);
@@ -195,11 +199,13 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
   const version = await services.repository.mutate((state) => {
     const item = state.workflows[id];
     if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
-    if (workflowContentHash(item.yaml) !== expectedHash) throw new HandlerFailure(409, "Workflow content changed during validation");
+    const publisher = assertCurrentWorkflowEditor(state, item, user);
+    if (item.draftVersion !== current.draftVersion || workflowContentHash(item.yaml) !== expectedHash) throw new HandlerFailure(409, "Workflow content changed during validation");
     item.publishedVersion = item.draftVersion; item.canRun = true; item.updatedAt = now();
     const value = { id: nextID(state, "ver"), workflowId: id, version: item.publishedVersion, artifactState: "PUBLISHED", versionNote: stringValue(body.versionNote), yaml: item.yaml, createdAt: now(), createdBy: { id: user.id, name: user.name } };
     const versions = state.versions[id] ?? [];
     versions.push(value); state.versions[id] = versions;
+    appendAudit(state, publisher, "workflow.published", "workflow", id, null, { version: item.publishedVersion, contentHash: expectedHash }, request);
     return value;
   });
   return reply.send(ok(version, "Workflow published", null));

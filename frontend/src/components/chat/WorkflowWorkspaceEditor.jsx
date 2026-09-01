@@ -14,7 +14,7 @@ function objectJSON(text) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Parameters and run inputs must be JSON objects.");
   return value;
 }
-function NodeInspector({ node, canEdit, busy, onPreview, onPrompt }) {
+function NodeInspector({ node, canEdit, busy, onPreview, onPrompt, sharedChat }) {
   const [description, setDescription] = useState(node.source.description ?? "");
   const [action, setAction] = useState(node.source.action ?? "");
   const [parameters, setParameters] = useState(JSON.stringify(node.source.parameters ?? {}, null, 2));
@@ -30,17 +30,17 @@ function NodeInspector({ node, canEdit, busy, onPreview, onPrompt }) {
           <label className="block text-xs text-gray-500">Parameters · JSON<textarea aria-label="Node parameters" className={`${input} mt-1 min-h-28 font-mono`} value={parameters} onChange={(event) => setParameters(event.target.value)} spellCheck={false} /></label></>}
         <button disabled={busy} className={`${button} border border-gray-200 dark:border-gray-700`}><Icon icon="lucide:git-compare-arrows" />Preview manual edit</button>
       </form>
-      <form className="mt-5 border-t border-gray-100 pt-4 dark:border-gray-800" onSubmit={(event) => { event.preventDefault(); onPrompt(prompt); }}>
+      {sharedChat ? <p className="mt-5 border-t border-gray-100 pt-4 text-xs leading-5 text-gray-500 dark:border-gray-800">This node is selected for editing in the main chat. Describe your change there; review the returned proposal before applying it.</p> : <form className="mt-5 border-t border-gray-100 pt-4 dark:border-gray-800" onSubmit={(event) => { event.preventDefault(); onPrompt(prompt); }}>
         <label className="block text-xs font-medium">Ask the agent about this node<textarea aria-label="Selected node prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} className={`${input} mt-2 min-h-20`} placeholder="Change this node’s parameters…" maxLength={4000} required /></label>
         <button className={`${button} mt-2 bg-primary/10 text-primary`} disabled={busy || !prompt.trim()}><Icon icon="lucide:sparkles" />Propose change</button>
         <p className="mt-2 text-[10px] leading-4 text-gray-500">Only this node is in scope. A proposal is not a save or an execution.</p>
-      </form>
+      </form>}
     </> : <pre className="overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(node.source, null, 2)}</pre>}
     {error && <p role="alert" className="mt-3 text-xs text-red-600">{error}</p>}
   </aside>;
 }
 
-export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit = false, selectionStorageKey, onChatChanged, savedProposals = [] }) {
+export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit = false, selectionStorageKey, onChatChanged, savedProposals = [], onNodeContext, onFocusChat }) {
   const [record, setRecord] = useState(null), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(() => readWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, ""));
   const [proposal, setProposal] = useState(null), [undo, setUndo] = useState([]), [redo, setRedo] = useState([]);
@@ -61,6 +61,13 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   }, [workflowId]);
   const preview = useMemo(() => parseWorkflowPreview(record?.yaml), [record?.yaml]);
   const node = preview.steps.find((step) => step.id === selected);
+  const nodeId = node?.id, nodeLabel = node?.source.description || nodeId;
+  const version = record?.version, contentHash = record?.contentHash;
+  useEffect(() => {
+    onNodeContext?.(canEdit && nodeId && contentHash ? { workflowId, sessionId, nodeId, label: nodeLabel, version, contentHash,
+      onProposal: setProposal, clear: () => { setSelected(""); writeWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, ""); } } : null);
+    return () => onNodeContext?.(null);
+  }, [onNodeContext, canEdit, workflowId, sessionId, nodeId, nodeLabel, version, contentHash, selectionStorageKey]);
   const pendingProposal = proposal || savedProposals.findLast((item) => item.workflowId === workflowId && item.status === "PROPOSED" && item.baseVersion === record?.version && item.baseHash === record?.contentHash && !resolvedProposals.includes(item.id));
   const perform = async (action) => { setBusy(true); setError(""); try { await action(); } catch (cause) { setError(message(cause)); } finally { setBusy(false); } };
   const save = async (command, history = "edit", revision = record) => {
@@ -94,7 +101,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
         {canEdit && <><button className={button} aria-label="Undo workflow edit" disabled={busy || !undo.length} onClick={() => perform(async () => { await save({ type: "restoreDraft", yaml: undo.at(-1) }, "undo"); setUndo((items) => items.slice(0, -1)); setRedo((items) => [...items, record.yaml]); })}><Icon icon="lucide:undo-2" /></button>
           <button className={button} aria-label="Redo workflow edit" disabled={busy || !redo.length} onClick={() => perform(async () => { await save({ type: "restoreDraft", yaml: redo.at(-1) }, "redo"); setRedo((items) => items.slice(0, -1)); setUndo((items) => [...items, record.yaml]); })}><Icon icon="lucide:redo-2" /></button>
           <button className={button} disabled={busy} onClick={() => setAdding((value) => !value)}><Icon icon="lucide:plus" />Add node</button>
-          <button className={`${button} ml-auto border border-gray-200 dark:border-gray-700`} disabled={busy || record.readinessUnknown || !record.validation?.passed || record.published} onClick={() => perform(async () => { await workflowService.publish(workflowId, "Explicitly reviewed in chat workspace"); setNotice("Draft published. Execution has not been requested."); await load(); })}>Publish reviewed draft</button></>}
+          <button className={`${button} ml-auto border border-gray-200 dark:border-gray-700`} disabled={busy || record.readinessUnknown || !record.validation?.passed || record.published} onClick={() => perform(async () => { await workflowService.publish(workflowId, "Explicitly reviewed in chat workspace", record); setNotice("Draft published. Execution has not been requested."); await load(); })}>Publish reviewed draft</button></>}
       </div>
     </div>
     <div className="flex-1 overflow-auto px-5 py-5">
@@ -124,8 +131,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
           </li>;
         })}
       </ol>
-      {node && <><NodeInspector key={`${node.id}:${record.version}`} node={node} canEdit={canEdit} busy={busy} onPrompt={requestProposal} onPreview={(patch) => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "updateNode", nodeId: node.id, patch }, before: node.source, after: { ...node.source, ...patch } })} />
-        {canEdit && <div className="mt-3 flex gap-1"><button className={button} disabled={busy || preview.steps.at(-1)?.id === node.id} onClick={() => perform(() => save({ type: "moveNode", nodeId: node.id, beforeNodeId: null }))}>Move to end</button><button className={`${button} text-red-600`} disabled={busy} onClick={() => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "removeNode", nodeId: node.id }, before: node.source, after: null })}>Remove node…</button></div>}</>}
+      {node && <><details key={`${node.id}:${record.version}`} open={!onNodeContext} className="mt-5 border-t border-gray-200 pt-3 text-xs dark:border-gray-700"><summary className="cursor-pointer font-medium">Node settings · {node.id}</summary><NodeInspector node={node} canEdit={canEdit} busy={busy} onPrompt={requestProposal} sharedChat={Boolean(onNodeContext)} onPreview={(patch) => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "updateNode", nodeId: node.id, patch }, before: node.source, after: { ...node.source, ...patch } })} /></details>
+        {canEdit && <div className="mt-3 flex flex-wrap gap-1">{onFocusChat && <button className={`${button} text-primary lg:hidden`} onClick={onFocusChat}>Edit this node in chat</button>}<button className={button} disabled={busy || preview.steps.at(-1)?.id === node.id} onClick={() => perform(() => save({ type: "moveNode", nodeId: node.id, beforeNodeId: null }))}>Move to end</button><button className={`${button} text-red-600`} disabled={busy} onClick={() => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "removeNode", nodeId: node.id }, before: node.source, after: null })}>Remove node…</button></div>}</>}
       {canEdit && pendingProposal && <section aria-label="Node change preview" className="workspace-reveal mt-5 border-y border-primary/25 py-4">
         <h4 className="text-xs font-semibold">Review change · {pendingProposal.nodeId}</h4><p className="mt-1 text-[10px] text-gray-500">Based on draft v{pendingProposal.baseVersion}. Unrelated nodes are unchanged.</p>
         <details className="mt-3 text-[10px]"><summary className="cursor-pointer">Before</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{JSON.stringify(pendingProposal.before, null, 2)}</pre></details>

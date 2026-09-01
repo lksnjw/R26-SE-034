@@ -79,7 +79,7 @@ const QUICK_PROMPTS = [
  *
  * Performs the Chat Window operation on window for the ChatWindow module.
  ******************************************************************************/
-function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey }) {
+function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, nodeContext, onClearNodeContext }) {
   const [draft, setDraft] = useState(() => readWorkspaceValue(draftStorageKey));
   const [sendError, setSendError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -152,8 +152,8 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
         setDraft("");
         writeWorkspaceValue(draftStorageKey, "");
       }
-    } catch {
-      setSendError("Could not send the message. Your draft has been kept; try again.");
+    } catch (cause) {
+      setSendError(`${cause?.response?.data?.message || "Could not send the message."} Your draft has been kept. Reload the workflow if the selected revision changed.`);
     } finally {
       setSubmitting(false);
     }
@@ -176,7 +176,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
   const isEmpty = messages.length === 0 && !loading;
 
   return (
-    <section className="flex h-full flex-col overflow-hidden bg-white dark:bg-darkBackground">
+    <section aria-label="Workflow chat" className="flex h-full min-h-0 flex-col overflow-hidden bg-white dark:bg-darkBackground">
       {/* ── Header ── */}
       <div className="flex items-center gap-3 border-b border-gray-100 px-4 py-3 dark:border-gray-800">
         <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10">
@@ -191,8 +191,13 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
         </div>
       </div>
 
+      {nodeContext && <div aria-label="Chat node editing context" className="flex shrink-0 items-center gap-3 border-b border-primary/20 bg-primary/5 px-4 py-3">
+        <div className="min-w-0 flex-1"><p className="text-xs font-semibold">Editing node · {nodeContext.nodeId}</p><p className="mt-1 text-[10px] text-gray-500">{nodeContext.label} · draft v{nodeContext.version}. Messages propose changes only to this node.</p></div>
+        <button type="button" aria-label="Exit node editing" onClick={onClearNodeContext} disabled={busy} className="rounded p-1 text-gray-500"><Icon icon="lucide:x" /></button>
+      </div>}
+
       {/* ── Workflow edit context banner ── */}
-      {editContext && (
+      {editContext && !nodeContext && (
         <div className="flex shrink-0 items-center gap-3 border-b border-indigo-100 bg-indigo-50 px-4 py-2.5 dark:border-indigo-900/40 dark:bg-indigo-900/20">
           <Icon icon="mdi:pencil-box-outline" className="h-4 w-4 shrink-0 text-indigo-600 dark:text-indigo-400" />
           <div className="min-w-0 flex-1">
@@ -265,12 +270,12 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
                 onChange={setDraft}
                 onKeyDown={handleKeyDown}
                 disabled={busy}
-                placeholder="Describe a workflow, query ERP data, or ask anything… (Enter to send, Shift+Enter for newline)"
+                placeholder={nodeContext ? `Describe the change to ${nodeContext.nodeId}…` : "Describe a workflow, query ERP data, or ask anything… (Enter to send, Shift+Enter for newline)"}
               />
             </div>
             <div className="mt-2 flex items-center justify-between gap-2">
               <div className="flex flex-wrap gap-1.5">
-                {QUICK_PROMPTS.slice(0, 2).map((p) => (
+                {!nodeContext && QUICK_PROMPTS.slice(0, 2).map((p) => (
                   <button
                     key={p.label}
                     type="button"
@@ -284,7 +289,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
                 ))}
               </div>
               <div className="ml-auto flex items-center gap-2">
-                {availableModels.length > 0 && (
+                {!nodeContext && availableModels.length > 0 && (
                   <div className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 dark:border-gray-700 dark:bg-gray-800/60">
                     <Icon icon="mdi:chip" className="h-3 w-3 shrink-0 text-gray-400" />
                     <select
@@ -316,7 +321,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
             </div>
           </div>
           <p className="mt-1.5 text-center text-[10px] text-gray-400">
-            Enter to send · Shift+Enter for newline · A draft is not proof of ERP readiness or safe execution
+            {nodeContext ? "Enter to propose · configured provider · review Apply/Discard in the canvas · nothing executes" : "Enter to send · Shift+Enter for newline · A draft is not proof of ERP readiness or safe execution"}
           </p>
         </div>
       </div>

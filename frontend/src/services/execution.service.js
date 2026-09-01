@@ -73,9 +73,8 @@ export const executionService = {
  * Runs the application for the execution service module.
  ******************************************************************************/
   async run(workflowId, input = {}, options = {}) {
-    // The self-healing LLM agent can take well over the default 30s timeout
-    // (multiple tool calls, retries on failure) — give it room to finish
-    // instead of the request being treated as a dead server mid-run.
+    // Transitional synchronous deterministic read execution. This timeout is
+    // not retry safety, cancellation, durable jobs or a latency guarantee.
     return normalizeExecution(
       unwrap(await apiClient.post(`/workflows/${workflowId}/run`, { input, ...options }, { timeout: 300000 })),
     );
@@ -94,8 +93,8 @@ export const executionService = {
  * Performs the approve operation on the application for the execution service module.
  ******************************************************************************/
   async approve(id, note = "") {
-    // Approving resumes the LLM agent from where it stopped — same long-run
-    // timeout as run/retry, not the default 30s.
+    // Legacy approval resume currently returns unavailable until the governed
+    // durable checkpoint executor is implemented. Never imply LLM approval.
     return normalizeExecution(unwrap(await apiClient.post(`/executions/${id}/approve`, { note }, { timeout: 300000 })));
   },
 /*******************************************************************************

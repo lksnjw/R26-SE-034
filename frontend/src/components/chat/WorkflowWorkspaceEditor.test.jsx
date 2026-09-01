@@ -72,7 +72,7 @@ test("read-only users see source and run status, never editing or proposal actio
 
 test("publication is explicit and does not call execution", async () => {
   await open(); fireEvent.click(screen.getByRole("button", { name: "Publish reviewed draft" }));
-  await waitFor(() => expect(workflowService.publish).toHaveBeenCalledWith("report", "Explicitly reviewed in chat workspace"));
+  await waitFor(() => expect(workflowService.publish).toHaveBeenCalledWith("report", "Explicitly reviewed in chat workspace", record));
   expect(workflowService.run).not.toHaveBeenCalled();
 });
 

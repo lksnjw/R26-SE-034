@@ -178,3 +178,13 @@ test("proposal requests require an owned chat before calling the provider", asyn
   expect((await s.propose({ sessionId: "not-owned" })).statusCode).toBe(404);
   expect(s.fetchImplementation).not.toHaveBeenCalled();
 });
+
+test("publication with a reviewed revision rejects stale or malformed review evidence", async () => {
+  const s = await setup();
+  const publish = (baseVersion: unknown, baseHash: unknown) => s.app.inject({ method: "POST", url: "/api/workflows/report/publish", headers: s.headers(), payload: { baseVersion, baseHash } });
+  expect((await publish(1, "not-a-hash")).statusCode).toBe(400);
+  expect((await publish(0, workflowContentHash(yaml))).statusCode).toBe(409);
+  await s.edit({ type: "updateNode", nodeId: "first", patch: { description: "updated" } });
+  expect((await publish(1, workflowContentHash(yaml))).statusCode).toBe(409);
+  expect((await s.repository.snapshot()).workflows.report?.publishedVersion).toBe(1);
+});

@@ -15,9 +15,10 @@ export default function BuilderModeControls({ readOnly = false, isExecuting, onD
       {
         type: "button",
         onClick: onDeploy,
+        disabled: isExecuting,
         className: "inline-flex h-10 items-center rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700 transition hover:bg-slate-50",
       },
-      "Deploy Workflow"
+      "Review & publish draft"
     ),
     React.createElement(
       "button",
@@ -27,7 +28,7 @@ export default function BuilderModeControls({ readOnly = false, isExecuting, onD
         disabled: isExecuting,
         className: "inline-flex h-10 items-center rounded-lg bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60",
       },
-      isExecuting ? "Running…" : "Run Workflow"
+      isExecuting ? "Working…" : "Run published workflow"
     )
   );
 }

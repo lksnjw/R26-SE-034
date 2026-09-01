@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import ChatHistory from "../../components/chat/ChatHistory";
 import ChatWindow from "../../components/chat/ChatWindow";
@@ -9,6 +9,7 @@ import { useChat } from "../../hooks/useChat";
 import { useChatSessions } from "../../hooks/useChatSessions";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { peekWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
+import { workflowService } from "../../services/workflow.service";
 
 /*******************************************************************************
  * Function: ChatPage
@@ -26,6 +27,17 @@ function ChatPage() {
   const draftKey = workspaceKey(user, `draft.${sessions.selectedSessionId || "new"}`);
   const [pendingDraftKey, setPendingDraftKey] = useState(null);
   const composerKey = pendingDraftKey || draftKey;
+  const [nodeContext, setNodeContext] = useState(null);
+  const chatPaneRef = useRef(null);
+  const focusChat = useCallback(() => {
+    chatPaneRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    chatPaneRef.current?.querySelector('textarea[aria-label="Message to workflow assistant"]')?.focus({ preventScroll: true });
+  }, []);
+  const activeNodeContext = nodeContext?.sessionId === sessions.selectedSessionId ? nodeContext : null;
+  const onNodeContext = useCallback((value) => setNodeContext(value), []);
+  const onChatChanged = useCallback(async () => {
+    await Promise.all([queryClient.invalidateQueries({ queryKey: ["chat-session", sessions.selectedSessionId] }), queryClient.invalidateQueries({ queryKey: ["chat-sessions"] })]);
+  }, [queryClient, sessions.selectedSessionId]);
 
   // Auto-create a new session when redirected from "Edit in Chat"
   useEffect(() => {
@@ -58,6 +70,13 @@ function ChatPage() {
     const creating = !sid;
     if (creating) setPendingDraftKey(draftKey);
     try {
+      if (activeNodeContext && sid) {
+        const proposal = await workflowService.proposeNode(activeNodeContext.workflowId, activeNodeContext, activeNodeContext.nodeId, text, sid);
+        activeNodeContext.onProposal(proposal);
+        await onChatChanged();
+        writeWorkspaceValue(workspaceKey(user, `draft.${sid}`), "");
+        return proposal;
+      }
       if (creating) {
         const session = await sessions.createSession(text.slice(0, 64) || "Workflow conversation");
         sid = session.id;
@@ -78,8 +97,13 @@ function ChatPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
-      {/* Session sidebar */}
-      <div className="hidden w-48 flex-shrink-0 overflow-y-auto border-r border-gray-200 dark:border-gray-700 xl:block">
+      <div className="min-h-[320px] shrink-0 border-b border-gray-200 dark:border-gray-700 lg:h-full lg:w-[55%] lg:border-b-0 lg:border-r" data-testid="workspace-canvas-pane">
+        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} sessionId={sessions.selectedSessionId} canEdit={user?.permissions?.includes("workflow:write")} onChatChanged={onChatChanged} onNodeContext={onNodeContext} onFocusChat={focusChat} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
+      </div>
+
+      <div ref={chatPaneRef} className="flex min-h-[420px] min-w-0 flex-1 flex-col lg:min-h-0" data-testid="workspace-chat-pane">
+      <details className="shrink-0 border-b border-gray-200 px-4 py-2 text-xs dark:border-gray-700">
+        <summary className="cursor-pointer text-gray-500">Chats · {sessions.sessions.length}</summary>
         <ChatHistory
           sessions={sessions.sessions}
           activeSessionId={sessions.selectedSessionId}
@@ -91,10 +115,7 @@ function ChatPage() {
           error={sessions.error}
           onRetry={sessions.reload}
         />
-      </div>
-
-      {/* Chat window */}
-      <div className="flex min-h-[420px] min-w-0 flex-1 flex-col lg:min-h-0">
+      </details>
         <ChatWindow
           key={composerKey || sessions.selectedSessionId || "new"}
           draftStorageKey={composerKey}
@@ -105,11 +126,9 @@ function ChatPage() {
           hasMoreMessages={chat.hasMoreMessages}
           loadingMore={chat.loadingMore}
           onLoadMore={chat.loadMore}
+          nodeContext={activeNodeContext}
+          onClearNodeContext={() => activeNodeContext?.clear()}
         />
-      </div>
-
-      <div className="min-h-[320px] shrink-0 border-t border-gray-200 dark:border-gray-700 lg:h-full lg:w-[42%] lg:max-w-[640px] lg:border-l lg:border-t-0">
-        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} sessionId={sessions.selectedSessionId} canEdit={user?.permissions?.includes("workflow:write")} onChatChanged={() => { queryClient.invalidateQueries({ queryKey: ["chat-session", sessions.selectedSessionId] }); queryClient.invalidateQueries({ queryKey: ["chat-sessions"] }); }} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
       </div>
     </div>
   );
