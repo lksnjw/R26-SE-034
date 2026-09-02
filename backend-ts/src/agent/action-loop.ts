@@ -36,6 +36,7 @@ export type ActionLoopInput = {
   user: GovernanceUser;
   signal?: AbortSignal;
   traceId?: string;
+  onTurn?: (iteration: number) => Promise<void>;
 };
 
 export type ActionLoopResult = {
@@ -97,6 +98,7 @@ export async function runActionLoop(
     if (input.signal?.aborted) { blocked = true; lastText = "Read operation cancelled. No new ERP change was performed."; break; }
     if (Date.now() > deadline || totalTokens.output >= TOKEN_BUDGET) break;
 
+    await input.onTurn?.(iteration);
     const turn = await provider.queryWithTools(messages, agentTools, {
       maxOutputTokens: TOKEN_BUDGET - totalTokens.output,
       promptTemplateVersion: "prompt/action/v2",

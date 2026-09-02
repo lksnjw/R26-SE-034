@@ -31,6 +31,7 @@ export type QueryLoopInput = {
   actorRole: string;
   signal?: AbortSignal;
   traceId?: string;
+  onTurn?: (iteration: number) => Promise<void>;
 };
 
 export type QueryLoopResult = {
@@ -111,6 +112,7 @@ export async function runQueryLoop(
 
     let turn;
     try {
+      await input.onTurn?.(iteration);
       turn = await provider.queryWithTools(messages, agentTools, {
         maxOutputTokens: TOKEN_BUDGET - totalTokens.output,
         promptTemplateVersion: "prompt/query/v2",

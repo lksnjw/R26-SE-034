@@ -1,0 +1,252 @@
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import type { ChatOperation, Repository, RepositoryState, StoredRecord } from "../repository/store.js";
+import { AESGCMCodec, decodeEncryptionKey } from "../storage/aes-gcm.js";
+import { canonicalJSONBytes } from "../core/canonical-json.js";
+import { HandlerFailure, isRecord, nextID, now, stringValue, type CurrentUser, type HandlerServices } from "../http/handlers/common.js";
+import { assertChatAuthority, requestedModel, selectProvider } from "../http/handlers/model-selection.js";
+import { processStoredChat } from "../http/handlers/resources.js";
+import type { RuntimeProviderConfiguration } from "../providers/runtime.js";
+import { ProviderRuntime } from "../providers/runtime.js";
+import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
+import type { ChatProcessingHooks, StoredChatInput } from "./chat-context.js";
+import { withoutSecretFields } from "../redact/secrets.js";
+
+const queues = new WeakMap<Repository, ChatJobQueue>();
+export const activeChatStatus = (status: string) => ["QUEUED", "RUNNING"].includes(status);
+function authorityFingerprint(user: CurrentUser) { return createHash("sha256").update(canonicalJSONBytes([user.role, [...new Set(user.permissions)].sort()])).digest("hex"); }
+export function authorizeChatOperation(state: Readonly<RepositoryState>, op: ChatOperation | undefined, user: CurrentUser): ChatOperation {
+  if (!op || op.actorId !== user.id) throw new HandlerFailure(404, "Chat operation not found");
+  assertChatAuthority(state, user, op.sessionId);
+  if (op.authorityFingerprint !== authorityFingerprint(user)) throw new HandlerFailure(403, "Chat operation authority changed", { code: "CHAT_AUTHORITY_CHANGED" });
+  return op;
+}
+export function supportsChatJobs(services: HandlerServices) { return services.repository.persistence === null || services.repository.persistence.readQueueDurability === "encrypted-single-writer"; }
+export function chatJobQueue(services: HandlerServices): ChatJobQueue {
+  let queue = queues.get(services.repository);
+  if (!queue || queue.closed) { queue = new ChatJobQueue(services); queues.set(services.repository, queue); }
+  return queue;
+}
+type PrivateInput = { version: 1; operationId: string; body: Record<string, unknown>; content: string; user: CurrentUser; stored: StoredChatInput; provider: RuntimeProviderConfiguration | null };
+
+export function publicChatOperation(op: ChatOperation) {
+  return { id: op.id, sessionId: op.sessionId, userMessageId: op.userMessageId, assistantMessageId: op.assistantMessageId ?? null,
+    status: op.status, stage: op.stage, epoch: op.epoch, lastSequence: op.lastSequence, createdAt: op.createdAt, updatedAt: op.updatedAt,
+    finishedAt: op.finishedAt ?? null, traceId: op.traceId, persistence: op.persistence, modelBinding: op.modelBinding,
+    cancellationRequested: op.cancellationRequested === true, reason: op.reason ?? null, artifactRefs: op.artifactRefs ?? [], attempts: op.attempts.map(a => ({ id: a.id, toolName: a.toolName, status: a.status, startedAt: a.startedAt, completedAt: a.completedAt ?? null,
+      ...(a.status === "DONE" ? { output: a.output } : {}) })) };
+}
+function event(state: RepositoryState, op: ChatOperation, type: string, attemptId?: string) {
+  const entries = state.chatOperationEvents[op.id] ??= [];
+  if ((entries.at(-1)?.sequence ?? 0) !== op.lastSequence) throw new Error("Chat event sequence is inconsistent");
+  op.updatedAt = now();
+  entries.push({ version: 1, operationId: op.id, sessionId: op.sessionId, sequence: ++op.lastSequence, timestamp: op.updatedAt, stage: op.stage, type, status: op.status, ...(attemptId ? { attemptId } : {}) });
+}
+function audit(state: RepositoryState, op: ChatOperation, action: string) {
+  state.auditLogs.push({ id: nextID(state, "audit"), source: "chat-job-worker", actor: { id: op.actorId }, action, resource: { type: "chat_operation", id: op.id }, createdAt: now(), traceId: op.traceId,
+    before: null, after: { status: op.status, stage: op.stage, epoch: op.epoch } });
+}
+
+/** Encrypted, locked single-owner queue. Claimed jobs never restart/replay.
+ * Every visible stage is committed, and effects still use the governed broker. */
+export class ChatJobQueue {
+  readonly #codec: AESGCMCodec;
+  readonly #key: Buffer;
+  readonly #worker = `chat-worker-${randomBytes(12).toString("hex")}`;
+  #closed = false; #started = false; #pumping = false; #scheduled = false;
+  #controller: AbortController | undefined; #activeId: string | undefined;
+  get closed() { return this.#closed; }
+  constructor(readonly services: HandlerServices) {
+    if (!supportsChatJobs(services)) throw new HandlerFailure(503, "Storage does not support a verified single-writer chat queue", { code: "CHAT_QUEUE_STORAGE_UNSUPPORTED" });
+    const key = services.repository.persistence === null ? randomBytes(32).toString("base64") : services.config.storageEncryptionKey;
+    this.#codec = new AESGCMCodec(key); this.#key = decodeEncryptionKey(key);
+  }
+  private fingerprint(data: unknown) { return createHmac("sha256", this.#key).update(canonicalJSONBytes(data)).digest("hex"); }
+  private connection() { return this.fingerprint({ binding: this.services.erpbridgeSession?.admissionBinding ?? null, roles: this.services.config.erpbridgeRoleMap }); }
+  private contracts() { return this.fingerprint(this.services.registries.snapshot().tools); }
+  async admit(sessionId: string, user: CurrentUser, raw: Record<string, unknown>, traceId: string) {
+    if (this.#closed) throw new HandlerFailure(503, "Chat worker is shutting down");
+    const key = stringValue(raw.idempotencyKey);
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new HandlerFailure(400, "Provide a 16–128 character chat idempotency key", { code: "CHAT_JOB_KEY_REQUIRED" });
+    const content = (stringValue(raw.content) || stringValue(raw.message)).trim();
+    if (!content) throw new HandlerFailure(400, "message is required");
+    if (Object.keys(raw).some(k => !["content", "message", "model", "mode", "workflowContext", "delivery", "idempotencyKey"].includes(k))) throw new HandlerFailure(400, "Unsupported asynchronous chat input");
+    const body = structuredClone(raw); delete body.idempotencyKey; delete body.delivery;
+    const bytes = JSON.stringify(body);
+    if (Buffer.byteLength(bytes) > 200_000) throw new HandlerFailure(413, "Chat request exceeds 200 KB");
+    const scope = this.fingerprint([user.id, sessionId, key]);
+    const fingerprint = this.fingerprint(body);
+    // Check the original idempotent identity before consulting today's defaults.
+    const existing = await this.services.repository.read(state => {
+      assertChatAuthority(state, user, sessionId);
+      const op = Object.values(state.chatOperations).find(op => op.idempotencyScope === scope);
+      return op ? this.receipt(authorizeChatOperation(state, op, user), fingerprint, user, state) : undefined;
+    });
+    if (existing) return existing;
+    const previousModel = await this.services.repository.read(state => state.chats[sessionId]?.selectedModel);
+    const provider = selectProvider(this.services, requestedModel(body.model) ?? previousModel);
+    const configuration = provider?.configuration ?? null, binding = provider?.binding ?? null;
+    const connection = this.connection(), contracts = this.contracts();
+    const admitted = await this.services.repository.mutate(state => {
+      const chat = assertChatAuthority(state, user, sessionId);
+      if (chat.ownerId !== user.id) throw new HandlerFailure(404, "Chat session not found");
+      const duplicate = Object.values(state.chatOperations).find(op => op.idempotencyScope === scope);
+      if (duplicate) return this.receipt(authorizeChatOperation(state, duplicate, user), fingerprint, user, state);
+      const pending = Object.values(state.chatOperations).filter(op => activeChatStatus(op.status));
+      if (pending.some(op => op.sessionId === sessionId)) throw new HandlerFailure(409, "This conversation already has an active operation", { code: "CHAT_OPERATION_ACTIVE" });
+      if (pending.length >= 100) throw new HandlerFailure(429, "Chat queue is full; no message was admitted", { code: "CHAT_QUEUE_FULL" });
+      const id = nextID(state, "chatop"), timestamp = now();
+      const userMessage = { id: nextID(state, "msg"), role: "user", text: content, createdAt: timestamp, traceId, operationId: id, ...(binding ? { modelBinding: binding } : {}) };
+      const stored = { session: { id: chat.id, title: chat.title, selectedModel: binding?.model ?? chat.selectedModel }, userMessage,
+        priorMessages: chat.messages.slice(-10).map(m => `${stringValue(m.role)}: ${stringValue(m.text)}`) };
+      const privateInput: PrivateInput = { version: 1, operationId: id, body, content, user: structuredClone(user), stored, provider: configuration };
+      const privateBytes = Buffer.from(JSON.stringify(privateInput));
+      if (privateBytes.length > 500_000) throw new HandlerFailure(413, "Chat context exceeds 500 KB; shorten the workflow context or start a new conversation");
+      const op: ChatOperation = { version: 1, id, sessionId, actorId: user.id, userMessageId: userMessage.id, status: "QUEUED", stage: "QUEUED", epoch: 1, lastSequence: 0,
+        createdAt: timestamp, updatedAt: timestamp, traceId, persistence: this.services.repository.persistence === null ? "memory-only" : "durable", modelBinding: binding,
+        inputCiphertext: this.#codec.encode(privateBytes).toString("base64"), idempotencyScope: scope, requestFingerprint: fingerprint, connectionFingerprint: connection, contractFingerprint: contracts, authorityFingerprint: authorityFingerprint(user), attempts: [] };
+      state.chatOperations[id] = op;
+      chat.messages.push(userMessage); chat.messageCount = chat.messages.length; chat.updatedAt = timestamp;
+      if (binding) chat.selectedModel = binding.model;
+      event(state, op, "operation.queued"); audit(state, op, "chat.operation.admitted");
+      return { operation: publicChatOperation(op), userMessage, session: stored.session };
+    });
+    this.kick(); return admitted;
+  }
+  private receipt(op: ChatOperation, fingerprint: string, user: CurrentUser, state?: Readonly<RepositoryState>) {
+    if (op.actorId !== user.id || op.requestFingerprint !== fingerprint) throw new HandlerFailure(409, "This chat key was used for different input", { code: "CHAT_JOB_KEY_CONFLICT" });
+    return { operation: publicChatOperation(op), userMessage: state?.chats[op.sessionId]?.messages.find(m => m.id === op.userMessageId) ?? null, session: { id: op.sessionId } };
+  }
+  async start() {
+    if (this.#started) return; this.#started = true;
+    await this.services.repository.mutate(state => {
+      for (const op of Object.values(state.chatOperations)) if (op.status === "RUNNING") this.reconcile(state, op, "WORKER_RESTARTED");
+    });
+    this.kick();
+  }
+  private reconcile(state: RepositoryState, op: ChatOperation, reason: string) {
+    op.epoch++; op.status = "RECOVERY_REQUIRED"; op.stage = "RECOVERY_REQUIRED"; op.reason = reason; op.finishedAt = now();
+    for (const attempt of op.attempts) if (["PREPARING", "DISPATCH_INTENT"].includes(attempt.status)) {
+      attempt.status = attempt.status === "DISPATCH_INTENT" ? "UNKNOWN" : "FAILED"; attempt.completedAt = now();
+      event(state, op, "tool.interrupted", attempt.id);
+    }
+    delete op.inputCiphertext; event(state, op, "operation.recovery_required"); audit(state, op, "chat.operation.recovery_required");
+  }
+  kick() { if (this.#closed || this.#scheduled || this.#pumping) return; this.#scheduled = true; setImmediate(() => { this.#scheduled = false; void this.pump(); }); }
+  private async pump() {
+    if (this.#closed || this.#pumping) return; this.#pumping = true;
+    try { while (!this.#closed) {
+      const id = await this.services.repository.read(state => Object.values(state.chatOperations).filter(op => op.status === "QUEUED").sort((a,b) => a.createdAt.localeCompare(b.createdAt))[0]?.id);
+      if (!id) break; await this.process(id);
+    } } catch { /* A lost claim acknowledgement stops the pump; no hot loop or replay. */ }
+    finally { this.#pumping = false; }
+  }
+  private async process(id: string) {
+    let op: ChatOperation | undefined;
+    const controller = new AbortController(); this.#controller = controller; this.#activeId = id;
+    try {
+      op = await this.services.repository.mutate(state => {
+        const current = state.chatOperations[id]; if (!current || current.status !== "QUEUED") return undefined;
+        current.status = "RUNNING"; current.stage = "PREPARING"; current.workerId = this.#worker; current.epoch++;
+        event(state, current, "operation.started"); audit(state, current, "chat.operation.claimed"); return structuredClone(current);
+      });
+      if (!op) return;
+      const input: PrivateInput = JSON.parse(this.#codec.decode(Buffer.from(op.inputCiphertext!, "base64")).toString("utf8"));
+      if (input.version !== 1 || input.operationId !== id || input.user.id !== op.actorId || input.stored.userMessage.id !== op.userMessageId || !isRecord(input.body) ||
+          this.fingerprint(input.body) !== op.requestFingerprint || authorityFingerprint(input.user) !== op.authorityFingerprint || input.content !== input.stored.userMessage.text) throw new Error("Private chat identity is not authentic");
+      const hooks = this.hooks(op, input.user, controller.signal);
+      await this.services.repository.read(state => hooks.assertCurrent(state as RepositoryState));
+      if (op.connectionFingerprint !== this.connection() || op.contractFingerprint !== this.contracts()) throw new Error("Chat connection or contracts changed");
+      let provider: ProviderRuntime | undefined;
+      if (input.provider) provider = (this.services.providerRuntime ?? new ProviderRuntime(this.services.repository, this.services.executor)).restoreCaptured(input.provider, op.modelBinding!.configurationRevision);
+      const services = { ...this.services, ...(provider ? { providerRuntime: provider } : {}) };
+      // A job admitted without a model does not silently adopt a later default.
+      if (!input.provider) delete services.providerRuntime;
+      await processStoredChat({ body: input.body, content: input.content, sessionId: op.sessionId, traceId: op.traceId, stored: input.stored, user: input.user, services, signal: controller.signal, hooks });
+      // All answer paths commit status and message together. A missing answer
+      // acknowledgement is not promoted to ANSWERED by worker return alone.
+      await this.services.repository.mutate(state => {
+        const current = state.chatOperations[id]; if (current?.status === "RUNNING" && current.epoch === op!.epoch) throw new Error("Processing returned without a saved answer");
+      });
+    } catch (error) {
+      if (!op) throw error;
+      try { await this.services.repository.mutate(state => {
+        const current = state.chatOperations[id]; if (!current || current.status !== "RUNNING" || current.epoch !== op!.epoch || current.workerId !== this.#worker) return;
+        for (const a of current.attempts) if (a.status === "DISPATCH_INTENT") { a.status = "UNKNOWN"; a.completedAt = now(); }
+        const uncertain = current.attempts.some(a => a.status === "UNKNOWN");
+        current.status = uncertain ? "RECOVERY_REQUIRED" : current.cancellationRequested || controller.signal.aborted ? "CANCELLED" : "FAILED";
+        current.stage = current.status; current.reason = uncertain ? "TOOL_OUTCOME_UNKNOWN" : "PROCESSING_STOPPED"; current.finishedAt = now(); delete current.inputCiphertext;
+        event(state, current, "operation.stopped"); audit(state, current, "chat.operation.stopped");
+      }); } catch { /* Storage acknowledgement uncertain: restart reconciles, never replay. */ }
+    } finally { this.#activeId = undefined; this.#controller = undefined; }
+  }
+  private hooks(admitted: ChatOperation, user: CurrentUser, signal: AbortSignal): ChatProcessingHooks {
+    const current = (state: RepositoryState) => {
+      const op = state.chatOperations[admitted.id];
+      if (!op || op.status !== "RUNNING" || op.epoch !== admitted.epoch || op.workerId !== this.#worker || this.#closed || signal.aborted || op.cancellationRequested) throw new Error("Chat worker generation is no longer authorized");
+      assertChatAuthority(state, user, op.sessionId); return op;
+    };
+    return {
+      assertCurrent: current,
+      stage: async stage => { await this.services.repository.mutate(state => { const op = current(state); op.stage = stage; event(state, op, "operation.stage"); }); },
+      artifact: (state, reference) => {
+        const op = current(state); (op.artifactRefs ??= []).push(reference); op.stage = "DRAFT_SAVED";
+        event(state, op, "artifact.saved"); audit(state, op, "chat.artifact.saved");
+      },
+      saved: (state, message) => {
+        const op = current(state); message.operationId = op.id; op.assistantMessageId = stringValue(message.id);
+        op.status = op.attempts.some(a => a.status === "UNKNOWN") ? "RECOVERY_REQUIRED" : "ANSWERED";
+        op.stage = op.status; op.finishedAt = now(); delete op.inputCiphertext;
+        if (op.status === "RECOVERY_REQUIRED") op.reason = "TOOL_OUTCOME_UNKNOWN";
+        event(state, op, "answer.saved"); audit(state, op, "chat.answer.saved");
+      },
+      read: async (name, args, dispatch) => {
+        const attempt = await this.services.repository.mutate(state => {
+          const op = current(state); if (op.attempts.length >= 64) throw new Error("Chat read attempt limit reached");
+          const a = { id: nextID(state, "chat_attempt"), toolName: name, argumentHash: createHash("sha256").update(canonicalJSONBytes(args)).digest("hex"), status: "PREPARING" as const, startedAt: now() };
+          op.attempts.push(a); op.stage = "VERIFYING"; event(state, op, "tool.preparing", a.id); return structuredClone(a);
+        });
+        try {
+          const output = await dispatch(async () => { await this.services.repository.mutate(state => {
+            const op = current(state), a = op.attempts.find(a => a.id === attempt.id);
+            if (!a || a.status !== "PREPARING" || op.connectionFingerprint !== this.connection() || op.contractFingerprint !== this.contracts()) throw new Error("Chat dispatch binding changed");
+            a.status = "DISPATCH_INTENT"; op.stage = "READING"; event(state, op, "tool.dispatch_intent", a.id);
+          }); });
+          await this.services.repository.mutate(state => {
+            const op = current(state), a = op.attempts.find(a => a.id === attempt.id);
+            if (!a || a.status !== "DISPATCH_INTENT") throw new Error("Invalid chat receipt checkpoint");
+            const receipt = withoutSecretFields(output) as Record<string, unknown>;
+            const receiptBytes = Buffer.byteLength(JSON.stringify(receipt));
+            const previousBytes = op.attempts.reduce((total, attempt) => total + (attempt.output ? Buffer.byteLength(JSON.stringify(attempt.output)) : 0), 0);
+            if (receiptBytes > 512_000 || previousBytes + receiptBytes > 2_000_000) throw new Error("Chat receipt budget exceeded; remote outcome cannot be checkpointed");
+            a.status = "DONE"; a.completedAt = now(); a.output = receipt;
+            op.stage = "READ_SAVED"; event(state, op, "tool.completed", a.id);
+          });
+          return output;
+        } catch (error) {
+          await this.services.repository.mutate(state => {
+            const op = state.chatOperations[admitted.id], a = op?.attempts.find(a => a.id === attempt.id);
+            if (!op || op.epoch !== admitted.epoch || op.status !== "RUNNING" || !a || !["PREPARING", "DISPATCH_INTENT"].includes(a.status)) throw new Error("Chat attempt is fenced");
+            a.status = a.status === "DISPATCH_INTENT" && !(error instanceof ErpbridgeMcpToolError) ? "UNKNOWN" : "FAILED"; a.completedAt = now();
+            op.stage = "READ_STOPPED"; event(state, op, a.status === "UNKNOWN" ? "tool.outcome_unknown" : "tool.failed", a.id);
+          });
+          throw error;
+        }
+      },
+    };
+  }
+  async cancel(id: string, user: CurrentUser) {
+    const op = await this.services.repository.mutate(state => {
+      const op = authorizeChatOperation(state, state.chatOperations[id], user);
+      if (!activeChatStatus(op.status)) return structuredClone(op);
+      if (!op.cancellationRequested) { op.cancellationRequested = true; event(state, op, "operation.cancel_requested"); audit(state, op, "chat.operation.cancel_requested"); }
+      if (op.status === "QUEUED") { op.status = "CANCELLED"; op.stage = "CANCELLED"; op.finishedAt = now(); delete op.inputCiphertext; event(state, op, "operation.cancelled"); }
+      return structuredClone(op);
+    });
+    if (this.#activeId === id) this.#controller?.abort();
+    return publicChatOperation(op);
+  }
+  async stop() {
+    this.#closed = true; this.#controller?.abort();
+    if (this.#activeId) await this.services.repository.mutate(state => { const op = state.chatOperations[this.#activeId!]; if (op?.status === "RUNNING") this.reconcile(state, op, "WORKER_SHUTDOWN"); });
+  }
+}

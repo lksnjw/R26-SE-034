@@ -121,6 +121,13 @@ function ChatPage() {
           onSend={handleSend}
           loading={chat.loading}
           error={chat.error}
+          operation={chat.operation}
+          operationEvents={chat.operationEvents}
+          operationError={chat.operationError}
+          reconnecting={chat.reconnecting}
+          onCancelOperation={chat.cancelOperation}
+          cancelling={chat.cancelling}
+          onRefreshOperation={chat.refreshOperation}
           hasMoreMessages={chat.hasMoreMessages}
           loadingMore={chat.loadingMore}
           onLoadMore={chat.loadMore}

@@ -71,6 +71,19 @@ export class ProviderRuntime {
     return scoped;
   }
 
+  /** Restore authenticated private worker configuration without activating it
+   * globally. The caller owns input authentication and job/actor fencing. */
+  restoreCaptured(configuration: RuntimeProviderConfiguration, revision: string): ProviderRuntime {
+    validateRuntimeProviderConfiguration(configuration);
+    if (!/^[a-f0-9]{32}$/.test(revision)) throw new Error("Invalid captured provider revision");
+    const scoped = new ProviderRuntime(this.repository, this.executor, this.fetchImplementation);
+    scoped.#configuration = structuredClone(configuration);
+    scoped.#rawClient = new OpenAICompatibleClient({ ...configuration, ...(this.fetchImplementation ? { fetchImplementation: this.fetchImplementation } : {}) });
+    scoped.#provider = new ProvenanceAnalysisProvider(scoped.#rawClient, this.repository, structuredClone(configuration), revision);
+    scoped.#revision = revision;
+    return scoped;
+  }
+
   /*******************************************************************************
    * Function: activate
    *

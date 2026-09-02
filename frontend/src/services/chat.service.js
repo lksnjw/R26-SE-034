@@ -5,6 +5,18 @@ export const chatService = {
     const response = await apiClient.get("/chat/models");
     return response.data.data;
   },
+  async operations(sessionId) {
+    const response = await apiClient.get(`/chat/sessions/${sessionId}/operations`);
+    return response.data.data ?? [];
+  },
+  async operation(id, after = 0, options = {}) {
+    const response = await apiClient.get(`/chat/operations/${id}`, { params: { after }, ...options });
+    return response.data.data;
+  },
+  async cancelOperation(id) {
+    const response = await apiClient.post(`/chat/operations/${id}/cancel`, {});
+    return response.data.data;
+  },
 /*******************************************************************************
  * Function: listSessions
  *
@@ -67,14 +79,14 @@ export const chatService = {
  ******************************************************************************/
   async sendMessage(sessionId, content, options = {}) {
     const payload = { content };
-    ["mode", "model"].forEach((key) => {
+    ["mode", "model", "delivery", "idempotencyKey"].forEach((key) => {
       if (options[key]) payload[key] = options[key];
     });
     if (options.workflowContext) payload.workflowContext = options.workflowContext;
     if (options.emailDraftCommand) payload.emailDraftCommand = options.emailDraftCommand;
     // Read loops can use multiple provider turns. Draft edits themselves do
     // not invoke a provider or dispatch an ERP/email operation.
-    const response = await apiClient.post(`/chat/sessions/${sessionId}/messages`, payload, { timeout: 300000 });
+    const response = await apiClient.post(`/chat/sessions/${sessionId}/messages`, payload, { timeout: options.delivery === "async-chat" ? 30000 : 300000 });
     return response.data.data;
   },
 };

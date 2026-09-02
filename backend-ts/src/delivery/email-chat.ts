@@ -7,6 +7,7 @@ import { dispatchReadTool } from "../tools/read-tool-broker.js";
 import type { RepositoryState } from "../repository/store.js";
 import { appendAudit, HandlerFailure, isRecord, nextID, now, type CurrentUser, type HandlerServices } from "../http/handlers/common.js";
 import { createEmailDraft, deliveryIntent, draftRequirements, emailDraftCommandSchema, emailDraftHash, emailDraftMessage, type EmailDraft } from "./email-draft.js";
+import type { ChatProcessingHooks } from "../agent/chat-context.js";
 
 function assertOwner(state: RepositoryState, sessionId: string, user: CurrentUser) {
   const chat = state.chats[sessionId];
@@ -46,7 +47,9 @@ export async function editEmailDraft(services: HandlerServices, user: CurrentUse
   });
 }
 
-export async function prepareEmailDraft(services: HandlerServices, user: CurrentUser, sessionId: string, content: string, request: FastifyRequest) {
+export async function prepareEmailDraft(services: HandlerServices, user: CurrentUser, sessionId: string, content: string, request: FastifyRequest | undefined, context: { signal?: AbortSignal; traceId?: string; hooks?: ChatProcessingHooks } = {}) {
+  const signal = context.signal ?? request?.signal;
+  const hooks = context.hooks;
   const intent = deliveryIntent(content);
   if (!intent) throw new HandlerFailure(400, "Delivery request is unresolved");
   await services.repository.read((state) => assertOwner(state, sessionId, user));
@@ -63,20 +66,22 @@ export async function prepareEmailDraft(services: HandlerServices, user: Current
           // No prior model-produced draft is a source of ERP facts. Sending is
           // never delegated to the query loop, even when requested in the text.
           report = await runQueryLoop({ userMessage: `Prepare only the report requested below using confirmed reads. Never send email, resolve a person's address by guessing, or activate a schedule. If the report scope or reporting period is unclear, ask for it instead of assuming.\n\nOriginal request:\n${content}`,
-            chatHistory: [], sessionId, actorId: user.id, actorRole: user.role, signal: request.signal }, tools,
-            (name, args) => dispatchReadTool(services, user.id, name, args, { signal: request.signal, sessionId }), services.providerRuntime, true);
+            chatHistory: [], sessionId, actorId: user.id, actorRole: user.role, ...(context.traceId ? { traceId: context.traceId } : {}), ...(signal ? { signal } : {}), ...(hooks ? { onTurn: () => hooks.stage("MODEL") } : {}) }, tools,
+            (name, args) => hooks ? hooks.read(name, args, beforeDispatch => dispatchReadTool(services, user.id, name, args, { signal, sessionId, traceId: context.traceId, beforeDispatch })) : dispatchReadTool(services, user.id, name, args, { signal, sessionId, traceId: context.traceId }), services.providerRuntime, true);
           reason = report.stopReason === "PROVIDER_FAILED" || report.stopReason === "CANCELLED" ? report.stopReason : report.readOutcome ?? "REPORT_NOT_PREPARED";
         }
       } catch { reason = "REPORT_PREPARATION_FAILED"; }
     }
   }
   return services.repository.mutate((state) => {
+    hooks?.assertCurrent(state);
     const chat = assertOwner(state, sessionId, user);
     const draft = createEmailDraft(nextID(state, "email_draft"), sessionId, user.id, content, intent, report);
     const text = emailDraftMessage(draft);
-    const message = { id: nextID(state, "msg"), role: "assistant", text, artifacts: { intent: "EMAIL_DELIVERY", emailDraft: draft, can_execute: false, reportReason: reason,
+    const message = { id: nextID(state, "msg"), role: "assistant", text, modelBinding: services.providerRuntime?.binding ?? null, ...(context.traceId ? { traceId: context.traceId } : {}), artifacts: { intent: "EMAIL_DELIVERY", emailDraft: draft, can_execute: false, reportReason: reason,
       ...(report ? { sources: report.toolCallLog, toolSteps: report.toolSteps, readOutcome: report.readOutcome, boundHit: report.boundHit, stopReason: report.stopReason } : {}) }, createdAt: now() };
     chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
+    hooks?.saved(state, message);
     appendAudit(state, user, "email_draft.created", "email_draft", draft.id, null, { version: draft.version, contentHash: draft.contentHash, state: draft.state, reportStatus: draft.reportStatus }, request);
     return { assistantMessage: message, answer: text, intent: "EMAIL_DELIVERY", operation: { success: false, code: "EMAIL_NOT_SENT" } };
   });

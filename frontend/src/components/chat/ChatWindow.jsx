@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Icon } from "@iconify/react";
 import ChatMessage from "./ChatMessage";
 import ChatWelcome from "./ChatWelcome";
+import ChatOperationProgress from "./ChatOperationProgress";
 import { chatService } from "../../services/chat.service";
 import { readWorkspaceValue, writeWorkspaceValue } from "../../utils/workspaceSession";
 import { peekWorkflowForChatEdit, clearWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
@@ -31,7 +32,7 @@ function ThinkingIndicator() {
             />
           ))}
         </span>
-        <span className="text-xs">Thinking…</span>
+        <span className="text-xs">Waiting for acknowledgement…</span>
       </div>
     </div>
   );
@@ -79,7 +80,7 @@ const QUICK_PROMPTS = [
  *
  * Performs the Chat Window operation on window for the ChatWindow module.
  ******************************************************************************/
-function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, savedModel, nodeContext, onClearNodeContext, onChatChanged }) {
+function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, savedModel, nodeContext, onClearNodeContext, onChatChanged, operation, operationEvents, operationError, reconnecting, onCancelOperation, cancelling, onRefreshOperation }) {
   const [draft, setDraft] = useState(() => readWorkspaceValue(draftStorageKey));
   const [sendError, setSendError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -245,7 +246,8 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
             <ChatMessage key={msg.id ?? `${msg.role}-${idx}`} message={msg} onChatChanged={onChatChanged} />
           ))}
 
-          {loading && <ThinkingIndicator />}
+          {(operation || operationError) && <ChatOperationProgress operation={operation} events={operationEvents} error={operationError} reconnecting={reconnecting} onCancel={onCancelOperation} cancelling={cancelling} onRefresh={onRefreshOperation} />}
+          {loading && !operation && <ThinkingIndicator />}
 
           {(error || sendError) && (
             <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800/40 dark:bg-red-900/20 dark:text-red-400">

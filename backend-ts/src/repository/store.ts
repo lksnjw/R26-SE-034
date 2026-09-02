@@ -61,6 +61,15 @@ export type ReadJob = { version: 1; executionId: string; actorId: string; admitt
   inputCiphertext?: string; requestFingerprint: string; idempotencyScope: string; connectionFingerprint: string; createdAt: string; claimedAt?: string; finishedAt?: string; workerId?: string };
 
 export type Permission = { key: string; name: string; description: string; group: string };
+export type ChatAttempt = { id: string; toolName: string; argumentHash: string; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN"; startedAt: string; completedAt?: string; output?: Record<string, unknown> };
+export type ChatOperation = { version: 1; id: string; sessionId: string; actorId: string; userMessageId: string; assistantMessageId?: string;
+  status: "QUEUED" | "RUNNING" | "ANSWERED" | "FAILED" | "CANCELLED" | "RECOVERY_REQUIRED"; stage: string; epoch: number; lastSequence: number;
+  createdAt: string; updatedAt: string; finishedAt?: string; traceId: string; persistence: "memory-only" | "durable";
+  inputCiphertext?: string; idempotencyScope: string; requestFingerprint: string; connectionFingerprint: string; contractFingerprint: string; authorityFingerprint: string;
+  modelBinding: { providerId: string; providerName: string; model: string; configurationRevision: string } | null;
+  workerId?: string; cancellationRequested?: boolean; reason?: string; attempts: ChatAttempt[];
+  artifactRefs?: Array<{ type: "workflow-draft"; id: string }> };
+export type ChatOperationEvent = { version: 1; operationId: string; sessionId: string; sequence: number; timestamp: string; stage: string; type: string; attemptId?: string; status?: string };
 export type StoredRecord = Record<string, unknown>;
 export type ChatSessionRecord = {
   id: string;
@@ -112,6 +121,8 @@ export type RepositoryState = {
   executionLogs: Record<string, StoredRecord[]>;
   executionEvents: Record<string, ExecutionEvent[]>;
   readJobs: Record<string, ReadJob>;
+  chatOperations: Record<string, ChatOperation>;
+  chatOperationEvents: Record<string, ChatOperationEvent[]>;
   timelines: Record<string, StoredRecord[]>;
   healing: Record<string, StoredRecord>;
   chats: Record<string, ChatSessionRecord>;
@@ -308,7 +319,7 @@ function restoreState(payload: Uint8Array): RepositoryState {
   if (source.version !== 1) throw new Error(`unsupported stored repository version ${String(source.version)}`);
   const defaults = initialState();
   const restored: RepositoryState = { ...defaults, ...source } as RepositoryState;
-  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "readJobs", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
+  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "readJobs", "chatOperations", "chatOperationEvents", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) restored[key] = defaults[key] as never;
   }
   if (restored.governancePolicy !== null && (typeof restored.governancePolicy !== "object" || Array.isArray(restored.governancePolicy))) restored.governancePolicy = null;
@@ -341,6 +352,8 @@ export function initialState(): RepositoryState {
     executionLogs: {},
     executionEvents: {},
     readJobs: {},
+    chatOperations: {},
+    chatOperationEvents: {},
     timelines: {},
     healing: {},
     chats: {},

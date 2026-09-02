@@ -54,6 +54,7 @@ import {
 import { inspectReadWorkflow } from "../runner/read-workflow.js";
 import { runVerifiedRead } from "./handlers/read-execution.js";
 import { readJobQueue, supportsReadJobs } from "../runner/read-jobs.js";
+import { chatJobQueue, supportsChatJobs } from "../agent/chat-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
 import {
   REGISTRY_UNHANDLED,
@@ -173,6 +174,11 @@ export async function buildApp(
     bodyLimit: 10 * 1024 * 1024,
   });
   const resourceMutations = new ResourceMutations();
+  if (supportsChatJobs(services)) {
+    const queue = chatJobQueue(services);
+    app.addHook("onReady", () => queue.start());
+    app.addHook("onClose", () => queue.stop());
+  }
   if (supportsReadJobs(services)) {
     const queue = readJobQueue(services);
     app.addHook("onReady", () => queue.start());
@@ -287,9 +293,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 177)
+  if (routeTable.length !== 180)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 177`,
+      `route table has ${routeTable.length} routes, expected 180`,
     );
   return app;
 }
