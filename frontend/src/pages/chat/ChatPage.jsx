@@ -9,7 +9,6 @@ import { useChat } from "../../hooks/useChat";
 import { useChatSessions } from "../../hooks/useChatSessions";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { peekWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
-import { workflowService } from "../../services/workflow.service";
 
 /*******************************************************************************
  * Function: ChatPage
@@ -71,11 +70,12 @@ function ChatPage() {
     if (creating) setPendingDraftKey(draftKey);
     try {
       if (activeNodeContext && sid) {
-        const proposal = await workflowService.proposeNode(activeNodeContext.workflowId, activeNodeContext, activeNodeContext.nodeId, text, sid, options.model);
-        activeNodeContext.onProposal(proposal);
-        await onChatChanged();
-        writeWorkspaceValue(workspaceKey(user, `draft.${sid}`), "");
-        return proposal;
+        const result = await chat.send(text, sid, { ...(options.model ? { model: options.model } : {}), nodeContext: {
+          workflowId: activeNodeContext.workflowId, nodeId: activeNodeContext.nodeId,
+          baseVersion: activeNodeContext.version, baseHash: activeNodeContext.contentHash,
+        } });
+        if (result) writeWorkspaceValue(workspaceKey(user, `draft.${sid}`), "");
+        return result;
       }
       if (creating) {
         const session = await sessions.createSession(text.slice(0, 64) || "Workflow conversation");

@@ -4,6 +4,7 @@ import { chatService } from "../services/chat.service";
 import { useAuthContext } from "../context/AuthContext";
 import { acknowledgeChatCommand, prepareChatCommand } from "../utils/chatCommand";
 import { isActiveChatOperation, useChatOperationMonitor } from "./useChatOperationMonitor";
+import { requireChatCapability, requireChatReceipt } from "../utils/chatAdmission";
 
 /*******************************************************************************
  * Function: useChat
@@ -50,7 +51,16 @@ export function useChat(sessionId) {
  * Performs the send Mutation operation on mutation for the useChat module.
  ******************************************************************************/
   const sendMutation = useMutation({
-    mutationFn: ({ target, text, options }) => chatService.sendMessage(target, text, options),
+    mutationFn: async ({ target, text, options }) => {
+      if (options.delivery === "async-chat") {
+        // Negotiate before POST: an older server could otherwise ignore delivery
+        // and synchronously execute a request with the wrong scope.
+        try { requireChatCapability(await chatService.capabilities(), options); }
+        catch (error) { error.beforeAdmission = true; throw error; }
+      }
+      const result = await chatService.sendMessage(target, text, options);
+      return options.delivery === "async-chat" ? requireChatReceipt(result, target, options, text) : result;
+    },
     onSuccess: async (result, variables) => {
       // Fence pre-admission reads before installing the newer acknowledgement.
       await Promise.all([
@@ -116,7 +126,7 @@ export function useChat(sessionId) {
       // Local email-draft edits keep their revision-bound synchronous command.
       return await sendMutation.mutateAsync({ target, text: text.trim(), command, options: command ? { ...options, delivery: "async-chat", idempotencyKey: command.key } : options });
     } catch (error) {
-      if (!error?.response) setIdentityFailure({ target, message: "Acknowledgement was not confirmed. Your draft is kept. Retry the same message to retrieve its saved operation; it will not be admitted twice." });
+      if (!error?.response) setIdentityFailure({ target, message: error.beforeAdmission ? "Saved chat admission could not be verified. No message was sent. Check the server connection and version; your draft is kept." : "Acknowledgement was not confirmed. Your draft is kept. Retry the same message to retrieve its saved operation; it will not be admitted twice." });
       void queryClient.invalidateQueries({ queryKey: ["chat-operations", target] });
       return null;
     }

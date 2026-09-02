@@ -4,6 +4,7 @@ import { isActiveChatOperation } from "../../hooks/useChatOperationMonitor";
 const stages = {
   QUEUED: "Queued", PREPARING: "Checking request", MODEL: "Assistant analysis",
   GENERATING: "Preparing workflow proposal", DRAFT_SAVED: "Workflow draft saved", VERIFYING: "Verifying ERP read",
+  GENERATING_NODE_PROPOSAL: "Preparing selected-node proposal", PROPOSAL_SAVED: "Node proposal saved",
   READING: "Waiting for ERPBridge", READ_SAVED: "Confirmed read saved", READ_STOPPED: "Read stopped",
   ANSWERED: "Response saved", FAILED: "Preparation stopped", CANCELLED: "Cancelled",
   RECOVERY_REQUIRED: "Recovery review required",
@@ -19,14 +20,15 @@ export default function ChatOperationProgress({ operation, events = [], error, r
       <div className="min-w-0">
         <p role="status" className="font-semibold text-gray-900 dark:text-white">{reconnecting ? "Reconnecting · last saved progress" : stages[operation?.stage] || "Saved operation progress"}</p>
         {operation && <p className="text-[11px] text-gray-500">{operation.modelBinding?.requestedModel || operation.modelBinding?.model || "No model bound"} · {operation.persistence === "durable" ? "Saved on server" : "Memory only · lost on server restart"}</p>}
+        {operation?.nodeContext && <p className="text-[11px] text-gray-500">Node {operation.nodeContext.nodeId} · draft v{operation.nodeContext.baseVersion} · proposal only</p>}
       </div>
       {active && <button type="button" disabled={cancelling || operation.cancellationRequested} onClick={onCancel} className="shrink-0 text-xs text-primary underline disabled:opacity-50">{cancelling || operation.cancellationRequested ? "Cancel requested" : "Cancel request"}</button>}
     </div>
     {operation?.cancellationRequested && <p className="mt-1">Cancellation does not prove that remote work was rolled back.</p>}
     {operation?.status === "RECOVERY_REQUIRED" && <p className="mt-1">Processing stopped with an uncertain or interrupted outcome. Review saved evidence before starting a new request; nothing will be replayed automatically.</p>}
-    {operation?.status === "FAILED" && <p className="mt-1">The request stopped before a response could be saved. Check connection and permissions before submitting a new request.</p>}
+    {operation?.status === "FAILED" && <p className="mt-1">{operation.reason === "DRAFT_REVISION_CONFLICT" ? "The workflow draft changed while this proposal was being prepared. No proposal was saved. Reload and review the current node before submitting a new edit." : operation.reason === "NODE_PROPOSAL_INVALID" ? "A supported node patch could not be prepared. No proposal was saved and the workflow was not changed. Review the prompt and model configuration before a new request." : "The request stopped before a response could be saved. Check connection and permissions before submitting a new request."}</p>}
     {operation?.status === "ANSWERED" && <p className="mt-1">A saved response is not proof of email delivery, workflow execution or scheduling.</p>}
-    {operation?.artifactRefs?.map(reference => <p key={reference.id} className="mt-1">Workflow draft saved · {reference.id}. Find it in Workflows; it has not been published or executed.</p>)}
+    {operation?.artifactRefs?.map(reference => <p key={reference.id} className="mt-1">{reference.type === "node-proposal" ? `Node proposal saved · ${reference.id}. Review it beside the workflow and choose Apply to draft.` : `Workflow draft saved · ${reference.id}. Find it in Workflows; it has not been published or executed.`}</p>)}
     {operation?.attempts?.length > 0 && <div className="mt-2 space-y-2">{operation.attempts.map(attempt => <details key={attempt.id} className="border-t border-gray-100 pt-2 dark:border-gray-800">
       <summary className="cursor-pointer"><span className="font-medium">{toolLabel(attempt.toolName)}</span> · {attempts[attempt.status] || "Unknown status"}</summary>
       <div className="mt-2">{["DONE", "FAILED"].includes(attempt.status) && attempt.output !== undefined ? <ReadableResult value={attempt.output} /> : <p>{attempt.status === "UNKNOWN" ? "No confirmed answer is available. An automatic retry could duplicate remote work." : "No confirmed result has been saved for this attempt."}</p>}</div>

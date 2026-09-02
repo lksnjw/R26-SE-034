@@ -10,15 +10,15 @@ import ValueFields from "./ValueFields";
 import { useExecutionMonitor } from "../../hooks/useExecutionMonitor";
 import ExecutionRunControls from "../executions/ExecutionRunControls";
 import { isActiveExecution } from "../../utils/executionEvents";
+import NodePrompt from "./NodePrompt";
 
 const button = "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800";
 const input = "w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackground";
 const message = (error) => error?.response?.data?.message || error?.message || "The operation could not be completed.";
-function NodeInspector({ node, canEdit, busy, onPreview, onPrompt, sharedChat }) {
+function NodeInspector({ node, canEdit, busy, onPreview, sessionId, context, onProposal, sharedChat, draftStorageKey }) {
   const [description, setDescription] = useState(node.source.description ?? "");
   const [action, setAction] = useState(node.source.action ?? "");
   const [parameters, setParameters] = useState(node.source.parameters ?? {});
-  const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const tool = !node.source.kind || node.source.kind === "tool";
   return <aside aria-label="Selected node details" className="workspace-reveal mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
@@ -30,11 +30,7 @@ function NodeInspector({ node, canEdit, busy, onPreview, onPrompt, sharedChat })
           <div className="space-y-2"><p className="text-xs text-gray-500">Parameters</p><ValueFields value={parameters} onChange={setParameters} /></div></>}
         <button disabled={busy} className={`${button} border border-gray-200 dark:border-gray-700`}><Icon icon="lucide:git-compare-arrows" />Preview manual edit</button>
       </form>
-      {sharedChat ? <p className="mt-5 border-t border-gray-100 pt-4 text-xs leading-5 text-gray-500 dark:border-gray-800">This node is selected for editing in the main chat. Describe your change there; review the returned proposal before applying it.</p> : <form className="mt-5 border-t border-gray-100 pt-4 dark:border-gray-800" onSubmit={(event) => { event.preventDefault(); onPrompt(prompt); }}>
-        <label className="block text-xs font-medium">Ask the agent about this node<textarea aria-label="Selected node prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} className={`${input} mt-2 min-h-20`} placeholder="Change this node’s parameters…" maxLength={4000} required /></label>
-        <button className={`${button} mt-2 bg-primary/10 text-primary`} disabled={busy || !prompt.trim()}><Icon icon="lucide:sparkles" />Propose change</button>
-        <p className="mt-2 text-[10px] leading-4 text-gray-500">Only this node is in scope. A proposal is not a save or an execution.</p>
-      </form>}
+      {sharedChat ? <p className="mt-5 border-t border-gray-100 pt-4 text-xs leading-5 text-gray-500 dark:border-gray-800">This node is selected for editing in the main chat. Describe your change there; review the returned proposal before applying it.</p> : <NodePrompt sessionId={sessionId} context={context} busy={busy} onProposal={onProposal} draftStorageKey={draftStorageKey} />}
     </> : <ReadableValue value={node.source} />}
     {error && <p role="alert" className="mt-3 text-xs text-red-600">{error}</p>}
   </aside>;
@@ -75,7 +71,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
       onProposal: setProposal, clear: () => { setSelected(""); writeWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, ""); } } : null);
     return () => onNodeContext?.(null);
   }, [onNodeContext, canEdit, workflowId, sessionId, nodeId, nodeLabel, version, contentHash, selectionStorageKey]);
-  const pendingProposal = proposal || savedProposals.findLast((item) => item.workflowId === workflowId && item.status === "PROPOSED" && item.baseVersion === record?.version && item.baseHash === record?.contentHash && !resolvedProposals.includes(item.id));
+  const pendingProposal = (proposal && !resolvedProposals.includes(proposal.id) ? proposal : null) || savedProposals.findLast((item) => item.workflowId === workflowId && item.status === "PROPOSED" && item.baseVersion === record?.version && item.baseHash === record?.contentHash && !resolvedProposals.includes(item.id));
   const perform = async (action) => { setBusy(true); setError(""); try { await action(); } catch (cause) { setError(message(cause)); } finally { setBusy(false); } };
   const save = async (command, history = "edit", revision = record) => {
     const next = await workflowService.command(workflowId, revision, command);
@@ -84,10 +80,6 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
     setRecord({ ...next, readinessUnknown: true }); setProposal(null); setNotice("Draft saved. Publication and execution are separate actions."); onChatChanged?.();
     try { await load(); } catch { setNotice("Draft saved, but readiness could not be refreshed. Reload before publishing or running."); }
   };
-  const requestProposal = (prompt) => perform(async () => {
-    const next = await workflowService.proposeNode(workflowId, record, node.id, prompt, sessionId);
-    setProposal(next); onChatChanged?.();
-  });
   const attemptRun = async () => {
     if (submittingRun || unconfirmedRun || runActive || shownRun?.status === "RECOVERY_REQUIRED") return;
     setSubmittingRun(true); setError(""); setNotice("");
@@ -149,7 +141,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
           </li>;
         })}
       </ol>
-      {node && <><details key={`${node.id}:${record.version}`} open={!onNodeContext} className="mt-5 border-t border-gray-200 pt-3 text-xs dark:border-gray-700"><summary className="cursor-pointer font-medium">Node settings · {node.id}</summary><NodeInspector node={node} canEdit={canEdit} busy={busy} onPrompt={requestProposal} sharedChat={Boolean(onNodeContext)} onPreview={(patch) => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "updateNode", nodeId: node.id, patch }, before: node.source, after: { ...node.source, ...patch } })} /></details>
+      {node && <><details key={`${node.id}:${record.version}`} open={!onNodeContext} className="mt-5 border-t border-gray-200 pt-3 text-xs dark:border-gray-700"><summary className="cursor-pointer font-medium">Node settings · {node.id}</summary><NodeInspector node={node} canEdit={canEdit} busy={busy} sessionId={sessionId} context={{ workflowId, nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash }} onProposal={setProposal} sharedChat={Boolean(onNodeContext)} draftStorageKey={selectionStorageKey ? `${selectionStorageKey}.node-prompt.${node.id}` : null} onPreview={(patch) => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "updateNode", nodeId: node.id, patch }, before: node.source, after: { ...node.source, ...patch } })} /></details>
         {canEdit && <div className="mt-3 flex flex-wrap gap-1">{onFocusChat && <button className={`${button} text-primary lg:hidden`} onClick={onFocusChat}>Edit this node in chat</button>}<button className={button} disabled={busy || preview.steps.at(-1)?.id === node.id} onClick={() => perform(() => save({ type: "moveNode", nodeId: node.id, beforeNodeId: null }))}>Move to end</button><button className={`${button} text-red-600`} disabled={busy} onClick={() => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "removeNode", nodeId: node.id }, before: node.source, after: null })}>Remove node…</button></div>}</>}
       {canEdit && pendingProposal && <section aria-label="Node change preview" className="workspace-reveal mt-5 border-y border-primary/25 py-4">
         <h4 className="text-xs font-semibold">Review change · {pendingProposal.nodeId}</h4><p className="mt-1 text-[10px] text-gray-500">Based on draft v{pendingProposal.baseVersion}. Unrelated nodes are unchanged.</p>

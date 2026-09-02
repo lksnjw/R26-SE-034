@@ -23,6 +23,7 @@ import { stringify as yamlStringify } from "yaml";
 import { assertActorAuthority, assertChatAuthority, requestedModel, selectProvider } from "./model-selection.js";
 import { activeChatStatus, chatJobQueue } from "../../agent/chat-jobs.js";
 import { handleChatOperationRoute, CHAT_OPERATION_UNHANDLED } from "./chat-operations.js";
+import { processNodeProposal } from "../../agent/node-proposals.js";
 
 /*******************************************************************************
  * Function: buildWorkflowYamlFromSteps
@@ -463,6 +464,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
   if (body.delivery === "async-chat") return reply.status(202).send(ok(
     await chatJobQueue(services).admit(requestParam(request, "id"), user, body, requestTraceId(request)), "Chat operation acknowledged; no business completion is implied", null));
   if (body.delivery !== undefined) throw new HandlerFailure(400, "Unsupported chat delivery mode");
+  if (Object.hasOwn(body, "nodeContext")) throw new HandlerFailure(400, "Selected node prompts require saved asynchronous chat admission");
   const content = stringValue(body.content).trim() === "" ? stringValue(body.message).trim() : stringValue(body.content).trim();
   if (content === "") throw new HandlerFailure(400, "message is required");
   const previousModel = await services.repository.read((state) => state.chats[requestParam(request, "id")]?.selectedModel);
@@ -499,6 +501,10 @@ export async function processStoredChat(input: {
   request?: FastifyRequest; hooks?: import("../../agent/chat-context.js").ChatProcessingHooks;
 }) {
   const { body, content, sessionId, traceId, stored, user, services, signal, request, hooks } = input;
+  if (body.nodeContext !== undefined) {
+    if (!hooks) throw new HandlerFailure(400, "Selected node prompts require saved chat operations");
+    return processNodeProposal({ context: body.nodeContext, content, sessionId, traceId, user, services, ...(signal ? { signal } : {}), hooks });
+  }
   const provider = services.providerRuntime;
   const intent = classifyIntent(content);
   const bodyWorkflowCtx = isRecord(body.workflowContext) ? body.workflowContext : null;

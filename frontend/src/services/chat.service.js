@@ -1,6 +1,10 @@
 import { apiClient } from "../config/axios";
 
 export const chatService = {
+  async capabilities() {
+    const response = await apiClient.get("/chat/capabilities");
+    return response.data.data;
+  },
   async models() {
     const response = await apiClient.get("/chat/models");
     return response.data.data;
@@ -83,6 +87,7 @@ export const chatService = {
       if (options[key]) payload[key] = options[key];
     });
     if (options.workflowContext) payload.workflowContext = options.workflowContext;
+    if (options.nodeContext) payload.nodeContext = options.nodeContext;
     if (options.emailDraftCommand) payload.emailDraftCommand = options.emailDraftCommand;
     // Read loops can use multiple provider turns. Draft edits themselves do
     // not invoke a provider or dispatch an ERP/email operation.

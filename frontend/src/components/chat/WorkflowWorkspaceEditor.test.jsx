@@ -2,14 +2,18 @@
 import React from "react";
 import { jest, test, expect, beforeEach, afterEach } from "@jest/globals";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
-import WorkflowWorkspaceEditor from "./WorkflowWorkspaceEditor";
 import { workflowService } from "../../services/workflow.service";
 import { executionService } from "../../services/execution.service";
 
 const yaml = "name: Report\ntrigger:\n  type: manual\nsteps:\n - id: first\n   action: demo.echo\n   parameters:\n     value: original\n - id: last\n   action: demo.echo\n   parameters:\n     value: tail\n";
 const record = { workflowId: "report", version: 1, contentHash: `sha256:${"a".repeat(64)}`, yaml, validation: { passed: true, errors: [] }, published: false, bridge: "not_connected", can_attempt_run: false };
 const proposal = { id: "proposal-one", workflowId: "report", nodeId: "first", baseVersion: 1, baseHash: record.contentHash, status: "PROPOSED", before: { id: "first", action: "demo.echo", parameters: { value: "original" } }, after: { id: "first", action: "demo.echo", parameters: { value: "proposed" } }, command: { type: "updateNode", nodeId: "first", patch: { parameters: { value: "proposed" } } } };
+let messages = [];
+const send = jest.fn();
+jest.unstable_mockModule("../../hooks/useChat", () => ({ useChat: () => ({ messages, send, loading: false }) }));
+const { default: WorkflowWorkspaceEditor } = await import("./WorkflowWorkspaceEditor");
 beforeEach(() => {
+  messages = []; send.mockReset(); send.mockResolvedValue({ operation: { id: "saved" } });
   jest.spyOn(workflowService, "readiness").mockResolvedValue(record);
   jest.spyOn(workflowService, "command").mockResolvedValue({ ...record, version: 2 });
   jest.spyOn(workflowService, "proposeNode").mockResolvedValue(proposal);
@@ -27,6 +31,15 @@ async function open(props = {}) {
 }
 async function selectNode() { fireEvent.click(screen.getByRole("button", { name: /01 first/ })); }
 
+test("an unacknowledged canvas prompt is retained on remount and is not applied", async () => {
+  send.mockResolvedValue(null); const view = await open(); await selectNode();
+  fireEvent.change(screen.getByRole("textbox", { name: "Selected node prompt" }), { target: { value: "Keep my pending edit" } });
+  fireEvent.click(screen.getByRole("button", { name: "Propose change" }));
+  await waitFor(() => expect(send).toHaveBeenCalled()); view.unmount();
+  await open(); expect(screen.getByRole("textbox", { name: "Selected node prompt" }).value).toBe("Keep my pending edit");
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.proposeNode).not.toHaveBeenCalled();
+});
+
 test("manual editing is preview-only until an explicit revision-bound apply", async () => {
   await open(); await selectNode();
   fireEvent.change(screen.getByRole("textbox", { name: "Node label" }), { target: { value: "Read invoices" } });
@@ -40,11 +53,14 @@ test("manual editing is preview-only until an explicit revision-bound apply", as
 
 test("node prompts persist a scoped proposal and stale apply preserves its preview", async () => {
   workflowService.command.mockRejectedValue({ response: { data: { message: "Draft changed. Reload." } } });
-  await open(); await selectNode();
+  const view = await open(); await selectNode();
   fireEvent.change(screen.getByRole("textbox", { name: "Selected node prompt" }), { target: { value: "Change the value" } });
   fireEvent.click(screen.getByRole("button", { name: "Propose change" }));
+  await waitFor(() => expect(send).toHaveBeenCalledWith("Change the value", undefined, { nodeContext: { workflowId: "report", nodeId: "first", baseVersion: 1, baseHash: record.contentHash } }));
+  expect(screen.queryByRole("region", { name: "Node change preview" })).toBeNull();
+  expect(workflowService.proposeNode).not.toHaveBeenCalled();
+  messages = [{ artifacts: { proposal } }]; view.rerender(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit selectionStorageKey="account.chat" />);
   await screen.findByRole("region", { name: "Node change preview" });
-  expect(workflowService.proposeNode).toHaveBeenCalledWith("report", record, "first", "Change the value", "chat");
   expect(workflowService.command).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
   await screen.findByRole("alert");

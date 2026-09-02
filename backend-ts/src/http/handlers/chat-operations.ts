@@ -1,13 +1,21 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { RouteDefinition } from "../generated-routes.js";
 import { ok } from "../../models/schemas.js";
-import { activeChatStatus, authorizeChatOperation, chatJobQueue, publicChatOperation } from "../../agent/chat-jobs.js";
-import { assertChatAuthority } from "./model-selection.js";
+import { activeChatStatus, authorizeChatOperation, chatJobQueue, publicChatOperation, supportsChatJobs } from "../../agent/chat-jobs.js";
+import { assertActorAuthority, assertChatAuthority } from "./model-selection.js";
 import { HandlerFailure, queryRecord, requestParam, type CurrentUser, type HandlerServices } from "./common.js";
 
 export const CHAT_OPERATION_UNHANDLED = Symbol("chat-operation-unhandled");
 export async function handleChatOperationRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices) {
   const base = services.config.apiBasePath;
+  if (route.path === `${base}/chat/capabilities` && route.method === "GET") {
+    await services.repository.read(state => {
+      const permissions = assertActorAuthority(state, user);
+      if (!permissions.some(value => ["chat:use", "workflow:write"].includes(value))) throw new HandlerFailure(403, "Chat authority is not available");
+    });
+    const supported = supportsChatJobs(services);
+    return reply.send(ok({ profile: "chat-admission-v1", asyncChat: supported, nodeProposals: supported, localDraftEdits: true }, "Chat admission capabilities; not provider or ERP readiness", null));
+  }
   if (route.path === `${base}/chat/sessions/:id/operations`) {
     const values = await services.repository.read(state => {
       const sessionId = requestParam(request, "id"); assertChatAuthority(state, user, sessionId);

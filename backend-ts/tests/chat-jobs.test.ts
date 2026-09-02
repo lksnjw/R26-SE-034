@@ -12,6 +12,8 @@ import { ProviderRuntime } from "../src/providers/runtime.js";
 import { SynthesisService } from "../src/synthesis/service.js";
 import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
 import { chatJobQueue } from "../src/agent/chat-jobs.js";
+import { workflowContentHash } from "../src/parser/workflow.js";
+import type { Workflow } from "../src/models/schemas.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); });
@@ -36,6 +38,7 @@ async function setup(options: { persistence?: PersistenceBackend; timeoutMs?: nu
   const validator = new RegistryValidator(registries, repository), executor = new Executor(new ToolRegistry(), validator);
   const fetchImplementation = vi.fn<typeof fetch>(async (_url, init) => {
     const input = JSON.parse(String(init?.body));
+    if (input.messages[0].content.includes("ONE SELECTED NODE PATCH")) return Response.json({ choices: [{ message: { content: '{"description":"Proposed label"}' } }] });
     if (input.messages[0].content.includes("WORKFLOW DRAFT SYNTHESIS")) return Response.json({ choices: [{ message: { content: yaml } }] });
     if (input.messages[0].content.includes("WORKFLOW MODIFICATION PROPOSAL")) return Response.json({ choices: [{ message: { content: yaml.replace("Report", "Updated") } }] });
     const hasRead = input.messages.some((m: { role: string }) => m.role === "tool");
@@ -57,6 +60,103 @@ async function setup(options: { persistence?: PersistenceBackend; timeoutMs?: nu
   async function terminal(id: string) { await vi.waitFor(async () => expect((await repository.snapshot()).chatOperations[id]?.status).not.toMatch(/^(QUEUED|RUNNING)$/), { timeout: 3500, interval: 10 }); return (await repository.snapshot()).chatOperations[id]!; }
   return { services, repository, runtime, callTool, fetchImplementation, app, headers, sessionId, send, get, terminal };
 }
+
+async function nodeSetup(options: Parameters<typeof setup>[0] = {}) {
+  const s = await setup(options), timestamp = new Date().toISOString();
+  await s.repository.mutate(state => {
+    state.workflows.report = { id: "report", name: "Report", description: "Read", owner: { id: "owner", name: "owner" }, assignedUserIds: [], status: "PENDING", trigger: { type: "manual" }, steps: 1, successRate: 0, lastRunAt: null,
+      publishedVersion: 1, draftVersion: 1, tags: [], domainTags: [], canRun: true, createdAt: timestamp, updatedAt: timestamp, yaml, archived: false } satisfies Workflow;
+    state.versions.report = [{ version: 1, artifactState: "PUBLISHED", yaml }];
+  });
+  const nodeContext = { workflowId: "report", nodeId: "echo", baseVersion: 1, baseHash: workflowContentHash(yaml) };
+  s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: '{"description":"Proposed label"}' } }] }));
+  return { ...s, nodeContext };
+}
+
+test("node scope overrides action prose, saves a reviewable proposal atomically and never dispatches ERP or edits a draft", async () => {
+  const s = await nodeSetup(), content = "Get invoices and send an email to manager@example.test";
+  const receipt = (await s.send(content, { nodeContext: s.nodeContext, model: "model-b" })).json().data;
+  expect(receipt.operation.nodeContext).toEqual(s.nodeContext);
+  const op = await s.terminal(receipt.operation.id);
+  expect(op).toMatchObject({ status: "ANSWERED", attempts: [], artifactRefs: [{ type: "node-proposal" }] });
+  const state = await s.repository.snapshot(), messages = state.chats[s.sessionId]!.messages;
+  expect(messages).toHaveLength(2); expect(messages[0]).toMatchObject({ operationId: op.id, artifacts: { intent: "NODE_EDIT_REQUEST", nodeId: "echo" } });
+  expect(messages[1]).toMatchObject({ operationId: op.id, artifacts: { intent: "NODE_PATCH_PROPOSAL", proposal: { ...s.nodeContext, status: "PROPOSED", command: { type: "updateNode", nodeId: "echo", patch: { description: "Proposed label" } } } } });
+  expect(state.workflows.report).toMatchObject({ yaml, draftVersion: 1, publishedVersion: 1 });
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
+  expect(JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)).model).toBe("model-b");
+  // Repeating the original identity after a later revision or lost default still retrieves it.
+  await s.repository.mutate(state => { state.workflows.report!.draftVersion++; }); vi.spyOn(s.runtime, "configured", "get").mockReturnValue(false);
+  expect((await s.send(content, { nodeContext: s.nodeContext, model: "model-b" })).json().data.operation.id).toBe(op.id);
+  expect(s.fetchImplementation).toHaveBeenCalledOnce();
+});
+
+test.each(["invalid", "stale", "missing-node", "unconfigured"])("node admission rejects %s before saving a message or invoking a provider", async kind => {
+  const s = await nodeSetup(); const context = { ...s.nodeContext };
+  if (kind === "stale") context.baseVersion++;
+  if (kind === "missing-node") context.nodeId = "absent";
+  if (kind === "unconfigured") vi.spyOn(s.runtime, "configured", "get").mockReturnValue(false);
+  const result = await s.send("Edit", { nodeContext: kind === "invalid" ? { ...context, hidden: true } : context });
+  expect(result.statusCode).toBe(kind === "invalid" ? 400 : kind === "stale" ? 409 : kind === "missing-node" ? 422 : 503);
+  expect((await s.repository.snapshot()).chats[s.sessionId]!.messages).toHaveLength(0);
+  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["edit", "revoke", "cancel"])("late node generation cannot save a proposal after %s", async kind => {
+  const s = await nodeSetup(), entered = barrier(), unblock = barrier();
+  s.fetchImplementation.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return Response.json({ choices: [{ message: { content: '{"description":"Late"}' } }] }); });
+  const id = (await s.send("Edit", { nodeContext: s.nodeContext })).json().data.operation.id; await entered.promise;
+  if (kind === "edit") await s.repository.mutate(state => { state.workflows.report!.draftVersion++; });
+  if (kind === "revoke") await s.repository.mutate(state => { state.users.owner!.status = "Inactive"; });
+  if (kind === "cancel") await s.app.inject({ method: "POST", url: `/api/chat/operations/${id}/cancel`, headers: s.headers(), payload: {} });
+  unblock.release(); expect((await s.terminal(id)).status).toBe(kind === "cancel" ? "CANCELLED" : "FAILED");
+  if (kind === "edit") expect((await s.repository.snapshot()).chatOperations[id]!.reason).toBe("DRAFT_REVISION_CONFLICT");
+  const state = await s.repository.snapshot(); expect(state.chats[s.sessionId]!.messages).toHaveLength(1); expect(state.chatOperations[id]!.artifactRefs).toBeUndefined();
+  expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("a committed node answer with lost storage acknowledgement is restored without another model call", async () => {
+  const persistence = new Persistence(), s = await nodeSetup({ persistence });
+  persistence.commitBeforeFailure = true; persistence.failWhen = state => Object.values(state.chatOperations).some(op => op.status === "ANSWERED");
+  const receipt = (await s.send("Edit", { nodeContext: s.nodeContext })).json().data;
+  await vi.waitFor(() => expect(JSON.parse(Buffer.from(persistence.payload!).toString()).chatOperations[receipt.operation.id].status).toBe("ANSWERED"));
+  await s.app.close(); apps.splice(apps.indexOf(s.app), 1);
+  const next = await setup({ persistence });
+  const saved = (await next.get(receipt.operation.id)).json().data.operation;
+  expect(saved).toMatchObject({ status: "ANSWERED", artifactRefs: [{ type: "node-proposal" }] });
+  expect((await next.repository.snapshot()).chats[s.sessionId]!.messages).toHaveLength(2);
+  expect(next.fetchImplementation).not.toHaveBeenCalled(); expect(next.callTool).not.toHaveBeenCalled();
+});
+
+test("capabilities identify admission support without external discovery, and node context cannot fall back to synchronous chat", async () => {
+  const s = await nodeSetup();
+  const capability = await s.app.inject({ method: "GET", url: "/api/chat/capabilities", headers: s.headers() });
+  expect(capability.statusCode).toBe(200); expect(capability.json().data).toEqual({ profile: "chat-admission-v1", asyncChat: true, nodeProposals: true, localDraftEdits: true });
+  const response = await s.send("Send an email", { delivery: undefined, nodeContext: s.nodeContext });
+  expect(response.statusCode).toBe(400); expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("queued node proposal survives restart with its original model and revision binding", async () => {
+  const persistence = new Persistence(), first = await nodeSetup({ persistence });
+  const queue = chatJobQueue(first.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const op = (await first.send("Edit", { nodeContext: first.nodeContext, model: "model-b" })).json().data.operation;
+  await first.app.close(); apps.splice(apps.indexOf(first.app), 1); kick.mockRestore();
+  const second = await setup({ persistence });
+  expect((await second.terminal(op.id)).status).toBe("ANSWERED");
+  expect(second.fetchImplementation).toHaveBeenCalledOnce(); expect(first.fetchImplementation).not.toHaveBeenCalled(); expect(second.callTool).not.toHaveBeenCalled();
+  expect(JSON.parse(String(second.fetchImplementation.mock.calls[0]![1]?.body)).model).toBe("model-b");
+  expect((await second.repository.snapshot()).chats[first.sessionId]!.messages.at(-1)).toMatchObject({ artifacts: { proposal: { ...first.nodeContext, after: { description: "Proposed label" } } } });
+});
+
+test("unsupported storage capability is explicit and a legacy node endpoint cannot bypass an active chat operation", async () => {
+  const unsupported = new Persistence(); Object.defineProperty(unsupported, "readQueueDurability", { value: undefined });
+  const first = await setup({ persistence: unsupported });
+  expect((await first.app.inject({ method: "GET", url: "/api/chat/capabilities", headers: first.headers() })).json().data).toMatchObject({ asyncChat: false, nodeProposals: false });
+  const s = await nodeSetup(), queue = chatJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  await s.send("Edit", { nodeContext: s.nodeContext });
+  const result = await s.app.inject({ method: "POST", url: "/api/workflows/report/node-proposals", headers: s.headers(), payload: { ...s.nodeContext, workflowId: undefined, prompt: "Edit again", sessionId: s.sessionId } });
+  expect(result.statusCode).toBe(409); expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled(); kick.mockRestore();
+});
 
 test("admission returns before held ERP completion, duplicates never re-execute, and saved receipts precede narration", async () => {
   const s = await setup(), entered = barrier(), unblock = barrier();

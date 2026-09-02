@@ -10,14 +10,20 @@ import { ProviderRuntime } from "../providers/runtime.js";
 import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
 import type { ChatProcessingHooks, StoredChatInput } from "./chat-context.js";
 import { withoutSecretFields } from "../redact/secrets.js";
+import { assertNodeContext, assertCurrentWorkflowEditor, nodeContextSchema } from "../workflows/commands.js";
 
 const queues = new WeakMap<Repository, ChatJobQueue>();
 export const activeChatStatus = (status: string) => ["QUEUED", "RUNNING"].includes(status);
 function authorityFingerprint(user: CurrentUser) { return createHash("sha256").update(canonicalJSONBytes([user.role, [...new Set(user.permissions)].sort()])).digest("hex"); }
 export function authorizeChatOperation(state: Readonly<RepositoryState>, op: ChatOperation | undefined, user: CurrentUser): ChatOperation {
   if (!op || op.actorId !== user.id) throw new HandlerFailure(404, "Chat operation not found");
-  assertChatAuthority(state, user, op.sessionId);
+  if (assertChatAuthority(state, user, op.sessionId).ownerId !== user.id) throw new HandlerFailure(404, "Chat operation not found");
   if (op.authorityFingerprint !== authorityFingerprint(user)) throw new HandlerFailure(403, "Chat operation authority changed", { code: "CHAT_AUTHORITY_CHANGED" });
+  if (op.nodeContext) {
+    const workflow = state.workflows[op.nodeContext.workflowId];
+    if (!workflow) throw new HandlerFailure(404, "Workflow not found");
+    assertCurrentWorkflowEditor(state, workflow, user);
+  }
   return op;
 }
 export function supportsChatJobs(services: HandlerServices) { return services.repository.persistence === null || services.repository.persistence.readQueueDurability === "encrypted-single-writer"; }
@@ -32,7 +38,7 @@ export function publicChatOperation(op: ChatOperation) {
   return { id: op.id, sessionId: op.sessionId, userMessageId: op.userMessageId, assistantMessageId: op.assistantMessageId ?? null,
     status: op.status, stage: op.stage, epoch: op.epoch, lastSequence: op.lastSequence, createdAt: op.createdAt, updatedAt: op.updatedAt,
     finishedAt: op.finishedAt ?? null, traceId: op.traceId, persistence: op.persistence, modelBinding: op.modelBinding,
-    cancellationRequested: op.cancellationRequested === true, reason: op.reason ?? null, artifactRefs: op.artifactRefs ?? [], attempts: op.attempts.map(a => ({ id: a.id, toolName: a.toolName, status: a.status, startedAt: a.startedAt, completedAt: a.completedAt ?? null,
+    cancellationRequested: op.cancellationRequested === true, reason: op.reason ?? null, nodeContext: op.nodeContext ?? null, artifactRefs: op.artifactRefs ?? [], attempts: op.attempts.map(a => ({ id: a.id, toolName: a.toolName, status: a.status, startedAt: a.startedAt, completedAt: a.completedAt ?? null,
       ...(["DONE", "FAILED"].includes(a.status) && a.output !== undefined ? { output: a.output } : {}) })) };
 }
 function event(state: RepositoryState, op: ChatOperation, type: string, attemptId?: string) {
@@ -69,7 +75,11 @@ export class ChatJobQueue {
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new HandlerFailure(400, "Provide a 16–128 character chat idempotency key", { code: "CHAT_JOB_KEY_REQUIRED" });
     const content = (stringValue(raw.content) || stringValue(raw.message)).trim();
     if (!content) throw new HandlerFailure(400, "message is required");
-    if (Object.keys(raw).some(k => !["content", "message", "model", "mode", "workflowContext", "delivery", "idempotencyKey"].includes(k))) throw new HandlerFailure(400, "Unsupported asynchronous chat input");
+    if (Object.keys(raw).some(k => !["content", "message", "model", "mode", "workflowContext", "nodeContext", "delivery", "idempotencyKey"].includes(k))) throw new HandlerFailure(400, "Unsupported asynchronous chat input");
+    const parsedContext = raw.nodeContext === undefined ? undefined : nodeContextSchema.safeParse(raw.nodeContext);
+    if (parsedContext && !parsedContext.success) throw new HandlerFailure(400, "Invalid selected node context");
+    const nodeContext = parsedContext?.success ? parsedContext.data : undefined;
+    if (nodeContext && (content.length > 4000 || raw.workflowContext !== undefined || raw.mode !== undefined)) throw new HandlerFailure(400, "A node prompt must contain at most 4000 characters and a single node scope");
     const body = structuredClone(raw); delete body.idempotencyKey; delete body.delivery;
     const bytes = JSON.stringify(body);
     if (Buffer.byteLength(bytes) > 200_000) throw new HandlerFailure(413, "Chat request exceeds 200 KB");
@@ -82,8 +92,10 @@ export class ChatJobQueue {
       return op ? this.receipt(authorizeChatOperation(state, op, user), fingerprint, user, state) : undefined;
     });
     if (existing) return existing;
+    if (nodeContext) await this.services.repository.read(state => assertNodeContext(state, nodeContext, user));
     const previousModel = await this.services.repository.read(state => state.chats[sessionId]?.selectedModel);
     const provider = selectProvider(this.services, requestedModel(body.model) ?? previousModel);
+    if (nodeContext && !provider?.configured) throw new HandlerFailure(503, "Configure a provider before requesting a node proposal", { code: "PROVIDER_NOT_CONFIGURED" });
     const configuration = provider?.configuration ?? null, binding = provider?.binding ?? null;
     const connection = this.connection(), contracts = this.contracts();
     const admitted = await this.services.repository.mutate(state => {
@@ -91,11 +103,13 @@ export class ChatJobQueue {
       if (chat.ownerId !== user.id) throw new HandlerFailure(404, "Chat session not found");
       const duplicate = Object.values(state.chatOperations).find(op => op.idempotencyScope === scope);
       if (duplicate) return this.receipt(authorizeChatOperation(state, duplicate, user), fingerprint, user, state);
+      if (nodeContext) assertNodeContext(state, nodeContext, user);
       const pending = Object.values(state.chatOperations).filter(op => activeChatStatus(op.status));
       if (pending.some(op => op.sessionId === sessionId)) throw new HandlerFailure(409, "This conversation already has an active operation", { code: "CHAT_OPERATION_ACTIVE" });
       if (pending.length >= 100) throw new HandlerFailure(429, "Chat queue is full; no message was admitted", { code: "CHAT_QUEUE_FULL" });
       const id = nextID(state, "chatop"), timestamp = now();
-      const userMessage = { id: nextID(state, "msg"), role: "user", text: content, createdAt: timestamp, traceId, operationId: id, ...(binding ? { modelBinding: binding } : {}) };
+      const userMessage = { id: nextID(state, "msg"), role: "user", text: content, createdAt: timestamp, traceId, operationId: id, ...(binding ? { modelBinding: binding } : {}),
+        ...(nodeContext ? { artifacts: { intent: "NODE_EDIT_REQUEST", ...nodeContext } } : {}) };
       const stored = { session: { id: chat.id, title: chat.title, selectedModel: binding?.model ?? chat.selectedModel }, userMessage,
         priorMessages: chat.messages.slice(-10).map(m => `${stringValue(m.role)}: ${stringValue(m.text)}`) };
       const privateInput: PrivateInput = { version: 1, operationId: id, body, content, user: structuredClone(user), stored, provider: configuration };
@@ -103,7 +117,7 @@ export class ChatJobQueue {
       if (privateBytes.length > 500_000) throw new HandlerFailure(413, "Chat context exceeds 500 KB; shorten the workflow context or start a new conversation");
       const op: ChatOperation = { version: 1, id, sessionId, actorId: user.id, userMessageId: userMessage.id, status: "QUEUED", stage: "QUEUED", epoch: 1, lastSequence: 0,
         createdAt: timestamp, updatedAt: timestamp, traceId, persistence: this.services.repository.persistence === null ? "memory-only" : "durable", modelBinding: binding,
-        inputCiphertext: this.#codec.encode(privateBytes).toString("base64"), idempotencyScope: scope, requestFingerprint: fingerprint, connectionFingerprint: connection, contractFingerprint: contracts, authorityFingerprint: authorityFingerprint(user), attempts: [] };
+        inputCiphertext: this.#codec.encode(privateBytes).toString("base64"), idempotencyScope: scope, requestFingerprint: fingerprint, connectionFingerprint: connection, contractFingerprint: contracts, authorityFingerprint: authorityFingerprint(user), attempts: [], ...(nodeContext ? { nodeContext } : {}) };
       state.chatOperations[id] = op;
       chat.messages.push(userMessage); chat.messageCount = chat.messages.length; chat.updatedAt = timestamp;
       if (binding) chat.selectedModel = binding.model;
@@ -174,7 +188,8 @@ export class ChatJobQueue {
         for (const a of current.attempts) if (a.status === "DISPATCH_INTENT") { a.status = "UNKNOWN"; a.completedAt = now(); }
         const uncertain = current.attempts.some(a => a.status === "UNKNOWN");
         current.status = uncertain ? "RECOVERY_REQUIRED" : current.cancellationRequested || controller.signal.aborted ? "CANCELLED" : "FAILED";
-        current.stage = current.status; current.reason = uncertain ? "TOOL_OUTCOME_UNKNOWN" : "PROCESSING_STOPPED"; current.finishedAt = now(); delete current.inputCiphertext;
+        const knownReason = error instanceof HandlerFailure && isRecord(error.meta) && ["DRAFT_REVISION_CONFLICT", "NODE_PROPOSAL_INVALID"].includes(String(error.meta.code)) ? String(error.meta.code) : "PROCESSING_STOPPED";
+        current.stage = current.status; current.reason = uncertain ? "TOOL_OUTCOME_UNKNOWN" : current.status === "CANCELLED" ? "PROCESSING_STOPPED" : knownReason; current.finishedAt = now(); delete current.inputCiphertext;
         event(state, current, "operation.stopped"); audit(state, current, "chat.operation.stopped");
       }); } catch { /* Storage acknowledgement uncertain: restart reconciles, never replay. */ }
     } finally { this.#activeId = undefined; this.#controller = undefined; }
@@ -183,13 +198,13 @@ export class ChatJobQueue {
     const current = (state: RepositoryState) => {
       const op = state.chatOperations[admitted.id];
       if (!op || op.status !== "RUNNING" || op.epoch !== admitted.epoch || op.workerId !== this.#worker || this.#closed || signal.aborted || op.cancellationRequested) throw new Error("Chat worker generation is no longer authorized");
-      assertChatAuthority(state, user, op.sessionId); return op;
+      authorizeChatOperation(state, op, user); return op;
     };
     return {
       assertCurrent: current,
       stage: async stage => { await this.services.repository.mutate(state => { const op = current(state); op.stage = stage; event(state, op, "operation.stage"); }); },
       artifact: (state, reference) => {
-        const op = current(state); (op.artifactRefs ??= []).push(reference); op.stage = "DRAFT_SAVED";
+        const op = current(state); (op.artifactRefs ??= []).push(reference); op.stage = reference.type === "node-proposal" ? "PROPOSAL_SAVED" : "DRAFT_SAVED";
         event(state, op, "artifact.saved"); audit(state, op, "chat.artifact.saved");
       },
       saved: (state, message) => {

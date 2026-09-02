@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { jsonObjectSchema, workflowStepBlueprintSchema, ok, fail, type Workflow } from "../../models/schemas.js";
-import { parseWorkflowYAMLStrict, stringifyWorkflowYAML, workflowContentHash } from "../../parser/workflow.js";
+import { ok, fail, type Workflow } from "../../models/schemas.js";
+import { parseWorkflowYAMLStrict, workflowContentHash } from "../../parser/workflow.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
 import { inspectReadWorkflow } from "../../runner/read-workflow.js";
 import { discoverTools } from "../../agent/tool-discovery.js";
@@ -12,62 +12,14 @@ import { canonicalJSONBytes } from "../../core/canonical-json.js";
 import { supportsReadJobs } from "../../runner/read-jobs.js";
 import { promptData } from "../../prompts/contracts.js";
 import { assertChatAuthority, selectProvider } from "./model-selection.js";
+import { activeChatStatus } from "../../agent/chat-jobs.js";
+import { nodeIdSchema as id, nodePatchSchema as patch, workflowRevisionSchema as base, workflowCommandSchema as command,
+  permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
+export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
 
-const id = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
-const patch = z.object({ action: z.string().min(1).max(128).optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine((value) => Object.keys(value).length > 0);
-const command = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("updateNode"), nodeId: id, patch }).strict(),
-  z.object({ type: z.literal("addNode"), node: workflowStepBlueprintSchema, beforeNodeId: id.nullable() }).strict(),
-  z.object({ type: z.literal("removeNode"), nodeId: id }).strict(),
-  z.object({ type: z.literal("moveNode"), nodeId: id, beforeNodeId: id.nullable() }).strict(),
-  z.object({ type: z.literal("restoreDraft"), yaml: z.string().min(1).max(200000) }).strict(),
-  z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
-]);
-const base = { baseVersion: z.number().int().min(1), baseHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) };
 const requestSchema = z.object({ ...base, command, proposalId: z.string().min(1).max(128).optional() }).strict();
 const proposalSchema = z.object({ ...base, nodeId: id, prompt: z.string().trim().min(1).max(4000), sessionId: z.string().min(1).max(128), model: z.string().trim().min(1).max(256).optional() }).strict();
 
-function permitted(workflow: Workflow, user: CurrentUser, editing: boolean): boolean {
-  return !workflow.archived && (!editing || user.permissions.includes("workflow:write")) &&
-    (user.permissions.includes("workflow:read") || workflow.owner.id === user.id || (workflow.assignedUserIds ?? []).includes(user.id));
-}
-function requireBase(workflow: Workflow, version: number, hash: string): void {
-  if (workflow.draftVersion !== version || workflowContentHash(workflow.yaml) !== hash)
-    throw new HandlerFailure(409, "This draft changed. Reload before applying the edit", { code: "DRAFT_REVISION_CONFLICT" });
-}
-export function assertCurrentWorkflowEditor(state: Readonly<RepositoryState>, workflow: Workflow, user: CurrentUser): CurrentUser {
-  const account = state.users[user.id], role = account && state.roles[account.roleId];
-  if (!account || account.status.toLowerCase() !== "active") throw new HandlerFailure(403, "Editing authority was revoked");
-  const current = { ...account, role: role?.name ?? "", permissions: [...new Set([...(role?.permissions ?? []), ...account.permissionOverrides])] };
-  if (current.role !== user.role || !permitted(workflow, current, true)) throw new HandlerFailure(403, "Editing authority changed; reload the workspace");
-  return current;
-}
-function apply(source: string, change: z.infer<typeof command>): string {
-  if (change.type === "discardProposal") return source;
-  const blueprint = parseWorkflowYAMLStrict(change.type === "restoreDraft" ? change.yaml : source);
-  if (change.type === "restoreDraft") return stringifyWorkflowYAML(blueprint);
-  if (change.type === "addNode") {
-    if (blueprint.steps.some((step) => step.id === change.node.id)) throw new HandlerFailure(422, "Node ID already exists");
-    const index = change.beforeNodeId === null ? blueprint.steps.length : blueprint.steps.findIndex((step) => step.id === change.beforeNodeId);
-    if (index < 0) throw new HandlerFailure(422, "Insertion target does not exist");
-    blueprint.steps.splice(index, 0, change.node);
-  } else {
-    const index = blueprint.steps.findIndex((step) => step.id === change.nodeId);
-    if (index < 0) throw new HandlerFailure(422, "Selected node does not exist");
-    if (change.type === "updateNode") blueprint.steps[index] = { ...blueprint.steps[index]!, ...change.patch };
-    else if (change.type === "removeNode") blueprint.steps.splice(index, 1);
-    else {
-      if (change.beforeNodeId === change.nodeId) throw new HandlerFailure(422, "A node cannot move before itself");
-      const [node] = blueprint.steps.splice(index, 1);
-      const target = change.beforeNodeId === null ? blueprint.steps.length : blueprint.steps.findIndex((step) => step.id === change.beforeNodeId);
-      if (target < 0) throw new HandlerFailure(422, "Move target does not exist");
-      blueprint.steps.splice(target, 0, node!);
-    }
-  }
-  if (blueprint.steps.length > 200 || new Set(blueprint.steps.map((step) => step.id)).size !== blueprint.steps.length)
-    throw new HandlerFailure(422, "Draft must have at most 200 uniquely identified nodes");
-  return stringifyWorkflowYAML(blueprint);
-}
 function record(workflow: Workflow) { return { workflowId: workflow.id, version: workflow.draftVersion, contentHash: workflowContentHash(workflow.yaml), yaml: workflow.yaml, publishedVersion: workflow.publishedVersion, canRun: workflow.canRun }; }
 function ownedProposal(state: RepositoryState, actorId: string, workflowId: string, proposalId: string) {
   for (const chat of Object.values(state.chats)) {
@@ -120,7 +72,10 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       if (!node) throw new HandlerFailure(422, "Selected node does not exist");
       if (!(await services.repository.read((state) => state.chats[value.sessionId]?.ownerId === user.id))) throw new HandlerFailure(404, "Chat session not found");
       if (!services.providerRuntime?.configured) throw new HandlerFailure(503, "Configure a model provider before requesting a node proposal", { code: "PROVIDER_NOT_CONFIGURED" });
-      const sessionModel = await services.repository.read((state) => assertChatAuthority(state, user, value.sessionId).selectedModel);
+      const sessionModel = await services.repository.read((state) => {
+        if (Object.values(state.chatOperations).some(op => op.sessionId === value.sessionId && activeChatStatus(op.status))) throw new HandlerFailure(409, "This conversation has an active operation", { code: "CHAT_OPERATION_ACTIVE" });
+        return assertChatAuthority(state, user, value.sessionId).selectedModel;
+      });
       const provider = selectProvider(services, value.model ?? sessionModel)!;
       const prompt = promptData({ instruction: value.prompt, node: withoutSecretFields(node), tools: services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role)).map((tool) => ({ name: tool.name, inputSchema: tool.input_schema })) });
       let proposed: z.infer<typeof patch>;
@@ -133,6 +88,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       const yaml = apply(current.yaml, change);
       const validation = services.validator.validatePlan("NodeProposal", yaml, user.role);
       const proposal = await services.repository.mutate((state) => {
+        if (Object.values(state.chatOperations).some(op => op.sessionId === value.sessionId && activeChatStatus(op.status))) throw new HandlerFailure(409, "This conversation has an active operation", { code: "CHAT_OPERATION_ACTIVE" });
         const scopedChat = assertChatAuthority(state, user, value.sessionId);
         if (provider.binding) scopedChat.selectedModel = provider.binding.model;
         const fresh = state.workflows[workflowId];

@@ -710,6 +710,10 @@ export const routeTable = [
   },
   {
     "method": "GET",
+    "path": "/api/chat/capabilities"
+  },
+  {
+    "method": "GET",
     "path": "/api/chat/sessions/:id/operations"
   },
   {
