@@ -7,7 +7,7 @@ import Card from "../shared/ui/Card";
  * Performs the Content operation on the application for the HealingReport module.
  ******************************************************************************/
 function Content({ report }) {
-  if (!report || report.status === "NO_HEALING_REQUIRED") return <p className="text-sm text-gray-500">No self-healing action was required.</p>;
+  if (!report || report.status === "NO_HEALING_REQUIRED") return <p className="text-sm text-gray-500">No recovery action is recorded in this report. Automatic replay is disabled.</p>;
   return (
     <div className="flex items-start gap-4">
       <span className="flex h-12 w-12 items-center justify-center rounded-full bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-500/15 dark:text-fuchsia-300"><Icon icon="mdi:shield-refresh-outline" className="h-6 w-6" /></span>

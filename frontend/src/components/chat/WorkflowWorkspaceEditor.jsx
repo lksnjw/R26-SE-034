@@ -7,6 +7,9 @@ import { readWorkspaceValue, writeWorkspaceValue } from "../../utils/workspaceSe
 import "./workflowWorkspace.css";
 import ReadableValue, { ReadableResult } from "./ReadableValue";
 import ValueFields from "./ValueFields";
+import { useExecutionMonitor } from "../../hooks/useExecutionMonitor";
+import ExecutionRunControls from "../executions/ExecutionRunControls";
+import { isActiveExecution } from "../../utils/executionEvents";
 
 const button = "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800";
 const input = "w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackground";
@@ -37,12 +40,19 @@ function NodeInspector({ node, canEdit, busy, onPreview, onPrompt, sharedChat })
   </aside>;
 }
 
-export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit = false, selectionStorageKey, onChatChanged, savedProposals = [], onNodeContext, onFocusChat }) {
+export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit = false, canControl = false, selectionStorageKey, onChatChanged, savedProposals = [], onNodeContext, onFocusChat }) {
   const [record, setRecord] = useState(null), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(() => readWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, ""));
   const [proposal, setProposal] = useState(null), [undo, setUndo] = useState([]), [redo, setRedo] = useState([]);
   const [resolvedProposals, setResolvedProposals] = useState([]), [notice, setNotice] = useState("");
   const [run, setRun] = useState(null), [timeline, setTimeline] = useState([]), [runInput, setRunInput] = useState({});
+  const [submittingRun, setSubmittingRun] = useState(false);
+  const [unconfirmedRun, setUnconfirmedRun] = useState(false);
+  const monitor = useExecutionMonitor(run?.id, { enabled: run?.readProgress?.profile === "read-progress-v1" || run?.status === "RUNNING" });
+  const shownRun = monitor.denied ? null : monitor.execution ?? run;
+  const shownTimeline = monitor.denied ? [] : monitor.execution ? monitor.timeline : timeline;
+  const runActive = isActiveExecution(shownRun?.status);
+  const snapshotMatches = shownRun?.workflowSnapshot?.yaml === record?.yaml;
   const [adding, setAdding] = useState(false), [newId, setNewId] = useState(""), [newAction, setNewAction] = useState("");
   const load = useCallback(async () => { const next = await workflowService.readiness(workflowId); setRecord(next); return next; }, [workflowId]);
   useEffect(() => {
@@ -78,16 +88,21 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
     const next = await workflowService.proposeNode(workflowId, record, node.id, prompt, sessionId);
     setProposal(next); onChatChanged?.();
   });
-  const attemptRun = () => perform(async () => {
+  const attemptRun = async () => {
+    if (submittingRun || unconfirmedRun || runActive || shownRun?.status === "RECOVERY_REQUIRED") return;
+    setSubmittingRun(true); setError("");
     try {
       const result = await workflowService.run(workflowId, runInput);
       setRun(result); setTimeline(await executionService.getTimeline(result.id));
     } catch (cause) {
       const executionId = cause?.response?.data?.meta?.executionId;
-      if (executionId) { setRun(await executionService.get(executionId)); setTimeline(await executionService.getTimeline(executionId)); }
-      throw cause;
-    }
-  });
+      if (executionId) {
+        try { const result = await executionService.get(executionId); setRun(result); setTimeline(await executionService.getTimeline(executionId)); }
+        catch { setUnconfirmedRun(true); setNotice(`Run ${executionId} was recorded, but its evidence could not be loaded. Open Execution History before starting another run.`); }
+      } else if (!cause?.response) { setUnconfirmedRun(true); setNotice("The run response was not received. Its outcome is unconfirmed; check Execution History before starting another run. No automatic retry was sent."); }
+      setError(message(cause));
+    } finally { setSubmittingRun(false); }
+  };
   if (!record) return <div className="p-5"><p className="text-xs text-gray-500">Loading saved workflow…</p>{error && <p role="alert" className="mt-3 text-xs text-red-600">{error}</p>}<button className={button} onClick={() => perform(load)}>Reload</button></div>;
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="border-b border-gray-200 px-5 py-3 dark:border-gray-800">
@@ -106,6 +121,9 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
       {error && <div role="alert" className="mb-4 rounded-md bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/30">{error}{pendingProposal && <p className="mt-1">Your unsaved proposal is retained. Reload if another edit changed the draft.</p>}</div>}
       {preview.error && <p role="alert" className="text-xs text-amber-700">{preview.error}</p>}
       {!!record.validation?.errors?.length && <details className="mb-4 text-xs"><summary className="cursor-pointer text-amber-700">Validation issues ({record.validation.errors.length})</summary><ul className="mt-2 space-y-1 text-gray-500">{record.validation.errors.map((issue, index) => <li key={index}>{issue}</li>)}</ul></details>}
+      {(shownRun || monitor.denied) && <div className="mb-5"><ExecutionRunControls key={shownRun?.id || "unavailable"} execution={shownRun} canControl={canControl} monitor={monitor} />
+        {shownRun && !snapshotMatches && <p className="mt-2 text-[10px] text-gray-500">These answers belong to a different or unverified run snapshot, not the current draft.</p>}
+      </div>}
       {adding && <form className="mb-5 space-y-2 border-b border-gray-200 pb-4 dark:border-gray-700" onSubmit={(event) => { event.preventDefault(); perform(async () => { await save({ type: "addNode", node: { id: newId, action: newAction, parameters: {} }, beforeNodeId: null }); setAdding(false); setNewId(""); setNewAction(""); }); }}>
         <input className={input} aria-label="New node ID" placeholder="Unique node ID" pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" value={newId} onChange={(event) => setNewId(event.target.value)} required />
         <input className={input} aria-label="New node tool" placeholder="Exact registered tool name" value={newAction} onChange={(event) => setNewAction(event.target.value)} required />
@@ -114,17 +132,20 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
       <p className="mb-4 text-[10px] leading-4 text-gray-500">Source-order flow · conditions and approvals are preserved, not inferred as branch paths.</p>
       <ol className="workspace-flow space-y-4">
         {preview.steps.map((step, index) => {
-          const attempt = timeline.find((item) => item.nodeId === step.id);
-          const output = run?.stepOutputs?.[step.id];
+          const attempt = shownTimeline.find((item) => item.nodeId === step.id);
+          const output = shownRun?.stepOutputs?.[step.id];
           return <li key={step.id} className="relative">
             <button type="button" aria-pressed={node?.id === step.id} onClick={() => { setSelected(step.id); writeWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, step.id); setProposal(null); }} className={`workspace-node relative z-10 flex w-full items-center gap-3 rounded-lg border bg-white px-4 py-3 text-left dark:bg-darkBackground ${node?.id === step.id ? "border-primary ring-1 ring-primary/20" : "border-gray-200 dark:border-gray-700"}`}>
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 text-xs text-gray-400 dark:bg-gray-900">{attempt?.status === "DONE" ? <Icon icon="lucide:check" /> : attempt?.status === "FAILED" ? <Icon icon="lucide:triangle-alert" /> : String(index + 1).padStart(2, "0")}</span>
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 text-xs text-gray-400 dark:bg-gray-900">{snapshotMatches && attempt?.status === "DONE" ? <Icon icon="lucide:check" /> : snapshotMatches && attempt?.status === "FAILED" ? <Icon icon="lucide:triangle-alert" /> : String(index + 1).padStart(2, "0")}</span>
               <span className="min-w-0 flex-1"><span className="block break-words text-xs font-semibold">{step.source.description || step.id}</span><span className="mt-1 block break-words font-mono text-[10px] text-gray-500">{step.action}</span></span>
               {step.source.condition && <span className="text-[9px] text-gray-500">condition</span>}
               <Icon icon="lucide:chevron-right" className="h-3 w-3 text-gray-400" />
             </button>
-            {output !== undefined && <details className="relative z-10 ml-10 mt-2 rounded-md bg-white/80 px-3 py-2 text-[10px] dark:bg-gray-900"><summary className="cursor-pointer">Node answer · run {run.id}</summary><div className="mt-2 max-h-64 overflow-auto"><ReadableResult value={output} /></div></details>}
-            {attempt?.status === "FAILED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-red-600">This node failed or was blocked. Following nodes were not executed.</p>}
+            {output !== undefined && <details className="relative z-10 ml-10 mt-2 rounded-md bg-white/80 px-3 py-2 text-[10px] dark:bg-gray-900"><summary className="cursor-pointer">Node answer · run {shownRun.id}</summary><div className="mt-2 max-h-64 overflow-auto"><ReadableResult value={output} /></div></details>}
+            {attempt?.status === "FAILED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-red-600">In this run, this node failed or was blocked. Following nodes were not executed.</p>}
+            {attempt?.status === "UNKNOWN" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-amber-700 dark:text-amber-300">Outcome unknown · the read may have reached ERP, but no confirmed answer was saved. No automatic replay.</p>}
+            {attempt?.status === "RUNNING" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">{attempt.phase === "DISPATCH_INTENT" ? "Read dispatch recorded · waiting for a saved answer" : "Checking this node before dispatch"}</p>}
+            {attempt?.outcome === "NOT_DISPATCHED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">No dispatch was recorded for this attempt.</p>}
           </li>;
         })}
       </ol>
@@ -137,8 +158,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
         {pendingProposal.validation && <p className="mt-2 text-[10px] text-gray-500">{pendingProposal.validation.passed ? "Proposal validation passed · not published" : "Proposal has validation issues · may only be saved as a blocked draft"}</p>}
         <div className="mt-3 flex gap-2"><button className={`${button} bg-primary text-white hover:bg-primary/90`} disabled={busy} onClick={() => perform(() => save(pendingProposal.command, "edit", { version: pendingProposal.baseVersion, contentHash: pendingProposal.baseHash, proposalId: pendingProposal.id }))}>Apply to draft</button><button className={button} disabled={busy} onClick={() => perform(async () => { if (pendingProposal.id) { await workflowService.command(workflowId, record, { type: "discardProposal", proposalId: pendingProposal.id }); setResolvedProposals((items) => [...items, pendingProposal.id]); onChatChanged?.(); } setProposal(null); setNotice("Proposal discarded. The workflow was not changed."); })}>Discard</button></div>
       </section>}
-      <details className="mt-6 border-t border-gray-200 pt-4 text-xs dark:border-gray-700"><summary className="cursor-pointer">Run published read workflow</summary><p className="mt-2 text-[10px] text-gray-500">Publish explicitly and verify the connection first. Runtime authorization is rechecked for each call.</p><div className="mt-3"><ValueFields label="Run inputs" value={runInput} onChange={setRunInput} /></div><button className={`${button} mt-2 bg-primary/10 text-primary`} disabled={busy || !record.can_attempt_run} onClick={attemptRun}><Icon icon="lucide:play" />Run published version</button></details>
-      {run && <div className="mt-4 border-t border-gray-200 pt-3 text-[10px] text-gray-500 dark:border-gray-700"><p>Run {run.id} · {run.status} · published v{run.workflowSnapshot?.version ?? "unknown"}</p><p className="mt-1">Answers belong to this run snapshot, not unsaved edits.</p>{run.agentSummary && <p className="mt-2">{run.agentSummary}</p>}</div>}
+      <details className="mt-6 border-t border-gray-200 pt-4 text-xs dark:border-gray-700"><summary className="cursor-pointer">Run published read workflow</summary><p className="mt-2 text-[10px] text-gray-500">Publish explicitly and verify the connection first. Runtime authorization is rechecked for each call.</p><div className="mt-3"><ValueFields label="Run inputs" value={runInput} onChange={setRunInput} /></div><button className={`${button} mt-2 bg-primary/10 text-primary`} disabled={busy || submittingRun || unconfirmedRun || runActive || shownRun?.status === "RECOVERY_REQUIRED" || !record.can_attempt_run} onClick={attemptRun}><Icon icon="lucide:play" />Run published version</button>{submittingRun && <p role="status" className="mt-2 text-gray-500">Run request in progress. This synchronous endpoint has not returned its run identifier yet. Editing a draft does not alter a running snapshot.</p>}{unconfirmedRun && <a href="/executions" className="mt-2 block text-primary">Review execution history · outcome unconfirmed</a>}</details>
+      {shownRun && <div className="mt-4 border-t border-gray-200 pt-3 text-[10px] text-gray-500 dark:border-gray-700"><p>Run {shownRun.id} · {shownRun.status} · published v{shownRun.workflowSnapshot?.version ?? "unknown"}</p><p className="mt-1">Answers belong to this run snapshot, not unsaved edits.</p>{shownRun.agentSummary && <p className="mt-2">{shownRun.agentSummary}</p>}<a href={`/executions/${encodeURIComponent(shownRun.id)}`} className="mt-2 inline-block text-primary">Open full run evidence</a></div>}
       <details className="mt-5 text-xs"><summary className="cursor-pointer">Saved source</summary><pre className="mt-3 overflow-auto whitespace-pre-wrap break-words text-[10px]">{record.yaml}</pre></details>
       {busy && <p role="status" className="mt-4 text-xs text-gray-500">Working… no completed result is assumed.</p>}
     </div>

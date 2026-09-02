@@ -40,8 +40,8 @@ export const executionService = {
  *
  * Gets the application for the execution service module.
  ******************************************************************************/
-  async get(id) {
-    return normalizeExecution(unwrap(await apiClient.get(`/executions/${id}`)));
+  async get(id, options = {}) {
+    return normalizeExecution(unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}`, options)));
   },
 /*******************************************************************************
  * Function: getLogs
@@ -56,8 +56,15 @@ export const executionService = {
  *
  * Gets timeline for the execution service module.
  ******************************************************************************/
-  async getTimeline(id) {
-    return unwrap(await apiClient.get(`/executions/${id}/timeline`), []);
+  async getTimeline(id, options = {}) {
+    return unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}/timeline`, options), []);
+  },
+  async getEvents(id, after = 0, options = {}) {
+    return unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}/events`, { ...options, params: { after, limit: 100 } }));
+  },
+  async cancel(id) {
+    // 202 confirms a request, not an interrupted SDK transport or terminal run.
+    return normalizeExecution(unwrap(await apiClient.post(`/executions/${encodeURIComponent(id)}/cancel`, {})));
   },
 /*******************************************************************************
  * Function: getHealingReport

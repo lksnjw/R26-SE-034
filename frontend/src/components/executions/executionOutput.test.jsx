@@ -33,7 +33,8 @@ test("a DONE execution renders its final output", () => {
   const final = screen.getByTestId("final-output");
   expect(final.textContent).toMatch(/Final output/);
   expect(final.textContent).toMatch(/INV-42/);
-  expect(final.textContent).toMatch(/"cleared": true/);
+  expect(final.textContent).toMatch(/ClearedYes/);
+  expect(final.querySelector("pre")).toBeNull();
   // Every step output is listed too.
   expect(screen.getByTestId("step-outputs").textContent).toMatch(/classify/);
   expect(screen.getByTestId("step-outputs").textContent).toMatch(/utilities/);
@@ -53,7 +54,7 @@ test("a FAILED execution still renders the partial output it produced", () => {
 
 test("an execution with no output says so instead of rendering an empty box", () => {
   render(<ExecutionOutputPanel execution={{ id: "run-3", status: "FAILED" }} />);
-  expect(screen.getByTestId("no-output").textContent).toMatch(/did not produce an output/i);
+  expect(screen.getByTestId("no-output").textContent).toMatch(/did not produce a confirmed output/i);
   expect(screen.queryByTestId("final-output")).toBeNull();
 });
 
@@ -73,16 +74,24 @@ test("redacted output renders safely when credential-shaped fields are absent", 
   expect(screen.getByTestId("step-outputs").textContent).toMatch(/lookup/);
 });
 
-test("a large output is truncated with a view-full affordance and does not crash", () => {
+test("a large output has a bounded readable table with disclosed preview limits", () => {
   const big = { rows: Array.from({ length: 4000 }, (_, index) => ({ index, value: `row-${index}` })) };
   render(<ExecutionOutputPanel execution={{ id: "run-4", status: "DONE", finalOutput: big }} />);
 
   const block = screen.getAllByTestId("output-block")[0];
-  expect(block.textContent.length).toBeLessThan(2100);
-  expect(block.textContent.endsWith("…")).toBe(true);
+  expect(block.querySelector("pre")).toBeNull();
+  expect(block.querySelectorAll("tbody tr")).toHaveLength(25);
+  expect(block.textContent).toMatch(/Showing 25 of 4000 records/);
 
-  const toggle = screen.getByRole("button", { name: /View full output/i });
+  const toggle = screen.getByRole("button", { name: /Show more fields and rows/i });
   fireEvent.click(toggle);
-  expect(screen.getAllByTestId("output-block")[0].textContent.length).toBeGreaterThan(2100);
-  expect(screen.getByRole("button", { name: /Show less/i })).not.toBeNull();
+  expect(block.querySelectorAll("tbody tr")).toHaveLength(50);
+  expect(block.textContent).toMatch(/Showing 50 of 4000 records/);
+});
+
+test.each(["CANCELLED", "RECOVERY_REQUIRED", "RUNNING"])("%s retains confirmed partial answers without a completed outcome label", (status) => {
+  render(<ExecutionOutputPanel execution={{ ...failedExecution, status }} />);
+  expect(screen.getByTestId("final-output").textContent).toMatch(/Last completed step/);
+  expect(screen.getByTestId("partial-output-badge")).not.toBeNull();
+  expect(screen.getByTestId("step-outputs").textContent).toMatch(/V-1/);
 });

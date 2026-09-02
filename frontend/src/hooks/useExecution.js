@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { executionService } from "../services/execution.service";
+import { useExecutionMonitor } from "./useExecutionMonitor";
+import { isActiveExecution } from "../utils/executionEvents";
 
 /*******************************************************************************
  * Function: useExecution
@@ -7,6 +9,7 @@ import { executionService } from "../services/execution.service";
  * Provides execution for the useExecution module.
  ******************************************************************************/
 export function useExecution(executionId, params = {}) {
+  const monitor = useExecutionMonitor(executionId);
 /*******************************************************************************
  * Function: listQuery
  *
@@ -16,17 +19,13 @@ export function useExecution(executionId, params = {}) {
     queryKey: ["executions", params],
     queryFn: () => executionService.list(params),
     enabled: !executionId,
+    refetchInterval: (query) => query.state.data?.some((item) => isActiveExecution(item.status)) ? 3000 : false,
   });
 /*******************************************************************************
  * Function: detailQuery
  *
  * Performs the detail Query operation on query for the useExecution module.
  ******************************************************************************/
-  const detailQuery = useQuery({
-    queryKey: ["execution", executionId],
-    queryFn: () => executionService.get(executionId),
-    enabled: Boolean(executionId),
-  });
   const executions = listQuery.data || [];
   const selectedId = executionId || executions[0]?.id;
 /*******************************************************************************
@@ -35,9 +34,9 @@ export function useExecution(executionId, params = {}) {
  * Performs the logs Query operation on query for the useExecution module.
  ******************************************************************************/
   const logsQuery = useQuery({
-    queryKey: ["execution-logs", selectedId],
+    queryKey: ["execution-logs", selectedId, executionId ? monitor.cursor : 0],
     queryFn: () => executionService.getLogs(selectedId),
-    enabled: Boolean(selectedId),
+    enabled: Boolean(selectedId) && !monitor.denied,
   });
 /*******************************************************************************
  * Function: timelineQuery
@@ -47,7 +46,7 @@ export function useExecution(executionId, params = {}) {
   const timelineQuery = useQuery({
     queryKey: ["execution-timeline", selectedId],
     queryFn: () => executionService.getTimeline(selectedId),
-    enabled: Boolean(selectedId),
+    enabled: Boolean(selectedId) && !executionId,
   });
 /*******************************************************************************
  * Function: healingQuery
@@ -55,26 +54,27 @@ export function useExecution(executionId, params = {}) {
  * Performs the healing Query operation on query for the useExecution module.
  ******************************************************************************/
   const healingQuery = useQuery({
-    queryKey: ["execution-healing", selectedId],
+    queryKey: ["execution-healing", selectedId, executionId ? monitor.cursor : 0],
     queryFn: () => executionService.getHealingReport(selectedId),
-    enabled: Boolean(selectedId),
+    enabled: Boolean(selectedId) && !monitor.denied,
   });
   return {
     executions,
-    execution: detailQuery.data || null,
+    execution: monitor.execution,
+    monitor,
     selectedId,
     logs: logsQuery.data || [],
-    timeline: timelineQuery.data || [],
+    timeline: executionId ? monitor.timeline : timelineQuery.data || [],
     healingReport: healingQuery.data || null,
     loading: executionId
-      ? detailQuery.isLoading || logsQuery.isLoading || timelineQuery.isLoading || healingQuery.isLoading
+      ? (!monitor.execution && !monitor.error) || logsQuery.isLoading || healingQuery.isLoading
       : listQuery.isLoading,
     error: executionId
-      ? detailQuery.error || logsQuery.error || timelineQuery.error || healingQuery.error
+      ? ((!monitor.execution || monitor.denied) && monitor.error ? new Error(monitor.error) : null) || logsQuery.error || healingQuery.error
       : listQuery.error,
     reload: () =>
       executionId
-        ? Promise.all([detailQuery.refetch(), logsQuery.refetch(), timelineQuery.refetch(), healingQuery.refetch()])
+        ? Promise.all([monitor.refresh(), logsQuery.refetch(), healingQuery.refetch()])
         : listQuery.refetch(),
   };
 }

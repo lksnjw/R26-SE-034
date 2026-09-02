@@ -1,23 +1,6 @@
-import { useState } from "react";
 import { Icon } from "@iconify/react";
 import Card from "../shared/ui/Card";
-
-const TRUNCATE_AT = 2000;
-
-/*******************************************************************************
- * Function: format
- *
- * Formats the application for the ExecutionOutputPanel module.
- ******************************************************************************/
-function format(value) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
+import { ReadableResult } from "../chat/ReadableValue";
 
 /*******************************************************************************
  * Function: OutputBlock
@@ -25,28 +8,9 @@ function format(value) {
  * Performs the Output Block operation on block for the ExecutionOutputPanel module.
  ******************************************************************************/
 function OutputBlock({ value }) {
-  const [expanded, setExpanded] = useState(false);
-  const text = format(value);
-  const isLong = text.length > TRUNCATE_AT;
-  const shown = expanded || !isLong ? text : `${text.slice(0, TRUNCATE_AT)}…`;
-
   return (
-    <div>
-      <pre
-        data-testid="output-block"
-        className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded-xl bg-backgroundLight px-4 py-3 font-mono text-xs leading-6 text-gray-800 dark:bg-darkBackgroundVery dark:text-gray-200"
-      >
-        {shown}
-      </pre>
-      {isLong ? (
-        <button
-          type="button"
-          onClick={() => setExpanded((current) => !current)}
-          className="mt-2 text-xs font-bold text-primary hover:underline"
-        >
-          {expanded ? "Show less" : `View full output (${text.length.toLocaleString()} characters)`}
-        </button>
-      ) : null}
+    <div data-testid="output-block" className="max-h-[420px] overflow-auto">
+      <ReadableResult value={value} />
     </div>
   );
 }
@@ -72,25 +36,25 @@ function ExecutionOutputPanel({ execution }) {
       <Card>
         <h2 className="section-title mb-3">Workflow output</h2>
         <p data-testid="no-output" className="text-sm text-gray-500">
-          This run did not produce an output.
+          {status === "RUNNING" ? "No confirmed output has been saved yet." : "This run did not produce a confirmed output."}
         </p>
       </Card>
     );
   }
 
-  const failed = status === "FAILED";
+  const partial = status !== "DONE";
 
   return (
     <Card>
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="section-title">Workflow output</h2>
-        {failed ? (
+        {partial ? (
           <span
             data-testid="partial-output-badge"
             className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
           >
             <Icon icon="mdi:progress-alert" className="h-4 w-4" />
-            Partial — the run stopped early
+            {status === "RUNNING" ? "Partial — run still active" : "Partial — run not completed"}
           </span>
         ) : null}
       </div>
@@ -98,7 +62,7 @@ function ExecutionOutputPanel({ execution }) {
       {hasFinal ? (
         <div data-testid="final-output" className="mb-5">
           <p className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
-            {failed ? "Last completed step" : "Final output"}
+            {partial ? "Last completed step" : "Final output"}
           </p>
           <OutputBlock value={finalOutput} />
         </div>
@@ -106,7 +70,7 @@ function ExecutionOutputPanel({ execution }) {
 
       {stepEntries.length > 0 ? (
         <div data-testid="step-outputs">
-          <p className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">Step outputs</p>
+          <p className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">Saved step answers</p>
           <div className="space-y-3">
             {stepEntries.map(([stepId, value]) => (
               <div key={stepId}>

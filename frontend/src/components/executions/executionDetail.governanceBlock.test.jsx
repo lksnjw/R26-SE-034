@@ -1,11 +1,12 @@
 /** @jest-environment jsdom */
 
-import { expect, test } from "@jest/globals";
+import { afterEach, expect, test } from "@jest/globals";
 import { cleanup, render, screen } from "@testing-library/react";
 import React from "react";
 import ExecutionStatus from "./ExecutionStatus";
 import ExecutionTimeline from "./ExecutionTimeline";
 import GovernanceBlockPanel from "./GovernanceBlockPanel";
+afterEach(cleanup);
 
 const policyFailure = {
   failureCategory: "POLICY_VIOLATION",
@@ -46,6 +47,14 @@ test("a governance block renders as a policy block, not a tool failure", () => {
   expect(screen.getByTestId("tool-not-called").textContent).toMatch(/never called/i);
 
   cleanup();
+});
+
+test("unknown dispatch outcome is not rendered as a tool failure or a never-called block", () => {
+  render(<><GovernanceBlockPanel failure={{ failureCategory: "READ_OUTCOME_UNKNOWN", failedStepId: "lookup" }} /><ExecutionTimeline timeline={[{ nodeId: "lookup", status: "UNKNOWN" }]} /></>);
+  expect(screen.getByTestId("recovery-required-panel").textContent).toMatch(/unconfirmed call may have reached ERP/);
+  expect(screen.queryByTestId("tool-failure-panel")).toBeNull();
+  expect(screen.queryByTestId("tool-not-called")).toBeNull();
+  expect(screen.getByTestId("timeline-step").textContent).toMatch(/Outcome unknown/);
 });
 
 test("a tool failure keeps the red treatment and names step and tool", () => {

@@ -29,12 +29,19 @@ function Field({ label, value, mono }) {
 function GovernanceBlockPanel({ failure }) {
   if (!failure) return null;
 
+  if (["READ_OUTCOME_UNKNOWN", "LEGACY_OUTCOME_UNKNOWN", "READ_INTERRUPTED"].includes(failure.failureCategory)) return <section data-testid="recovery-required-panel" className="border-y border-amber-200 py-4 text-sm text-amber-900 dark:border-amber-700 dark:text-amber-200">
+    <h2 className="font-semibold">{failure.failureCategory === "READ_INTERRUPTED" ? "Run interrupted" : "Outcome unknown"}</h2>
+    <p className="mt-2">Saved completed answers remain available. {failure.failureCategory === "READ_INTERRUPTED" ? "The run stopped before its next completion checkpoint." : "An unconfirmed call may have reached ERP; it is not a confirmed tool failure or success."} No automatic replay was performed.</p>
+    {failure.failedStepId && <p className="mt-2">Step <span className="font-mono">{failure.failedStepId}</span></p>}
+  </section>;
+
   if (!isGovernanceBlock(failure)) {
     const validation = failure.failureCategory === FAILURE_CATEGORY.VALIDATION_FAILURE;
     const transient = failure.failureCategory === FAILURE_CATEGORY.TRANSIENT;
     const authDenied = failure.failureCategory === FAILURE_CATEGORY.AUTH_DENIED;
     const invalidRequest = failure.failureCategory === FAILURE_CATEGORY.INVALID_REQUEST;
     const notFound = failure.failureCategory === FAILURE_CATEGORY.NOT_FOUND;
+    const readStopped = failure.failureCategory === "READ_EXECUTION_FAILED";
     const title = validation
       ? "Execution stopped before dispatch"
       : transient
@@ -45,7 +52,7 @@ function GovernanceBlockPanel({ failure }) {
             ? "ERP request rejected"
             : notFound
               ? "ERP record not found"
-              : "Tool failure";
+              : readStopped ? "Read workflow stopped" : "Tool failure";
     return (
       <section
         data-testid="tool-failure-panel"
@@ -60,7 +67,8 @@ function GovernanceBlockPanel({ failure }) {
         <p className="mt-2 text-sm text-red-800 dark:text-red-200/90">
           {validation
             ? "This run stopped before any tool was reached."
-            : `Step ${failure.failedStepId || "—"} failed while running ${failure.failedToolName || "the tool"}.`}
+            : readStopped ? `The run stopped at step ${failure.failedStepId || "—"}. Consult the node timeline for whether dispatch was recorded.`
+              : `Step ${failure.failedStepId || "—"} failed while running ${failure.failedToolName || "the tool"}.`}
         </p>
         <dl className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>

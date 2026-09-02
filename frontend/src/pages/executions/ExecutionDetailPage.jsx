@@ -10,6 +10,8 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/shared/Re
 import Card from "../../components/shared/ui/Card";
 import { useExecution } from "../../hooks/useExecution";
 import TraceIdentifier from "../../components/shared/TraceIdentifier";
+import ExecutionRunControls from "../../components/executions/ExecutionRunControls";
+import usePermissions from "../../hooks/usePermissions";
 
 /*******************************************************************************
  * Function: ExecutionDetailPage
@@ -18,7 +20,8 @@ import TraceIdentifier from "../../components/shared/TraceIdentifier";
  ******************************************************************************/
 function ExecutionDetailPage() {
   const { executionId } = useParams();
-  const { execution, logs, timeline, healingReport, loading, error, reload } = useExecution(executionId);
+  const { execution, logs, timeline, healingReport, loading, error, reload, monitor } = useExecution(executionId);
+  const { hasAny } = usePermissions();
 
   if (loading) return <LoadingState label={`Loading execution ${executionId}…`} />;
   if (error) return <ErrorState error={error} onRetry={reload} />;
@@ -37,6 +40,7 @@ function ExecutionDetailPage() {
         </div>
         <ExecutionStatus status={execution.status} failure={execution.failure} />
       </section>
+      <ExecutionRunControls key={execution.id} execution={execution} monitor={monitor} canControl={hasAny(["workflow:run", "workflow:run_own"])} onChanged={reload} />
       {execution.status === "AWAITING_APPROVAL" ? (
         <PendingApprovalCard execution={execution} onChanged={reload} />
       ) : null}

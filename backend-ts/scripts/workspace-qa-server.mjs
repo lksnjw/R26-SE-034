@@ -12,6 +12,7 @@ import { Executor } from "../src/runner/executor.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { ProviderRuntime } from "../src/providers/runtime.ts";
 import { hashPassword } from "../src/authn/password.ts";
+import { newReadProgress, appendExecutionEvent } from "../src/runner/read-checkpoints.ts";
 
 const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "local-workspace-qa-only-not-production-secret", STORAGE_DRIVER: "memory", MCP_MODE: "mock", CORS_ORIGINS: "http://localhost:5173" });
 const repository = new Repository(null);
@@ -29,6 +30,23 @@ await repository.mutate((state) => {
   // Synthetic historical display evidence only, not a dispatched ERP execution.
   state.executions.qa_display_fixture = { id: "qa_display_fixture", workflowId: "qa_report", workflowName: "Daily invoice review", status: "FAILED", startedAt: createdAt, completedAt: createdAt, durationMs: 0, tokens: { input: 0, output: 0, total: 0 }, costUsd: 0, startedBy: { id: "qa", name: "Local QA" }, workflowSnapshot: { version: 1, contentHash: `sha256:${createHash("sha256").update(yaml).digest("hex")}`, registryHash: "synthetic-display-only", yaml, input: {}, executionProfile: "sequential-read-v1" }, agentSummary: "Synthetic display fixture only. No ERP tools were called.", stepOutputs: { invoices: { structuredContent: [{ invoice_id: "FIXTURE-001", customer: "Example Company", total: 12500, currency: "LKR", paid: false }, { invoice_id: "FIXTURE-002", customer: "Demo Customer", total: 3200, currency: "LKR", paid: true }], content: [{ type: "text", text: "Synthetic fixture data — not retrieved from ERP." }] } } };
   state.timelines.qa_display_fixture = [{ nodeId: "invoices", status: "DONE", startedAt: createdAt, completedAt: createdAt }, { nodeId: "summary", status: "FAILED", startedAt: createdAt, completedAt: createdAt }];
+  // Optional synthetic read-state UI fixtures. They do not run a worker or SDK;
+  // RUNNING intentionally stays pending to check cancellation-request wording.
+  if (["running", "recovery"].includes(process.env.WORKSPACE_QA_READ_STATE)) {
+    const item = state.executions.qa_display_fixture;
+    item.status = process.env.WORKSPACE_QA_READ_STATE === "running" ? "RUNNING" : "RECOVERY_REQUIRED";
+    item.readProgress = newReadProgress(repository);
+    item.readProgress.nextStepIndex = 1;
+    state.executionEvents[item.id] = [];
+    state.timelines[item.id][1].status = item.status === "RUNNING" ? "RUNNING" : "UNKNOWN";
+    state.timelines[item.id][1].phase = "DISPATCH_INTENT";
+    item.readProgress.attempts = { invoices: { id: "fixture-invoices", nodeId: "invoices", stepIndex: 0, status: "DONE", startedAt: createdAt, completedAt: createdAt }, summary: { id: "fixture-summary", nodeId: "summary", stepIndex: 1, status: item.status === "RUNNING" ? "DISPATCH_INTENT" : "UNKNOWN", startedAt: createdAt, dispatchIntentAt: createdAt } };
+    if (item.status === "RUNNING") item.completedAt = null;
+    else item.failure = { failureCategory: "READ_OUTCOME_UNKNOWN", failedStepId: "summary" };
+    appendExecutionEvent(state, item, "run.started", { syntheticFixture: true });
+    appendExecutionEvent(state, item, "node.completed", { syntheticFixture: true, outputRef: "invoices" }, "invoices", "fixture-invoices");
+    appendExecutionEvent(state, item, item.status === "RUNNING" ? "node.dispatch_intent" : "node.outcome_unknown", { syntheticFixture: true }, "summary", "fixture-summary");
+  }
   state.chats.qa_chat = { id: "qa_chat", ownerId: "qa", title: "Local invoice workspace", createdAt, updatedAt: createdAt, messageCount: 2, messages: [
     { id: "qa_request", role: "user", text: "Prepare an invoice review workflow (local fixture).", createdAt },
     { id: "qa_answer", role: "assistant", text: "Local fixture draft saved. ERP connection is intentionally unavailable; no invoices have been retrieved or sent.", createdAt, artifacts: { intent: "WORKFLOW", workflowId: "qa_report", yaml, selected_workflow_yaml: yaml, validation: { passed: true }, validation_passed: true, can_execute: false } },

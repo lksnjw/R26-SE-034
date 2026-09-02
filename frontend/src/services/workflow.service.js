@@ -157,9 +157,8 @@ export const workflowService = {
  * Runs the application for the workflow service module.
  ******************************************************************************/
   async run(id, input = {}, options = {}) {
-    // Same long-run timeout as executionService.run — the self-healing LLM
-    // agent can take well over the default 30s, and this path (Canvas's Run
-    // button) hits the same /workflows/:id/run endpoint.
+    // Published reads are deterministic, not LLM healing. This is still a
+    // synchronous request; timeout is not cancellation or retry safety.
     return unwrap(
       await apiClient.post(`/workflows/${id}/run`, {
         input,

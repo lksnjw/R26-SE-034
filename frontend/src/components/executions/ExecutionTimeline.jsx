@@ -12,9 +12,9 @@ function ExecutionTimeline({ timeline = [] }) {
   return (
     <div className="space-y-3">
       {timeline.map((step, index) => {
-        const blocked = isGovernanceBlock(step.failure);
+        const blocked = step.status === "FAILED" && isGovernanceBlock(step.failure);
         // A blocked step reads BLOCKED, not FAILED: nothing crashed.
-        const chip = blocked ? "BLOCKED" : step.status;
+        const chip = blocked ? "BLOCKED" : step.status === "UNKNOWN" ? "Outcome unknown" : step.status;
         const label = step.label || step.nodeId;
         return (
           <div
@@ -29,6 +29,8 @@ function ExecutionTimeline({ timeline = [] }) {
                 Blocked by {step.failure.ruleId} — tool never called
               </p>
             ) : null}
+            {step.status === "UNKNOWN" && <p className="ml-9 mt-1 text-xs text-amber-700 dark:text-amber-300">The read may have reached ERP, but no confirmed answer was saved. Do not assume success or retry it automatically.</p>}
+            {step.outcome === "NOT_DISPATCHED" && <p className="ml-9 mt-1 text-xs text-gray-500">No dispatch was recorded for this attempt.</p>}
           </div>
         );
       })}

@@ -9,9 +9,9 @@ import WorkflowBadge from "./WorkflowBadge.jsx";
 afterEach(cleanup);
 
 test("unknown execution and workflow statuses render the raw value with neutral styling", () => {
-  const { unmount } = render(<ExecutionStatus status="CANCELLED" />);
+  const { unmount } = render(<ExecutionStatus status="FUTURE_STATUS" />);
   const executionStatus = screen.getByTestId("execution-status");
-  expect(executionStatus.textContent).toBe("CANCELLED");
+  expect(executionStatus.textContent).toBe("FUTURE_STATUS");
   expect(executionStatus.className).toMatch(/bg-gray-100/);
   expect(executionStatus.textContent).not.toMatch(/Pending/i);
   unmount();
@@ -20,4 +20,10 @@ test("unknown execution and workflow statuses render the raw value with neutral 
   const workflowStatus = screen.getByText("ARCHIVED");
   expect(workflowStatus.className).toMatch(/bg-gray-100/);
   expect(screen.queryByText("Pending")).toBeNull();
+});
+
+test.each([["CANCELLED", "Cancelled"], ["RECOVERY_REQUIRED", "Recovery required"], ["UNKNOWN", "Outcome unknown"]])("known execution state %s has a readable distinct label", (status, label) => {
+  render(<ExecutionStatus status={status} />);
+  expect(screen.getByTestId("execution-status").textContent).toBe(label);
+  expect(screen.getByTestId("execution-status").textContent).not.toMatch(/Done|Failed|Pending/);
 });

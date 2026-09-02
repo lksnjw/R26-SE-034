@@ -23,6 +23,8 @@ function ExecutionFilters({ query, status, range, onQueryChange, onStatusChange,
           <option value="FAILED">Failed</option>
           <option value="HEALING">Healing</option>
           <option value="RUNNING">Running</option>
+          <option value="CANCELLED">Cancelled</option>
+          <option value="RECOVERY_REQUIRED">Recovery required</option>
         </Select>
       </div>
     </div>

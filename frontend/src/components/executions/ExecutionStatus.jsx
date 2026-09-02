@@ -8,6 +8,9 @@ const icons = {
   HEALING: "mdi:shield-refresh-outline",
   PENDING: "mdi:clock-outline",
   AWAITING_APPROVAL: "mdi:account-check-outline",
+  CANCELLED: "mdi:stop-circle-outline",
+  RECOVERY_REQUIRED: "mdi:help-circle-outline",
+  UNKNOWN: "mdi:help-circle-outline",
 };
 
 /*******************************************************************************
@@ -16,7 +19,7 @@ const icons = {
  * Performs the Execution Status operation on status for the ExecutionStatus module.
  ******************************************************************************/
 function ExecutionStatus({ status, failure }) {
-  const blocked = isGovernanceBlock(failure);
+  const blocked = status === "FAILED" && isGovernanceBlock(failure);
   const meta = statusMetaFor(status, failure);
   const icon = blocked ? "mdi:shield-alert-outline" : icons[status] ?? "mdi:help-circle-outline";
 

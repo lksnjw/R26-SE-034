@@ -22,7 +22,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); sessionStorage.clear(); jest.restoreAllMocks(); });
 async function open(props = {}) {
   const view = render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit selectionStorageKey="account.chat" {...props} />);
-  await screen.findByRole("button", { name: /01 first/ });
+  await screen.findByRole("button", { name: /first/ });
   return view;
 }
 async function selectNode() { fireEvent.click(screen.getByRole("button", { name: /01 first/ })); }
@@ -120,4 +120,43 @@ test("friendly run input fields submit typed values only through explicit Run", 
   fireEvent.click(screen.getByRole("button", { name: "Run published version" }));
   await waitFor(() => expect(workflowService.run).toHaveBeenCalledWith("report", { limit: 5 }));
   expect(workflowService.publish).not.toHaveBeenCalled();
+});
+
+test("a synchronous run request does not lock draft/node editing or send a second run", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, can_attempt_run: true });
+  let finish;
+  workflowService.run.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  await open(); fireEvent.click(screen.getByRole("button", { name: "Run published version" }));
+  await screen.findByText(/synchronous endpoint has not returned its run identifier/);
+  expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
+  await selectNode();
+  expect(screen.getByRole("button", { name: "Preview manual edit" }).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Preview manual edit" }));
+  expect(screen.getByRole("region", { name: "Node change preview" })).toBeTruthy();
+  expect(workflowService.run).toHaveBeenCalledTimes(1);
+  finish({ id: "run-one", status: "DONE", stepOutputs: {} });
+  await waitFor(() => expect(screen.queryByText(/synchronous endpoint has not returned/)).toBeNull());
+});
+
+test("an unconfirmed run response blocks repeat dispatch and directs the user to history", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, can_attempt_run: true });
+  workflowService.run.mockRejectedValue(new Error("Network Error"));
+  await open(); fireEvent.click(screen.getByRole("button", { name: "Run published version" }));
+  await screen.findByRole("link", { name: /Review execution history/ });
+  expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
+  expect(workflowService.run).toHaveBeenCalledTimes(1);
+  expect(screen.getByText(/No automatic retry was sent/)).toBeTruthy();
+});
+
+test("recovered runs show readable saved answers and unknown nodes, never a fresh run action", async () => {
+  const interrupted = { id: "run-recovery", workflowId: "report", status: "RECOVERY_REQUIRED", startedAt: "2026-10-05T00:00:00Z", workflowSnapshot: { yaml, version: 1 }, readProgress: { profile: "read-progress-v1", lastSequence: 1 }, stepOutputs: { first: { structuredContent: { value: "retained answer" } } } };
+  executionService.list.mockResolvedValue([interrupted]); executionService.get.mockResolvedValue(interrupted);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "DONE" }, { nodeId: "last", status: "UNKNOWN" }]);
+  jest.spyOn(executionService, "getEvents").mockResolvedValue({ events: [{ version: 1, executionId: interrupted.id, sequence: 1, timestamp: interrupted.startedAt, type: "node.outcome_unknown", nodeId: "last" }], cursor: 1, lastSequence: 1, hasMore: false, status: interrupted.status, profile: "read-progress-v1" });
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, can_attempt_run: true });
+  await open({ canControl: true });
+  await screen.findByText(/Outcome unknown · the read may have reached ERP/);
+  expect(screen.getByText("retained answer")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
+  expect(screen.queryByRole("button", { name: "Request cancellation" })).toBeNull();
 });
