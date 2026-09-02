@@ -4,6 +4,13 @@ import { chatService } from "./chat.service";
 
 afterEach(() => jest.restoreAllMocks());
 
+test("draft edits forward their revision-bound command without asserting delivery", async () => {
+  const post = jest.spyOn(apiClient, "post").mockResolvedValue({ data: { data: { answer: "Not sent" } } });
+  const command = { draftId: "draft", baseVersion: 1, baseHash: "sha256:fixture", commandId: "one", patch: { to: "a@example.test", subject: "Report", body: "Draft" } };
+  await chatService.sendMessage("chat-1", "Save email draft changes", { emailDraftCommand: command });
+  expect(post.mock.calls[0][1]).toEqual({ content: "Save email draft changes", emailDraftCommand: command });
+});
+
 test("sendMessage no longer sends the previously ignored workflowId option", async () => {
   const post = jest.spyOn(apiClient, "post").mockResolvedValue({
     data: { data: { answer: "ok" } },

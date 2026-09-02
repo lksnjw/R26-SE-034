@@ -7,6 +7,7 @@ import { workflowService } from "../../services/workflow.service";
 import PendingGenerationApprovalCard from "../workflows/PendingGenerationApprovalCard";
 import { workflowArtifactStatus } from "./workflowArtifactStatus";
 import ReadableValue from "./ReadableValue";
+import EmailDraftPreview from "./EmailDraftPreview";
 
 // ── Inline validation badge ─────────────────────────────────────────────────
 /*******************************************************************************
@@ -231,7 +232,7 @@ function InlineSources({ sources, boundHit }) {
         <Icon icon="mdi:api" className="h-3.5 w-3.5 shrink-0 text-blue-500" />
         <span className="flex-1 text-xs font-semibold text-blue-700 dark:text-blue-300">
           {sources.length} tool call{sources.length !== 1 ? "s" : ""}
-          {boundHit ? " · limit reached" : ""}
+          {boundHit ? " · preparation incomplete" : ""}
         </span>
         <Icon icon={open ? "mdi:chevron-up" : "mdi:chevron-down"} className="h-3.5 w-3.5 text-gray-400" />
       </button>
@@ -445,7 +446,7 @@ function OpenWorkflowButton({ workflowId }) {
  *
  * Performs the Chat Message operation on message for the ChatMessage module.
  ******************************************************************************/
-function ChatMessage({ message }) {
+function ChatMessage({ message, onChatChanged }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const artifacts = message.artifacts;
@@ -503,7 +504,7 @@ function ChatMessage({ message }) {
           <Icon icon="hugeicons:ai-magic" className="h-3 w-3 text-primary" />
         </div>
         <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400">
-          {isQuery ? "Data Agent" : isToolCall ? "Action Agent" : "Workflow Assistant"}
+          {intent === "EMAIL_DELIVERY" ? "Delivery draft" : isQuery ? "Data Agent" : isToolCall ? "Action Agent" : "Workflow Assistant"}
         </span>
         {message.createdAt && (
           <span className="text-[10px] text-gray-400">
@@ -515,6 +516,8 @@ function ChatMessage({ message }) {
       {/* Message body — no bubble, flows like Claude Code */}
       <div className="max-w-[92%]">
         <MessageMarkdown text={message.text} />
+
+        {intent === "EMAIL_DELIVERY" && artifacts?.emailDraft && <EmailDraftPreview draft={artifacts.emailDraft} reportReason={artifacts.reportReason} superseded={artifacts.emailDraftSuperseded} onSaved={onChatChanged} />}
 
         {intent === "NODE_PATCH_PROPOSAL" && artifacts?.proposal && <p className="mt-2 text-xs text-gray-500">
           {artifacts.proposal.status === "APPLIED" ? `Applied to draft v${artifacts.proposal.appliedVersion} · not published or executed by this decision.` : artifacts.proposal.status === "DISCARDED" ? "Proposal discarded · workflow unchanged by this decision." : `Pending node proposal · ${artifacts.proposal.nodeId}. Review it in the workflow canvas.`}

@@ -79,7 +79,7 @@ const QUICK_PROMPTS = [
  *
  * Performs the Chat Window operation on window for the ChatWindow module.
  ******************************************************************************/
-function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, nodeContext, onClearNodeContext }) {
+function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, nodeContext, onClearNodeContext, onChatChanged }) {
   const [draft, setDraft] = useState(() => readWorkspaceValue(draftStorageKey));
   const [sendError, setSendError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -240,7 +240,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
           )}
 
           {messages.map((msg, idx) => (
-            <ChatMessage key={msg.id ?? `${msg.role}-${idx}`} message={msg} />
+            <ChatMessage key={msg.id ?? `${msg.role}-${idx}`} message={msg} onChatChanged={onChatChanged} />
           ))}
 
           {loading && <ThinkingIndicator />}

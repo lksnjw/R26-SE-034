@@ -1,4 +1,5 @@
-export type Intent = "QUERY" | "AUDIT" | "ACTION" | "CAPABILITIES" | "TOOL_CALL" | "WORKFLOW_MODIFY";
+import { deliveryIntent } from "../delivery/email-draft.js";
+export type Intent = "QUERY" | "AUDIT" | "ACTION" | "CAPABILITIES" | "TOOL_CALL" | "WORKFLOW_MODIFY" | "EMAIL_DELIVERY";
 
 const WORKFLOW_MODIFY_PATTERNS = [
   "modify the workflow", "change the workflow", "update the workflow", "edit the workflow",
@@ -131,6 +132,8 @@ export function classifyIntent(message: string): Intent {
   // has a generation verb plus a near-miss on "workflow" that the literal
   // patterns above never see as a substring.
   if (GENERATION_VERB_PATTERN.test(normalized) && mentionsWorkflowFuzzy(normalized)) return "ACTION";
+
+  if (deliveryIntent(message)) return "EMAIL_DELIVERY";
 
   for (const pattern of TOOL_CALL_PATTERNS) {
     if (normalized.includes(pattern)) return "TOOL_CALL";

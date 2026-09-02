@@ -10,6 +10,7 @@ import { requestTraceId } from "../../trace/request-trace.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, numberValue, paginate, queryRecord, requestParam, stringValue } from "./common.js";
 import { classifyIntent } from "../../agent/intent-classifier.js";
+import { editEmailDraft, prepareEmailDraft } from "../../delivery/email-chat.js";
 import { runQueryLoop, type ToolStep } from "../../agent/query-loop.js";
 import { runActionLoop } from "../../agent/action-loop.js";
 import { discoverTools } from "../../agent/tool-discovery.js";
@@ -391,7 +392,12 @@ async function getChat(request: FastifyRequest, reply: FastifyReply, user: Curre
   const chat = await services.repository.read((state) => { const value = state.chats[requestParam(request, "id")]; return value !== undefined && (user.permissions.includes("workflow:read") || value.ownerId === user.id) ? structuredClone(value) : null; });
   if (chat === null) throw new HandlerFailure(404, "Chat session not found");
 
-  const allMessages = trimRedundantRetrieval(chat.messages as Array<Record<string, unknown>>);
+  const latestEmailDraftMessages = new Map<string, unknown>();
+  for (const message of chat.messages) if (isRecord(message.artifacts) && isRecord(message.artifacts.emailDraft)) latestEmailDraftMessages.set(stringValue(message.artifacts.emailDraft.id), message.id);
+  const allMessages = trimRedundantRetrieval(chat.messages as Array<Record<string, unknown>>).map((message) => {
+    if (!isRecord(message.artifacts) || !isRecord(message.artifacts.emailDraft)) return message;
+    return { ...message, artifacts: { ...message.artifacts, emailDraftSuperseded: latestEmailDraftMessages.get(stringValue(message.artifacts.emailDraft.id)) !== message.id } };
+  });
   const query = queryRecord(request);
   const limit = Math.max(1, Math.min(200, Math.trunc(numberValue(query.limit, 30))));
   const beforeId = typeof query.before === "string" ? query.before : "";
@@ -433,8 +439,10 @@ async function deleteChat(request: FastifyRequest, reply: FastifyReply, user: Cu
 async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const body = bodyRecord(request);
   if (body === null) throw new HandlerFailure(400, "Invalid request body");
+  if (Object.hasOwn(body, "emailDraftCommand")) return reply.send(ok(await editEmailDraft(services, user, requestParam(request, "id"), body.emailDraftCommand, request), "Email draft saved; nothing sent", null));
   const content = stringValue(body.content).trim() === "" ? stringValue(body.message).trim() : stringValue(body.content).trim();
   if (content === "") throw new HandlerFailure(400, "message is required");
+  const intent = classifyIntent(content);
   const bodyWorkflowCtx = isRecord(body.workflowContext) ? body.workflowContext : null;
   const workflowContextYaml = typeof bodyWorkflowCtx?.yaml === "string" && bodyWorkflowCtx.yaml.trim() ? bodyWorkflowCtx.yaml.trim() : null;
   const workflowContextName = typeof bodyWorkflowCtx?.name === "string" && bodyWorkflowCtx.name ? bodyWorkflowCtx.name : "Workflow";
@@ -443,7 +451,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     const id = requestParam(request, "id");
     let chat = state.chats[id];
     if (chat === undefined) { const timestamp = now(); chat = { id, ownerId: user.id, title: content.slice(0, 80), createdAt: timestamp, updatedAt: timestamp, messageCount: 0, messages: [] }; state.chats[id] = chat; }
-    if (chat.ownerId !== user.id && !user.permissions.includes("workflow:write")) throw new HandlerFailure(404, "Chat session not found");
+    if (chat.ownerId !== user.id && (intent === "EMAIL_DELIVERY" || !user.permissions.includes("workflow:write"))) throw new HandlerFailure(404, "Chat session not found");
     const priorMessages = chat.messages.map((message) => `${stringValue(message.role)}: ${stringValue(message.text)}`);
     const userMessage = { id: nextID(state, "msg"), role: "user", text: content, createdAt: now(), traceId };
     chat.messages.push(userMessage); chat.messageCount = chat.messages.length; chat.updatedAt = now();
@@ -472,7 +480,10 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       return reply.send(ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage, answer: denialText, intent: "POLICY_DENIAL" }, "Message processed", null));
     }
   }
-  const intent = classifyIntent(content);
+  if (intent === "EMAIL_DELIVERY") {
+    const result = await prepareEmailDraft(services, user, requestParam(request, "id"), content, request);
+    return reply.send(ok({ session: stored.session, userMessage: stored.userMessage, ...result }, "Email draft prepared; nothing sent", null));
+  }
   if (["QUERY", "AUDIT", "TOOL_CALL"].includes(intent) &&
       (services.erpbridgeSession === undefined || services.providerRuntime?.configured !== true)) {
     const code = services.erpbridgeSession === undefined ? "ERPBRIDGE_NOT_CONNECTED" : "PROVIDER_NOT_CONFIGURED";
@@ -526,7 +537,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     } catch (error) {
       throw new HandlerFailure(502, `Query agent failed: ${errorText(error)}`);
     }
-    const workflowDraft = loopResult.toolSteps.length > 0
+    const workflowDraft = loopResult.readOutcome === "READS_COMPLETED" && !loopResult.narrativeRejected
       ? buildWorkflowYamlFromSteps(loopResult.toolSteps, content)
       : undefined;
     const queryArtifacts = {
@@ -536,6 +547,8 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       boundHit: loopResult.boundHit,
       iterationsUsed: loopResult.iterationsUsed,
       latencyMs: loopResult.latencyMs,
+      readOutcome: loopResult.readOutcome,
+      narrativeRejected: loopResult.narrativeRejected,
       ...(loopResult.visualisation !== undefined ? { visualisation: loopResult.visualisation } : {}),
       ...(workflowDraft !== undefined ? { workflowDraft } : {}),
     };

@@ -113,6 +113,7 @@ function ChatPage() {
         />
       </details>
         <ChatWindow
+          onChatChanged={onChatChanged}
           key={composerKey || sessions.selectedSessionId || "new"}
           draftStorageKey={composerKey}
           messages={chat.messages}

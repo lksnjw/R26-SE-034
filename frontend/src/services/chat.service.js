@@ -67,10 +67,9 @@ export const chatService = {
       if (options[key]) payload[key] = options[key];
     });
     if (options.workflowContext) payload.workflowContext = options.workflowContext;
-    // Candidate synthesis, tool-name correction, and the follow-up narrative are
-    // separate provider calls chained in one request — keep the client alive
-    // long enough for all of them, matching the 300s nginx proxy timeout so
-    // neither side gives up before the other.
+    if (options.emailDraftCommand) payload.emailDraftCommand = options.emailDraftCommand;
+    // Read loops can use multiple provider turns. Draft edits themselves do
+    // not invoke a provider or dispatch an ERP/email operation.
     const response = await apiClient.post(`/chat/sessions/${sessionId}/messages`, payload, { timeout: 300000 });
     return response.data.data;
   },

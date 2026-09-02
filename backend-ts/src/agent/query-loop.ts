@@ -18,6 +18,7 @@ export type ToolStep = {
   toolName: string;
   arguments: Record<string, unknown>;
   result: unknown;
+  status?: "SUCCEEDED" | "FAILED";
 };
 
 export type QueryLoopInput = {
@@ -39,6 +40,9 @@ export type QueryLoopResult = {
   visualisation?: VisualisationSpec;
   totalTokens: { input: number; output: number };
   latencyMs: number;
+  narrativeRejected?: boolean;
+  readOutcome?: "NO_CONFIRMED_READ" | "PARTIAL_READ" | "READS_COMPLETED";
+  stopReason?: "COMPLETED" | "LIMIT_REACHED" | "PROVIDER_FAILED" | "CANCELLED";
 };
 
 const MAX_ITERATIONS = parseInt(process.env.QUERY_AGENT_MAX_ITERATIONS ?? "5", 10);
@@ -134,6 +138,7 @@ export async function runQueryLoop(
   const deadline = Date.now() + TIMEOUT_MS;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    if (input.signal?.aborted) return buildResult("Read preparation cancelled.", toolCallLog, toolSteps, iteration, true, totalTokens, started, "CANCELLED");
     if (Date.now() > deadline) {
       boundHit = true;
       break;
@@ -143,18 +148,26 @@ export async function runQueryLoop(
       break;
     }
 
-    const turn = await providerRuntime.queryWithTools(messages, agentTools, {
-      maxOutputTokens: TOKEN_BUDGET - totalTokens.output,
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-    });
+    let turn;
+    try {
+      turn = await providerRuntime.queryWithTools(messages, agentTools, {
+        maxOutputTokens: TOKEN_BUDGET - totalTokens.output,
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+      });
+    } catch {
+      // Preserve acknowledged read evidence even if the summarising provider
+      // fails later. Never expose an arbitrary provider exception as content.
+      return buildResult("Report preparation stopped before a complete answer was produced.", toolCallLog, toolSteps, iteration + 1, true, totalTokens, started, input.signal?.aborted ? "CANCELLED" : "PROVIDER_FAILED");
+    }
 
     totalTokens.input += turn.inputTokens;
     totalTokens.output += turn.outputTokens;
     lastText = turn.text;
 
     if (turn.toolCalls.length === 0 || turn.stopReason !== "tool_calls") {
-      // Final text response — done
-      return buildResult(lastText, toolCallLog, toolSteps, iteration + 1, false, totalTokens, started);
+      // Truncation/filtering is not a completed report, even after real reads.
+      const complete = turn.stopReason === "stop" && turn.toolCalls.length === 0 && Date.now() <= deadline;
+      return buildResult(lastText, toolCallLog, toolSteps, iteration + 1, !complete, totalTokens, started);
     }
 
     // Append assistant message with tool calls
@@ -170,6 +183,8 @@ export async function runQueryLoop(
 
     // Process each tool call
     for (const call of turn.toolCalls) {
+      if (input.signal?.aborted) return buildResult("Read preparation cancelled.", toolCallLog, toolSteps, iteration + 1, true, totalTokens, started, "CANCELLED");
+      if (Date.now() > deadline || totalTokens.output >= TOKEN_BUDGET) return buildResult("Read preparation reached its limit.", toolCallLog, toolSteps, iteration + 1, true, totalTokens, started);
       const callHash = `${call.name}:${stableHash(call.arguments)}`;
       if (seenCallHashes.has(callHash)) {
         boundHit = true;
@@ -190,12 +205,12 @@ export async function runQueryLoop(
       let toolResultContent: string;
       try {
         const raw = await callTool(call.name, call.arguments);
-        toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: raw });
+        toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: raw, status: "SUCCEEDED" });
         const serialized = typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
         // Wrap in structural delimiter to prevent injection
         toolResultContent = `<tool_result id="${escapeAttr(call.id)}" name="${escapeAttr(call.name)}">\n${serialized}\n</tool_result>`;
       } catch (error) {
-        toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: { error: errorText(error) } });
+        toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: { error: errorText(error) }, status: "FAILED" });
         toolResultContent = `<tool_result id="${escapeAttr(call.id)}" name="${escapeAttr(call.name)}">\n{"error":${JSON.stringify(errorText(error))}}\n</tool_result>`;
       }
 
@@ -224,8 +239,15 @@ function buildResult(
   boundHit: boolean,
   totalTokens: { input: number; output: number },
   started: number,
+  stopReason: QueryLoopResult["stopReason"] = boundHit ? "LIMIT_REACHED" : "COMPLETED",
 ): QueryLoopResult {
   const latencyMs = Math.max(0, Math.round(performance.now() - started));
+  const successful = toolSteps.filter((step) => step.status === "SUCCEEDED").length;
+  // No-read model prose is not evidence of ERP data or completed actions. A
+  // read response can never acknowledge a new email, write or schedule.
+  const completionClaim = /\b(?:(?:i|we|i've|we've|i have|we have)\s+(?:successfully\s+)?(?:sent|emailed|forwarded|delivered|scheduled|paid|created|updated|deleted|approved|submitted))\b|\b(?:email|e-mail|message|report)\s+(?:(?:has been|was|is|successfully)\s+)*(?:sent|emailed|delivered|scheduled)\b/i.test(text);
+  const narrativeRejected = successful === 0 || completionClaim;
+  if (narrativeRejected) text = successful === 0 ? "No confirmed ERP data was retrieved. No email was sent, schedule activated or ERP change made." : "The assistant returned an unsupported action-completion claim. Confirmed read results are available, but no email was sent, schedule activated or ERP change made.";
   const vis = extractVisualisation(text);
   return {
     text: extractText(text),
@@ -236,6 +258,8 @@ function buildResult(
     ...(vis !== undefined ? { visualisation: vis } : {}),
     totalTokens,
     latencyMs,
+    narrativeRejected, readOutcome: successful === 0 ? "NO_CONFIRMED_READ" : successful !== toolSteps.length || boundHit ? "PARTIAL_READ" : "READS_COMPLETED",
+    stopReason,
   };
 }
 

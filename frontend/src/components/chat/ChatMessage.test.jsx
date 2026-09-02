@@ -15,3 +15,8 @@ test("validated saved workflow is explicitly a draft, not invalid or ready to ex
   expect(screen.getByText("Saved draft · Validation passed")).toBeTruthy();
   expect(screen.queryByText(/ready to execute/)).toBeNull();
 });
+test("incomplete read preparation is not mislabeled as a successful result or a known timeout", () => {
+  render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Preparation stopped.", artifacts: { intent: "QUERY", sources: [{ name: "read", arguments: {} }], boundHit: true } }} /></MemoryRouter>);
+  expect(screen.getByText("1 tool call · preparation incomplete")).toBeTruthy();
+  expect(screen.queryByText(/limit reached/)).toBeNull();
+});
