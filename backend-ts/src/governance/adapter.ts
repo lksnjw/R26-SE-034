@@ -1,3 +1,5 @@
+import { boundedJSONRequest, InvalidResponseJSON } from "../core/bounded-json-request.js";
+import { OperationDeadlineExceeded } from "../core/bounded-operation.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
@@ -56,7 +58,7 @@ export type GovernancePolicySet = {
   source: GovernanceSource;
 };
 
-export type GovernanceFailureKind = "timeout" | "unreachable" | "parse";
+export type GovernanceFailureKind = "timeout" | "unreachable" | "parse" | "authorization" | "cancelled";
 
 export class GovernanceAdapterError extends Error {
   /*******************************************************************************
@@ -107,29 +109,23 @@ export class GovernanceAdapter {
    * Requests and validates a policy snapshot from the governance service.
    ******************************************************************************/
   async fetchPolicy(request: GovernanceRequest, signal?: AbortSignal): Promise<GovernancePolicySet> {
-    const timeoutSignal = AbortSignal.timeout(this.#timeoutMs);
-    const combinedSignal = signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal]);
-    let response: Response;
-    try {
-      response = await this.#fetch(this.#url, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${this.#apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(request),
-        signal: combinedSignal,
-      });
-    } catch {
-      if (timeoutSignal.aborted) throw new GovernanceAdapterError("governance request timed out", "timeout");
-      throw new GovernanceAdapterError("governance endpoint is unreachable", "unreachable");
-    }
-    if (!response.ok) throw new GovernanceAdapterError(`governance endpoint returned HTTP ${response.status}`, "unreachable");
     let decoded: unknown;
     try {
-      decoded = await response.json();
-    } catch {
-      throw new GovernanceAdapterError("governance response was not valid JSON", "parse");
+      const result = await boundedJSONRequest(this.#fetch, this.#url, {
+        method: "POST", headers: { authorization: `Bearer ${this.#apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify(request), ...(signal === undefined ? {} : { signal }),
+      }, this.#timeoutMs, "Governance response");
+      if (!result.response.ok) {
+        const denied = [401, 403].includes(result.response.status);
+        throw new GovernanceAdapterError(`governance endpoint returned HTTP ${result.response.status}`, denied ? "authorization" : "unreachable");
+      }
+      decoded = result.decoded;
+    } catch (error) {
+      if (signal?.aborted) throw new GovernanceAdapterError("governance request was cancelled", "cancelled");
+      if (error instanceof GovernanceAdapterError) throw error;
+      if (error instanceof OperationDeadlineExceeded) throw new GovernanceAdapterError("governance request timed out", "timeout");
+      if (error instanceof InvalidResponseJSON) throw new GovernanceAdapterError("governance response was not valid JSON", "parse");
+      throw new GovernanceAdapterError("governance endpoint is unreachable", "unreachable");
     }
     const parsed = governanceResponseSchema.safeParse(decoded);
     if (!parsed.success) throw new GovernanceAdapterError(`governance response did not match the typed contract: ${parsed.error.issues.map((issue) => issue.path.join(".") || "response").join(", ")}`, "parse");

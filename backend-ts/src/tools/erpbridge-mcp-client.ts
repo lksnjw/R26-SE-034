@@ -1,5 +1,6 @@
 import { createClient } from "@erpbridge/sdk";
 import { createHash } from "node:crypto";
+import { boundedOperation } from "../core/bounded-operation.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import type {
@@ -23,11 +24,12 @@ export type ErpbridgeMcpSdkClient = Readonly<{
 }>;
 
 export type ErpbridgeMcpSession = Readonly<{
+  available?: boolean;
   // Internal opaque binding only; never expose endpoint credentials in runs.
   admissionBinding?: string;
   clientFor(definition: ToolDefinition): GovernedMCPClient;
-  callToolDirect(toolName: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
-  listTools(): Promise<readonly ErpbridgeMcpSdkTool[]>;
+  callToolDirect(toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>>;
+  listTools(signal?: AbortSignal): Promise<readonly ErpbridgeMcpSdkTool[]>;
   close(): Promise<void>;
 }>;
 
@@ -54,7 +56,10 @@ export async function createErpbridgeMcpSession(options: {
   timeoutMs: number;
   validator: RegistryValidator;
   sdkClient?: ErpbridgeMcpSdkClient;
+  signal?: AbortSignal;
 }): Promise<ErpbridgeMcpSession> {
+  if (!Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 2_147_483_647)
+    throw new Error("ERPBridge MCP timeout must be a positive supported integer");
   const admissionBinding = createHash("sha256").update(JSON.stringify([options.baseURL.trim(), options.token])).digest("hex");
   const sdkClient =
     options.sdkClient ??
@@ -65,24 +70,35 @@ export async function createErpbridgeMcpSession(options: {
       declaredScopes: ["mcp"],
       mcpRetryPolicy: "never",
     }).mcp;
-  try {
-    await sdkClient.connect();
-  } catch (error) {
-    await sdkClient.close().catch(() => {});
-    throw error;
-  }
   let closed = false;
-  /*******************************************************************************
-   * Function: close
-   *
-   * Closes the ERPBridge MCP session once.
-   ******************************************************************************/
-  const close = async (): Promise<void> => {
-    if (closed) return;
+  let closePromise: Promise<void> | undefined;
+  const lifecycle = new AbortController();
+  const cleanup = () => boundedOperation(() => sdkClient.close(), {
+    timeoutMs: Math.min(options.timeoutMs, 1_000), label: "ERPBridge MCP cleanup",
+  });
+  const close = (): Promise<void> => {
+    if (closePromise) return closePromise;
     closed = true;
-    await sdkClient.close();
+    lifecycle.abort();
+    closePromise = cleanup();
+    return closePromise;
   };
+  const abandon = () => { if (!closed) void close().catch(() => {}); };
+  const run = <T>(label: string, start: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    if (closed) return Promise.reject(new Error("ERPBridge MCP session is closed"));
+    return boundedOperation(start, {
+      timeoutMs: options.timeoutMs, label,
+      signal: signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal,
+      onAbandon: abandon,
+      // The SDK does not expose a request signal. A late initialize can create
+      // resources after the first close; clean those up without admitting reuse.
+      onLateSettlement: () => { if (closed) void cleanup().catch(() => {}); },
+    });
+  };
+  try { await run("ERPBridge MCP initialization", () => sdkClient.connect(), options.signal); }
+  catch (error) { void close().catch(() => {}); throw error; }
   return Object.freeze({
+    get available() { return !closed; },
     admissionBinding,
     /*******************************************************************************
      * Function: clientFor
@@ -90,15 +106,15 @@ export async function createErpbridgeMcpSession(options: {
      * Creates a governed client for the selected ERPBridge tool definition.
      ******************************************************************************/
     clientFor: (definition: ToolDefinition) =>
-      createToolClient(sdkClient, options.validator, definition, () => closed),
+      createToolClient((name, args, signal) => run("ERPBridge MCP tool call", () => sdkClient.callTool(name, args), signal), options.validator, definition, () => closed),
     /*******************************************************************************
      * Function: callToolDirect
      *
      * Calls a named tool directly through the connected ERPBridge SDK session.
      ******************************************************************************/
-    callToolDirect: async (toolName: string, args: Record<string, unknown>) => {
+    callToolDirect: async (toolName: string, args: Record<string, unknown>, signal?: AbortSignal) => {
       if (closed) throw new Error("ERPBridge MCP session is closed");
-      const result = await sdkClient.callTool(toolName, args);
+      const result = await run("ERPBridge MCP direct tool call", () => sdkClient.callTool(toolName, args), signal);
       const envelope = asResultRecord(result);
       if (envelope.isError === true) throw new ErpbridgeMcpToolError(envelope);
       return envelope;
@@ -108,7 +124,7 @@ export async function createErpbridgeMcpSession(options: {
      *
      * Retrieves tool definitions from the connected ERPBridge MCP session.
      ******************************************************************************/
-    listTools: () => sdkClient.listTools(),
+    listTools: (signal?: AbortSignal) => run("ERPBridge MCP tool discovery", () => sdkClient.listTools(), signal),
     close,
   });
 }
@@ -120,7 +136,7 @@ export async function createErpbridgeMcpSession(options: {
  * access.
  ******************************************************************************/
 function createToolClient(
-  sdkClient: ErpbridgeMcpSdkClient,
+  callTool: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>,
   validator: RegistryValidator,
   definition: ToolDefinition,
   isClosed: () => boolean,
@@ -170,7 +186,7 @@ function createToolClient(
       const args = guarded
         ? { ...parameters, role: identity.erpbridgeRole! }
         : { ...parameters };
-      const result = await sdkClient.callTool(remoteName || action, args);
+      const result = await callTool(remoteName || action, args, signal);
       const envelope = asResultRecord(result);
       if (envelope.isError === true) throw new ErpbridgeMcpToolError(envelope);
       return envelope;

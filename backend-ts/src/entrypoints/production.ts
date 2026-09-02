@@ -37,10 +37,9 @@ import { PolicyGateClient } from "../governance/policy-gate-client.js";
 import { discoverTools } from "../agent/tool-discovery.js";
 import { reconcileInterruptedExecutions } from "../runner/read-checkpoints.js";
 
-// Some external SDKs (the Firestore client, the ERP Bridge MCP client) have no
-// built-in connect timeout — an unresponsive dependency would otherwise hang
-// startup forever with zero log output. Race every such call against a hard
-// deadline so failures are fast and visible instead of silent.
+// Storage startup waits are bounded here; storage late-resource disposal and
+// acknowledgement reconciliation still require their own lifecycle contract.
+// ERPBridge now owns its initialization deadline and cleanup inside its adapter.
 /*******************************************************************************
  * Function: withTimeout
  *
@@ -130,16 +129,14 @@ const legacyMcp =
 let erpbridgeSession: ErpbridgeMcpSession | null = null;
 if (config.mcpTransport === "erpbridge-mcp") {
   try {
-    erpbridgeSession = await withTimeout(
-      createErpbridgeMcpSession({
+    // The session owns its bounded initialization and late-resource cleanup.
+    // An outer race would abandon that lifecycle and leak a late connection.
+    erpbridgeSession = await createErpbridgeMcpSession({
         baseURL: config.erpbridgeBaseURL,
         token: config.erpbridgeMcpToken,
         timeoutMs: config.mcpTimeoutMs,
         validator,
-      }),
-      config.mcpTimeoutMs,
-      "ERP Bridge connection",
-    );
+      });
   } catch (err) {
     console.warn("[erpbridge] MCP session failed to start — ERP tools will be unavailable:", err instanceof Error ? err.message : String(err));
   }
@@ -267,7 +264,8 @@ const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
   await app.close();
-  await erpbridgeSession?.close();
+  try { await erpbridgeSession?.close(); }
+  catch { console.warn("[erpbridge] MCP cleanup could not be confirmed; continuing shutdown without replay"); }
   await repository.close();
   // Explicit exit so lingering async handles (Firestore listeners, timers) don't keep the
   // process alive after the HTTP port is closed — prevents EADDRINUSE on --watch restarts.

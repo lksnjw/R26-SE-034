@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { RegistryService } from "../src/registry/service.js";
 import { Repository } from "../src/repository/store.js";
 import type { DispatchIdentity } from "../src/tools/registry.js";
@@ -59,6 +59,7 @@ async function fixture(
   sdk: ErpbridgeMcpSdkClient,
   identity: DispatchIdentity = builderIdentity,
   parameters: Record<string, unknown> = { value: "ok" },
+  timeoutMs = 1_000,
 ) {
   const registries = await RegistryService.load(
     resolve("tests/fixtures/tools.json"),
@@ -83,7 +84,7 @@ async function fixture(
   const session = await createErpbridgeMcpSession({
     baseURL: "https://erpbridge.example.test",
     token: "scoped-token",
-    timeoutMs: 1_000,
+    timeoutMs,
     validator,
     sdkClient: sdk,
   });
@@ -101,6 +102,8 @@ async function fixture(
     parameters,
   };
 }
+
+afterEach(() => vi.useRealTimers());
 
 describe("governed ERPBridge MCP adapter", () => {
   test("connects once and calls the reviewed remote MCP name with the mapped role", async () => {
@@ -301,5 +304,69 @@ describe("governed ERPBridge MCP adapter", () => {
     await testFixture.session.close();
 
     expect(sdk.close).toHaveBeenCalledOnce();
+  });
+
+  test("initialization timeout does not await hung cleanup and closes a late connection again", async () => {
+    const ready = await fixture(fakeSdk());
+    vi.useFakeTimers(); const sdk = fakeSdk();
+    let complete!: () => void;
+    vi.mocked(sdk.connect).mockImplementation(() => new Promise<void>(resolve => { complete = resolve; }));
+    vi.mocked(sdk.close).mockImplementation(() => new Promise<void>(() => {}));
+    const initialized = createErpbridgeMcpSession({ baseURL: "https://erpbridge.example.test", token: "fixture-only", timeoutMs: 1_000, validator: ready.validator, sdkClient: sdk });
+    const assertion = expect(initialized).rejects.toMatchObject({ name: "OperationDeadlineExceeded" });
+    await vi.advanceTimersByTimeAsync(1_000); await assertion;
+    expect(sdk.connect).toHaveBeenCalledOnce(); expect(sdk.close).toHaveBeenCalledOnce();
+    complete(); await Promise.resolve(); await Promise.resolve();
+    expect(sdk.close).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1_000); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test.each(["discovery", "direct", "governed"])("hung %s call fences session and never retries", async (operation) => {
+    const sdk = fakeSdk(); const f = await fixture(sdk, builderIdentity, { value: "ok" }, 20);
+    vi.useFakeTimers(); let complete!: (value: unknown) => void;
+    const pending = new Promise<unknown>(resolve => { complete = resolve; });
+    vi.mocked(sdk.callTool).mockImplementation(() => pending);
+    vi.mocked(sdk.listTools).mockImplementation(() => pending as Promise<[]>);
+    const result = operation === "discovery" ? f.session.listTools() : operation === "direct" ? f.session.callToolDirect("policy", {}) :
+      f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity);
+    const assertion = expect(result).rejects.toMatchObject({ name: "OperationDeadlineExceeded" });
+    await vi.advanceTimersByTimeAsync(20); await assertion;
+    expect(f.session.available).toBe(false); expect(sdk.connect).toHaveBeenCalledOnce();
+    expect(sdk.callTool).toHaveBeenCalledTimes(operation === "discovery" ? 0 : 1);
+    expect(sdk.listTools).toHaveBeenCalledTimes(operation === "discovery" ? 1 : 0);
+    await expect(f.session.listTools()).rejects.toThrow(/closed/);
+    await expect(f.session.callToolDirect("policy", {})).rejects.toThrow(/closed/);
+    complete(operation === "discovery" ? [] : { content: [], structuredContent: { id: "late" } });
+    await Promise.resolve(); await Promise.resolve();
+    expect(f.session.available).toBe(false); expect(sdk.close).toHaveBeenCalledTimes(2);
+  });
+
+  test("in-flight abort rejects without claiming the SDK operation was cancelled", async () => {
+    const sdk = fakeSdk(), f = await fixture(sdk); const controller = new AbortController();
+    vi.mocked(sdk.callTool).mockImplementation(() => new Promise<unknown>(() => {}));
+    const result = f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity, controller.signal);
+    const assertion = expect(result).rejects.toMatchObject({ name: "AbortError" });
+    controller.abort(); await assertion;
+    expect(f.session.available).toBe(false); expect(sdk.callTool).toHaveBeenCalledOnce();
+  });
+
+  test("pre-aborted governed call does not consume capability or poison the session", async () => {
+    const sdk = fakeSdk(), f = await fixture(sdk); const controller = new AbortController(); controller.abort();
+    const client = f.session.clientFor(f.definition);
+    await expect(client.execute("demo.echo", f.capability, f.parameters, f.identity, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(f.session.available).toBe(true); expect(sdk.callTool).not.toHaveBeenCalled();
+    await expect(client.execute("demo.echo", f.capability, f.parameters, f.identity)).resolves.toBeDefined();
+  });
+
+  test("close bounds cleanup, is idempotent and abandons in-flight wait", async () => {
+    const sdk = fakeSdk(), f = await fixture(sdk, builderIdentity, { value: "ok" }, 20);
+    vi.useFakeTimers(); vi.mocked(sdk.close).mockImplementation(() => new Promise<void>(() => {}));
+    vi.mocked(sdk.callTool).mockImplementation(() => new Promise<unknown>(() => {}));
+    const waiting = f.session.callToolDirect("policy", {});
+    const waitingAssertion = expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+    const closing = f.session.close(); expect(f.session.close()).toBe(closing);
+    const closeAssertion = expect(closing).rejects.toMatchObject({ name: "OperationDeadlineExceeded" });
+    await waitingAssertion; await vi.advanceTimersByTimeAsync(20); await closeAssertion;
+    expect(sdk.close).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
   });
 });

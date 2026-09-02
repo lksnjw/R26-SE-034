@@ -23,6 +23,10 @@ export async function discoverTools(
   registries: RegistryService,
 ): Promise<readonly ToolDefinition[]> {
   if (session === null) return Object.freeze([]);
+  if (session.available === false) {
+    sessionCaches.delete(session);
+    throw new ToolDiscoveryError();
+  }
   const registryHash = registries.hash();
   const cached = sessionCaches.get(session);
   if (cached !== undefined && cached.registryHash === registryHash && cached.expiresAt > Date.now()) return cached.result;

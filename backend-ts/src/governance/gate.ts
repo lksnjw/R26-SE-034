@@ -68,6 +68,7 @@ export class GovernedValidationGate implements ValidationGate {
     // On any network failure the outcome is "fallback" and we drop through to tier 1.
     if (this.policyGate !== null) {
       const pg = await this.policyGate.evaluate(request, context.signal);
+      if (context.signal?.aborted) throw new DOMException("Policy evaluation cancelled", "AbortError");
       if (pg.outcome !== "fallback") {
         return this.#resolveFromPolicyGate(pg, action, rawYAML, user, proposal, request, context);
       }
@@ -80,6 +81,7 @@ export class GovernedValidationGate implements ValidationGate {
       () => this.validator.validateAndIssueToken(action, rawYAML, user.role),
       context.signal,
     );
+    if (context.signal?.aborted) throw new DOMException("Policy evaluation cancelled", "AbortError");
     let gate: ValidationGateResult;
     if (outcome.allowed) {
       gate = outcome.value;
@@ -105,6 +107,7 @@ export class GovernedValidationGate implements ValidationGate {
       });
     }
     await this.recordDecision(action, rawYAML, proposal.readOnly, outcome.decision, gate.result.passed, request, context);
+    if (context.signal?.aborted) throw new DOMException("Policy evaluation cancelled", "AbortError");
     return gate;
   }
 
@@ -122,6 +125,11 @@ export class GovernedValidationGate implements ValidationGate {
     request: GovernanceRequest,
     context: GovernedValidationContext,
   ): Promise<ValidationGateResult> {
+    if (context.signal?.aborted) throw new DOMException("Policy evaluation cancelled", "AbortError");
+    // Defense in depth: even an injected policy client cannot make conditional
+    // permission executable by converting its conditions to warnings.
+    if (pg.outcome === "allow" && pg.conditions.length > 0)
+      pg = { outcome: "review", reason: "Policy conditions require enforced review before execution" };
     const decision: GovernanceDecision = {
       status: pg.outcome === "review" ? "HUMAN_REVIEW" : pg.outcome === "allow" ? "FRESH" : "BLOCKED",
       policyVersion: "policy-gate",
@@ -159,6 +167,7 @@ export class GovernedValidationGate implements ValidationGate {
       });
     }
     await this.recordDecision(action, rawYAML, proposal.readOnly, decision, gate.result.passed, request, context);
+    if (context.signal?.aborted) throw new DOMException("Policy evaluation cancelled", "AbortError");
     return gate;
   }
 

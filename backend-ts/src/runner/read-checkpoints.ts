@@ -134,7 +134,7 @@ export class ReadCheckpoints implements ReadExecutionHooks {
           if (entry) { entry.status = "CANCELLED"; entry.completedAt = item.completedAt; entry.durationMs = Math.max(0, Date.parse(item.completedAt) - Date.parse(attempt.startedAt)); entry.outcome = "NOT_DISPATCHED"; }
           appendExecutionEvent(state, item, "node.cancelled", { outcome: "NOT_DISPATCHED" }, attempt.nodeId, attempt.id);
         }
-        item.agentSummary = "Cancellation was observed at a read boundary. Already dispatched reads were not interrupted; their saved answers are retained.";
+        item.agentSummary = "Cancellation was observed at a read boundary. No further reads will start; confirmed saved answers are retained. This does not confirm that remote processing stopped.";
       } else item.agentSummary = item.status === "DONE" ? "Published read workflow completed with deterministic execution." : "Read workflow stopped. No automatic replay was performed; saved completed answers are retained.";
       if (item.status === "RECOVERY_REQUIRED") progress.recoveryReason = "READ_OUTCOME_UNKNOWN";
       if (failed || unknown) item.failure = { failureCategory: unknown ? "READ_OUTCOME_UNKNOWN" : "READ_EXECUTION_FAILED", failedStepId: unknown?.nodeId ?? stopped?.nodeId ?? "preflight" };

@@ -1,3 +1,5 @@
+import { boundedJSONRequest, InvalidResponseJSON } from "../core/bounded-json-request.js";
+import { OperationDeadlineExceeded } from "../core/bounded-operation.js";
 import type { AnalysisProvider, AnalysisResponse, ProviderInvocationContext } from "../analysisprovider/types.js";
 import type { QueryMessage, QueryOptions, QueryToolCall, QueryToolDefinition, QueryTurnResult } from "../analysisprovider/query-types.js";
 import { generationMessages } from "../prompts/contracts.js";
@@ -88,28 +90,9 @@ export class OpenAICompatibleClient implements AnalysisProvider {
    ******************************************************************************/
   async generate(prompt: string, model: string, signal?: AbortSignal, context?: ProviderInvocationContext): Promise<AnalysisResponse> {
     const selectedModel = model.trim() === "" ? this.model : model;
-    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-    const combinedSignal = signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal]);
-    let response: Response;
-    try {
-      response = await this.#fetch(`${this.baseURL}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${this.#apiKey}` },
-        body: JSON.stringify({ model: selectedModel, messages: generationMessages(prompt, context?.promptTemplateVersion), temperature: this.temperature }),
-        signal: combinedSignal,
-      });
-    } catch {
-      if (signal?.aborted === true) throw new OpenAICompatibleError("OpenAI-compatible request was cancelled", "cancelled");
-      if (timeoutSignal.aborted) throw new OpenAICompatibleError("OpenAI-compatible request timed out", "timeout");
-      throw new OpenAICompatibleError("OpenAI-compatible request failed", "transport");
-    }
-    if (!response.ok) {
-      const kind: OpenAICompatibleFailureKind = response.status === 429 ? "rate_limit" : response.status >= 500 ? "server" : "client";
-      throw new OpenAICompatibleError(`OpenAI-compatible provider returned HTTP ${response.status}`, kind, response.status);
-    }
-    let decoded: unknown;
-    try { decoded = await response.json(); }
-    catch { throw new OpenAICompatibleError("OpenAI-compatible response was not valid JSON", "malformed"); }
+    const decoded = await this.requestJSON({
+      model: selectedModel, messages: generationMessages(prompt, context?.promptTemplateVersion), temperature: this.temperature,
+    }, signal, "OpenAI-compatible");
     let parsed: OpenAIChatResponse;
     try { parsed = parseResponse(decoded); }
     catch (error) { throw new OpenAICompatibleError(error instanceof Error ? error.message : "OpenAI-compatible response has an invalid shape", "malformed"); }
@@ -133,34 +116,10 @@ export class OpenAICompatibleClient implements AnalysisProvider {
    ******************************************************************************/
   async queryWithTools(messages: QueryMessage[], tools: QueryToolDefinition[], options: QueryOptions): Promise<QueryTurnResult> {
     const selectedModel = (options.model ?? "").trim() === "" ? this.model : options.model!.trim();
-    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-    const combinedSignal = options.signal === undefined ? timeoutSignal : AbortSignal.any([options.signal, timeoutSignal]);
-    let response: Response;
-    try {
-      response = await this.#fetch(`${this.baseURL}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${this.#apiKey}` },
-        body: JSON.stringify({
-          model: selectedModel,
-          messages,
-          tools: tools.length > 0 ? tools : undefined,
-          temperature: this.temperature,
-          ...(options.maxOutputTokens !== undefined ? { max_tokens: options.maxOutputTokens } : {}),
-        }),
-        signal: combinedSignal,
-      });
-    } catch {
-      if (options.signal?.aborted === true) throw new OpenAICompatibleError("Query request was cancelled", "cancelled");
-      if (timeoutSignal.aborted) throw new OpenAICompatibleError("Query request timed out", "timeout");
-      throw new OpenAICompatibleError("Query request failed", "transport");
-    }
-    if (!response.ok) {
-      const kind: OpenAICompatibleFailureKind = response.status === 429 ? "rate_limit" : response.status >= 500 ? "server" : "client";
-      throw new OpenAICompatibleError(`Query provider returned HTTP ${response.status}`, kind, response.status);
-    }
-    let decoded: unknown;
-    try { decoded = await response.json(); }
-    catch { throw new OpenAICompatibleError("Query response was not valid JSON", "malformed"); }
+    const decoded = await this.requestJSON({
+      model: selectedModel, messages, tools: tools.length > 0 ? tools : undefined, temperature: this.temperature,
+      ...(options.maxOutputTokens !== undefined ? { max_tokens: options.maxOutputTokens } : {}),
+    }, options.signal, "Query");
     const parsed = parseQueryResponse(decoded);
     const choice = parsed.choices[0];
     if (choice === undefined) throw new OpenAICompatibleError("Query response had no choices", "malformed");
@@ -188,6 +147,26 @@ export class OpenAICompatibleClient implements AnalysisProvider {
     }
     return { text, toolCalls, stopReason, inputTokens, outputTokens, measured, model: selectedModel, provider: this.provider };
   }
+  private async requestJSON(payload: Record<string, unknown>, signal: AbortSignal | undefined, label: string): Promise<unknown> {
+    try {
+      const { response, decoded } = await boundedJSONRequest(this.#fetch, `${this.baseURL}/chat/completions`, {
+        method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${this.#apiKey}` },
+        body: JSON.stringify(payload), ...(signal === undefined ? {} : { signal }),
+      }, this.timeoutMs, `${label} provider response`);
+      if (!response.ok) {
+        const kind: OpenAICompatibleFailureKind = response.status === 429 ? "rate_limit" : response.status >= 500 ? "server" : "client";
+        throw new OpenAICompatibleError(`${label} provider returned HTTP ${response.status}`, kind, response.status);
+      }
+      return decoded;
+    } catch (error) {
+      if (signal?.aborted) throw new OpenAICompatibleError(`${label} request was cancelled`, "cancelled");
+      if (error instanceof OpenAICompatibleError) throw error;
+      if (error instanceof OperationDeadlineExceeded) throw new OpenAICompatibleError(`${label} request timed out`, "timeout");
+      if (error instanceof InvalidResponseJSON) throw new OpenAICompatibleError(`${label} response was not valid JSON`, "malformed");
+      throw new OpenAICompatibleError(`${label} request failed`, "transport");
+    }
+  }
+
 }
 
 /*******************************************************************************

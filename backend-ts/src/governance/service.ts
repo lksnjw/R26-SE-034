@@ -96,14 +96,19 @@ export class GovernanceService {
     signal?: AbortSignal,
   ): Promise<GovernanceOutcome<T>> {
     return this.#mutex.runExclusive(async () => {
+      if (signal?.aborted) return this.blocked("BLOCKED", "governance request was cancelled");
       let primaryFailure: GovernanceAdapterError | null = null;
       if (this.primary !== null) {
         try {
           const policy = await this.primary.fetchPolicy(request, signal);
+          if (signal?.aborted) return this.blocked("BLOCKED", "governance request was cancelled");
           await this.acceptPrimary(policy);
+          if (signal?.aborted) return this.blocked("BLOCKED", "governance request was cancelled");
           return this.allowed(policy, "FRESH", null, evaluateLocally);
         } catch (error) {
           primaryFailure = normalizeFailure(error);
+          if (signal?.aborted || ["parse", "authorization", "cancelled"].includes(primaryFailure.kind))
+            return this.blocked("BLOCKED", signal?.aborted ? "governance request was cancelled" : primaryFailure.message);
         }
       } else {
         primaryFailure = new GovernanceAdapterError("primary governance endpoint is not configured", "unreachable");
@@ -113,6 +118,7 @@ export class GovernanceService {
       if (this.secondary !== null) {
         try {
           const policy = await this.secondary.fetchPolicy(request, signal);
+          if (signal?.aborted) return this.blocked("BLOCKED", "governance request was cancelled");
           const expected = this.#state.lastPrimaryPolicyVersion;
           if (expected === null || policy.policyVersion !== expected) {
             const reason = expected === null
@@ -121,13 +127,17 @@ export class GovernanceService {
             return this.blocked(readOnly ? "HUMAN_REVIEW" : "BLOCKED", reason, policy.policyVersion, "secondary", policy.evidenceIds);
           }
           await this.acceptSecondary(policy);
+          if (signal?.aborted) return this.blocked("BLOCKED", "governance request was cancelled");
           return this.allowed(policy, "FRESH", null, evaluateLocally);
         } catch (error) {
           secondaryFailure = normalizeFailure(error);
+          if (signal?.aborted || ["parse", "authorization", "cancelled"].includes(secondaryFailure.kind))
+            return this.blocked("BLOCKED", signal?.aborted ? "governance request was cancelled" : secondaryFailure.message);
         }
       }
 
       const failure = preferredFailure(primaryFailure, secondaryFailure);
+      if (signal?.aborted) return this.blocked("BLOCKED", "governance request was cancelled");
       if (failure.kind === "parse") return this.blocked("BLOCKED", failure.message);
       const cached = this.#state.snapshot;
       // Use cached snapshot for read-only workflows when it has not expired
@@ -145,6 +155,7 @@ export class GovernanceService {
       if (this.#llmFallback !== null) {
         try {
           const fallback = await this.#llmFallback.evaluate(request, readOnly, signal);
+          if (signal?.aborted) return this.blocked("BLOCKED", "governance request was cancelled");
           if (fallback.allowed) {
             const value = await evaluateLocally();
             const warning = `${failure.message}; decision made by offline policy fallback (${fallback.source}): ${fallback.reason}`;

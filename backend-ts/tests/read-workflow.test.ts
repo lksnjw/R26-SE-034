@@ -26,7 +26,7 @@ const yaml = stringify({ name: "Daily read", description: "Read invoice details"
   { id: "details", action: "invoice-read", parameters: { id: "{{lookup.structuredContent.id}}" } },
 ] });
 
-async function setup(options: { noBridge?: boolean; roleId?: string; provider?: boolean; write?: boolean; persistence?: PersistenceBackend } = {}) {
+async function setup(options: { noBridge?: boolean; roleId?: string; provider?: boolean; write?: boolean; persistence?: PersistenceBackend; mcpTimeoutMs?: number } = {}) {
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "read-workflow-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }),
     storageEncryptionKey: "x".repeat(32), erpbridgeRoleMap: { "Platform Admin": "admin", Client: "client" } };
   const repository = await Repository.open(options.persistence ?? null);
@@ -38,7 +38,7 @@ async function setup(options: { noBridge?: boolean; roleId?: string; provider?: 
   const validator = new RegistryValidator(registries, repository);
   const callTool = vi.fn(async (_name: string, _args: Record<string, unknown>): Promise<unknown> => ({ content: [], structuredContent: { id: "invoice-actual" } }));
   const listTools = vi.fn(async () => [{ name: tool.mcp_tool_name, inputSchema: tool.input_schema }]);
-  const erpbridgeSession = await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "fixture-only", timeoutMs: 1000, validator,
+  const erpbridgeSession = await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "fixture-only", timeoutMs: options.mcpTimeoutMs ?? 1000, validator,
     sdkClient: { connect: async () => {}, close: async () => {}, listTools, callTool } });
   const queryWithTools = vi.fn(async () => { throw new Error("Published reads must never invoke the model"); });
   const services: ApplicationServices = { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator),
@@ -621,4 +621,39 @@ test("authority revoked during preflight prevents creating a run, before SDK dis
   unblock.release(); const response = await running;
   expect(response.statusCode).toBe(403); expect(response.json().meta.code).toBe("EXECUTION_AUTHORITY_CHANGED");
   expect(s.callTool).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
+test.each([false, true])("MCP timeout after saved first answer=%s records UNKNOWN, rejects late output and never replays", async (savedFirst) => {
+  const s = await setup({ mcpTimeoutMs: 80 }); await s.seed();
+  const entered = barrier(), unblock = barrier();
+  if (savedFirst) s.callTool.mockImplementationOnce(async () => ({ content: [], structuredContent: { id: "confirmed-first" } }));
+  s.callTool.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return { content: [], structuredContent: { id: "unconfirmed-late" } }; });
+  const admitted = (await s.run(queuedInput())).json().data; await entered.promise;
+  const item = await waitForTerminal(s.repository, admitted.id), node = savedFirst ? "details" : "lookup";
+  expect(item).toMatchObject({ status: "RECOVERY_REQUIRED", failure: { failureCategory: "READ_OUTCOME_UNKNOWN", failedStepId: node }, readProgress: { attempts: { [node]: { status: "UNKNOWN" } } } });
+  expect(s.callTool).toHaveBeenCalledTimes(savedFirst ? 2 : 1);
+  expect(s.services.erpbridgeSession!.available).toBe(false);
+  if (savedFirst) expect(item.stepOutputs?.lookup).toEqual({ content: [], structuredContent: { id: "confirmed-first" } });
+  else { expect(item.stepOutputs).toEqual({}); expect(item.finalOutput).toBeUndefined(); }
+  const snapshot = await s.repository.snapshot();
+  expect(snapshot.executionEvents[item.id]?.at(-1)?.type).toBe("run.recovery_required");
+  expect((await s.run(queuedInput())).json().data.id).toBe(item.id);
+  expect((await s.app.inject({ method: "POST", url: `/api/executions/${item.id}/retry`, headers: s.headers, payload: {} })).statusCode).toBe(409);
+  unblock.release(); await new Promise(resolve => setImmediate(resolve));
+  const after = await s.repository.snapshot();
+  expect(after.executions[item.id]).toEqual(snapshot.executions[item.id]);
+  expect(after.timelines[item.id]).toEqual(snapshot.timelines[item.id]);
+  expect(after.executionEvents[item.id]).toEqual(snapshot.executionEvents[item.id]);
+  expect(JSON.stringify(after.executions[item.id])).not.toContain("unconfirmed-late");
+});
+
+test("MCP discovery timeout fails preflight without an execution or cached readiness", async () => {
+  const s = await setup({ mcpTimeoutMs: 30 }); await s.seed();
+  s.listTools.mockImplementationOnce(() => new Promise(() => {}));
+  const failed = await s.run(); expect(failed.statusCode).toBe(503);
+  expect(failed.json().meta.code).toBe("ERPBRIDGE_DISCOVERY_FAILED");
+  expect(s.services.erpbridgeSession!.available).toBe(false);
+  expect((await s.run()).statusCode).toBe(503);
+  expect(s.listTools).toHaveBeenCalledOnce(); expect(s.callTool).not.toHaveBeenCalled();
+  expect((await s.repository.snapshot()).executions).toEqual({});
 });

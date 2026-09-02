@@ -26,7 +26,7 @@ export default function ExecutionRunControls({ execution, canControl = false, mo
     </div>
     {pending && <p role="status" className="text-amber-700 dark:text-amber-300">Cancellation is pending. An in-flight read may finish; its saved answer is retained. Further calls stop when the request is observed.</p>}
     {recovery && <p role="status" className="text-amber-700 dark:text-amber-300">Recovery review required. Saved answers are retained; an unconfirmed call may have reached ERP. No automatic retry or replay was performed.</p>}
-    {execution.status === "CANCELLED" && <p className="text-gray-500">Stopped at a read boundary. Already dispatched reads were not interrupted; saved answers remain available.</p>}
+    {execution.status === "CANCELLED" && <p className="text-gray-500">No further reads will start. Confirmed saved answers remain available; remote processing is not confirmed stopped.</p>}
     {execution.readProgress?.persistence === "memory-only" && <p className="text-gray-500">Memory-only run · checkpoints will not survive server restart.</p>}
     {(error || monitor?.error) && <p role="alert" className="text-amber-700 dark:text-amber-300">{error || monitor.error}{!monitor?.denied && " Displayed answers are the last confirmed snapshot, not fresh status."}</p>}
     {monitor?.reconnecting && <p role="status" className="text-gray-500">Reconnecting run updates automatically. No business operation is being replayed.</p>}
