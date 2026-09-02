@@ -89,6 +89,14 @@ test("a failed run retrieves actual partial node outputs and does not silently p
   expect(workflowService.publish).not.toHaveBeenCalled();
 });
 
+test("known failed-node response is readable beside the node and is not called a successful answer", async () => {
+  executionService.list.mockResolvedValue([{ id: "run-failure", workflowId: "report", startedAt: "2026-10-05T00:00:00Z", status: "FAILED", workflowSnapshot: { yaml }, stepOutputs: {} }]);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "FAILED", output: { content: [{ type: "text", text: "Rate limit reached" }], isError: true, _meta: { "com.erpbridge/error": { type: "rate_limit", retryable: true } } } }]);
+  await open(); await screen.findByText("Node failure response · run run-failure");
+  expect(screen.getByText("The tool reported an error.")).toBeTruthy(); expect(screen.getByText("Rate limit reached")).toBeTruthy();
+  expect(screen.queryByText("Node answer · run run-failure")).toBeNull(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
 test("a save acknowledgement survives a readiness refresh failure and blocks further publication", async () => {
   workflowService.readiness.mockResolvedValueOnce(record).mockRejectedValue(new Error("Offline"));
   await open(); await selectNode(); fireEvent.click(screen.getByRole("button", { name: "Preview manual edit" }));

@@ -70,7 +70,10 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
       const completed = new Date();
       // Do not reflect arbitrary remote exception strings/credentials to users.
       const error = new Error(`Read step ${step.id} failed or was blocked; no automatic replay was performed`, { cause });
-      const entry = { id: `tl_${index + 1}`, nodeId: step.id, label: step.description ?? step.action!, status: "FAILED" as const, startedAt: started.toISOString(), completedAt: completed.toISOString(), durationMs: completed.getTime() - started.getTime(), sideEffect: false };
+      // A failure receipt belongs to this attempt, never stepOutputs/finalOutput
+      // or a dependent node's successful data bindings.
+      const entry = { id: `tl_${index + 1}`, nodeId: step.id, label: step.description ?? step.action!, status: "FAILED" as const, startedAt: started.toISOString(), completedAt: completed.toISOString(), durationMs: completed.getTime() - started.getTime(), sideEffect: false,
+        ...(cause instanceof ErpbridgeMcpToolError ? { output: cause.result } : {}) };
       const log = { timestamp: completed.toISOString(), level: "error" as const, nodeId: step.id, message: error.message, metadata: { action: step.action!, sideEffect: false } };
       await hooks?.failed(index, entry, log, cause instanceof ErpbridgeMcpToolError);
       result.timeline.push(entry); result.logs.push(log);

@@ -1,11 +1,11 @@
 import type { ToolDefinition } from "../registry/schemas.js";
 import type { ErpbridgeMcpSession } from "../tools/erpbridge-mcp-client.js";
 import type { RegistryService } from "../registry/service.js";
-import { canonicalJSONBytes } from "../core/canonical-json.js";
+import { exactBridgeName, matchesBridgeContract } from "../tools/erpbridge-contract.js";
 
 const CACHE_TTL_MS = 60_000;
 
-type DiscoveryCache = { registryHash: string; expiresAt: number; result: Promise<readonly ToolDefinition[]> };
+type DiscoveryCache = { registryHash: string; generation: number; expiresAt: number; result: Promise<readonly ToolDefinition[]> };
 let sessionCaches = new WeakMap<ErpbridgeMcpSession, DiscoveryCache>();
 
 export class ToolDiscoveryError extends Error {
@@ -29,14 +29,17 @@ export async function discoverTools(
   }
   const registryHash = registries.hash();
   const cached = sessionCaches.get(session);
-  if (cached !== undefined && cached.registryHash === registryHash && cached.expiresAt > Date.now()) return cached.result;
+  const generation = session.discoveryGeneration ?? 0;
+  if (cached !== undefined && cached.registryHash === registryHash && cached.generation === generation && cached.expiresAt > Date.now()) return cached.result;
   const byMcpName = new Map<string, ToolDefinition>();
   for (const tool of registries.snapshot().tools) {
     // Discovery is not admission. Legacy entries without identity, role
     // grants, or an explicit usable schema remain unavailable to agents.
     if (!tool.tool_id.trim() || !tool.mcp_tool_name.trim() || tool.allowed_roles.length === 0 || tool.input_schema.type !== "object") continue;
-    if (byMcpName.has(tool.mcp_tool_name)) throw new ToolDiscoveryError();
-    byMcpName.set(tool.mcp_tool_name, tool);
+    if (session.requiresReviewedRevision && !tool.bridge_contract) continue;
+    const remoteName = exactBridgeName(tool);
+    if (byMcpName.has(remoteName)) throw new ToolDiscoveryError();
+    byMcpName.set(remoteName, tool);
   }
   const result = (async () => {
     try {
@@ -47,14 +50,15 @@ export async function discoverTools(
       if (names.has(liveT.name)) throw new ToolDiscoveryError();
       names.add(liveT.name);
       const existing = byMcpName.get(liveT.name);
-      if (existing !== undefined && canonicalJSONBytes(existing.input_schema).equals(canonicalJSONBytes(liveT.inputSchema))) {
+      if (existing !== undefined && matchesBridgeContract(existing, liveT)) {
         merged.push(existing);
       }
     }
+    if ((session.discoveryGeneration ?? 0) !== generation) throw new ToolDiscoveryError();
     return Object.freeze(merged);
     } catch { throw new ToolDiscoveryError(); }
   })();
-  const entry = { registryHash, expiresAt: Date.now() + CACHE_TTL_MS, result };
+  const entry = { registryHash, generation, expiresAt: Date.now() + CACHE_TTL_MS, result };
   sessionCaches.set(session, entry);
   try { return await result; } catch (error) {
     if (sessionCaches.get(session) === entry) sessionCaches.delete(session);

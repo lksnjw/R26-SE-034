@@ -33,7 +33,7 @@ export function publicChatOperation(op: ChatOperation) {
     status: op.status, stage: op.stage, epoch: op.epoch, lastSequence: op.lastSequence, createdAt: op.createdAt, updatedAt: op.updatedAt,
     finishedAt: op.finishedAt ?? null, traceId: op.traceId, persistence: op.persistence, modelBinding: op.modelBinding,
     cancellationRequested: op.cancellationRequested === true, reason: op.reason ?? null, artifactRefs: op.artifactRefs ?? [], attempts: op.attempts.map(a => ({ id: a.id, toolName: a.toolName, status: a.status, startedAt: a.startedAt, completedAt: a.completedAt ?? null,
-      ...(a.status === "DONE" ? { output: a.output } : {}) })) };
+      ...(["DONE", "FAILED"].includes(a.status) && a.output !== undefined ? { output: a.output } : {}) })) };
 }
 function event(state: RepositoryState, op: ChatOperation, type: string, attemptId?: string) {
   const entries = state.chatOperationEvents[op.id] ??= [];
@@ -226,6 +226,12 @@ export class ChatJobQueue {
           await this.services.repository.mutate(state => {
             const op = state.chatOperations[admitted.id], a = op?.attempts.find(a => a.id === attempt.id);
             if (!op || op.epoch !== admitted.epoch || op.status !== "RUNNING" || !a || !["PREPARING", "DISPATCH_INTENT"].includes(a.status)) throw new Error("Chat attempt is fenced");
+            if (error instanceof ErpbridgeMcpToolError) {
+              const bytes = Buffer.byteLength(JSON.stringify(error.result));
+              const previous = op.attempts.reduce((total, item) => total + (item.output ? Buffer.byteLength(JSON.stringify(item.output)) : 0), 0);
+              if (bytes > 512_000 || previous + bytes > 2_000_000) throw new Error("Chat failure receipt budget exceeded");
+              a.output = error.result;
+            }
             a.status = a.status === "DISPATCH_INTENT" && !(error instanceof ErpbridgeMcpToolError) ? "UNKNOWN" : "FAILED"; a.completedAt = now();
             op.stage = "READ_STOPPED"; event(state, op, a.status === "UNKNOWN" ? "tool.outcome_unknown" : "tool.failed", a.id);
           });

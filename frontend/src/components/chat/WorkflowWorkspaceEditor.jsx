@@ -133,7 +133,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
       <ol className="workspace-flow space-y-4">
         {preview.steps.map((step, index) => {
           const attempt = shownTimeline.find((item) => item.nodeId === step.id);
-          const output = shownRun?.stepOutputs?.[step.id];
+          const output = shownRun?.stepOutputs?.[step.id] ?? (attempt?.status === "FAILED" ? attempt.output : undefined);
           return <li key={step.id} className="relative">
             <button type="button" aria-pressed={node?.id === step.id} onClick={() => { setSelected(step.id); writeWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, step.id); setProposal(null); }} className={`workspace-node relative z-10 flex w-full items-center gap-3 rounded-lg border bg-white px-4 py-3 text-left dark:bg-darkBackground ${node?.id === step.id ? "border-primary ring-1 ring-primary/20" : "border-gray-200 dark:border-gray-700"}`}>
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 text-xs text-gray-400 dark:bg-gray-900">{snapshotMatches && attempt?.status === "DONE" ? <Icon icon="lucide:check" /> : snapshotMatches && attempt?.status === "FAILED" ? <Icon icon="lucide:triangle-alert" /> : String(index + 1).padStart(2, "0")}</span>
@@ -141,7 +141,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
               {step.source.condition && <span className="text-[9px] text-gray-500">condition</span>}
               <Icon icon="lucide:chevron-right" className="h-3 w-3 text-gray-400" />
             </button>
-            {output !== undefined && <details className="relative z-10 ml-10 mt-2 rounded-md bg-white/80 px-3 py-2 text-[10px] dark:bg-gray-900"><summary className="cursor-pointer">Node answer · run {shownRun.id}</summary><div className="mt-2 max-h-64 overflow-auto"><ReadableResult value={output} /></div></details>}
+            {output !== undefined && <details className="relative z-10 ml-10 mt-2 rounded-md bg-white/80 px-3 py-2 text-[10px] dark:bg-gray-900"><summary className="cursor-pointer">{attempt?.status === "FAILED" ? "Node failure response" : "Node answer"} · run {shownRun.id}</summary><div className="mt-2 max-h-64 overflow-auto"><ReadableResult value={output} /></div></details>}
             {attempt?.status === "FAILED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-red-600">In this run, this node failed or was blocked. Following nodes were not executed.</p>}
             {attempt?.status === "UNKNOWN" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-amber-700 dark:text-amber-300">Outcome unknown · the read may have reached ERP, but no confirmed answer was saved. No automatic replay.</p>}
             {attempt?.status === "RUNNING" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">{attempt.phase === "DISPATCH_INTENT" ? "Read dispatch recorded · waiting for a saved answer" : "Checking this node before dispatch"}</p>}

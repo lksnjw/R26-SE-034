@@ -6,7 +6,7 @@ import { saveWorkflowForCanvas, peekWorkflowForChatEdit, clearWorkflowForChatEdi
 import { workflowService } from "../../services/workflow.service";
 import PendingGenerationApprovalCard from "../workflows/PendingGenerationApprovalCard";
 import { workflowArtifactStatus } from "./workflowArtifactStatus";
-import ReadableValue from "./ReadableValue";
+import ReadableValue, { ReadableResult } from "./ReadableValue";
 import EmailDraftPreview from "./EmailDraftPreview";
 
 // ── Inline validation badge ─────────────────────────────────────────────────
@@ -253,6 +253,20 @@ function InlineSources({ sources, boundHit }) {
       )}
     </div>
   );
+}
+
+function SavedToolResponses({ steps }) {
+  if (!Array.isArray(steps)) return null;
+  const receipts = steps.filter(step => step.result !== null && step.result !== undefined).slice(0, 64);
+  if (!receipts.length) return null;
+  return <details className="mt-3 border-t border-gray-100 pt-2 text-xs dark:border-gray-800">
+    <summary className="cursor-pointer text-gray-500">Saved tool responses · {receipts.length}</summary>
+    <div className="mt-3 space-y-3">{receipts.map((step, index) => <section key={index} className="border-l border-gray-200 pl-3 dark:border-gray-700">
+      <p className="mb-2 font-medium">{step.toolName || step.displayName || "Tool"} · {step.status === "FAILED" || step.error || step.result?.isError === true ? "Failure response" : step.status === "SUCCEEDED" ? "Confirmed read response" : "Recorded response"}</p>
+      <ReadableResult value={step.result} />
+    </section>)}</div>
+    {steps.filter(step => step.result !== null && step.result !== undefined).length > 64 && <p className="mt-2 text-gray-500">Additional responses exceed this display preview.</p>}
+  </details>;
 }
 
 // ── Save button after WORKFLOW_MODIFY ──────────────────────────────────────
@@ -535,6 +549,7 @@ function ChatMessage({ message, onChatChanged }) {
         {isToolCall && (
           <ActionStepsList steps={artifacts?.steps} blocked={artifacts?.blocked} />
         )}
+        <SavedToolResponses steps={artifacts?.toolSteps ?? artifacts?.steps} />
 
         {/* ── Workflow: inline validation + YAML preview + save-after-edit ── */}
         {isWorkflow && (

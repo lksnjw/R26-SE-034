@@ -3,6 +3,9 @@ import type { QueryMessage, QueryToolDefinition } from "../analysisprovider/quer
 import type { ProviderRuntime } from "../providers/runtime.js";
 import { QUERY_SYSTEM_PROMPT, promptData } from "../prompts/contracts.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
+import { hasReservedBridgeRole } from "../tools/erpbridge-contract.js";
+import { mcpResultForModel } from "../tools/mcp-result.js";
+import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
 
 export type VisualisationSpec = {
   type: "bar" | "line" | "table" | "pie";
@@ -173,13 +176,13 @@ export async function runQueryLoop(
       let toolResultContent: string;
       try {
         const matches = readOnlyTools.filter((tool) => (tool.mcp_tool_name.trim() || tool.name) === call.name);
-        if (matches.length !== 1 || validateToolInput(matches[0]!.input_schema, call.arguments).length > 0 || Object.hasOwn(call.arguments, "role"))
+        if (matches.length !== 1 || validateToolInput(matches[0]!.input_schema, call.arguments).length > 0 || (hasReservedBridgeRole(matches[0]!) && Object.hasOwn(call.arguments, "role")))
           throw new Error("Read proposal does not match an offered tool and valid arguments");
         const raw = await callTool(call.name, call.arguments);
         toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: raw, status: "SUCCEEDED" });
-        toolResultContent = promptData({ source: "untrusted_tool_result", callId: call.id, toolName: call.name, status: "SUCCEEDED", data: raw });
+        toolResultContent = promptData({ source: "untrusted_tool_result", callId: call.id, toolName: call.name, status: "SUCCEEDED", data: mcpResultForModel(raw) });
       } catch (error) {
-        toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: { error: errorText(error) }, status: "FAILED" });
+        toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: error instanceof ErpbridgeMcpToolError ? error.result : { error: errorText(error) }, status: "FAILED" });
         // A denial/failure is not permission to try another tool or argument.
         return buildResult("Read preparation stopped after a failed or denied tool request.", toolCallLog, toolSteps, iteration + 1, true, totalTokens, started);
       }

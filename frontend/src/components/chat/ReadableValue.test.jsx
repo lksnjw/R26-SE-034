@@ -45,3 +45,36 @@ test("large collections disclose their preview and can show additional rows", ()
   fireEvent.click(screen.getByRole("button", { name: "Show more fields and rows" }));
   expect(screen.getByText("record-29")).toBeTruthy();
 });
+test("inline image and audio require explicit disclosure, with no autoplay or remote fetch", () => {
+  const { container } = render(<ReadableResult value={{ content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }, { type: "audio", data: "YXVkaW8=", mimeType: "audio/wav" }] }} />);
+  expect(container.querySelector("img,audio")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Show image attachment" }));
+  expect(screen.getByAltText("Tool-returned image attachment").getAttribute("src")).toBe("data:image/png;base64,aW1hZ2U=");
+  fireEvent.click(screen.getByRole("button", { name: "Show audio attachment" }));
+  const audio = container.querySelector("audio"); expect(audio.controls).toBe(true); expect(audio.autoplay).toBe(false); expect(audio.preload).toBe("none");
+});
+test("resources are readable references or literal data, never HTML, remote links, blob text or secrets in URLs", () => {
+  const { container } = render(<ReadableResult value={{ content: [
+    { type: "resource_link", name: "Invoice report", uri: "https://u:private@example.test/report?token=private#private", description: "Saved report", mimeType: "application/pdf", size: 42 },
+    { type: "resource", resource: { uri: "erp://invoice/1", mimeType: "application/json", text: '{"invoice_id":"INV-1"}' } },
+    { type: "resource", resource: { uri: "erp://report/1", blob: "SECRETBASE64==", mimeType: "text/html" } },
+    { type: "image", mimeType: "image/svg+xml", data: "PHN2Zz4=" },
+  ] }} />);
+  expect(screen.getByText("Invoice report")).toBeTruthy(); expect(screen.getByText("INV-1")).toBeTruthy();
+  expect(screen.getByText("https://example.test/report")).toBeTruthy();
+  expect(container.textContent).not.toMatch(/SECRETBASE64|private|PHN2Zz4=/);
+  expect(container.querySelector("a,img,iframe,svg,object")).toBeNull();
+});
+test("bridge error category and suggested wait explain a saved failure without automatic retry", () => {
+  render(<ReadableResult value={{ content: [], isError: true, _meta: { "com.erpbridge/error": { type: "rate_limit", retryable: true, retryAfterMs: 1250 } } }} />);
+  expect(screen.getByText("Error category · Rate limit")).toBeTruthy(); expect(screen.getByText(/Nothing will be retried automatically/)).toBeTruthy(); expect(screen.getByText("Suggested wait · 1.25 seconds")).toBeTruthy();
+});
+test("additional content blocks can be exposed without truncating the saved result", () => {
+  render(<ReadableResult value={{ content: Array.from({ length: 30 }, (_, i) => ({ type: "text", text: `Returned block ${i}` })) }} />);
+  expect(screen.queryByText("Returned block 29")).toBeNull(); expect(screen.getByText("Showing 25 of 30 content blocks.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Show more tool content" })); expect(screen.getByText("Returned block 29")).toBeTruthy();
+});
+test("dispatch provenance is labeled as an engine request binding, not proof of delivery", () => {
+  render(<ReadableResult value={{ content: [], structuredContent: { id: "INV-1" }, _meta: { "io.workflow-engine/dispatch": { remoteName: "read.rev_MS4wLjA", resourceVersion: "1.0.0", resourceDigest: "a".repeat(64) } } }} />);
+  expect(screen.getByText("Reviewed dispatch binding")).toBeTruthy(); expect(screen.getByText("read.rev_MS4wLjA")).toBeTruthy(); expect(screen.getByText(/not a server-signed delivery/)).toBeTruthy();
+});

@@ -8,22 +8,26 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { Executor } from "../src/runner/executor.js";
 import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
+import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
+import type { ToolDefinition } from "../src/registry/schemas.js";
 
-async function setup(options: { write?: boolean; schema?: Record<string, unknown>; roles?: string[]; result?: unknown } = {}) {
+async function setup(options: { write?: boolean; schema?: Record<string, unknown>; roles?: string[]; result?: unknown; contract?: ToolDefinition["bridge_contract"]; metadataComplete?: boolean; drift?: boolean; remoteFailure?: boolean } = {}) {
   const tool = toolSchema.parse({ tool_id: "READ-1", name: "finance.read", mcp_tool_name: "finance.read", allowed_roles: options.roles ?? ["Workflow Builder"],
-    is_read_only: !options.write, input_schema: options.schema ?? { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
+    is_read_only: !options.write, ...(options.contract ? { bridge_contract: options.contract } : {}), input_schema: options.schema ?? { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
   const registries = { snapshot: () => ({ tools: [tool], rules: [], versions: { tools: "v1", rules: "v1" } }), hash: () => "sha256:test",
     findTool: (name: string) => name === tool.name ? tool : undefined, findRule: () => undefined, enabledRules: () => [] } as unknown as RegistryService;
   const repository = new Repository(null);
   await repository.mutate((state) => { state.users.builder = { id: "builder", name: "Builder", email: "builder@example.test", roleId: "role_builder", permissionOverrides: [],
     status: "Active", initials: "B", departmentId: null, lastLoginAt: null, createdAt: new Date().toISOString() }; });
   const validator = new RegistryValidator(registries, repository);
-  const callTool = vi.fn(async () => options.result ?? { content: [], structuredContent: { id: "invoice-1" } });
+  const callTool = vi.fn(async () => options.remoteFailure ? { content: [{ type: "text", text: "Revision withdrawn" }], isError: true } : options.result ?? { content: [], structuredContent: { id: "invoice-1" } });
+  const listTools = vi.fn(async () => [{ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool),
+    ...(options.contract ? { ...(options.contract.output_schema ? { outputSchema: options.contract.output_schema } : {}), _meta: { "toolplane.resourceVersion": options.contract.resource_version, "toolplane.resourceDigest": (options.drift ? "b".repeat(64) : options.contract.resource_digest), "io.erpbridge/allowedRoles": options.contract.remote_roles } } : {}) }]);
   const erpbridgeSession = await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "test-token", timeoutMs: 1000, validator,
-    sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => [{ name: tool.mcp_tool_name, inputSchema: tool.input_schema }], callTool } });
+    sdkClient: { connect: async () => {}, close: async () => {}, ...(options.metadataComplete !== undefined ? { metadataComplete: options.metadataComplete } : {}), listTools, callTool } });
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "test-broker-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }),
     erpbridgeRoleMap: { "Workflow Builder": "workflow_builder" } };
-  return { services: { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator), erpbridgeSession }, callTool };
+  return { services: { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator), erpbridgeSession }, callTool, listTools };
 }
 
 test("approved read consumes real capability and injects only backend-mapped role", async () => {
@@ -69,4 +73,34 @@ test("credential fields are removed from structured and JSON-text results before
   const result = await dispatchReadTool(s.services, "builder", "finance.read", { id: "x" });
   expect(JSON.stringify(result)).not.toContain("private");
   expect(result.structuredContent).toEqual({ id: "x", nested: {} });
+});
+
+const contract = { profile: "toolplane-v1" as const, resource_version: "1.2.3", resource_digest: "a".repeat(64), remote_roles: ["workflow_builder"], output_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } };
+test("production-like guarded dispatch pins exact revision and digest with no second discovery round trip", async () => {
+  const s = await setup({ contract, metadataComplete: true });
+  const output = await dispatchReadTool(s.services, "builder", "finance.read", { id: "invoice-1" });
+  expect(output).toMatchObject({ _meta: { "io.workflow-engine/dispatch": { remoteName: "finance.read.rev_MS4yLjM", resourceVersion: "1.2.3", resourceDigest: "a".repeat(64) } } });
+  expect(s.callTool).toHaveBeenCalledExactlyOnceWith("finance.read.rev_MS4yLjM", { id: "invoice-1", role: "workflow_builder" }, { "toolplane.resourceDigest": "a".repeat(64) });
+  expect(s.listTools).toHaveBeenCalledOnce();
+});
+test("open bridge tools preserve a legitimate business role but still enforce local grants", async () => {
+  const schema = { type: "object", properties: { role: { type: "string" } }, required: ["role"], additionalProperties: false };
+  const s = await setup({ contract: { ...contract, remote_roles: [] }, metadataComplete: true, schema });
+  await dispatchReadTool(s.services, "builder", "finance.read", { role: "customer" });
+  expect(s.callTool).toHaveBeenCalledExactlyOnceWith("finance.read.rev_MS4yLjM", { role: "customer" }, { "toolplane.resourceDigest": "a".repeat(64) });
+  const denied = await setup({ contract: { ...contract, remote_roles: [] }, metadataComplete: true, schema, roles: ["Platform Admin"] });
+  await expect(dispatchReadTool(denied.services, "builder", "finance.read", { role: "customer" })).rejects.toThrow(); expect(denied.callTool).not.toHaveBeenCalled();
+});
+test.each(["no-review", "digest-drift", "wrong-role", "injected-role", "output-mismatch", "withdrawn"])("modern bridge contract %s denies/fails without alias fallback or replay", async scenario => {
+  const s = await setup({ metadataComplete: true, ...(scenario === "no-review" ? {} : { contract: { ...contract, remote_roles: scenario === "wrong-role" ? ["finance_reader"] : contract.remote_roles } }),
+    drift: scenario === "digest-drift", remoteFailure: scenario === "withdrawn", ...(scenario === "output-mismatch" ? { result: { content: [], structuredContent: { id: 1 } } } : {}) });
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "invoice-1", ...(scenario === "injected-role" ? { role: "admin" } : {}) })).rejects.toThrow();
+  expect(s.callTool).toHaveBeenCalledTimes(["withdrawn", "output-mismatch"].includes(scenario) ? 1 : 0);
+  if (s.callTool.mock.calls.length) expect((s.callTool.mock.calls as unknown[][])[0]![0]).toBe("finance.read.rev_MS4yLjM");
+});
+test("modern direct policy path rejects business tools and absent policy contracts", async () => {
+  const s = await setup({ contract, metadataComplete: true });
+  for (const name of ["finance.read", "check_policy", "policy-gate-evaluate", "policy-gate-assist"])
+    await expect(s.services.erpbridgeSession.callToolDirect(name, {})).rejects.toThrow();
+  expect(s.callTool).not.toHaveBeenCalled();
 });

@@ -20,3 +20,12 @@ test("incomplete read preparation is not mislabeled as a successful result or a 
   expect(screen.getByText("1 tool call · preparation incomplete")).toBeTruthy();
   expect(screen.queryByText(/limit reached/)).toBeNull();
 });
+test("historical chat exposes saved structured/attachment/failure receipts even without an active operation monitor", () => {
+  const { container } = render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Partial read.", artifacts: { intent: "QUERY", toolSteps: [
+    { toolName: "invoices", status: "SUCCEEDED", result: { content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }], structuredContent: { invoice_id: "INV-7" } } },
+    { toolName: "details", status: "FAILED", result: { content: [{ type: "text", text: "Rate limit reached" }], isError: true } },
+  ] } }} /></MemoryRouter>);
+  expect(screen.getByText("Saved tool responses · 2")).toBeTruthy(); expect(screen.getByText("Invoice id")).toBeTruthy(); expect(screen.getByText("INV-7")).toBeTruthy();
+  expect(screen.getByText("details · Failure response")).toBeTruthy(); expect(screen.getByText("Rate limit reached")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Show image attachment" })).toBeTruthy(); expect(container.querySelector("img,pre")).toBeNull();
+});

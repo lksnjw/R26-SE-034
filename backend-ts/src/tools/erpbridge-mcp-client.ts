@@ -1,4 +1,7 @@
-import { createClient } from "@erpbridge/sdk";
+import { createBridgeProtocolAdapter } from "./erpbridge-protocol-adapter.js";
+import { exactBridgeName, hasReservedBridgeRole } from "./erpbridge-contract.js";
+import { validateToolInput } from "./tool-input-schema.js";
+import { safeMcpResult, MCP_RESULT_BYTES } from "./mcp-result.js";
 import { createHash } from "node:crypto";
 import { boundedOperation } from "../core/bounded-operation.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
@@ -14,17 +17,24 @@ export type ErpbridgeMcpSdkTool = {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
 };
 
 export type ErpbridgeMcpSdkClient = Readonly<{
   connect(): Promise<void>;
   close(): Promise<void>;
-  callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+  metadataComplete?: boolean;
+  callTool(name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<unknown>;
   listTools(): Promise<readonly ErpbridgeMcpSdkTool[]>;
+  onToolsChanged?(listener: () => void): () => void;
 }>;
 
 export type ErpbridgeMcpSession = Readonly<{
   available?: boolean;
+  requiresReviewedRevision?: boolean;
+  discoveryGeneration?: number;
   // Internal opaque binding only; never expose endpoint credentials in runs.
   admissionBinding?: string;
   clientFor(definition: ToolDefinition): GovernedMCPClient;
@@ -56,6 +66,7 @@ export async function createErpbridgeMcpSession(options: {
   timeoutMs: number;
   validator: RegistryValidator;
   sdkClient?: ErpbridgeMcpSdkClient;
+  fetch?: typeof fetch;
   signal?: AbortSignal;
 }): Promise<ErpbridgeMcpSession> {
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 2_147_483_647)
@@ -63,13 +74,14 @@ export async function createErpbridgeMcpSession(options: {
   const admissionBinding = createHash("sha256").update(JSON.stringify([options.baseURL.trim(), options.token])).digest("hex");
   const sdkClient =
     options.sdkClient ??
-    createClient({
-      baseUrl: options.baseURL,
+    createBridgeProtocolAdapter({
+      baseURL: options.baseURL,
       token: options.token,
       timeoutMs: options.timeoutMs,
-      declaredScopes: ["mcp"],
-      mcpRetryPolicy: "never",
-    }).mcp;
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+    });
+  let discoveryGeneration = 0;
+  const unsubscribe = sdkClient.onToolsChanged?.(() => { discoveryGeneration++; });
   let closed = false;
   let closePromise: Promise<void> | undefined;
   const lifecycle = new AbortController();
@@ -79,6 +91,7 @@ export async function createErpbridgeMcpSession(options: {
   const close = (): Promise<void> => {
     if (closePromise) return closePromise;
     closed = true;
+    unsubscribe?.();
     lifecycle.abort();
     closePromise = cleanup();
     return closePromise;
@@ -99,6 +112,8 @@ export async function createErpbridgeMcpSession(options: {
   catch (error) { void close().catch(() => {}); throw error; }
   return Object.freeze({
     get available() { return !closed; },
+    get discoveryGeneration() { return discoveryGeneration; },
+    requiresReviewedRevision: sdkClient.metadataComplete === true,
     admissionBinding,
     /*******************************************************************************
      * Function: clientFor
@@ -106,7 +121,15 @@ export async function createErpbridgeMcpSession(options: {
      * Creates a governed client for the selected ERPBridge tool definition.
      ******************************************************************************/
     clientFor: (definition: ToolDefinition) =>
-      createToolClient((name, args, signal) => run("ERPBridge MCP tool call", () => sdkClient.callTool(name, args), signal), options.validator, definition, () => closed),
+      createToolClient(async (name, args, signal) => {
+        if (sdkClient.metadataComplete && !definition.bridge_contract) throw new Error("ERPBridge tool has no reviewed immutable revision");
+        // Discovery admits a reviewed immutable identity. Dispatch pins both
+        // exact name and digest; the bridge owns the final active/origin check.
+        // An extra tools/list here would add latency without granting authority.
+        return run("ERPBridge MCP tool call", () => definition.bridge_contract
+          ? sdkClient.callTool(name, args, { "toolplane.resourceDigest": definition.bridge_contract.resource_digest })
+          : sdkClient.callTool(name, args), signal);
+      }, options.validator, definition, () => closed),
     /*******************************************************************************
      * Function: callToolDirect
      *
@@ -114,8 +137,21 @@ export async function createErpbridgeMcpSession(options: {
      ******************************************************************************/
     callToolDirect: async (toolName: string, args: Record<string, unknown>, signal?: AbortSignal) => {
       if (closed) throw new Error("ERPBridge MCP session is closed");
-      const result = await run("ERPBridge MCP direct tool call", () => sdkClient.callTool(toolName, args), signal);
-      const envelope = asResultRecord(result);
+      let definition: ToolDefinition | undefined;
+      if (sdkClient.metadataComplete) {
+        // This private path is for optional/required policy evaluation only,
+        // never a model-facing bypass around the governed business broker.
+        if (!["check_policy", "policy-gate-evaluate", "policy-gate-assist"].includes(toolName)) throw new Error("Direct ERPBridge business dispatch is not allowed");
+        const matches = options.validator.registries.snapshot().tools.filter(t => t.mcp_tool_name === toolName);
+        definition = matches.length === 1 ? matches[0] : undefined;
+        if (!definition?.bridge_contract || !definition.is_read_only || hasReservedBridgeRole(definition) || validateToolInput(definition.input_schema, args).length)
+          throw new Error("ERPBridge policy tool requires a reviewed read-only unguarded contract and valid arguments");
+      }
+      const admitted = definition;
+      const result = await run("ERPBridge MCP direct tool call", () => admitted?.bridge_contract
+        ? sdkClient.callTool(exactBridgeName(admitted), args, { "toolplane.resourceDigest": admitted.bridge_contract.resource_digest })
+        : sdkClient.callTool(toolName, args), signal);
+      const envelope = boundResult(result, admitted);
       if (envelope.isError === true) throw new ErpbridgeMcpToolError(envelope);
       return envelope;
     },
@@ -141,8 +177,8 @@ function createToolClient(
   definition: ToolDefinition,
   isClosed: () => boolean,
 ): GovernedMCPClient {
-  const remoteName = definition.mcp_tool_name.trim();
-  const guarded = definition.allowed_roles.length > 0;
+  const remoteName = exactBridgeName(definition);
+  const guarded = hasReservedBridgeRole(definition);
   return Object.freeze({
     /*******************************************************************************
      * Function: execute
@@ -168,6 +204,8 @@ function createToolClient(
         identity,
       );
       if (isClosed()) throw new Error("ERPBridge MCP session is closed");
+      if (definition.bridge_contract && guarded && !definition.bridge_contract.remote_roles.includes(identity.erpbridgeRole ?? ""))
+        throw new Error("Mapped role is not in the reviewed remote tool allow-list");
       if (guarded && Object.hasOwn(parameters, "role"))
         throw new Error(
           "workflow-provided role is not allowed for a guarded ERPBridge tool",
@@ -177,8 +215,7 @@ function createToolClient(
           "guarded ERPBridge tool requires a mapped ERPBridge role",
         );
       if (
-        guarded &&
-        !localRoleAllowed(identity.localRole, definition.allowed_roles)
+        (definition.bridge_contract !== undefined || definition.allowed_roles.length > 0) && !localRoleAllowed(identity.localRole, definition.allowed_roles)
       )
         throw new Error(
           "dispatch identity local role is not allowed for this ERPBridge tool",
@@ -187,22 +224,24 @@ function createToolClient(
         ? { ...parameters, role: identity.erpbridgeRole! }
         : { ...parameters };
       const result = await callTool(remoteName || action, args, signal);
-      const envelope = asResultRecord(result);
+      const envelope = boundResult(result, definition);
       if (envelope.isError === true) throw new ErpbridgeMcpToolError(envelope);
       return envelope;
     },
   });
 }
 
-/*******************************************************************************
- * Function: asResultRecord
- *
- * Requires an ERPBridge tool result to be an object record.
- ******************************************************************************/
-function asResultRecord(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    throw new Error("ERPBridge MCP result must be an object");
-  return value as Record<string, unknown>;
+function boundResult(result: unknown, definition?: ToolDefinition): Record<string, unknown> {
+  const envelope = safeMcpResult(result, definition?.bridge_contract?.output_schema);
+  if (definition?.bridge_contract) {
+    const contract = definition.bridge_contract;
+    // Locally recorded request provenance, not a server-signed effect receipt.
+    envelope._meta = { ...(envelope._meta as Record<string, unknown> | undefined), "io.workflow-engine/dispatch": {
+      remoteName: exactBridgeName(definition), resourceVersion: contract.resource_version, resourceDigest: contract.resource_digest,
+    } };
+    if (Buffer.byteLength(JSON.stringify(envelope)) > MCP_RESULT_BYTES) throw new Error("ERPBridge receipt exceeds supported byte limit; remote outcome requires review");
+  }
+  return envelope;
 }
 
 /*******************************************************************************

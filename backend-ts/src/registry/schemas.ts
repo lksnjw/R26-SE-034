@@ -15,6 +15,14 @@ export const toolSchema = z.object({
   http_method: z.string().default(""),
   mcp_tool_name: z.string().default(""),
   input_schema: jsonObjectSchema.default({}),
+  // Optional additive admission record; no default changes frozen legacy hashes.
+  bridge_contract: z.object({
+    profile: z.literal("toolplane-v1"),
+    resource_version: z.string().min(1).max(128).regex(/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/),
+    resource_digest: z.string().regex(/^[a-f0-9]{64}$/),
+    remote_roles: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)).max(32).refine(roles => new Set(roles).size === roles.length),
+    output_schema: jsonObjectSchema.optional(),
+  }).strict().optional(),
   required_parameters: z.array(z.string()).default([]),
   optional_parameters: z.array(z.string()).default([]),
   allowed_roles: z.array(z.string()).default([]),

@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ErpbridgeMcpSession } from "../tools/erpbridge-mcp-client.js";
+import { interpretPolicyResponse } from "./rbac.js";
 
 export type SemanticValidatorContext = {
   toolName: string;
@@ -133,7 +134,7 @@ function checkFilePolicy(ctx: SemanticValidatorContext): SemanticValidationResul
 async function checkMcpPolicy(ctx: SemanticValidatorContext, session: ErpbridgeMcpSession): Promise<SemanticValidationResult | null> {
   try {
     const tools = await session.listTools();
-    const hasPolicyTool = tools.some((t) => t.name === "check_policy");
+    const hasPolicyTool = tools.some((t) => t.name === "check_policy" || t.name.startsWith("check_policy.rev_"));
     if (!hasPolicyTool) return null;
 
     const raw = await session.callToolDirect("check_policy", {
@@ -143,16 +144,10 @@ async function checkMcpPolicy(ctx: SemanticValidatorContext, session: ErpbridgeM
       arguments: ctx.arguments,
     }) as unknown;
 
-    if (raw !== null && typeof raw === "object") {
-      const resp = raw as Record<string, unknown>;
-      const allowed = resp.allowed !== false;
-      if (!allowed) {
-        const reason = typeof resp.reason === "string" ? resp.reason : undefined;
-        return reason !== undefined ? { allowed: false, reason, source: "mcp_policy" } : { allowed: false, source: "mcp_policy" };
-      }
-    }
-  } catch { /* MCP policy tool unavailable — fall through */ }
-  return null;
+    return { ...interpretPolicyResponse(raw), source: "mcp_policy" };
+  } catch {
+    return { allowed: false, reason: "ERP semantic policy is unavailable; tool execution is blocked", source: "mcp_policy" };
+  }
 }
 
 /*******************************************************************************

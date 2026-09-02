@@ -142,6 +142,16 @@ test.each(["missing-input", "invalid-input", "missing-output", "mcp-error", "mal
   else expect(execution.finalOutput).toBeUndefined();
 });
 
+test("known bridge failure receipt belongs to its failed attempt, never successful outputs or downstream inputs", async () => {
+  const s = await setup(); await s.seed();
+  s.callTool.mockResolvedValueOnce({ content: [{ type: "text", text: "Rate limit reached" }], isError: true, _meta: { secret: "private-meta", "com.erpbridge/error": { type: "rate_limit", retryable: true, retryAfterMs: 1000 } } });
+  expect((await s.run()).statusCode).toBe(422);
+  const state = await s.repository.snapshot(), execution = Object.values(state.executions)[0]!;
+  expect(execution.status).toBe("FAILED"); expect(execution.stepOutputs?.lookup).toBeUndefined(); expect(execution.finalOutput).toBeUndefined();
+  expect(state.timelines[execution.id]?.at(-1)).toMatchObject({ nodeId: "lookup", status: "FAILED", output: { isError: true, _meta: { "com.erpbridge/error": { type: "rate_limit", retryAfterMs: 1000 } } } });
+  expect(JSON.stringify(state.timelines)).not.toContain("private-meta"); expect(s.callTool).toHaveBeenCalledOnce();
+});
+
 test.each(["disabled", "assignment", "registry"])("%s revocation after first node prevents second dispatch", async (scenario) => {
   const s = await setup({ roleId: scenario === "assignment" ? "role_client" : "role_admin" }); await s.seed();
   s.callTool.mockImplementationOnce(async () => {

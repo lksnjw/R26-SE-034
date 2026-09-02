@@ -1,4 +1,4 @@
-import { canonicalJSONBytes } from "../core/canonical-json.js";
+import { exactBridgeName, matchesBridgeContract } from "./erpbridge-contract.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import type { ErpbridgeMcpSdkTool } from "./erpbridge-mcp-client.js";
 
@@ -21,7 +21,7 @@ export function compareErpbridgeRegistry(
 ): RegistryCompatibilityReport {
   const expected = new Map<string, ToolDefinition>();
   for (const tool of localTools) {
-    const name = tool.mcp_tool_name.trim() || tool.name.trim();
+    const name = exactBridgeName(tool) || tool.name.trim();
     if (name !== "") expected.set(name, tool);
   }
   const remote = new Map<string, ErpbridgeMcpSdkTool>();
@@ -40,8 +40,8 @@ export function compareErpbridgeRegistry(
       missing.push(name);
       continue;
     }
-    if (!sameJSON(local.input_schema, actual.inputSchema))
-      incompatible.push({ name, reason: "input schema differs" });
+    if (!matchesBridgeContract(local, actual))
+      incompatible.push({ name, reason: local.bridge_contract ? "reviewed revision, digest, role or input/output schema differs" : "input schema differs" });
   }
   const unreviewed = [...remote.keys()]
     .filter((name) => !expected.has(name))
@@ -72,19 +72,5 @@ export function assertErpbridgeRegistryCompatible(
   if (report.compatible) return;
   throw new Error(
     `ERPBridge registry drift: ${JSON.stringify({ missing: report.missing, incompatible: report.incompatible, unreviewed: report.unreviewed, duplicateRemoteNames: report.duplicateRemoteNames })}`,
-  );
-}
-
-/*******************************************************************************
- * Function: sameJSON
- *
- * Compares values using their canonical JSON bytes.
- ******************************************************************************/
-function sameJSON(
-  left: Record<string, unknown>,
-  right: Record<string, unknown>,
-): boolean {
-  return Buffer.from(canonicalJSONBytes(left)).equals(
-    Buffer.from(canonicalJSONBytes(right)),
   );
 }

@@ -128,7 +128,7 @@ export async function assistQueryPlan(
  *
  * Normalizes supported ERP policy response shapes into an access decision.
  ******************************************************************************/
-function interpretPolicyResponse(raw: unknown): ErpPolicyResult {
+export function interpretPolicyResponse(raw: unknown): ErpPolicyResult {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return invalidPolicyResponse();
   const r = raw as Record<string, unknown>;
   if (r.isError === true || ("isError" in r && typeof r.isError !== "boolean")) return invalidPolicyResponse();

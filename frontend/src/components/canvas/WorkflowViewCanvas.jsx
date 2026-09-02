@@ -5,6 +5,7 @@ import "@xyflow/react/dist/style.css";
 import { Icon } from "@iconify/react";
 import { peekWorkflowForCanvas, clearWorkflowForCanvas, workflowYamlToCanvas, saveWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
 import { workflowService } from "../../services/workflow.service";
+import { ReadableResult } from "../chat/ReadableValue";
 
 // ── Read-only step node ────────────────────────────────────────────────────────
 /*******************************************************************************
@@ -71,11 +72,7 @@ function ViewNode({ data }) {
               {hasOutput && (
                 <div>
                   <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-widest text-gray-400">Last Output</p>
-                  <pre className="max-h-24 overflow-auto rounded bg-gray-50 p-1.5 text-[9px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                    {typeof data.executionOutput === "string"
-                      ? data.executionOutput
-                      : JSON.stringify(data.executionOutput, null, 2)}
-                  </pre>
+                  <div className="max-h-48 overflow-auto text-[9px] text-gray-600 dark:text-gray-300"><ReadableResult value={data.executionOutput} /></div>
                 </div>
               )}
             </div>

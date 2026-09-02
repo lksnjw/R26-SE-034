@@ -5,10 +5,10 @@ import { discoverTools } from "../agent/tool-discovery.js";
 import { validateToolArguments } from "../agent/workflow-runtime-validator.js";
 import { createDispatchIdentity } from "./registry.js";
 import { validateToolInput } from "./tool-input-schema.js";
-import { withoutSecretFields } from "../redact/secrets.js";
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import type { ValidationToken } from "../validator/registry-validator.js";
 import { attachDispatchAuditTrace } from "../trace/audit-trace.js";
+import { hasReservedBridgeRole } from "./erpbridge-contract.js";
 
 export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined;
   beforeDispatch?: ((verifiedRole: string) => Promise<void>) | undefined;
@@ -36,7 +36,7 @@ export async function dispatchReadTool(
   const tool = matches[0]!;
   if (!tool.is_read_only) throw new Error("Live ERP writes are blocked until transaction approval, idempotency and recovery are enforced");
   if (!tool.allowed_roles.includes(actor.role)) throw new Error("Tool dispatch denied: current role has no grant for this tool");
-  if (Object.hasOwn(args, "role")) throw new Error("Tool dispatch denied: model-provided role is not allowed");
+  if (hasReservedBridgeRole(tool) && Object.hasOwn(args, "role")) throw new Error("Tool dispatch denied: model-provided role is not allowed");
   const parameters = structuredClone(args);
   if (validateToolInput(tool.input_schema, parameters).length > 0) throw new Error("Tool dispatch denied: unsupported schema or invalid arguments");
   const issues = validateToolArguments(toolName, parameters, tool);
@@ -67,24 +67,7 @@ export async function dispatchReadTool(
   // after all awaited policy work, immediately before entering the SDK.
   await beforeDispatch?.(current.role);
   const envelope = await session.clientFor(tool).execute(authored.action!, resolved.capability, parameters, identity, context.signal);
-  // The first read profile supports JSON/text results only. Unsupported or
-  // malformed MCP envelopes cannot be reported as a completed business read.
-  if (!Array.isArray(envelope.content) || ("isError" in envelope && typeof envelope.isError !== "boolean") ||
-      ("structuredContent" in envelope && (envelope.structuredContent === null || typeof envelope.structuredContent !== "object" || Array.isArray(envelope.structuredContent))) ||
-      envelope.content.length > 128 || envelope.content.some((block: unknown) => block === null || typeof block !== "object" ||
-        (block as Record<string, unknown>).type !== "text" || typeof (block as Record<string, unknown>).text !== "string") ||
-      JSON.stringify(envelope).length > 512_000)
-    throw new Error("ERPBridge read returned an unsupported or malformed result envelope");
-  const sanitized = withoutSecretFields(envelope) as Record<string, unknown>;
-  // Structured and JSON-text MCP results must not send credential-shaped
-  // fields into model context, chat persistence, exports or API responses.
-  if (Array.isArray(sanitized.content)) sanitized.content = sanitized.content.map((block: unknown) => {
-    if (block === null || typeof block !== "object" || Array.isArray(block)) return block;
-    const item = block as Record<string, unknown>;
-    if (item.type !== "text" || typeof item.text !== "string") return item;
-    try { return { ...item, text: JSON.stringify(withoutSecretFields(JSON.parse(item.text))) }; } catch { return item; }
-  });
-  return sanitized;
+  return envelope;
 }
 
 async function checkWorkflowScope(services: HandlerServices, actor: { id: string; permissions: string[] }, workflowId: string | undefined): Promise<void> {

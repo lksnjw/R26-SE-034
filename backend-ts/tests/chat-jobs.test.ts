@@ -131,11 +131,16 @@ test("in-flight cancellation preserves UNKNOWN and late output never becomes an 
 test("known MCP failure and unconfirmed timeout remain distinct", async () => {
   for (const timeout of [false, true]) {
     const s = await setup({ timeoutMs: 30 });
-    s.callTool.mockImplementationOnce(async () => timeout ? new Promise(() => {}) : { content: [], isError: true });
+    s.callTool.mockImplementationOnce(async () => timeout ? new Promise(() => {}) : { content: [{ type: "text", text: "Rate limit reached" }], isError: true, _meta: { private: "secret", "com.erpbridge/error": { type: "rate_limit", retryable: true, retryAfterMs: 1000 } } });
     const id = (await s.send()).json().data.operation.id;
     const final = await s.terminal(id);
     expect(final.attempts[0]?.status).toBe(timeout ? "UNKNOWN" : "FAILED");
     expect(final.status).toBe(timeout ? "RECOVERY_REQUIRED" : "ANSWERED");
+    if (!timeout) {
+      const visible = (await s.get(id)).json().data.operation;
+      expect(visible.attempts[0].output).toMatchObject({ isError: true, _meta: { "com.erpbridge/error": { type: "rate_limit", retryAfterMs: 1000 } } });
+      expect(JSON.stringify(visible)).not.toContain("secret");
+    }
     expect(s.callTool).toHaveBeenCalledOnce();
   }
 });

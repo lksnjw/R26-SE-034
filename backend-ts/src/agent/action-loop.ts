@@ -5,6 +5,9 @@ import type { GovernanceUser } from "../governance/gate.js";
 import { validateToolArguments } from "./workflow-runtime-validator.js";
 import { ACTION_SYSTEM_PROMPT, promptData } from "../prompts/contracts.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
+import { hasReservedBridgeRole } from "../tools/erpbridge-contract.js";
+import { mcpResultForModel } from "../tools/mcp-result.js";
+import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
 
 export type GovernanceCheck = (
   toolName: string,
@@ -141,7 +144,7 @@ export async function runActionLoop(
       const normalizedArguments = structuredClone(call.arguments);
       const argIssues = validateToolArguments(call.name, normalizedArguments, toolDef);
       if (toolDef === undefined || argIssues.missing.length > 0 || argIssues.invalid.length > 0 ||
-          validateToolInput(toolDef.input_schema, normalizedArguments).length > 0 || Object.hasOwn(normalizedArguments, "role")) {
+          validateToolInput(toolDef.input_schema, normalizedArguments).length > 0 || (hasReservedBridgeRole(toolDef) && Object.hasOwn(normalizedArguments, "role"))) {
         const reason = toolDef === undefined ? "Tool is not admitted" : "Tool arguments failed runtime validation";
         steps.push({ toolName: call.name, displayName, arguments: redactCredentials(normalizedArguments), result: null,
           isReadOnly, governanceStatus: "blocked", governanceReason: reason, error: reason,
@@ -178,7 +181,7 @@ export async function runActionLoop(
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: promptData({ source: "untrusted_tool_result", callId: call.id, toolName: call.name, status: "SUCCEEDED", data: rawResult }),
+          content: promptData({ source: "untrusted_tool_result", callId: call.id, toolName: call.name, status: "SUCCEEDED", data: mcpResultForModel(rawResult) }),
         });
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
@@ -187,7 +190,7 @@ export async function runActionLoop(
           toolName: call.name,
           displayName,
           arguments: redactCredentials(normalizedArguments),
-          result: null,
+          result: error instanceof ErpbridgeMcpToolError ? error.result : null,
           isReadOnly,
           governanceStatus: isReadOnly ? "skipped" : "allowed",
           error: errMsg,
