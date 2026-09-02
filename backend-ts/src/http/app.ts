@@ -53,6 +53,7 @@ import {
 } from "./handlers/analytics-catalog.js";
 import { inspectReadWorkflow } from "../runner/read-workflow.js";
 import { runVerifiedRead } from "./handlers/read-execution.js";
+import { readJobQueue, supportsReadJobs } from "../runner/read-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
 import {
   REGISTRY_UNHANDLED,
@@ -172,6 +173,11 @@ export async function buildApp(
     bodyLimit: 10 * 1024 * 1024,
   });
   const resourceMutations = new ResourceMutations();
+  if (supportsReadJobs(services)) {
+    const queue = readJobQueue(services);
+    app.addHook("onReady", () => queue.start());
+    app.addHook("onClose", () => queue.stop());
+  }
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
     "application/json",
@@ -1205,7 +1211,15 @@ export async function runWorkflowFor(
       .status(403)
       .send(fail("Workflow is not assigned to the current user", null));
   if (workflow.yaml.length > 200_000) return reply.status(422).send(fail("Workflow source exceeds supported limits", { traceId }));
-  if (!["", "execute", "deterministic-read"].includes(parsed.data.mode) || parsed.data.idempotencyKey !== "")
+  const asyncRead = parsed.data.mode === "async-read";
+  if (asyncRead) {
+    if (parsed.data.dryRun) return reply.status(422).send(fail("Async admission is not a dry-run mode", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));
+    const queue = readJobQueue(services);
+    const admission = queue.prepare(workflow, parsed.data.input ?? {}, user, parsed.data.idempotencyKey);
+    const existing = await services.repository.read((state) => queue.existing(state, admission, user));
+    if (existing) return reply.status(202).send(ok(existing, "Existing read run for this idempotency key; no additional run was admitted", { traceId, admission: "read-job-v1", replayed: true }));
+  }
+  if (!["", "execute", "deterministic-read", "async-read"].includes(parsed.data.mode) || (!asyncRead && parsed.data.idempotencyKey !== ""))
     return reply.status(422).send(fail("Requested execution mode or idempotency contract is not implemented", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));
   if (parsed.data.dryRun) {
     const validation = services.validator.validatePlan("ReadWorkflowSimulation", workflow.yaml, user.role);

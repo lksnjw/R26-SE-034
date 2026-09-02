@@ -9,6 +9,7 @@ import { requestTraceId } from "../../trace/request-trace.js";
 import { appendAudit, HandlerFailure, nextID, type CurrentUser, type HandlerServices } from "./common.js";
 import type { RepositoryState } from "../../repository/store.js";
 import { canonicalJSONBytes } from "../../core/canonical-json.js";
+import { supportsReadJobs } from "../../runner/read-jobs.js";
 
 const id = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 const patch = z.object({ action: z.string().min(1).max(128).optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine((value) => Object.keys(value).length > 0);
@@ -105,6 +106,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         (user.permissions.includes("workflow:run") || current.owner.id === user.id || (current.assignedUserIds ?? []).includes(user.id));
       return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published,
         can_attempt_run: canAttempt && published && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
+        read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
         authorization: "rechecked_at_dispatch", executionProfile: "sequential-read-v1" }, "Readiness checked", { traceId }));
     }
     if (kind === "node-proposals") {

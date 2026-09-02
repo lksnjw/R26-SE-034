@@ -5,6 +5,7 @@ import { loadConfig } from "../src/config/config.js";
 import { buildApp } from "../src/http/app.js";
 import { Repository, type PersistenceBackend, type RepositoryState } from "../src/repository/store.js";
 import { ReadCheckpoints, reconcileInterruptedExecutions } from "../src/runner/read-checkpoints.js";
+import { readJobQueue } from "../src/runner/read-jobs.js";
 import type { ApplicationServices } from "../src/http/app.js";
 import { RegistryService } from "../src/registry/service.js";
 import { toolSchema } from "../src/registry/schemas.js";
@@ -27,7 +28,7 @@ const yaml = stringify({ name: "Daily read", description: "Read invoice details"
 
 async function setup(options: { noBridge?: boolean; roleId?: string; provider?: boolean; write?: boolean; persistence?: PersistenceBackend } = {}) {
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "read-workflow-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }),
-    erpbridgeRoleMap: { "Platform Admin": "admin", Client: "client" } };
+    storageEncryptionKey: "x".repeat(32), erpbridgeRoleMap: { "Platform Admin": "admin", Client: "client" } };
   const repository = await Repository.open(options.persistence ?? null);
   const tool = toolSchema.parse({ tool_id: "READ-1", name: "finance.read", mcp_tool_name: "invoice-read", allowed_roles: ["Platform Admin", "Client"],
     is_read_only: !options.write, input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
@@ -222,6 +223,219 @@ function barrier() {
   const promise = new Promise<void>((resolve) => { release = resolve; });
   return { promise, release };
 }
+
+class QueuePersistence extends ReadPersistence { readonly readQueueDurability = "encrypted-single-writer" as const; }
+const queuedInput = (key = "read-job-fixture-001", input = { invoiceId: "queued-invoice", api_key: "private-queue-secret" }) => ({ mode: "async-read", idempotencyKey: key, input });
+async function waitForTerminal(repository: Repository, id: string) {
+  await vi.waitFor(async () => { expect((await repository.snapshot()).executions[id]?.status).not.toMatch(/^(PENDING|RUNNING)$/); }, { timeout: 3000, interval: 10 });
+  await vi.waitFor(async () => { expect((await repository.snapshot()).readJobs[id]?.state).not.toBe("CLAIMED"); }, { timeout: 3000, interval: 10 });
+  return (await repository.snapshot()).executions[id]!;
+}
+
+test("async admission returns a run ID before held SDK completion; same key never dispatches twice", async () => {
+  const s = await setup({ provider: true }); await s.seed(); const entered = barrier(), unblock = barrier();
+  s.callTool.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return { content: [], structuredContent: { id: "queued-result" } }; });
+  const response = await s.run(queuedInput()); expect(response.statusCode, response.body).toBe(202);
+  const admitted = response.json().data;
+  expect(admitted.status).toBe("PENDING"); expect(admitted.id).toBeTruthy(); expect(response.body).not.toContain("private-queue-secret");
+  await entered.promise;
+  const duplicate = await s.run(queuedInput()); expect(duplicate.statusCode, duplicate.body).toBe(202); expect(duplicate.json().data.id).toBe(admitted.id);
+  expect(s.callTool).toHaveBeenCalledTimes(1);
+  const state = await s.repository.snapshot(); expect(state.readJobs[admitted.id]?.inputCiphertext).toBeTruthy();
+  expect(state.readJobs[admitted.id]?.inputCiphertext).not.toContain("private-queue-secret");
+  const list = await s.app.inject({ method: "GET", url: "/api/executions", headers: s.headers });
+  expect(list.body).not.toContain("inputCiphertext"); expect(list.body).not.toContain("private-queue-secret");
+  unblock.release(); const done = await waitForTerminal(s.repository, admitted.id);
+  expect(done.status).toBe("DONE"); expect(s.callTool.mock.calls).toEqual([["invoice-read", { id: "queued-invoice", role: "admin" }], ["invoice-read", { id: "queued-result", role: "admin" }]]);
+  expect((await s.repository.snapshot()).readJobs[admitted.id]?.inputCiphertext).toBeUndefined();
+  expect((await s.run(queuedInput())).json().data.id).toBe(admitted.id); expect(s.callTool).toHaveBeenCalledTimes(2); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
+test("same-key concurrent admission is atomic and changed inputs conflict", async () => {
+  const s = await setup(); await s.seed(); const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const responses = await Promise.all([s.run(queuedInput()), s.run(queuedInput())]);
+  expect(responses.map((response) => response.statusCode)).toEqual([202, 202]);
+  expect(new Set(responses.map((response) => response.json().data.id)).size).toBe(1);
+  expect(Object.keys((await s.repository.snapshot()).readJobs)).toHaveLength(1);
+  expect((await s.run(queuedInput("read-job-fixture-001", { invoiceId: "other", api_key: "private-queue-secret" }))).statusCode).toBe(409);
+  expect(s.callTool).not.toHaveBeenCalled(); kick.mockRestore();
+});
+
+test("a queued cancellation is terminal before worker claim and deletes private input", async () => {
+  const s = await setup(); await s.seed(); const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const admitted = (await s.run(queuedInput())).json().data;
+  const cancel = await s.app.inject({ method: "POST", url: `/api/executions/${admitted.id}/cancel`, headers: s.headers, payload: {} });
+  expect(cancel.statusCode, cancel.body).toBe(200); expect(cancel.json().data.status).toBe("CANCELLED");
+  expect((await s.repository.snapshot()).readJobs[admitted.id]).toMatchObject({ state: "FINISHED" });
+  expect((await s.repository.snapshot()).readJobs[admitted.id]?.inputCiphertext).toBeUndefined();
+  kick.mockRestore(); queue.kick(); await new Promise((resolve) => setImmediate(resolve)); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["disabled", "role", "assignment", "registry", "publication", "ciphertext", "endpoint", "credential", "role-map"])("queued %s change stops before SDK dispatch", async (change) => {
+  const s = await setup({ roleId: "role_client" }); await s.seed(); const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const admitted = (await s.run(queuedInput())).json().data;
+  await s.repository.mutate((state) => {
+    if (change === "disabled") state.users.actor!.status = "Disabled";
+    if (change === "role") state.users.actor!.roleId = "role_admin";
+    if (change === "assignment") state.workflows.read!.assignedUserIds = [];
+    if (change === "publication") state.versions.read = [];
+    if (change === "ciphertext") state.readJobs[admitted.id]!.inputCiphertext = Buffer.from("tampered-input").toString("base64");
+  });
+  if (change === "registry") s.drift();
+  if (change === "role-map") s.services.config.erpbridgeRoleMap.Client = "changed-client";
+  if (["endpoint", "credential"].includes(change)) s.services.erpbridgeSession = await createErpbridgeMcpSession({
+    baseURL: change === "endpoint" ? "https://other-bridge.example.test" : "https://bridge.example.test", token: change === "credential" ? "other-fixture-token" : "fixture-only", timeoutMs: 1000, validator: s.validator,
+    sdkClient: { connect: async () => {}, close: async () => {}, listTools: s.listTools, callTool: s.callTool },
+  });
+  kick.mockRestore(); queue.kick(); const item = await waitForTerminal(s.repository, admitted.id);
+  expect(item).toMatchObject({ status: "FAILED", failure: { failureCategory: "READ_JOB_PREPARATION_FAILED", toolWasCalled: false } }); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("queued worker executes pinned published source even if a different draft is edited later", async () => {
+  const s = await setup(); await s.seed(); const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const admitted = (await s.run(queuedInput())).json().data;
+  await s.repository.mutate((state) => { state.workflows.read!.yaml = yaml.replace("Daily read", "Changed draft"); state.workflows.read!.draftVersion = 2; });
+  kick.mockRestore(); queue.kick(); const item = await waitForTerminal(s.repository, admitted.id);
+  expect(item.status).toBe("DONE"); expect(item.workflowSnapshot?.yaml).toBe(yaml); expect(s.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("connection role-map drift after a saved node cannot authorize a later queued read", async () => {
+  const s = await setup(); await s.seed();
+  s.callTool.mockImplementationOnce(async () => {
+    s.services.config.erpbridgeRoleMap["Platform Admin"] = "changed-admin";
+    return { content: [], structuredContent: { id: "first-saved" } };
+  });
+  const admitted = (await s.run(queuedInput())).json().data, item = await waitForTerminal(s.repository, admitted.id);
+  expect(item.status).toBe("FAILED"); expect(item.stepOutputs?.lookup).toMatchObject({ structuredContent: { id: "first-saved" } });
+  expect(item.readProgress?.attempts.details?.status).toBe("FAILED"); expect(s.callTool).toHaveBeenCalledTimes(1);
+  expect((await s.repository.snapshot()).timelines[admitted.id]?.[1]).toMatchObject({ status: "FAILED", outcome: "FAILED" });
+  expect((await s.repository.snapshot()).executionEvents[admitted.id]?.filter((event) => event.type === "node.dispatch_intent")).toHaveLength(1);
+});
+
+test("durable unclaimed job survives a repository/process restart with private input intact", async () => {
+  const persistence = new QueuePersistence(), first = await setup({ persistence }); await first.seed();
+  const kick = vi.spyOn(readJobQueue(first.services), "kick").mockImplementation(() => {});
+  const admitted = (await first.run(queuedInput())).json().data; expect(admitted.readProgress.persistence).toBe("durable");
+  await first.app.close(); kick.mockRestore();
+  const second = await setup({ persistence }); await second.app.ready();
+  const item = await waitForTerminal(second.repository, admitted.id);
+  expect(item.status).toBe("DONE"); expect(first.callTool).not.toHaveBeenCalled(); expect(second.callTool.mock.calls[0]?.[1]).toMatchObject({ id: "queued-invoice" });
+  expect((await second.run(queuedInput())).json().data.id).toBe(admitted.id); expect(second.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("shutdown fences in-flight job and restart never replays it", async () => {
+  const persistence = new QueuePersistence(), first = await setup({ persistence }); await first.seed(); const entered = barrier(), unblock = barrier();
+  first.callTool.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return { content: [], structuredContent: { id: "late-old-worker" } }; });
+  const admitted = (await first.run(queuedInput())).json().data; await entered.promise; await first.app.close();
+  const image = persistence.state(); expect(image.executions[admitted.id]?.status).toBe("RECOVERY_REQUIRED"); expect(image.readJobs[admitted.id]?.state).toBe("RECOVERY_REQUIRED");
+  unblock.release(); await new Promise((resolve) => setImmediate(resolve));
+  const second = await setup({ persistence }); await second.app.ready();
+  const item = (await second.repository.snapshot()).executions[admitted.id]!;
+  expect(item.status).toBe("RECOVERY_REQUIRED"); expect(item.stepOutputs?.lookup).toBeUndefined(); expect(second.callTool).not.toHaveBeenCalled();
+});
+
+test("unenforced durable storage and missing async key reject without admission", async () => {
+  const s = await setup({ persistence: new ReadPersistence() }); await s.seed();
+  const rejected = await s.run(queuedInput()); expect(rejected.statusCode).toBe(503); expect(rejected.json().meta.code).toBe("READ_QUEUE_STORAGE_UNSUPPORTED");
+  expect((await s.repository.snapshot()).readJobs).toEqual({}); expect(s.callTool).not.toHaveBeenCalled();
+  const memory = await setup(); await memory.seed(); expect((await memory.run({ mode: "async-read", input: {} })).statusCode).toBe(400);
+  expect((await memory.repository.snapshot()).executions).toEqual({});
+});
+
+test("read job bounds reject excessive input and keys before discovery or admission", async () => {
+  const s = await setup(); await s.seed();
+  let nested: Record<string, unknown> = {};
+  for (let index = 0; index < 18; index++) nested = { child: nested };
+  const requests = [
+    { ...queuedInput(), idempotencyKey: "short" },
+    { ...queuedInput(), idempotencyKey: "x".repeat(129) },
+    { ...queuedInput(), input: { invoiceId: "x".repeat(64001) } },
+    { ...queuedInput(), input: nested },
+  ];
+  expect((await Promise.all(requests.map((payload) => s.run(payload)))).map((response) => response.statusCode)).toEqual([400, 400, 413, 400]);
+  expect((await s.repository.snapshot()).executions).toEqual({});
+  expect(s.listTools).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("bounded queue refuses a new job but preserves same-key lookup; queued retry is blocked", async () => {
+  const s = await setup(); await s.seed(); const queue = readJobQueue(s.services);
+  const kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const admitted = (await s.run(queuedInput())).json().data;
+  await s.repository.mutate((state) => {
+    for (let index = 1; index < 100; index++) state.readJobs[`fixture-${index}`] = { ...state.readJobs[admitted.id]!, executionId: `fixture-${index}`, idempotencyScope: `fixture-${index}` };
+  });
+  const rejected = await s.run(queuedInput("read-job-new-fixture"));
+  expect(rejected.statusCode).toBe(429); expect(rejected.json().meta.code).toBe("READ_QUEUE_FULL");
+  expect((await s.run(queuedInput())).json().data.id).toBe(admitted.id);
+  expect((await s.app.inject({ method: "POST", url: `/api/executions/${admitted.id}/retry`, headers: s.headers, payload: {} })).statusCode).toBe(409);
+  expect(Object.keys((await s.repository.snapshot()).executions)).toHaveLength(1); expect(s.callTool).not.toHaveBeenCalled();
+  // Invalid capacity-only fixture entries must never reach the worker.
+  await s.repository.mutate((state) => { for (let index = 1; index < 100; index++) delete state.readJobs[`fixture-${index}`]; });
+  kick.mockRestore();
+});
+
+test("same-key admission cannot silently bind a later publication", async () => {
+  const s = await setup(); await s.seed(); const kick = vi.spyOn(readJobQueue(s.services), "kick").mockImplementation(() => {});
+  await s.run(queuedInput());
+  await s.repository.mutate((state) => { state.workflows.read!.publishedVersion = 2; state.versions.read!.push({ version: 2, artifactState: "PUBLISHED", yaml }); });
+  const response = await s.run(queuedInput()); expect(response.statusCode).toBe(409); expect(response.json().meta.code).toBe("READ_JOB_KEY_CONFLICT");
+  expect(Object.keys((await s.repository.snapshot()).executions)).toHaveLength(1); expect(s.callTool).not.toHaveBeenCalled(); kick.mockRestore();
+});
+
+test("an async in-flight cancellation retains the committed answer and prevents the next read", async () => {
+  const s = await setup(); await s.seed(); const entered = barrier(), unblock = barrier();
+  s.callTool.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return { content: [], structuredContent: { id: "saved-after-cancellation" } }; });
+  const admitted = (await s.run(queuedInput())).json().data; await entered.promise;
+  const response = await s.app.inject({ method: "POST", url: `/api/executions/${admitted.id}/cancel`, headers: s.headers, payload: {} });
+  expect(response.statusCode).toBe(202); expect(response.json().data.status).toBe("RUNNING");
+  unblock.release(); const item = await waitForTerminal(s.repository, admitted.id);
+  expect(item).toMatchObject({ status: "CANCELLED", stepOutputs: { lookup: { structuredContent: { id: "saved-after-cancellation" } } } });
+  expect(s.callTool).toHaveBeenCalledTimes(1); expect((await s.repository.snapshot()).readJobs[admitted.id]?.inputCiphertext).toBeUndefined();
+});
+
+test("a crash image of a CLAIMED job retains confirmed nodes and never dispatches on restart", async () => {
+  const persistence = new QueuePersistence(), first = await setup({ persistence }); await first.seed(); const entered = barrier(), unblock = barrier();
+  first.callTool.mockImplementationOnce(async () => ({ content: [], structuredContent: { id: "first-saved" } }));
+  first.callTool.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return { content: [], structuredContent: { id: "old-late" } }; });
+  const admitted = (await first.run(queuedInput())).json().data; await entered.promise;
+  const crashImage = new QueuePersistence(); crashImage.payload = Buffer.from(persistence.payload!);
+  const second = await setup({ persistence: crashImage }); await second.app.ready();
+  const state = await second.repository.snapshot();
+  expect(state.readJobs[admitted.id]?.state).toBe("RECOVERY_REQUIRED");
+  expect(state.executions[admitted.id]).toMatchObject({ status: "RECOVERY_REQUIRED", readProgress: { attempts: { lookup: { status: "DONE" }, details: { status: "UNKNOWN" } } }, stepOutputs: { lookup: { structuredContent: { id: "first-saved" } } } });
+  expect(second.callTool).not.toHaveBeenCalled();
+  expect((await second.run(queuedInput())).json().data.id).toBe(admitted.id); expect(second.callTool).not.toHaveBeenCalled();
+  await first.app.close(); unblock.release(); await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("a ciphertext from another queued execution cannot substitute its inputs", async () => {
+  const s = await setup(); await s.seed(); const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const first = (await s.run(queuedInput())).json().data;
+  const second = (await s.run(queuedInput("another-read-job-001"))).json().data;
+  await s.repository.mutate((state) => { state.readJobs[first.id]!.inputCiphertext = state.readJobs[second.id]!.inputCiphertext!; });
+  await s.app.inject({ method: "POST", url: `/api/executions/${second.id}/cancel`, headers: s.headers, payload: {} });
+  kick.mockRestore(); queue.kick(); const item = await waitForTerminal(s.repository, first.id);
+  expect(item).toMatchObject({ status: "FAILED", failure: { toolWasCalled: false } }); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["QUEUED", "CLAIMED"])("lost %s acknowledgement fences dispatch and preserves admitted identity after reload", async (phase) => {
+  const persistence = new QueuePersistence(), first = await setup({ persistence }); await first.seed();
+  persistence.commitBeforeFailure = true;
+  persistence.failWhen = (state) => Object.values(state.readJobs).some((job) => job.state === phase);
+  const response = await first.run(queuedInput());
+  expect(response.statusCode).toBe(phase === "QUEUED" ? 500 : 202);
+  await vi.waitFor(async () => { expect((await first.repository.persistenceStatus()).healthy).toBe(false); }, { timeout: 3000, interval: 10 });
+  const admitted = Object.values(persistence.state().executions)[0]!;
+  expect(first.callTool).not.toHaveBeenCalled();
+  const crashImage = new QueuePersistence(); crashImage.payload = Buffer.from(persistence.payload!);
+  await first.repository.recoverPersistenceState(); await first.app.close();
+  const second = await setup({ persistence: crashImage }); await second.app.ready();
+  const item = phase === "QUEUED" ? await waitForTerminal(second.repository, admitted.id) : (await second.repository.snapshot()).executions[admitted.id]!;
+  expect(item.status).toBe(phase === "QUEUED" ? "DONE" : "RECOVERY_REQUIRED");
+  expect((await second.run(queuedInput())).json().data.id).toBe(admitted.id);
+  expect(second.callTool).toHaveBeenCalledTimes(phase === "QUEUED" ? 2 : 0);
+  expect(Object.keys((await second.repository.snapshot()).executions)).toHaveLength(1);
+});
 
 test("dispatch intent is persisted before the SDK; completed output is persisted before the following call", async () => {
   const persistence = new ReadPersistence(), s = await setup({ persistence }); await s.seed();

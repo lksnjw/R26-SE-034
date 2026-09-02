@@ -343,7 +343,7 @@ async function retryExecution(
     user,
     services,
   );
-  if (["RUNNING", "RECOVERY_REQUIRED"].includes(prior.status)) throw new HandlerFailure(409, "A running or uncertain execution cannot be replayed through Retry; inspect its recorded outcomes first");
+  if (["PENDING", "RUNNING", "RECOVERY_REQUIRED"].includes(prior.status)) throw new HandlerFailure(409, "A queued, running or uncertain execution cannot be replayed through Retry; inspect its recorded outcomes first");
   const workflow = await services.repository.read(
     (state) => state.workflows[prior.workflowId] ?? null,
   );

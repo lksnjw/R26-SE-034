@@ -6,7 +6,7 @@ import ExecutionStatus from "./ExecutionStatus";
 export default function ExecutionRunControls({ execution, canControl = false, monitor, onChanged }) {
   const [requesting, setRequesting] = useState(false), [acknowledged, setAcknowledged] = useState(false), [error, setError] = useState("");
   if (!execution) return monitor?.error ? <div role="alert" className="text-xs text-amber-700">{monitor.error}<button className="ml-2 text-primary" onClick={monitor.refresh}>Refresh run</button></div> : null;
-  const running = execution.status === "RUNNING";
+  const running = execution.status === "RUNNING" || execution.status === "PENDING";
   const pending = running && (acknowledged || Boolean(execution.readProgress?.cancellation));
   const recovery = execution.status === "RECOVERY_REQUIRED";
   const requestCancel = async () => {

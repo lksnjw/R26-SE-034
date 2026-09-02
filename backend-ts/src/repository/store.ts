@@ -56,6 +56,9 @@ export type ReadRunProgress = { profile: "read-progress-v1"; epoch: number; next
   cancellation?: { requestedAt: string; requestedBy: Principal }; recoveryReason?: string };
 export type ExecutionEvent = { version: 1; executionId: string; workflowId: string; sequence: number; timestamp: string; type: string;
   traceId?: string; nodeId?: string; attemptId?: string; payload: Record<string, unknown> };
+// Private worker inputs are encrypted and never placed on public executions.
+export type ReadJob = { version: 1; executionId: string; actorId: string; admittedRole: string; state: "QUEUED" | "CLAIMED" | "FINISHED" | "RECOVERY_REQUIRED";
+  inputCiphertext?: string; requestFingerprint: string; idempotencyScope: string; connectionFingerprint: string; createdAt: string; claimedAt?: string; finishedAt?: string; workerId?: string };
 
 export type Permission = { key: string; name: string; description: string; group: string };
 export type StoredRecord = Record<string, unknown>;
@@ -105,6 +108,7 @@ export type RepositoryState = {
   executions: Record<string, Execution>;
   executionLogs: Record<string, StoredRecord[]>;
   executionEvents: Record<string, ExecutionEvent[]>;
+  readJobs: Record<string, ReadJob>;
   timelines: Record<string, StoredRecord[]>;
   healing: Record<string, StoredRecord>;
   chats: Record<string, ChatSessionRecord>;
@@ -127,6 +131,8 @@ export type RepositoryState = {
 };
 
 export interface PersistenceBackend {
+  // Capability of the actual storage implementation, not a config assertion.
+  readonly readQueueDurability?: "encrypted-single-writer";
   load(): Promise<Uint8Array | null>;
   save(payload: Uint8Array): Promise<void>;
   probe(): Promise<void>;
@@ -299,7 +305,7 @@ function restoreState(payload: Uint8Array): RepositoryState {
   if (source.version !== 1) throw new Error(`unsupported stored repository version ${String(source.version)}`);
   const defaults = initialState();
   const restored: RepositoryState = { ...defaults, ...source } as RepositoryState;
-  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
+  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "readJobs", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) restored[key] = defaults[key] as never;
   }
   if (restored.governancePolicy !== null && (typeof restored.governancePolicy !== "object" || Array.isArray(restored.governancePolicy))) restored.governancePolicy = null;
@@ -331,6 +337,7 @@ export function initialState(): RepositoryState {
     executions: {},
     executionLogs: {},
     executionEvents: {},
+    readJobs: {},
     timelines: {},
     healing: {},
     chats: {},

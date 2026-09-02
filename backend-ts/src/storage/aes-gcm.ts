@@ -57,7 +57,7 @@ export class AESGCMCodec {
  *
  * Decodes and validates a 32-byte storage encryption key.
  ******************************************************************************/
-function decodeEncryptionKey(value: string): Buffer {
+export function decodeEncryptionKey(value: string): Buffer {
   const trimmed = value.trim();
   if (trimmed === "") throw new Error("STORAGE_ENCRYPTION_KEY is required");
   const base64 = Buffer.from(trimmed, "base64");

@@ -1,4 +1,5 @@
 import { createClient } from "@erpbridge/sdk";
+import { createHash } from "node:crypto";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import type {
@@ -22,6 +23,8 @@ export type ErpbridgeMcpSdkClient = Readonly<{
 }>;
 
 export type ErpbridgeMcpSession = Readonly<{
+  // Internal opaque binding only; never expose endpoint credentials in runs.
+  admissionBinding?: string;
   clientFor(definition: ToolDefinition): GovernedMCPClient;
   callToolDirect(toolName: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
   listTools(): Promise<readonly ErpbridgeMcpSdkTool[]>;
@@ -52,6 +55,7 @@ export async function createErpbridgeMcpSession(options: {
   validator: RegistryValidator;
   sdkClient?: ErpbridgeMcpSdkClient;
 }): Promise<ErpbridgeMcpSession> {
+  const admissionBinding = createHash("sha256").update(JSON.stringify([options.baseURL.trim(), options.token])).digest("hex");
   const sdkClient =
     options.sdkClient ??
     createClient({
@@ -79,6 +83,7 @@ export async function createErpbridgeMcpSession(options: {
     await sdkClient.close();
   };
   return Object.freeze({
+    admissionBinding,
     /*******************************************************************************
      * Function: clientFor
      *

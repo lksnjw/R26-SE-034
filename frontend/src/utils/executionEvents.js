@@ -30,6 +30,7 @@ export function reconcileExecutionEvents(events, cursor, page, executionId) {
 }
 
 const eventNames = {
+  "run.queued": "Read job queued",
   "run.started": "Run started", "node.preparing": "Checking node", "node.dispatch_intent": "Read dispatch recorded — answer not yet saved",
   "node.completed": "Node answer saved", "node.failed": "Node stopped", "node.outcome_unknown": "Node outcome unknown",
   "node.interrupted": "Node interrupted before dispatch", "node.cancelled": "Node cancelled before dispatch",

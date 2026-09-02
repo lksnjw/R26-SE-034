@@ -13,13 +13,16 @@ import { ToolRegistry } from "../src/tools/registry.ts";
 import { ProviderRuntime } from "../src/providers/runtime.ts";
 import { hashPassword } from "../src/authn/password.ts";
 import { newReadProgress, appendExecutionEvent } from "../src/runner/read-checkpoints.ts";
+import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.ts";
 
-const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "local-workspace-qa-only-not-production-secret", STORAGE_DRIVER: "memory", MCP_MODE: "mock", CORS_ORIGINS: "http://localhost:5173" });
+const fixtureWorker = process.env.WORKSPACE_QA_READ_STATE === "worker";
+const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "local-workspace-qa-only-not-production-secret", STORAGE_DRIVER: "memory", MCP_MODE: "mock", CORS_ORIGINS: "http://localhost:5173",
+  ...(fixtureWorker ? { MCP_TRANSPORT: "erpbridge-mcp", ERPBRIDGE_BASE_URL: "https://fixture.invalid", ERPBRIDGE_MCP_TOKEN: "fixture-only", ERPBRIDGE_ROLE_MAP: '{"Platform Admin":"admin"}' } : {}) });
 const repository = new Repository(null);
 const createdAt = new Date().toISOString();
 const yaml = stringify({ name: "Daily invoice review", description: "LOCAL fixture only — no real ERP data", trigger: { type: "manual" }, steps: [
   { id: "invoices", action: "demo.echo", description: "Read invoice fixture", parameters: { value: "local invoices" } },
-  { id: "summary", action: "demo.echo", description: "Prepare report fixture", parameters: { value: "{{invoices.structuredContent}}" } },
+  { id: "summary", action: "demo.echo", description: "Prepare report fixture", parameters: { value: fixtureWorker ? "{{invoices.structuredContent.value}}" : "{{invoices.structuredContent}}" } },
 ] });
 const passwordHash = await hashPassword("Local-QA-only-2026!");
 await repository.mutate((state) => {
@@ -49,7 +52,7 @@ await repository.mutate((state) => {
   }
   state.chats.qa_chat = { id: "qa_chat", ownerId: "qa", title: "Local invoice workspace", createdAt, updatedAt: createdAt, messageCount: 2, messages: [
     { id: "qa_request", role: "user", text: "Prepare an invoice review workflow (local fixture).", createdAt },
-    { id: "qa_answer", role: "assistant", text: "Local fixture draft saved. ERP connection is intentionally unavailable; no invoices have been retrieved or sent.", createdAt, artifacts: { intent: "WORKFLOW", workflowId: "qa_report", yaml, selected_workflow_yaml: yaml, validation: { passed: true }, validation_passed: true, can_execute: false } },
+    { id: "qa_answer", role: "assistant", text: fixtureWorker ? "Local fixture draft saved. Only an injected synthetic SDK transport is available; no live ERP or provider is connected. Explicit Publish and Run exercise the real local read worker against fixture echoes." : "Local fixture draft saved. ERP connection is intentionally unavailable; no invoices have been retrieved or sent.", createdAt, artifacts: { intent: "WORKFLOW", workflowId: "qa_report", yaml, selected_workflow_yaml: yaml, validation: { passed: true }, validation_passed: true, can_execute: false } },
   ] };
 });
 const registries = await RegistryService.load(resolve("tests/fixtures/chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
@@ -57,6 +60,13 @@ const validator = new RegistryValidator(registries, repository);
 const executor = new Executor(new ToolRegistry(), validator);
 const providerRuntime = new ProviderRuntime(repository, executor, async () => Response.json({ choices: [{ message: { content: JSON.stringify({ description: "Invoice step reviewed by local fixture agent" }) } }] }));
 providerRuntime.activate({ id: "qa-fixture", name: "Local fixture", type: "openai_compatible", baseURL: "https://fixture.invalid/v1", apiKey: "fixture-no-network", model: "fixture-only", temperature: 0, timeoutMs: 1000 });
-const app = await buildApp({ config, repository, registries, validator, executor, providerRuntime });
+const erpbridgeSession = fixtureWorker ? await createErpbridgeMcpSession({ baseURL: "https://fixture.invalid", token: "fixture-only", timeoutMs: 1000, validator,
+  sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => [{ name: "demo.echo", inputSchema: registries.snapshot().tools[0].input_schema }],
+    callTool: async (_name, args) => {
+      const delay = Number(process.env.WORKSPACE_QA_READ_DELAY_MS || 30000);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.min(60000, Math.max(1000, Number.isFinite(delay) ? delay : 30000))));
+      return { content: [{ type: "text", text: "Synthetic SDK echo only — not ERP data." }], structuredContent: { value: args.value, synthetic_fixture: true } };
+    } } }) : undefined;
+const app = await buildApp({ config, repository, registries, validator, executor, providerRuntime, ...(erpbridgeSession ? { erpbridgeSession } : {}) });
 await app.listen({ host: "127.0.0.1", port: 8081 });
 console.log("LOCAL UI fixture at 127.0.0.1:8081; qa@example.test / Local-QA-only-2026!; memory-only; no ERP/provider network.");

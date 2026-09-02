@@ -6,6 +6,7 @@ import { AESGCMCodec } from "./aes-gcm.js";
 const writerLockID = 1_279_477_061;
 
 export class PostgresPersistence implements PersistenceBackend {
+  readonly readQueueDurability = "encrypted-single-writer" as const;
   readonly #mutex = new AsyncMutex();
   #closed = false;
 

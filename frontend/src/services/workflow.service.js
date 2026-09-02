@@ -162,6 +162,7 @@ export const workflowService = {
     return unwrap(
       await apiClient.post(`/workflows/${id}/run`, {
         input,
+        ...(options.mode ? { mode: options.mode } : {}),
         dryRun: Boolean(options.dryRun),
         idempotencyKey: options.idempotencyKey,
       }, { timeout: 300000 }),

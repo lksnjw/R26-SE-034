@@ -39,12 +39,20 @@ export async function handleExecutionControlRoute(route: RouteDefinition, reques
     try { actor = assertCurrentRunController(state, execution, user.id); }
     catch { throw new HandlerFailure(404, "Execution not controllable by the current user"); }
     if (execution.status === "CANCELLED") return structuredClone(execution);
-    if (execution.status !== "RUNNING") throw new HandlerFailure(409, "Execution is not running; cancellation cannot change a terminal outcome");
+    if (!["RUNNING", "PENDING"].includes(execution.status)) throw new HandlerFailure(409, "Execution is not running; cancellation cannot change a terminal outcome");
     if (execution.readProgress?.profile !== "read-progress-v1") throw new HandlerFailure(501, "This legacy execution has no safe cancellation boundary");
     if (!execution.readProgress.cancellation) {
       execution.readProgress.cancellation = { requestedAt: new Date().toISOString(), requestedBy: actor };
       appendExecutionEvent(state, execution, "run.cancel_requested", { requestedBy: actor.id });
       appendAudit(state, { ...user, ...actor }, "execution.cancel_requested", "execution", execution.id, null, { status: "CANCELLATION_REQUESTED", transportInterrupted: false }, request);
+    }
+    if (execution.status === "PENDING") {
+      const job = state.readJobs[execution.id];
+      if (job?.state !== "QUEUED") throw new HandlerFailure(409, "Pending run has no cancellable queued job");
+      job.state = "FINISHED"; job.finishedAt = new Date().toISOString(); delete job.inputCiphertext;
+      execution.status = "CANCELLED"; execution.completedAt = job.finishedAt; execution.durationMs = Math.max(0, Date.parse(job.finishedAt) - Date.parse(execution.startedAt));
+      execution.agentSummary = "Queued read job cancelled before worker dispatch. No ERP read was started.";
+      appendExecutionEvent(state, execution, "run.completed", { status: "CANCELLED", outcome: "NOT_DISPATCHED" });
     }
     return structuredClone(execution);
   });

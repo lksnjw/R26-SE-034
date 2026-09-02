@@ -160,3 +160,16 @@ test("recovered runs show readable saved answers and unknown nodes, never a fres
   expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
   expect(screen.queryByRole("button", { name: "Request cancellation" })).toBeNull();
 });
+
+test("async-ready workspace admits once, receives the run ID and starts monitoring saved queued state", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, can_attempt_run: true, read_job_admission: "read-job-v1" });
+  const admitted = { id: "run-queued", status: "PENDING", readProgress: { profile: "read-progress-v1", lastSequence: 1 }, workflowSnapshot: { yaml, version: 1 }, stepOutputs: {} };
+  workflowService.run.mockResolvedValue(admitted); executionService.get.mockResolvedValue(admitted);
+  jest.spyOn(executionService, "getEvents").mockResolvedValue({ events: [{ version: 1, executionId: admitted.id, sequence: 1, timestamp: "2026-10-05T00:00:00Z", type: "run.queued" }], cursor: 1, lastSequence: 1, hasMore: false, status: "PENDING", profile: "read-progress-v1" });
+  await open({ canControl: true }); fireEvent.click(screen.getByRole("button", { name: "Run published version" }));
+  await screen.findByText("Read job queued");
+  expect(workflowService.run).toHaveBeenCalledWith("report", {}, expect.objectContaining({ mode: "async-read", idempotencyKey: expect.stringMatching(/^[a-f0-9-]{36}$/) }));
+  expect(screen.getByRole("button", { name: "Request cancellation" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
+  expect(workflowService.run).toHaveBeenCalledTimes(1);
+});
