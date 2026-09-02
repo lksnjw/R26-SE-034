@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { workflowService } from "../../services/workflow.service";
 import { executionService } from "../../services/execution.service";
 import { settingsService } from "../../services/settings.service";
+import { chatService } from "../../services/chat.service";
 
 const source = "name: Report\ntrigger:\n  type: manual\nsteps:\n - id: invoices\n   action: demo.echo\n   parameters:\n     value: original\n";
 const record = { workflowId: "report", version: 4, contentHash: `sha256:${"a".repeat(64)}`, yaml: source, validation: { passed: true }, published: false, bridge: "not_connected" };
@@ -24,6 +25,7 @@ test("chat is left of canvas and first on mobile; selecting a node routes the ma
   jest.spyOn(workflowService, "readiness").mockResolvedValue(record);
   jest.spyOn(executionService, "list").mockResolvedValue([]);
   jest.spyOn(settingsService, "providers").mockResolvedValue([]);
+  jest.spyOn(chatService, "models").mockResolvedValue({ configured: true, binding: { model: "model-b" }, models: ["model-b"] });
   const propose = jest.spyOn(workflowService, "proposeNode").mockResolvedValue({ id: "one", workflowId: "report", nodeId: "invoices", baseVersion: 4, baseHash: record.contentHash, status: "PROPOSED", command: { type: "updateNode", nodeId: "invoices", patch: { description: "Reviewed" } }, before: {}, after: { description: "Reviewed" } });
   const command = jest.spyOn(workflowService, "command");
   const run = jest.spyOn(workflowService, "run");
@@ -34,9 +36,10 @@ test("chat is left of canvas and first on mobile; selecting a node routes the ma
   await screen.findByText("Editing node · invoices");
   expect(screen.queryByRole("textbox", { name: "Selected node prompt" })).toBeNull();
   fireEvent.change(screen.getByRole("textbox", { name: "Message to workflow assistant" }), { target: { value: "Rename this node" } });
+  await screen.findByRole("combobox", { name: "Requested model" });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await screen.findByRole("region", { name: "Node change preview" });
-  expect(propose).toHaveBeenCalledWith("report", expect.objectContaining({ version: 4, contentHash: record.contentHash, nodeId: "invoices" }), "invoices", "Rename this node", "chat");
+  expect(propose).toHaveBeenCalledWith("report", expect.objectContaining({ version: 4, contentHash: record.contentHash, nodeId: "invoices" }), "invoices", "Rename this node", "chat", "model-b");
   expect(normalSend).not.toHaveBeenCalled(); expect(command).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message to workflow assistant" }).value).toBe(""));
   fireEvent.click(screen.getByRole("button", { name: "Exit node editing" }));

@@ -13,6 +13,7 @@ import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js"
 import { classifyIntent } from "../src/agent/intent-classifier.js";
 import { createEmailDraft, deliveryIntent, type EmailDraft } from "../src/delivery/email-draft.js";
 import { runQueryLoop } from "../src/agent/query-loop.js";
+import { toolSchema } from "../src/registry/schemas.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -172,7 +173,12 @@ test("cancellation after one acknowledged read retains it and prevents a later p
     { id: "one", name: "fixture.one", arguments: {} }, { id: "two", name: "fixture.two", arguments: {} },
   ] }));
   const callTool = vi.fn(async () => { controller.abort(); return { content: [], structuredContent: { fixture: true } }; });
-  const result = await runQueryLoop({ userMessage: requestText, chatHistory: [], sessionId: "chat", actorId: "owner", actorRole: "Platform Admin", signal: controller.signal }, [], callTool, { queryWithTools } as unknown as ProviderRuntime, true);
+  const offeredTools = ["fixture.one", "fixture.two"].map((name) => toolSchema.parse({
+    tool_id: name, name, mcp_tool_name: name, description: "Cancellation fixture read",
+    is_read_only: true, allowed_roles: ["Platform Admin"],
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  }));
+  const result = await runQueryLoop({ userMessage: requestText, chatHistory: [], sessionId: "chat", actorId: "owner", actorRole: "Platform Admin", signal: controller.signal }, offeredTools, callTool, { queryWithTools } as unknown as ProviderRuntime, true);
   expect(result).toMatchObject({ stopReason: "CANCELLED", readOutcome: "PARTIAL_READ", boundHit: true });
   expect(result.toolSteps[0]?.status).toBe("SUCCEEDED"); expect(callTool).toHaveBeenCalledTimes(1); expect(queryWithTools).toHaveBeenCalledTimes(1);
   expect(createEmailDraft("draft", "chat", "owner", requestText, deliveryIntent(requestText)!, result)).toMatchObject({ body: "", reportStatus: "PARTIAL", state: "DRAFT_NOT_SENT" });

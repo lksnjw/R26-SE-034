@@ -13,7 +13,8 @@ routes.push(...[
   "/api/workflows/:id/commands", "/api/workflows/:id/node-proposals",
   "/api/workflows/:id/readiness",
   "/api/executions/:id/events",
-].map((path) => ({ method: /\/(readiness|events)$/.test(path) ? "GET" : "POST", path })));
+  "/api/chat/models",
+].map((path) => ({ method: /\/(readiness|events|models)$/.test(path) ? "GET" : "POST", path })));
 const content = `// Generated from frozen Go routes plus named product extensions. Do not hand-edit.\n` +
   `export const routeTable = ${JSON.stringify(routes, null, 2)} as const;\n` +
   `export type RouteDefinition = (typeof routeTable)[number];\n`;

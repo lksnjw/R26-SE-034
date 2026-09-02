@@ -703,6 +703,10 @@ export const routeTable = [
   {
     "method": "GET",
     "path": "/api/executions/:id/events"
+  },
+  {
+    "method": "GET",
+    "path": "/api/chat/models"
   }
 ] as const;
 export type RouteDefinition = (typeof routeTable)[number];

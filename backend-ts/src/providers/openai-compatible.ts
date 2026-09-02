@@ -1,5 +1,6 @@
 import type { AnalysisProvider, AnalysisResponse, ProviderInvocationContext } from "../analysisprovider/types.js";
 import type { QueryMessage, QueryOptions, QueryToolCall, QueryToolDefinition, QueryTurnResult } from "../analysisprovider/query-types.js";
+import { generationMessages } from "../prompts/contracts.js";
 
 export type OpenAICompatibleOptions = {
   baseURL: string;
@@ -85,7 +86,7 @@ export class OpenAICompatibleClient implements AnalysisProvider {
    *
    * Requests a text completion and validates the provider response.
    ******************************************************************************/
-  async generate(prompt: string, model: string, signal?: AbortSignal, _context?: ProviderInvocationContext): Promise<AnalysisResponse> {
+  async generate(prompt: string, model: string, signal?: AbortSignal, context?: ProviderInvocationContext): Promise<AnalysisResponse> {
     const selectedModel = model.trim() === "" ? this.model : model;
     const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
     const combinedSignal = signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal]);
@@ -94,7 +95,7 @@ export class OpenAICompatibleClient implements AnalysisProvider {
       response = await this.#fetch(`${this.baseURL}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${this.#apiKey}` },
-        body: JSON.stringify({ model: selectedModel, messages: [{ role: "user", content: prompt }], temperature: this.temperature }),
+        body: JSON.stringify({ model: selectedModel, messages: generationMessages(prompt, context?.promptTemplateVersion), temperature: this.temperature }),
         signal: combinedSignal,
       });
     } catch {
@@ -170,17 +171,22 @@ export class OpenAICompatibleClient implements AnalysisProvider {
     const text = (choice.message.content ?? "").trim();
     const toolCalls: QueryToolCall[] = [];
     if (Array.isArray(choice.message.tool_calls)) {
+      const ids = new Set<string>();
       for (const tc of choice.message.tool_calls) {
-        if (tc.type !== "function" || typeof tc.function?.name !== "string") continue;
-        let args: Record<string, unknown> = {};
+        if (!isRecord(tc) || tc.type !== "function" || typeof tc.id !== "string" || !tc.id.trim() || ids.has(tc.id) ||
+            !isRecord(tc.function) || typeof tc.function.name !== "string" || !tc.function.name.trim() || typeof tc.function.arguments !== "string")
+          throw new OpenAICompatibleError("Query provider returned a malformed tool call", "malformed");
+        ids.add(tc.id);
+        let args: Record<string, unknown>;
         try {
           const parsed_args = JSON.parse(tc.function.arguments);
-          if (isRecord(parsed_args)) args = parsed_args;
-        } catch { /* use empty args on parse failure */ }
+          if (!isRecord(parsed_args)) throw new Error("Arguments must be an object");
+          args = parsed_args;
+        } catch { throw new OpenAICompatibleError("Query tool arguments must be a valid JSON object", "malformed"); }
         toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args });
       }
     }
-    return { text, toolCalls, stopReason, inputTokens, outputTokens };
+    return { text, toolCalls, stopReason, inputTokens, outputTokens, measured, model: selectedModel, provider: this.provider };
   }
 }
 
@@ -195,6 +201,8 @@ function parseQueryResponse(value: unknown): OpenAIQueryResponse {
   for (const choice of value.choices) {
     if (!isRecord(choice) || !isRecord(choice.message)) continue;
     const content = choice.message.content === null ? null : typeof choice.message.content === "string" ? choice.message.content : null;
+    if (choice.message.tool_calls !== undefined && !Array.isArray(choice.message.tool_calls))
+      throw new OpenAICompatibleError("Query provider returned malformed tool calls", "malformed");
     const toolCalls = Array.isArray(choice.message.tool_calls) ? choice.message.tool_calls as OpenAIQueryResponse["choices"][0]["message"]["tool_calls"] : undefined;
     choices.push({ finish_reason: typeof choice.finish_reason === "string" ? choice.finish_reason : "stop", message: { content, ...(toolCalls !== undefined ? { tool_calls: toolCalls } : {}) } });
   }

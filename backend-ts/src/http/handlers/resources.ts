@@ -20,6 +20,7 @@ import { dispatchReadTool } from "../../tools/read-tool-broker.js";
 import { modifyWorkflow } from "../../agent/workflow-modifier.js";
 import { parseWorkflowYAMLStrict } from "../../parser/workflow.js";
 import { stringify as yamlStringify } from "yaml";
+import { assertActorAuthority, assertChatAuthority, requestedModel, selectProvider } from "./model-selection.js";
 
 /*******************************************************************************
  * Function: buildWorkflowYamlFromSteps
@@ -150,6 +151,8 @@ export async function handleResourceRoute(route: RouteDefinition, request: Fasti
     if (route.path === `${base}/company/approval-tiers/:id` && route.method === "PUT") return updateCompanyItem(request, reply, user, services, "approvalTiers");
     if (route.path === `${base}/company/approval-tiers/:id` && route.method === "DELETE") return deleteCompanyItem(request, reply, user, services, "approvalTiers");
     if (route.path === `${base}/chat/sessions` && route.method === "GET") return listChats(request, reply, user, services);
+    if (route.path === `${base}/chat/models` && route.method === "GET") return reply.send(ok(
+      services.providerRuntime?.catalog() ?? { configured: false, binding: null, models: [] }, "Configured chat models loaded; remote compatibility is not certified", null));
     if (route.path === `${base}/chat/sessions` && route.method === "POST") return createChat(request, reply, user, services);
     if (route.path === `${base}/chat/sessions/:id` && route.method === "GET") return getChat(request, reply, user, services);
     if (route.path === `${base}/chat/sessions/:id` && route.method === "PATCH") return updateChat(request, reply, user, services);
@@ -423,7 +426,18 @@ async function getChat(request: FastifyRequest, reply: FastifyReply, user: Curre
  *
  * Updates a visible chat session from the request body.
  ******************************************************************************/
-async function updateChat(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const chat = await services.repository.mutate((state) => { const value = state.chats[requestParam(request, "id")]; if (value === undefined || (!user.permissions.includes("workflow:write") && value.ownerId !== user.id)) throw new HandlerFailure(404, "Chat session not found"); value.title = stringValue(body.title); value.updatedAt = now(); return structuredClone(value); }); return reply.send(ok(chatSummary(chat), "Chat session updated", null)); }
+async function updateChat(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
+  const body = bodyRecord(request);
+  if (body === null) throw new HandlerFailure(400, "Invalid request body");
+  const provider = Object.hasOwn(body, "selectedModel") ? selectProvider(services, requestedModel(body.selectedModel)) : undefined;
+  const chat = await services.repository.mutate((state) => {
+    const value = assertChatAuthority(state, user, requestParam(request, "id"));
+    if (Object.hasOwn(body, "title")) value.title = stringValue(body.title);
+    if (provider?.binding) value.selectedModel = provider.binding.model;
+    value.updatedAt = now(); return structuredClone(value);
+  });
+  return reply.send(ok(chatSummary(chat), "Chat session updated", null));
+}
 /*******************************************************************************
  * Function: deleteChat
  *
@@ -442,6 +456,9 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
   if (Object.hasOwn(body, "emailDraftCommand")) return reply.send(ok(await editEmailDraft(services, user, requestParam(request, "id"), body.emailDraftCommand, request), "Email draft saved; nothing sent", null));
   const content = stringValue(body.content).trim() === "" ? stringValue(body.message).trim() : stringValue(body.content).trim();
   if (content === "") throw new HandlerFailure(400, "message is required");
+  const previousModel = await services.repository.read((state) => state.chats[requestParam(request, "id")]?.selectedModel);
+  const provider = selectProvider(services, requestedModel(body.model) ?? previousModel);
+  if (provider !== undefined) services = { ...services, providerRuntime: provider };
   const intent = classifyIntent(content);
   const bodyWorkflowCtx = isRecord(body.workflowContext) ? body.workflowContext : null;
   const workflowContextYaml = typeof bodyWorkflowCtx?.yaml === "string" && bodyWorkflowCtx.yaml.trim() ? bodyWorkflowCtx.yaml.trim() : null;
@@ -452,8 +469,10 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     let chat = state.chats[id];
     if (chat === undefined) { const timestamp = now(); chat = { id, ownerId: user.id, title: content.slice(0, 80), createdAt: timestamp, updatedAt: timestamp, messageCount: 0, messages: [] }; state.chats[id] = chat; }
     if (chat.ownerId !== user.id && (intent === "EMAIL_DELIVERY" || !user.permissions.includes("workflow:write"))) throw new HandlerFailure(404, "Chat session not found");
+    assertChatAuthority(state, user, id);
+    if (provider?.binding) chat.selectedModel = provider.binding.model;
     const priorMessages = chat.messages.map((message) => `${stringValue(message.role)}: ${stringValue(message.text)}`);
-    const userMessage = { id: nextID(state, "msg"), role: "user", text: content, createdAt: now(), traceId };
+    const userMessage = { id: nextID(state, "msg"), role: "user", text: content, createdAt: now(), traceId, ...(provider?.binding ? { modelBinding: provider.binding } : {}) };
     chat.messages.push(userMessage); chat.messageCount = chat.messages.length; chat.updatedAt = now();
     return { session: chatSummary(chat), userMessage, priorMessages };
   });
@@ -471,9 +490,8 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
         ? `**Request blocked by policy.**\n\n${feasibility.reason}`
         : `**Request blocked.**\n\n${feasibility.reason ?? "This action is not permitted in this system."}`;
       const assistantMessage = await services.repository.mutate((state) => {
-        const chat = state.chats[requestParam(request, "id")];
-        if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
-        const message = { id: nextID(state, "msg"), role: "assistant", text: denialText, artifacts: { intent: "POLICY_DENIAL", blockedWorkflow: feasibility.matchedWorkflow?.id ?? null }, createdAt: now(), traceId };
+        const chat = assertChatAuthority(state, user, requestParam(request, "id"));
+        const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: denialText, artifacts: { intent: "POLICY_DENIAL", blockedWorkflow: feasibility.matchedWorkflow?.id ?? null }, createdAt: now(), traceId };
         chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
         return message;
       });
@@ -491,8 +509,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       ? "ERPBridge is not connected. I cannot retrieve ERP data or execute tools for this request. No ERP operation was performed."
       : "The agent provider is not configured. I cannot plan this request. No ERP operation was performed.";
     const assistantMessage = await services.repository.mutate((state) => {
-      const chat = state.chats[requestParam(request, "id")];
-      if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
+      const chat = assertChatAuthority(state, user, requestParam(request, "id"));
       const message = { id: nextID(state, "msg"), role: "assistant", text, artifacts: { intent, blocked: true, code }, createdAt: now(), traceId };
       chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
       return message;
@@ -504,9 +521,8 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     const liveCapTools = await discoverTools(services.erpbridgeSession ?? null, services.registries);
     const capText = buildCapabilitiesResponse(liveCapTools);
     const assistantMessage = await services.repository.mutate((state) => {
-      const chat = state.chats[requestParam(request, "id")];
-      if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
-      const message = { id: nextID(state, "msg"), role: "assistant", text: capText, artifacts: { intent: "CAPABILITIES" }, createdAt: now(), traceId };
+      const chat = assertChatAuthority(state, user, requestParam(request, "id"));
+      const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: capText, artifacts: { intent: "CAPABILITIES" }, createdAt: now(), traceId };
       chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
       return message;
     });
@@ -553,9 +569,8 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       ...(workflowDraft !== undefined ? { workflowDraft } : {}),
     };
     const assistantMessage = await services.repository.mutate((state) => {
-      const chat = state.chats[requestParam(request, "id")];
-      if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
-      const message = { id: nextID(state, "msg"), role: "assistant", text: loopResult.text, artifacts: queryArtifacts, createdAt: now(), traceId };
+      const chat = assertChatAuthority(state, user, requestParam(request, "id"));
+      const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: loopResult.text, artifacts: queryArtifacts, createdAt: now(), traceId };
       chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
       return message;
     });
@@ -570,7 +585,8 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       ...(loopResult.visualisation !== undefined ? { visualisation: loopResult.visualisation } : {}),
       ...(workflowDraft !== undefined ? { workflowDraft } : {}),
       boundHit: loopResult.boundHit,
-      usage: { inputTokens: loopResult.totalTokens.input, outputTokens: loopResult.totalTokens.output, measured: true },
+      modelBinding: provider?.binding ?? null,
+      usage: { inputTokens: loopResult.totalTokens.input, outputTokens: loopResult.totalTokens.output, measured: loopResult.totalTokens.measured === true },
     }, "Message processed", null));
   }
   if (intent === "TOOL_CALL" && services.erpbridgeSession !== undefined && services.providerRuntime?.configured === true) {
@@ -609,9 +625,8 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       toolSteps: actionResult.steps.map((s) => ({ toolName: s.toolName, arguments: s.arguments, result: s.result })),
     };
     const assistantMessage = await services.repository.mutate((state) => {
-      const chat = state.chats[requestParam(request, "id")];
-      if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
-      const message = { id: nextID(state, "msg"), role: "assistant", text: actionResult.text, artifacts: actionArtifacts, createdAt: now(), traceId };
+      const chat = assertChatAuthority(state, user, requestParam(request, "id"));
+      const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: actionResult.text, artifacts: actionArtifacts, createdAt: now(), traceId };
       chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
       return message;
     });
@@ -624,7 +639,8 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       steps: actionResult.steps,
       blocked: actionResult.blocked,
       workflowDraft: actionResult.workflowYaml,
-      usage: { inputTokens: actionResult.totalTokens.input, outputTokens: actionResult.totalTokens.output, measured: true },
+      modelBinding: provider?.binding ?? null,
+      usage: { inputTokens: actionResult.totalTokens.input, outputTokens: actionResult.totalTokens.output, measured: actionResult.totalTokens.measured === true },
     }, "Message processed", null));
   }
 
@@ -649,15 +665,14 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     if (effectiveYaml !== null) {
       const modResult = await modifyWorkflow(effectiveYaml, content, services.providerRuntime, request.signal);
       const responseText = modResult.ok
-        ? `I've updated the workflow: ${modResult.changeDescription}\n\nThe modified YAML is ready in the panel.`
+        ? `I've prepared a workflow change proposal: ${modResult.changeDescription}\n\nReview the proposal in the panel; it is not saved, published or executed.`
         : `I wasn't able to apply that modification: ${modResult.errorMessage ?? "Unknown error"}`;
       const modArtifacts = modResult.ok
         ? { intent: "WORKFLOW", yaml: modResult.yaml, selected_workflow_yaml: modResult.yaml, can_execute: false, validation: { passed: false, failed_rules: [], warnings: [] } }
         : { intent: "WORKFLOW_MODIFY_ERROR" };
       const assistantMessage = await services.repository.mutate((state) => {
-        const chat = state.chats[sessionId];
-        if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
-        const message = { id: nextID(state, "msg"), role: "assistant", text: responseText, artifacts: modArtifacts, createdAt: now(), traceId };
+        const chat = assertChatAuthority(state, user, sessionId);
+        const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: responseText, artifacts: modArtifacts, createdAt: now(), traceId };
         chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
         return message;
       });
@@ -676,8 +691,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
   if (intent !== "ACTION") {
     // Non-ACTION intents that reached here (e.g. TOOL_CALL with no bridge) — reply conversationally.
     const fallbackMessage = await services.repository.mutate((state) => {
-      const chat = state.chats[requestParam(request, "id")];
-      if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
+      const chat = assertChatAuthority(state, user, requestParam(request, "id"));
       const msg = {
         id: nextID(state, "msg"),
         role: "assistant",
@@ -695,7 +709,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
   if (services.synthesis === undefined) throw new HandlerFailure(502, "Chat orchestration is not configured");
   const liveToolsForSynthesis = await discoverTools(services.erpbridgeSession ?? null, services.registries);
   let result;
-  try { result = await services.synthesis.synthesize({ prompt: content, userRole: user.role, user: { id: user.id, role: user.role, department: user.departmentId }, model: stringValue(body.model), priorMessages: augmentedPriorMessages, signal: request.signal, traceId, sessionId: requestParam(request, "id"), messageId: stringValue(stored.userMessage.id), liveTools: liveToolsForSynthesis }); }
+  try { result = await services.synthesis.synthesize({ prompt: content, userRole: user.role, user: { id: user.id, role: user.role, department: user.departmentId }, ...(provider === undefined ? {} : { providerRuntime: provider }), priorMessages: augmentedPriorMessages, signal: request.signal, traceId, sessionId: requestParam(request, "id"), messageId: stringValue(stored.userMessage.id), liveTools: liveToolsForSynthesis }); }
   catch (error) {
     const errText = errorText(error);
     const errorDetail = errText.split(":").at(-1)?.trim() || errText;
@@ -703,9 +717,8 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       ? "I wasn't able to generate a workflow for this request.\n\nThis usually happens when the request involves capabilities not available in this ERP system (e.g. tax verification, sanctions checking, email notifications), or when the AI model is temporarily unavailable.\n\nTry asking for a simpler workflow, or check **Capabilities** to see what this system supports."
       : `Unable to generate workflow — the generation service encountered an error. Please try again.\n\n_${errorDetail}_`;
     const errMessage = await services.repository.mutate((state) => {
-      const chat = state.chats[requestParam(request, "id")];
-      if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
-      const msg = { id: nextID(state, "msg"), role: "assistant", text: friendlyText, artifacts: { intent: "WORKFLOW_ERROR" }, createdAt: now(), traceId };
+      const chat = assertChatAuthority(state, user, requestParam(request, "id"));
+      const msg = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: friendlyText, artifacts: { intent: "WORKFLOW_ERROR" }, createdAt: now(), traceId };
       chat.messages.push(msg); chat.messageCount = chat.messages.length; chat.updatedAt = now();
       return msg;
     });
@@ -737,6 +750,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
       const nowTs = new Date().toISOString();
       if (approvalSteps.length > 0) pendingGenerationApproval = { steps: approvalSteps, requestedAt: nowTs };
       autoSavedWorkflowId = await services.repository.mutate((state) => {
+        assertChatAuthority(state, user, chatSessionId);
         state.counter += 1;
         const wfId = `wf_${state.counter}_${randomBytes(4).toString("hex")}`;
         const wf = {
@@ -769,7 +783,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
         return wfId;
       });
     }
-  } catch { /* non-fatal — workflow shown in chat even if save fails */ }
+  } catch (error) { if (error instanceof HandlerFailure) throw error; /* Other save failures remain explicit proposals. */ }
 
   // State claims come from persistence/validation, not an additional model.
   const assistantText = [
@@ -780,9 +794,8 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
   ].filter(Boolean).join("\n\n");
   const artifacts = compactWorkflowArtifacts(result, chatSessionId, chatMessageId, traceId, autoSavedWorkflowId, missingTools, pendingGenerationApproval);
   const assistantMessage = await services.repository.mutate((state) => {
-    const chat = state.chats[requestParam(request, "id")];
-    if (chat === undefined) throw new HandlerFailure(404, "Chat session not found");
-    const message = { id: nextID(state, "msg"), role: "assistant", text: assistantText, artifacts, createdAt: now(), traceId };
+    const chat = assertChatAuthority(state, user, requestParam(request, "id"));
+    const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: assistantText, artifacts, createdAt: now(), traceId };
     chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
     return message;
   });
@@ -906,18 +919,24 @@ function providerInput(body: Record<string, unknown>, id: string, existing?: Rec
   const model = stringValue(body.model).trim();
   if (name === "" || model === "") throw new HandlerFailure(422, "Provider name and model are required");
   const type = stringValue(body.type).trim();
-  if (!["gemini", "ollama", "openai_compatible"].includes(type)) throw new HandlerFailure(422, "Provider type must be gemini, ollama, or openai_compatible");
+  if (type !== "openai_compatible") throw new HandlerFailure(422, "Only OpenAI-compatible providers are implemented; native Gemini/Ollama adapters are unavailable");
+  if ((Object.hasOwn(body, "additionalModels") && (!Array.isArray(body.additionalModels) || body.additionalModels.some((value) => typeof value !== "string" || !value.trim()))) ||
+      (Object.hasOwn(body, "fallbackModel") && typeof body.fallbackModel !== "string")) throw new HandlerFailure(422, "Model choices must be strings");
   // additionalModels — list of extra model IDs selectable in the chat UI
   const rawAdditional = Array.isArray(body.additionalModels) ? body.additionalModels : (Array.isArray(existing?.additionalModels) ? existing!.additionalModels : []);
   const additionalModels = (rawAdditional as unknown[]).filter((m): m is string => typeof m === "string" && m.trim() !== "").map((m) => m.trim());
+  const fallbackModel = Object.hasOwn(body, "fallbackModel") ? stringValue(body.fallbackModel).trim() : stringValue(existing?.fallbackModel);
+  if (additionalModels.length > 64 || [...additionalModels, model, fallbackModel].some((value) => value.length > 256 || value.includes(":latest"))) throw new HandlerFailure(422, "Model IDs must be bounded and pinned");
   return {
     id, name, type,
     ...(stringValue(body.baseUrl).trim() === "" ? {} : { baseUrl: stringValue(body.baseUrl).trim() }),
     model,
+    fallbackModel,
     ...(additionalModels.length > 0 ? { additionalModels } : {}),
     temperature: typeof body.temperature === "number" ? body.temperature : 0,
     apiKey: typeof body.apiKey === "string" && body.apiKey !== "" ? body.apiKey : existing?.apiKey ?? "",
     active: existing?.active === true,
+    revision: numberValue(existing?.revision, 0) + 1,
     createdAt: stringValue(existing?.createdAt) === "" ? now() : existing!.createdAt,
   };
 }
@@ -932,13 +951,49 @@ async function createProvider(request: FastifyRequest, reply: FastifyReply, user
  *
  * Updates an existing provider configuration.
  ******************************************************************************/
-async function updateProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { requirePlatformAdmin(user); const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const id = requestParam(request, "id"); const provider = await services.repository.mutate((state) => { const existing = state.providers[id]; if (existing === undefined) throw new HandlerFailure(404, "Provider configuration not found"); const value = providerInput(body, id, existing); state.providers[id] = value; appendAudit(state, user, "provider.updated", "provider", id, withoutSecretFields(existing) as Record<string, unknown>, withoutSecretFields(value) as Record<string, unknown>, request); return value; }); return reply.send(ok(withoutSecretFields(provider), "Provider updated", null)); }
+async function updateProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
+  requirePlatformAdmin(user); const body = bodyRecord(request);
+  if (body === null) throw new HandlerFailure(400, "Invalid request body");
+  const id = requestParam(request, "id");
+  const provider = await services.repository.mutate((state) => {
+    assertActorAuthority(state, user);
+    const existing = state.providers[id];
+    if (existing === undefined) throw new HandlerFailure(404, "Provider configuration not found");
+    const value = providerInput(body, id, existing);
+    if (value.active === true) {
+      try { validateRuntimeProviderConfiguration(providerConfigurationFromRecord(value, services.config.generationTimeoutMs ?? 30_000)); }
+      catch (error) { throw new HandlerFailure(422, errorText(error)); }
+    }
+    state.providers[id] = value;
+    appendAudit(state, user, "provider.updated", "provider", id, withoutSecretFields(existing) as Record<string, unknown>, withoutSecretFields(value) as Record<string, unknown>, request);
+    return value;
+  });
+  if (provider.active === true) services.providerRuntime?.activate(providerConfigurationFromRecord(provider, services.config.generationTimeoutMs ?? 30_000));
+  return reply.send(ok(withoutSecretFields(provider), "Provider updated", null));
+}
 /*******************************************************************************
  * Function: activateProvider
  *
  * Activates the selected provider in storage and the runtime.
  ******************************************************************************/
-async function activateProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { requirePlatformAdmin(user); const id = requestParam(request, "id"); const current = await services.repository.read((state) => state.providers[id] ?? null); if (current === null) throw new HandlerFailure(404, "Provider configuration not found"); const configuration = providerConfigurationFromRecord(current, services.config.generationTimeoutMs ?? 30_000); try { validateRuntimeProviderConfiguration(configuration); } catch (error) { throw new HandlerFailure(422, errorText(error)); } if (services.providerRuntime === undefined) throw new HandlerFailure(503, "Provider runtime is unavailable"); const provider = await services.repository.mutate((state) => { const item = state.providers[id]; if (item === undefined) throw new HandlerFailure(404, "Provider configuration not found"); for (const value of Object.values(state.providers)) value.active = false; item.active = true; appendAudit(state, user, "provider.activated", "provider", id, null, { active: true }, request); return structuredClone(item); }); services.providerRuntime.activate(configuration); return reply.send(ok(withoutSecretFields(provider), "Provider activated", null)); }
+async function activateProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
+  requirePlatformAdmin(user); const id = requestParam(request, "id");
+  if (!(await services.repository.read((state) => state.providers[id]))) throw new HandlerFailure(404, "Provider configuration not found");
+  if (services.providerRuntime === undefined) throw new HandlerFailure(503, "Provider runtime is unavailable");
+  const provider = await services.repository.mutate((state) => {
+    assertActorAuthority(state, user);
+    const item = state.providers[id];
+    if (item === undefined) throw new HandlerFailure(404, "Provider configuration not found");
+    try { validateRuntimeProviderConfiguration(providerConfigurationFromRecord(item, services.config.generationTimeoutMs ?? 30_000)); }
+    catch (error) { throw new HandlerFailure(422, errorText(error)); }
+    for (const value of Object.values(state.providers)) value.active = false;
+    item.active = true;
+    appendAudit(state, user, "provider.activated", "provider", id, null, { active: true }, request);
+    return structuredClone(item);
+  });
+  services.providerRuntime.activate(providerConfigurationFromRecord(provider, services.config.generationTimeoutMs ?? 30_000));
+  return reply.send(ok(withoutSecretFields(provider), "Provider activated", null));
+}
 /*******************************************************************************
  * Function: testProvider
  *

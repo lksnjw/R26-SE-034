@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { promptData } from "../prompts/contracts.js";
 import type { AnalysisProvider } from "../analysisprovider/types.js";
 import type { Workflow } from "../models/schemas.js";
 import { effectiveStepKind } from "../models/schemas.js";
@@ -367,18 +368,18 @@ export class Executor {
         outputTokens: 0,
         cached: true,
       };
-    const basePrompt = `SYSTEM\nReturn exactly one JSON value matching OUTPUT_SCHEMA.\nINSTRUCTION\n${step.instruction ?? ""}\nOUTPUT_SCHEMA\n${schemaJSON}\nINPUT\n${inputJSON}`;
+    const analysisData = { INSTRUCTION: step.instruction ?? "", OUTPUT_SCHEMA: schema, INPUT: resolved };
     let inputTokens = 0;
     let outputTokens = 0;
     let correction = "";
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const response = await this.#analysisProvider.generate(
         correction === ""
-          ? basePrompt
-          : `${basePrompt}\nCORRECTION\n${correction}`,
+          ? promptData(analysisData)
+          : promptData({ ...analysisData, CORRECTION: correction }),
         model,
         signal,
-        { promptTemplateVersion: "prompt/analysis/v1", ...traceContext },
+        { promptTemplateVersion: "prompt/analysis/v2", ...traceContext },
       );
       if (response.measured) {
         inputTokens += response.inputTokens;

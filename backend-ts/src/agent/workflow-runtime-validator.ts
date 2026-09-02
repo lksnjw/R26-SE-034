@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "../registry/schemas.js";
 import type { ProviderRuntime } from "../providers/runtime.js";
+import { promptData } from "../prompts/contracts.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -210,65 +211,14 @@ export async function analyzeDataFlow(
   signal?: AbortSignal,
 ): Promise<string> {
   if (steps.length <= 1) return "";
-
-  const resMap = new Map(toolResolutions.map((r) => [r.stepId, r]));
-
-  const stepDescriptions = steps
-    .map((s, i) => {
-      if (s.kind === "approval") {
-        return (
-          `Step ${i + 1} [${s.id}]\n` +
-          `  Tool: (none — human approval checkpoint)\n` +
-          `  Goal: ${s.description ?? "Human sign-off required before continuing"}`
-        );
-      }
-      const r = resMap.get(s.id);
-      const toolDesc = r?.tool.description ?? "unknown tool";
-      const schema = r?.tool.input_schema as { required?: string[] } | undefined;
-      const required = (schema?.required ?? []).join(", ") || "none";
-      const params =
-        s.parameters && Object.keys(s.parameters).length > 0
-          ? JSON.stringify(s.parameters)
-          : "(to be inferred from prior step output)";
-      return (
-        `Step ${i + 1} [${s.id}]\n` +
-        `  Tool: ${r?.resolvedAction ?? s.action}\n` +
-        `  Goal: ${s.description ?? s.action}\n` +
-        `  Tool description: ${toolDesc}\n` +
-        `  Required inputs: ${required}\n` +
-        `  Configured params: ${params}`
-      );
-    })
-    .join("\n\n");
-
-  const prompt = [
-    "You are a workflow execution planner. Analyze the inter-step data flow for this workflow.",
-    "",
-    "WORKFLOW STEPS:",
-    stepDescriptions,
-    "",
-    "For each step transition, describe:",
-    "1. What fields/values Step N will return in its result",
-    "2. Exactly which fields the executor must extract and pass into Step N+1",
-    "3. Any data transformation needed (e.g. format a list as email body text)",
-    "",
-    "Output a concise numbered execution plan — one paragraph per step. Max 300 words.",
-    "Write it as instructions FOR the executor, not an analysis. Use imperative language.",
-    "Example: 'Step 1: Call list_leave_applications. Extract the array of records. Step 2: Format the records as a readable list and pass as the email body parameter.'",
-  ].join("\n");
-
+  const prompt = promptData({ steps, toolContracts: toolResolutions.map((resolution) => ({
+    stepId: resolution.stepId, action: resolution.resolvedAction, inputSchema: resolution.tool.input_schema,
+  })) });
   try {
-    const result = await providerRuntime.generateCandidate(
-      prompt,
-      "data-flow-v1",
-      () => { /* no YAML validation needed */ },
-      signal,
-      { candidateId: "data_flow_plan" },
-    );
+    const result = await providerRuntime.generateCandidate(prompt, "prompt/data-flow/v2",
+      () => { /* advisory text only; never a dispatch instruction */ }, signal, { candidateId: "data_flow_plan" });
     return result.text.trim();
-  } catch {
-    return "";
-  }
+  } catch { return ""; }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

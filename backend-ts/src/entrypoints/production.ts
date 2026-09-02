@@ -188,8 +188,7 @@ if (erpbridgeSession !== null) {
 const executor = new Executor(toolRegistry, validator);
 const providerRuntime = new ProviderRuntime(repository, executor);
 const generationConfiguration = staticProviderConfiguration();
-if (generationConfiguration !== null)
-  providerRuntime.activate(generationConfiguration);
+await providerRuntime.activateStoredOrStatic(generationConfiguration);
 const governancePrimary =
   (config.governanceURL ?? "") === ""
     ? null

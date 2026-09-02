@@ -10,6 +10,7 @@ const flush = async () => { await act(async () => { await Promise.resolve(); awa
 const tick = async (ms = 2000) => { await act(async () => { await jest.advanceTimersByTimeAsync(ms); }); };
 beforeEach(() => {
   jest.useFakeTimers();
+  jest.spyOn(Math, "random").mockReturnValue(0.5);
   jest.spyOn(executionService, "getEvents").mockResolvedValue(page([event(1, "run.started")]));
   jest.spyOn(executionService, "get").mockResolvedValue(snapshot(1));
   jest.spyOn(executionService, "getTimeline").mockResolvedValue([{ nodeId: "first", status: "DONE" }]);
@@ -53,11 +54,36 @@ test("account revocation hides saved data and stops polling", async () => {
   expect(result.current.denied).toBe(true); expect(result.current.execution).toBeNull(); expect(result.current.events).toEqual([]);
   await tick(20000); expect(executionService.getEvents).toHaveBeenCalledTimes(2);
 });
-test("read failures back off and stop after three failures without claiming a terminal run", async () => {
+test("read failures keep reconnecting beyond three failures without claiming a terminal run", async () => {
   executionService.getEvents.mockRejectedValue(new Error("Network unavailable"));
   const { result } = renderHook(() => useExecutionMonitor("run")); await flush(); await tick(2000); await tick(4000); await tick(40000);
-  expect(executionService.getEvents).toHaveBeenCalledTimes(3);
+  expect(executionService.getEvents.mock.calls.length).toBeGreaterThan(3);
   expect(result.current.execution).toBeNull(); expect(result.current.error).toBe("Network unavailable");
+  expect(result.current.reconnecting).toBe(true);
+  executionService.getEvents.mockResolvedValue(page([event(1, "run.completed")], "DONE"));
+  executionService.get.mockResolvedValue(snapshot(1, "DONE"));
+  await tick(30000); expect(result.current.execution.status).toBe("DONE"); expect(result.current.reconnecting).toBe(false);
+});
+
+test("online reconnect is immediate, non-overlapping and never revives denied monitoring", async () => {
+  executionService.getEvents.mockRejectedValueOnce(new Error("Offline")).mockResolvedValue(page([event(1)]));
+  const { result } = renderHook(() => useExecutionMonitor("run")); await flush();
+  act(() => window.dispatchEvent(new Event("online"))); await flush();
+  expect(result.current.error).toBe(""); expect(executionService.getEvents).toHaveBeenCalledTimes(2);
+  executionService.getEvents.mockRejectedValue({ response: { status: 403 } });
+  await tick(); const deniedCalls = executionService.getEvents.mock.calls.length;
+  act(() => window.dispatchEvent(new Event("online"))); await flush(); await tick(60000);
+  expect(result.current.denied).toBe(true); expect(executionService.getEvents).toHaveBeenCalledTimes(deniedCalls);
+});
+
+test("sequence gaps resync automatically without replaying the operation", async () => {
+  executionService.getEvents.mockResolvedValueOnce(page([event(1)])).mockResolvedValueOnce(page([event(3)])).mockResolvedValueOnce(page([event(1), event(2), event(3)], "DONE"));
+  executionService.get.mockResolvedValueOnce(snapshot(1)).mockResolvedValueOnce(snapshot(3, "DONE"));
+  const { result } = renderHook(() => useExecutionMonitor("run")); await flush(); await tick();
+  expect(result.current.error).toMatch(/sequence gap/);
+  expect(result.current.execution.stepOutputs.first.value).toBe("saved answer");
+  await tick(); expect(executionService.getEvents.mock.calls.at(-1)[1]).toBe(0);
+  expect(result.current.events.map((item) => item.sequence)).toEqual([1, 2, 3]); expect(result.current.error).toBe("");
 });
 test("switching execution hides the old account/run frame and ignores a late response", async () => {
   let late;
@@ -75,4 +101,13 @@ test("a terminal snapshot newer than the journal page still drains missing termi
   expect(result.current.events.map((item) => item.sequence)).toEqual([1, 2]);
   expect(result.current.execution.status).toBe("DONE");
   await tick(20000); expect(executionService.getEvents).toHaveBeenCalledTimes(2);
+});
+
+test("a journal temporarily behind a terminal snapshot does not hot-loop empty pages", async () => {
+  executionService.getEvents.mockResolvedValueOnce(page([event(1)])).mockResolvedValue(page([], "RUNNING", { cursor: 1, lastSequence: 1 }));
+  executionService.get.mockResolvedValue(snapshot(2, "DONE"));
+  renderHook(() => useExecutionMonitor("run")); await flush(); await tick(1);
+  expect(executionService.getEvents).toHaveBeenCalledTimes(2);
+  await tick(1000); expect(executionService.getEvents).toHaveBeenCalledTimes(2);
+  await tick(1000); expect(executionService.getEvents).toHaveBeenCalledTimes(3);
 });

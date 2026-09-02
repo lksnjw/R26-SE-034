@@ -30,9 +30,9 @@ describe("chat orchestration", () => {
     const yaml = `name: Echo request\ndescription: Echoes a value through the demo integration.\ntrigger:\n  type: manual\nsteps:\n  - id: echo_value\n    action: demo.echo\n    parameters:\n      value: hello\n`;
     const setup = await buildTestApplication(async (_input, init) => {
       const body = JSON.parse(String(init?.body)) as {
-        messages: Array<{ content: string }>;
+        messages: Array<{ role: string; content: string }>;
       };
-      prompts.push(body.messages[0]!.content);
+      prompts.push(body.messages.find((message) => message.role === "user")!.content);
       return Response.json({
         choices: [{ message: { content: yaml } }],
         usage: { prompt_tokens: 25, completion_tokens: 15 },
@@ -73,9 +73,9 @@ describe("chat orchestration", () => {
       headers: { authorization: `Bearer ${setup.token}` },
       payload: { content: "Create a workflow again" },
     });
-    const followupPrompt = prompts.find((prompt) => prompt.includes("USER_REQUEST\nCreate a workflow again"));
-    expect(followupPrompt).toContain("user: Create a workflow to echo hello");
-    expect(followupPrompt).toContain(JSON.stringify(`assistant: ${String(chat.messages[1]?.text)}`));
+    const followup = prompts.map((prompt) => JSON.parse(prompt)).find((prompt) => prompt.USER_REQUEST === "Create a workflow again");
+    expect(followup.PRIOR_MESSAGES_JSON).toContain("user: Create a workflow to echo hello");
+    expect(followup.PRIOR_MESSAGES_JSON).toContain(`assistant: ${String(chat.messages[1]?.text)}`);
   });
 
   test("saves a generated candidate as a draft through the workflow route and revalidates before persistence", async () => {

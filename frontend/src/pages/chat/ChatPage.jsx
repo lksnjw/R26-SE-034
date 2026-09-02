@@ -71,7 +71,7 @@ function ChatPage() {
     if (creating) setPendingDraftKey(draftKey);
     try {
       if (activeNodeContext && sid) {
-        const proposal = await workflowService.proposeNode(activeNodeContext.workflowId, activeNodeContext, activeNodeContext.nodeId, text, sid);
+        const proposal = await workflowService.proposeNode(activeNodeContext.workflowId, activeNodeContext, activeNodeContext.nodeId, text, sid, options.model);
         activeNodeContext.onProposal(proposal);
         await onChatChanged();
         writeWorkspaceValue(workspaceKey(user, `draft.${sid}`), "");
@@ -116,6 +116,7 @@ function ChatPage() {
           onChatChanged={onChatChanged}
           key={composerKey || sessions.selectedSessionId || "new"}
           draftStorageKey={composerKey}
+          savedModel={chat.selectedModel}
           messages={chat.messages}
           onSend={handleSend}
           loading={chat.loading}

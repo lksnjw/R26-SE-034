@@ -5,7 +5,7 @@ import ExecutionStatus from "./ExecutionStatus";
 
 export default function ExecutionRunControls({ execution, canControl = false, monitor, onChanged }) {
   const [requesting, setRequesting] = useState(false), [acknowledged, setAcknowledged] = useState(false), [error, setError] = useState("");
-  if (!execution) return monitor?.error ? <div role="alert" className="text-xs text-amber-700">{monitor.error}<button className="ml-2 text-primary" onClick={monitor.refresh}>Refresh run</button></div> : null;
+  if (!execution) return monitor?.error ? <div role="alert" className="text-xs text-amber-700">{monitor.error}{monitor.reconnecting && " Reconnecting updates automatically."}<button className="ml-2 text-primary" onClick={monitor.refresh}>Refresh run</button></div> : null;
   const running = execution.status === "RUNNING" || execution.status === "PENDING";
   const pending = running && (acknowledged || Boolean(execution.readProgress?.cancellation));
   const recovery = execution.status === "RECOVERY_REQUIRED";
@@ -29,6 +29,7 @@ export default function ExecutionRunControls({ execution, canControl = false, mo
     {execution.status === "CANCELLED" && <p className="text-gray-500">Stopped at a read boundary. Already dispatched reads were not interrupted; saved answers remain available.</p>}
     {execution.readProgress?.persistence === "memory-only" && <p className="text-gray-500">Memory-only run · checkpoints will not survive server restart.</p>}
     {(error || monitor?.error) && <p role="alert" className="text-amber-700 dark:text-amber-300">{error || monitor.error}{!monitor?.denied && " Displayed answers are the last confirmed snapshot, not fresh status."}</p>}
+    {monitor?.reconnecting && <p role="status" className="text-gray-500">Reconnecting run updates automatically. No business operation is being replayed.</p>}
     {!!monitor?.events?.length && <details><summary className="cursor-pointer text-gray-500">Saved run history · {monitor.cursor} events</summary><ol className="mt-2 max-h-56 space-y-2 overflow-auto border-l border-gray-200 pl-3 dark:border-gray-700">{monitor.events.slice(-200).map((event) => <li key={event.sequence}><span className="mr-2 font-mono text-[10px] text-gray-400">{event.sequence}</span>{executionEventLabel(event)}{event.nodeId && <span className="ml-2 font-mono text-[10px]">{event.nodeId}</span>}<time className="ml-2 text-[10px] text-gray-400" dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleTimeString()}</time></li>)}</ol>{monitor.events.length > 200 && <p className="mt-2 text-gray-500">Showing the latest 200 saved events.</p>}</details>}
   </section>;
 }

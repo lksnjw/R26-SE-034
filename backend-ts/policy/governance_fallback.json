@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
   "effective_date": "2026-08-28",
-  "description": "Offline fallback governance policy. Active when the external governance service and its cache are unavailable. Evaluated by the LLM policy fallback, or deterministically when the LLM is also offline.",
+  "description": "Deterministic read-only offline fallback when external governance and valid cache are unavailable. Model decisions cannot override denials. Write operations and listed human-review tools remain blocked regardless of legacy role allow_write_operations values.",
   "globally_blocked_tools": [],
   "tools_requiring_human_review": [
     "delete_customer",

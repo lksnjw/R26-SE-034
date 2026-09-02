@@ -34,10 +34,7 @@ export type LlmFallbackConfig = {
 };
 
 export class LlmPolicyFallback {
-  readonly #apiKey: string;
-  readonly #model: string;
   readonly #policyPath: string;
-  readonly #timeoutMs: number;
   #cachedPolicy: FallbackPolicy | null = null;
 
   /*******************************************************************************
@@ -46,16 +43,15 @@ export class LlmPolicyFallback {
    * Initializes a LlmPolicyFallback instance with its required state.
    ******************************************************************************/
   constructor(config: LlmFallbackConfig) {
-    this.#apiKey = config.openrouterApiKey.trim();
-    this.#model = config.model.trim();
+    // Legacy model/key options remain accepted for configuration compatibility,
+    // but a model is never consulted for an authorization decision.
     this.#policyPath = config.policyPath;
-    this.#timeoutMs = config.timeoutMs;
   }
 
   /*******************************************************************************
    * Function: evaluate
    *
-   * Applies static fallback policy and optional LLM evaluation.
+   * Applies read-only static fallback policy. LLMs cannot override denial.
    ******************************************************************************/
   async evaluate(
     request: GovernanceRequest,
@@ -73,23 +69,8 @@ export class LlmPolicyFallback {
       };
     }
 
-    // Static policy is the authoritative ground truth.
-    // If static allows → return immediately; the LLM never gets the chance to block it.
-    // If static blocks → optionally ask the LLM (it may loosen the block based on context).
-    const staticResult = this.#evaluateStatically(request, readOnly, policy);
-    if (staticResult.allowed) return staticResult;
-
-    // Static blocked — try LLM only as a potential override toward allow.
-    if (this.#apiKey !== "" && this.#model !== "") {
-      try {
-        const llmResult = await this.#evaluateWithLlm(request, readOnly, policy, signal);
-        if (llmResult.allowed) return llmResult;
-      } catch {
-        // LLM unavailable — keep static block
-      }
-    }
-
-    return staticResult;
+    if (signal?.aborted) return { allowed: false, reason: "Policy evaluation was cancelled", source: "static_policy" };
+    return this.#evaluateStatically(request, readOnly, policy);
   }
 
   /*******************************************************************************
@@ -105,55 +86,7 @@ export class LlmPolicyFallback {
     return parsed;
   }
 
-  /*******************************************************************************
-   * Function: #evaluateWithLlm
-   *
-   * Requests an access decision from the configured fallback model.
-   ******************************************************************************/
-  async #evaluateWithLlm(
-    request: GovernanceRequest,
-    readOnly: boolean,
-    policy: FallbackPolicy,
-    signal?: AbortSignal,
-  ): Promise<LlmFallbackResult> {
-    const prompt = buildPrompt(request, readOnly, policy);
-    const timeoutSignal = AbortSignal.timeout(this.#timeoutMs);
-    const combined = signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal]);
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.#apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://workflow-engine.local",
-        "X-Title": "Workflow Engine Governance Fallback",
-      },
-      body: JSON.stringify({
-        model: this.#model,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0,
-        max_tokens: 300,
-        response_format: { type: "json_object" },
-      }),
-      signal: combined,
-    });
-
-    if (!response.ok) {
-      throw new Error(`OpenRouter returned HTTP ${response.status}`);
-    }
-
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const content = data.choices?.[0]?.message?.content ?? "";
-    if (content.trim() === "") throw new Error("empty LLM response");
-
-    const parsed = JSON.parse(content) as { decision?: string; reason?: string };
-    const allowed = parsed.decision?.toLowerCase() === "allow";
-    return {
-      allowed,
-      reason: parsed.reason ?? "governance decision by offline LLM policy evaluation",
-      source: "llm",
-    };
-  }
 
   /*******************************************************************************
    * Function: #evaluateStatically
@@ -176,17 +109,20 @@ export class LlmPolicyFallback {
       };
     }
 
-    // Write operation check
-    if (!readOnly && !rolePolicy.allow_write_operations) {
+    // Offline policy never authorizes business effects, even for admins.
+    if (!readOnly) {
       return {
         allowed: false,
-        reason: `Role "${role}" is not permitted to run write workflows in offline governance mode`,
+        reason: "Side-effecting workflows require fresh policy and verified runtime approval; offline fallback cannot authorize writes",
         source: "static_policy",
       };
     }
 
     // Global block check
     for (const action of request.proposedActions) {
+      if (policy.tools_requiring_human_review.includes(action)) return {
+        allowed: false, reason: `Tool "${action}" requires human review; offline fallback cannot grant approval`, source: "static_policy",
+      };
       if (policy.globally_blocked_tools.includes(action)) {
         return {
           allowed: false,
@@ -220,41 +156,4 @@ export class LlmPolicyFallback {
       source: "static_policy",
     };
   }
-}
-
-/*******************************************************************************
- * Function: buildPrompt
- *
- * Builds a fallback evaluation prompt from the policy and proposed request.
- ******************************************************************************/
-function buildPrompt(
-  request: GovernanceRequest,
-  readOnly: boolean,
-  policy: FallbackPolicy,
-): string {
-  return [
-    "You are a workflow access control evaluator. Decide whether this workflow request should be allowed or blocked.",
-    "Use ONLY the policy rules below. Do not invent reasons. Do not reference governance systems or error formats.",
-    "",
-    "POLICY:",
-    JSON.stringify(policy, null, 2),
-    "",
-    "REQUEST:",
-    `user_role: ${request.user.role}`,
-    `proposed_actions: ${JSON.stringify(request.proposedActions)}`,
-    `is_read_only: ${readOnly}`,
-    "",
-    "RULES (apply in order, stop at first match):",
-    "1. If user_role is not in policy.role_access AND there is no 'default' key → BLOCK",
-    "2. If any proposed_action is in policy.globally_blocked_tools → BLOCK",
-    "3. If is_read_only is false AND the role's allow_write_operations is false → BLOCK",
-    "4. If any proposed_action is in the role's blocked_tools list → BLOCK",
-    "5. If the role's blocked_tools contains '*' → BLOCK",
-    "6. Otherwise → ALLOW",
-    "",
-    'Respond with ONLY this JSON — no extra text, no markdown:',
-    '{"decision":"allow","reason":"brief plain-English explanation"}',
-    "or",
-    '{"decision":"block","reason":"brief plain-English explanation"}',
-  ].join("\n");
 }

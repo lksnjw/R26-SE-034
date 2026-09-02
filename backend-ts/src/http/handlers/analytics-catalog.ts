@@ -4,6 +4,7 @@ import { parseWorkflowYAMLStrict } from "../../parser/workflow.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import { requestTraceId } from "../../trace/request-trace.js";
 import { discoverTools } from "../../agent/tool-discovery.js";
+import { assertActorAuthority, requestedModel, selectProvider } from "./model-selection.js";
 import {
   bodyRecord,
   HandlerFailure,
@@ -635,16 +636,18 @@ async function synthesis(
       502,
       "Workflow synthesis service is not configured",
     );
+  const provider = selectProvider(services, requestedModel(body.model));
   try {
     const liveTools = await discoverTools(services.erpbridgeSession ?? null, services.registries);
     const result = await services.synthesis.synthesize({
       prompt: stringValue(body.prompt),
       userRole: user.role,
       user: { id: user.id, role: user.role, department: user.departmentId },
-      model: stringValue(body.model),
+      ...(provider === undefined ? {} : { providerRuntime: provider }),
       signal: request.signal,
       liveTools,
     });
+    await services.repository.read((state) => assertActorAuthority(state, user));
     const meta = result.canExecute
       ? null
       : {
@@ -661,6 +664,7 @@ async function synthesis(
       ),
     );
   } catch (error) {
+    if (error instanceof HandlerFailure) throw error;
     throw new HandlerFailure(502, errorText(error));
   }
 }

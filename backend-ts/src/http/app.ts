@@ -287,9 +287,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 176)
+  if (routeTable.length !== 177)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 176`,
+      `route table has ${routeTable.length} routes, expected 177`,
     );
   return app;
 }

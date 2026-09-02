@@ -1,0 +1,11 @@
+{
+  "version": "prompt-test-v1",
+  "effective_date": "2026-10-05",
+  "globally_blocked_tools": ["blocked.global"],
+  "tools_requiring_human_review": ["read.sensitive"],
+  "role_access": {
+    "Reader": { "allowed_domains": ["*"], "blocked_tools": ["blocked.role"], "max_risk_level": "low", "allow_write_operations": false },
+    "Admin": { "allowed_domains": ["*"], "blocked_tools": [], "max_risk_level": "high", "allow_write_operations": true },
+    "default": { "allowed_domains": [], "blocked_tools": ["*"], "max_risk_level": "low", "allow_write_operations": false }
+  }
+}

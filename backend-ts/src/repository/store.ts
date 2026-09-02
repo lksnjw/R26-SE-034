@@ -69,6 +69,7 @@ export type ChatSessionRecord = {
   createdAt: string;
   updatedAt: string;
   messageCount: number;
+  selectedModel?: string;
   messages: StoredRecord[];
 };
 
@@ -77,6 +78,8 @@ export type InvocationProvenanceRecord = {
   promptTemplateVersion: string;
   promptSha256: string;
   provider: string;
+  providerId?: string;
+  configurationRevision?: string;
   model: string;
   inputTokens: number;
   outputTokens: number;

@@ -31,8 +31,8 @@ export const workflowService = {
   async command(id, revision, command) {
     return unwrap(await apiClient.post(`/workflows/${id}/commands`, { baseVersion: revision.version, baseHash: revision.contentHash, command, ...(revision.proposalId ? { proposalId: revision.proposalId } : {}) }));
   },
-  async proposeNode(id, revision, nodeId, prompt, sessionId) {
-    return unwrap(await apiClient.post(`/workflows/${id}/node-proposals`, { baseVersion: revision.version, baseHash: revision.contentHash, nodeId, prompt, ...(sessionId ? { sessionId } : {}) }, { timeout: 60000 }));
+  async proposeNode(id, revision, nodeId, prompt, sessionId, model) {
+    return unwrap(await apiClient.post(`/workflows/${id}/node-proposals`, { baseVersion: revision.version, baseHash: revision.contentHash, nodeId, prompt, ...(sessionId ? { sessionId } : {}), ...(model ? { model } : {}) }, { timeout: 60000 }));
   },
 /*******************************************************************************
  * Function: list

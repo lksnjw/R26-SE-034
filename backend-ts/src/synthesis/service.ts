@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import { CANDIDATE_PROMPT_VERSION, type ProviderRuntime } from "../providers/runtime.js";
+import { promptData, generationPromptHash } from "../prompts/contracts.js";
 import type { RegistryService } from "../registry/service.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import type { CandidateValidationResult, RegistryValidator } from "../validator/registry-validator.js";
@@ -63,10 +63,12 @@ export class SynthesisService {
    *
    * Generates a workflow candidate and evaluates its validation outcome.
    ******************************************************************************/
-  async synthesize(input: { prompt: string; userRole: string; user?: GovernanceUser; model?: string; priorMessages?: string[]; caseContext?: Record<string, unknown>; signal?: AbortSignal; traceId?: string; sessionId?: string; messageId?: string; liveTools?: readonly ToolDefinition[] }): Promise<SynthesisResult> {
+  async synthesize(input: { prompt: string; userRole: string; user?: GovernanceUser; model?: string; providerRuntime?: ProviderRuntime; priorMessages?: string[]; caseContext?: Record<string, unknown>; signal?: AbortSignal; traceId?: string; sessionId?: string; messageId?: string; liveTools?: readonly ToolDefinition[] }): Promise<SynthesisResult> {
+    const baseProvider = input.providerRuntime ?? this.providers;
+    const providers = baseProvider.snapshot?.(input.model) ?? baseProvider;
     const prompt = assembleCandidatePrompt(input.prompt, input.userRole, this.registries, input.priorMessages ?? [], input.liveTools);
     let generated;
-    try { generated = await this.providers.generateCandidate(prompt, CANDIDATE_PROMPT_VERSION, (response) => { parseWorkflowYAMLStrict(response.text.trim()); }, input.signal, {
+    try { generated = await providers.generateCandidate(prompt, CANDIDATE_PROMPT_VERSION, (response) => { parseWorkflowYAMLStrict(response.text.trim()); }, input.signal, {
       ...(input.traceId === undefined ? {} : { traceId: input.traceId }),
       ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
@@ -100,7 +102,7 @@ export class SynthesisService {
         });
     }
     const canExecute = gate.result.passed && gate.token !== null;
-    const temperature = this.providers.configuration?.temperature ?? 0;
+    const temperature = providers.configuration?.temperature ?? 0;
     const candidate: CandidateReport = {
       id: candidateID,
       candidate_id: candidateID,
@@ -109,7 +111,7 @@ export class SynthesisService {
       score: gate.result.score,
       generation_metadata: {
         promptTemplateVersion: CANDIDATE_PROMPT_VERSION,
-        promptSha256: `sha256:${createHash("sha256").update(prompt).digest("hex")}`,
+        promptSha256: generationPromptHash(prompt, CANDIDATE_PROMPT_VERSION),
         provider: generated.provider,
         model: generated.model,
         inputTokens: generated.inputTokens,
@@ -147,62 +149,10 @@ export class SynthesisService {
 export function assembleCandidatePrompt(userText: string, userRole: string, registries: RegistryService, priorMessages: string[] = [], liveTools?: readonly ToolDefinition[]): string {
   const snapshot = registries.snapshot();
   const applicableRules = snapshot.rules.filter((rule) => rule.enabled && (rule.applies_to_roles.length === 0 || rule.applies_to_roles.some((role) => normalizeRole(role) === normalizeRole(userRole))));
-  const history = priorMessages.length === 0 ? "[]" : JSON.stringify(priorMessages);
-  // Always give the model the FULL live tool list, never a keyword-filtered
-  // subset — a truncated list is how the LLM ends up not knowing a real tool
-  // exists and inventing a plausible-looking but fake action name instead.
-  const relevantTools = liveTools !== undefined && liveTools.length > 0 ? liveTools : snapshot.tools;
-  return [
-    "SYSTEM",
-    "Generate exactly one workflow as strict YAML. Return YAML only — no Markdown fence, no commentary.",
-    "",
-    "REQUIRED WORKFLOW STRUCTURE (all fields are exact key names — do not rename them):",
-    "  name: <string>           # workflow name",
-    "  description: <string>    # non-empty description",
-    "  trigger:",
-    "    type: <string>         # manual | schedule | event",
-    "    config:                # REQUIRED for schedule trigger only",
-    "      cron: <string>       # proposed schedule only; do not invent missing time details",
-    "      timezone: <string>   # explicit intended timezone; otherwise record an unresolved requirement",
-    "  steps:                   # at least one step",
-    "    - id: <string>         # REQUIRED — unique snake_case id, e.g. step_1",
-    "      description: <string> # REQUIRED — short plain-English label, e.g. 'Fetch all warehouses from ERP'",
-    "      action: <tool_name>  # must be an exact tool name from TOOL_REGISTRY_JSON below (omit for kind: approval)",
-    "      parameters:          # key/value pairs matching the tool's input schema",
-    "        key: value",
-    "      kind: approval        # OPTIONAL — see APPROVAL STEPS below. Omit entirely for a normal tool step.",
-    "",
-    "STRICT RULES:",
-    "- Every step MUST have an id field (string, unique within the workflow).",
-    "- Every step MUST have a description field — a short plain-English phrase describing what the step does (e.g. 'Fetch all warehouses from ERP'). Never leave description empty or use a tool name as the description.",
-    "- Every non-approval step MUST have action set to an EXACT tool name from TOOL_REGISTRY_JSON below. NO EXCEPTIONS.",
-    "- COPY THE TOOL NAME CHARACTER-FOR-CHARACTER from TOOL_REGISTRY_JSON — including any hyphens. For example, if the registry lists 'send-email', you MUST write action: send-email (with hyphen), NOT send_email (with underscore). Tool names are case-sensitive and hyphen/underscore differences matter.",
-    "- For send-email specifically: 'from' and 'to' are each a single email address written as a plain YAML string (e.g. to: user@example.com) — never a YAML list/array, never wrapped in [ ], even for one recipient.",
-    "- The ONLY step kinds that exist are the default (tool) and kind: approval. DO NOT use kind: condition, kind: http, or any other kind — nothing in this system interprets them and the workflow will fail.",
-    "",
-    "APPROVAL STEPS (kind: approval):",
-    "- Use a step with kind: approval (no action, no parameters) as a human sign-off checkpoint immediately BEFORE a step whose rule set in APPLICABLE_RULES_JSON requires manual authorization above a stated threshold (e.g. a payment, purchase order, or refund above a limit named in the rule) — never for routine reads or low-risk writes.",
-    "- Give it a description that states exactly what is being authorized and why, e.g. 'Manager approval — payment exceeds the $15,000 auto-approval limit'.",
-    "- Do not invent thresholds that are not stated in APPLICABLE_RULES_JSON or the user's request. If no rule requires sign-off, do not add an approval step.",
-    "- ONLY use tools that appear in TOOL_REGISTRY_JSON. Never add tools based on rule instructions — APPLICABLE_RULES_JSON is for reference only, not a source of tool names.",
-    "- Never ignore a relevant rule because its required tool is unavailable. Record the unmet policy requirement in metadata.unresolved_requirements and do not claim the proposal is ready.",
-    "- Do not invent tool names or silently drop requested outcomes. If a requested capability has no matching registered tool, preserve the supported steps and list the missing outcome in metadata.unresolved_requirements (an array of concise strings). A partial plan is blocked until the missing capability or an explicitly accepted alternative is resolved.",
-    "- Preserve required approvals, recipients, periods, amounts and all other user constraints. Unknown required values belong in metadata.unresolved_requirements, not invented example values or inferred approvals.",
-    "- For schedules, record the intended timezone and reporting period in trigger.config. If timezone/time/period/delivery recipient or channel is required but unknown, record it in metadata.unresolved_requirements. Never silently assume UTC, convert local time without an explicit timezone, or claim a saved schedule is active. Scheduling and live writes are not currently executable.",
-    "- Generate the MINIMUM number of steps needed to fulfill the user's request. Do NOT add extra steps for audit, notification, or echo unless the user explicitly asked for them AND the tool exists in TOOL_REGISTRY_JSON.",
-    "- No extra top-level keys beyond name, description, trigger, steps, metadata.",
-    "",
-    "USER_ROLE",
-    userRole,
-    "PRIOR_MESSAGES_JSON",
-    history,
-    "USER_REQUEST",
-    userText,
-    "TOOL_REGISTRY_JSON",
-    JSON.stringify(relevantTools),
-    "APPLICABLE_RULES_JSON",
-    JSON.stringify(applicableRules),
-  ].join("\n");
+  // An explicitly empty live catalog is unavailable, not a reason to fall
+  // back to registered tools that this connection did not advertise.
+  return promptData({ USER_ROLE: userRole, PRIOR_MESSAGES_JSON: priorMessages, USER_REQUEST: userText,
+    TOOL_REGISTRY_JSON: liveTools ?? snapshot.tools, APPLICABLE_RULES_JSON: applicableRules });
 }
 
 /*******************************************************************************

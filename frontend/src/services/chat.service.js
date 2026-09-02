@@ -1,6 +1,10 @@
 import { apiClient } from "../config/axios";
 
 export const chatService = {
+  async models() {
+    const response = await apiClient.get("/chat/models");
+    return response.data.data;
+  },
 /*******************************************************************************
  * Function: listSessions
  *

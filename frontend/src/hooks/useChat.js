@@ -29,6 +29,7 @@ export function useChat(sessionId) {
     onSuccess: (result, variables) => {
       queryClient.setQueryData(["chat-session", variables.target], (current = {}) => ({
         ...current,
+        ...(result.session || {}),
         messages: [...(current.messages || []), result.userMessage, result.assistantMessage].filter(Boolean),
       }));
       queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
@@ -96,6 +97,7 @@ export function useChat(sessionId) {
   const sessionError = messages.length === 0 ? session.error : null;
   const error = sendMutation.error || sessionError;
   return {
+    selectedModel: session.data?.selectedModel || "",
     messages,
     artifact,
     loading: sendMutation.isPending,

@@ -7,6 +7,7 @@ import { Executor } from "../src/runner/executor.js";
 import { SynthesisFailure, SynthesisService, assembleCandidatePrompt } from "../src/synthesis/service.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
+import { CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 const configuration: RuntimeProviderConfiguration = { id: "provider_test", name: "Test", type: "openai_compatible", baseURL: "https://openrouter.ai/api/v1", apiKey: "test-key", model: "openai/gpt-4o-mini-2024-07-18", temperature: 0, timeoutMs: 1_000 };
 
@@ -24,7 +25,9 @@ describe("single-candidate synthesis", () => {
 
   test("generation instructions preserve missing outcomes, policy and timezone uncertainty", async () => {
     const { registries } = await setup("tests/fixtures/tools.json", "tests/fixtures/rules.json", async () => providerResponse("unused"));
-    const prompt = assembleCandidatePrompt("Send daily invoices to the manager", "Platform Admin", registries);
+    const data = JSON.parse(assembleCandidatePrompt("Send daily invoices to the manager", "Platform Admin", registries));
+    expect(data.USER_REQUEST).toBe("Send daily invoices to the manager");
+    const prompt = CANDIDATE_SYSTEM_PROMPT;
     expect(prompt).toContain("metadata.unresolved_requirements");
     expect(prompt).toContain("Never ignore a relevant rule");
     expect(prompt).toContain("Never silently assume UTC");
@@ -52,7 +55,7 @@ describe("single-candidate synthesis", () => {
     expect(result.canExecute).toBe(true);
     expect(result.candidates).toHaveLength(1);
     expect(result.validation.passed).toBe(true);
-    expect(result.candidate.generation_metadata).toMatchObject({ measured: true, inputTokens: 30, outputTokens: 20, promptTemplateVersion: "prompt/candidate/v2" });
+    expect(result.candidate.generation_metadata).toMatchObject({ measured: true, inputTokens: 30, outputTokens: 20, promptTemplateVersion: "prompt/candidate/v3" });
   });
 
   test("a self-approval candidate is rejected with the governing rule ID", async () => {

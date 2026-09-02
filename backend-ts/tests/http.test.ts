@@ -125,6 +125,7 @@ describe("complete HTTP route graph", () => {
       "POST /api/workflows/:id/approve-generation", "POST /api/workflows/:id/reject-generation",
       "POST /api/workflows/:id/commands", "POST /api/workflows/:id/node-proposals", "GET /api/workflows/:id/readiness",
       "GET /api/executions/:id/events",
+      "GET /api/chat/models",
     ].sort());
   });
 

@@ -29,13 +29,15 @@ describe("runner output redaction", () => {
       },
     });
     const executor = new Executor(tools, validator);
+    const invocations: Array<{ prompt: string; version: string | undefined }> = [];
     const provider: AnalysisProvider = {
       /*******************************************************************************
        * Function: generate
        *
        * Returns a stub analysis response for the runner redaction test.
        ******************************************************************************/
-      async generate() {
+      async generate(prompt, _model, _signal, context) {
+        invocations.push({ prompt, version: context?.promptTemplateVersion });
         return {
           text: JSON.stringify({
             summary: "visible",
@@ -85,6 +87,11 @@ describe("runner output redaction", () => {
     });
     expect(JSON.stringify(result.state)).not.toContain("must-not-escape");
     expect(JSON.stringify(result.timeline)).not.toContain("must-not-escape");
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]?.version).toBe("prompt/analysis/v2");
+    expect(JSON.parse(invocations[0]!.prompt)).toMatchObject({
+      INSTRUCTION: "Summarize the input.", INPUT: { value: "input" }, OUTPUT_SCHEMA: { type: "object" },
+    });
   });
 });
 

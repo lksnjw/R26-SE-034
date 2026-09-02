@@ -141,7 +141,7 @@ export class GovernanceService {
           decision: this.decision("CACHED_WARNING", cached.policyVersion, "cache", cached.evidenceIds, warning, null),
         };
       }
-      // All online sources exhausted — try offline LLM + static-policy fallback
+      // All online sources exhausted — bounded deterministic read-only fallback.
       if (this.#llmFallback !== null) {
         try {
           const fallback = await this.#llmFallback.evaluate(request, readOnly, signal);

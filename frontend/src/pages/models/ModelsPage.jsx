@@ -8,7 +8,7 @@ import { useNotifications } from "../../context/NotificationContext";
 import { apiErrorMessage } from "../../services/api";
 import { settingsService } from "../../services/settings.service";
 
-const EMPTY_FORM = { name: "", type: "gemini", baseUrl: "", model: "", temperature: 0, apiKey: "", additionalModels: [] };
+const EMPTY_FORM = { name: "", type: "openai_compatible", baseUrl: "", model: "", fallbackModel: "", temperature: 0, apiKey: "", additionalModels: [] };
 const INPUT_CLASS = "w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none transition focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackgroundVery dark:text-white";
 const COLUMNS = [
   { key: "name", label: "Provider" },
@@ -81,6 +81,7 @@ function ModelsPage() {
       type: provider.type,
       baseUrl: provider.baseUrl || "",
       model: provider.model,
+      fallbackModel: provider.fallbackModel || "",
       temperature: provider.temperature ?? 0,
       apiKey: "",
       additionalModels: Array.isArray(provider.additionalModels) ? [...provider.additionalModels] : [],
@@ -180,12 +181,13 @@ function ModelsPage() {
             <Button variant="ghost" onClick={() => setEditor(null)}>Close</Button>
           </div>
           <div className="mt-5 grid gap-4 md:grid-cols-2">
-            <Field label="Name"><input required name="name" value={form.name} onChange={updateField} className={INPUT_CLASS} placeholder="Production Gemini" /></Field>
-            <Field label="Provider type"><select name="type" value={form.type} onChange={updateField} className={INPUT_CLASS}><option value="gemini">Gemini</option><option value="ollama">Ollama</option><option value="openai_compatible">OpenAI compatible</option></select></Field>
-            <Field label="Base URL"><input name="baseUrl" value={form.baseUrl} onChange={updateField} className={INPUT_CLASS} placeholder={form.type === "gemini" ? "Optional Gemini API base URL" : "https://provider.example/v1"} /></Field>
+            <Field label="Name"><input required name="name" value={form.name} onChange={updateField} className={INPUT_CLASS} placeholder="Production model provider" /></Field>
+            <Field label="Provider type" hint="Native Gemini/Ollama adapters are not implemented."><select name="type" value={form.type} onChange={updateField} className={INPUT_CLASS}>{form.type !== "openai_compatible" && <option value={form.type} disabled>{form.type} · unsupported</option>}<option value="openai_compatible">OpenAI compatible</option></select></Field>
+            <Field label="Base URL"><input required name="baseUrl" value={form.baseUrl} onChange={updateField} className={INPUT_CLASS} placeholder="https://provider.example/v1" /></Field>
             <Field label="Model"><input required name="model" value={form.model} onChange={updateField} className={INPUT_CLASS} placeholder="Model identifier" /></Field>
+            <Field label="Fallback model" hint="Optional for generation only; not an ERP retry."><input name="fallbackModel" value={form.fallbackModel} onChange={updateField} className={INPUT_CLASS} placeholder="Optional configured fallback" /></Field>
             <Field label="Temperature" hint="Defaults to 0 for reproducible generation."><input required name="temperature" type="number" min="0" step="0.1" value={form.temperature} onChange={updateField} className={INPUT_CLASS} /></Field>
-            <Field label="API key" hint={editor.id ? `Leave blank to retain ${editor.keyPreview || "the stored credential"}.` : form.type === "ollama" ? "Optional for Ollama." : "Required and never returned."}>
+            <Field label="API key" hint={editor.id ? `Leave blank to retain ${editor.keyPreview || "the stored credential"}.` : "Required and never returned."}>
               <input name="apiKey" type="password" value={form.apiKey} onChange={updateField} className={INPUT_CLASS} placeholder="Write-only credential" autoComplete="new-password" />
             </Field>
           </div>

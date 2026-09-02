@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Icon } from "@iconify/react";
 import ChatMessage from "./ChatMessage";
 import ChatWelcome from "./ChatWelcome";
-import { settingsService } from "../../services/settings.service";
+import { chatService } from "../../services/chat.service";
 import { readWorkspaceValue, writeWorkspaceValue } from "../../utils/workspaceSession";
 import { peekWorkflowForChatEdit, clearWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
 
@@ -79,14 +79,18 @@ const QUICK_PROMPTS = [
  *
  * Performs the Chat Window operation on window for the ChatWindow module.
  ******************************************************************************/
-function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, nodeContext, onClearNodeContext, onChatChanged }) {
+function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, savedModel, nodeContext, onClearNodeContext, onChatChanged }) {
   const [draft, setDraft] = useState(() => readWorkspaceValue(draftStorageKey));
   const [sendError, setSendError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const busy = loading || submitting;
   useEffect(() => { writeWorkspaceValue(draftStorageKey, draft); }, [draftStorageKey, draft]);
-  const [selectedModel, setSelectedModel] = useState("");
+  const modelStorageKey = draftStorageKey ? `${draftStorageKey}.model` : undefined;
+  const [selectedModel, setSelectedModel] = useState(() => savedModel || readWorkspaceValue(modelStorageKey));
   const [availableModels, setAvailableModels] = useState([]);
+  const [modelError, setModelError] = useState("");
+  const [catalogRetry, setCatalogRetry] = useState(0);
+  const modelChosenByUser = useRef(false);
   const [editContext, setEditContext] = useState(() => peekWorkflowForChatEdit());
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
@@ -94,19 +98,17 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
   const lastMessageIdRef = useRef(null);
 
   useEffect(() => {
-    settingsService.providers().then((providers) => {
-      const active = Array.isArray(providers) ? providers.find((p) => p.active) ?? providers[0] : null;
-      if (!active) return;
-      const seen = new Set();
-      const models = [
-        active.model && { id: active.model, label: active.model },
-        active.fallbackModel && active.fallbackModel !== active.model && { id: active.fallbackModel, label: `${active.fallbackModel} (fallback)` },
-        ...(Array.isArray(active.additionalModels) ? active.additionalModels.map((id) => ({ id, label: id })) : []),
-      ].filter((m) => m && m.id && !seen.has(m.id) && seen.add(m.id));
+    let current = true;
+    chatService.models().then((catalog) => {
+      if (!current) return;
+      const models = (Array.isArray(catalog.models) ? catalog.models : []).map((id) => ({ id, label: id }));
       setAvailableModels(models);
-      setSelectedModel(active.model ?? "");
-    }).catch(() => {});
-  }, []);
+      setSelectedModel((currentModel) => modelChosenByUser.current ? currentModel : savedModel || readWorkspaceValue(modelStorageKey) || catalog.binding?.model || "");
+      setModelError(catalog.configured ? "" : "No model provider is configured.");
+    }).catch(() => { if (current) { setAvailableModels([]); setModelError("Could not load configured models. Your draft is kept."); } });
+    return () => { current = false; };
+  }, [savedModel, modelStorageKey, catalogRetry]);
+  useEffect(() => { writeWorkspaceValue(modelStorageKey, selectedModel); }, [modelStorageKey, selectedModel]);
 
   // Only auto-scroll to bottom when a message is actually appended (a new
   // send, or the last message changing) — never when older messages get
@@ -289,20 +291,22 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
                 ))}
               </div>
               <div className="ml-auto flex items-center gap-2">
-                {!nodeContext && availableModels.length > 0 && (
+                {(availableModels.length > 0 || selectedModel) && (
                   <div className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 dark:border-gray-700 dark:bg-gray-800/60">
                     <Icon icon="mdi:chip" className="h-3 w-3 shrink-0 text-gray-400" />
                     <select
                       aria-label="Requested model"
                       value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
+                      onChange={(e) => { modelChosenByUser.current = true; setSelectedModel(e.target.value); }}
                       disabled={busy}
                       className="bg-transparent text-[10px] font-semibold text-gray-600 outline-none disabled:opacity-50 dark:text-gray-300"
                     >
+                      {selectedModel && !availableModels.some((model) => model.id === selectedModel) && <option value={selectedModel}>{selectedModel} · unavailable</option>}
                       {availableModels.map((m) => (
                         <option key={m.id} value={m.id}>{m.label}</option>
                       ))}
                     </select>
+                    <button type="button" aria-label="Refresh configured models" title="Refresh configured models" disabled={busy} onClick={() => setCatalogRetry((value) => value + 1)} className="rounded p-1 text-gray-500 disabled:opacity-50"><Icon icon="mdi:refresh" className="h-3 w-3" /></button>
                   </div>
                 )}
                 <button
@@ -319,6 +323,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
                 </button>
               </div>
             </div>
+            {modelError && <p role="status" className="mt-2 text-xs text-gray-600 dark:text-gray-300">{modelError} <button type="button" disabled={busy} className="underline" onClick={() => setCatalogRetry((value) => value + 1)}>Reload models</button></p>}
           </div>
           <p className="mt-1.5 text-center text-[10px] text-gray-400">
             {nodeContext ? "Enter to propose · configured provider · review Apply/Discard in the canvas · nothing executes" : "Enter to send · Shift+Enter for newline · A draft is not proof of ERP readiness or safe execution"}
