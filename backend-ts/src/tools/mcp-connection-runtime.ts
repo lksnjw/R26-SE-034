@@ -105,7 +105,7 @@ export class McpConnectionRuntime {
     return boundedOperation(async () => {
       candidate = await (this.options.factory ?? createErpbridgeMcpSession)({ baseURL: config.erpbridgeBaseURL, token: config.erpbridgeMcpToken,
         timeoutMs: config.mcpTimeoutMs, validator, signal: controller.signal, connectionRevision: `${DEFAULT_BRIDGE_CONNECTION}:${revision}`,
-        admissionAuthorizer: async (definition, binding) => { await this.assertRevision(revision, epoch); await authorizer(definition, binding); await this.assertRevision(revision, epoch); } });
+        admissionAuthorizer: async (definition, binding, pin) => { await this.assertRevision(revision, epoch); await authorizer(definition, binding, pin); await this.assertRevision(revision, epoch); } });
       if (controller.signal.aborted || epoch !== this.#epoch || this.#stopped) { await this.dispose(candidate); throw new Error("MCP initialization superseded"); }
       if (candidate.available === false || candidate.requiresReviewedRevision !== true || !/^[a-f0-9]{64}$/.test(candidate.admissionBinding ?? "")) throw new Error("Unsupported initialized MCP profile");
       const generation = candidate.discoveryGeneration ?? 0;

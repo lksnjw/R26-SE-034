@@ -13,6 +13,7 @@ import { supportsReadJobs } from "../../runner/read-jobs.js";
 import { promptData } from "../../prompts/contracts.js";
 import { assertChatAuthority, selectProvider } from "./model-selection.js";
 import { activeChatStatus } from "../../agent/chat-jobs.js";
+import { prepareCompiledExecution } from "../../workflows/read-compilation-lifecycle.js";
 import { nodeIdSchema as id, nodePatchSchema as patch, workflowRevisionSchema as base, workflowCommandSchema as command,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
@@ -56,10 +57,17 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         }
       } catch { issues.push("Workflow could not be parsed"); }
       const published = await services.repository.read((state) => (state.versions[workflowId] ?? []).some((version) => version.artifactState === "PUBLISHED" && version.version === current.publishedVersion && version.yaml === current.yaml));
+      const compilation = await services.repository.readAuthoritative(state => {
+        const version = (state.versions[workflowId] ?? []).findLast(value => value.artifactState === "PUBLISHED" && value.version === current.publishedVersion && value.yaml === current.yaml);
+        if (!version) return { state: "NOT_PUBLISHED" };
+        try { return { state: "CURRENT", receipt: prepareCompiledExecution(state, services, version, current.yaml, user.role).receipt }; }
+        catch { return { state: "BLOCKED", reason: "Review and explicitly republish current capability bindings" }; }
+      });
+      if (compilation.state === "BLOCKED") issues.push("Published execution artifact needs current capability review and explicit re-publication");
       const canAttempt = user.permissions.some((permission) => ["workflow:run", "workflow:run_own"].includes(permission)) &&
         (user.permissions.includes("workflow:run") || current.owner.id === user.id || (current.assignedUserIds ?? []).includes(user.id));
-      return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published,
-        can_attempt_run: canAttempt && published && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
+      return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation,
+        can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
         authorization: "rechecked_at_dispatch", executionProfile: "sequential-read-v1" }, "Readiness checked", { traceId }));
     }

@@ -10,6 +10,8 @@ import { withoutSecretFields } from "../../redact/secrets.js";
 import type { ValidationToken } from "../../validator/registry-validator.js";
 import { appendAudit, HandlerFailure, type CurrentUser, type HandlerServices } from "./common.js";
 import { readJobQueue } from "../../runner/read-jobs.js";
+import { prepareCompiledExecution } from "../../workflows/read-compilation-lifecycle.js";
+import { validateToolInput } from "../../tools/tool-input-schema.js";
 
 export async function runVerifiedRead(workflow: Workflow, input: Record<string, unknown>, token: ValidationToken, traceId: string,
   request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
@@ -22,6 +24,13 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
   catch { return reply.status(503).send(fail("ERPBridge discovery failed; no workflow tools were executed", { code: "ERPBRIDGE_DISCOVERY_FAILED", traceId })); }
   const readinessIssues = inspectReadWorkflow(blueprint, live, user.role);
   if (readinessIssues.length) return reply.status(422).send(fail("Workflow live contracts are unavailable or changed", { code: "LIVE_CONTRACT_NOT_READY", issues: readinessIssues, traceId }));
+  const compilation = await services.repository.readAuthoritative(state => {
+    const publication = (state.versions[workflow.id] ?? []).findLast(version => version.version === workflow.publishedVersion && version.artifactState === "PUBLISHED");
+    if (publication?.yaml !== workflow.yaml) throw new HandlerFailure(409, "Publication changed during compilation preflight", { code: "PUBLISHED_SNAPSHOT_REQUIRED" });
+    return prepareCompiledExecution(state, services, publication, workflow.yaml, user.role);
+  });
+  if (compilation.plan.ir.inputSchema && validateToolInput(compilation.plan.ir.inputSchema, input).length)
+    return reply.status(422).send(fail("Workflow input does not meet its declared schema; no run was admitted", { code: "WORKFLOW_INPUT_INVALID", traceId }));
   const queued = (request.body as { mode?: string } | undefined)?.mode === "async-read";
   const queue = queued ? readJobQueue(services) : null;
   const admission = queued ? queue!.prepare(workflow, input, user, String((request.body as { idempotencyKey?: string }).idempotencyKey)) : null;
@@ -40,11 +49,12 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
       readProgress: newReadProgress(services.repository), stepOutputs: {},
       ...(workflow.chatSessionId === undefined ? {} : { chatSessionId: workflow.chatSessionId }),
       workflowSnapshot: { version: workflow.publishedVersion, contentHash: workflowContentHash(workflow.yaml), registryHash: token.registry_hash,
-        yaml: workflow.yaml, input: withoutSecretFields(input) as Record<string, unknown>, executionProfile: "sequential-read-v1" } };
+        yaml: workflow.yaml, input: withoutSecretFields(input) as Record<string, unknown>, executionProfile: "sequential-read-v1", compilation: compilation.receipt } };
     try { assertCurrentRunController(state, item, user.id, user.role); }
     catch { throw new HandlerFailure(403, "Current execution authority changed during preflight", { code: "EXECUTION_AUTHORITY_CHANGED" }); }
     const publication = (state.versions[workflow.id] ?? []).findLast((version) => version.version === workflow.publishedVersion && version.artifactState === "PUBLISHED");
     if (publication?.yaml !== workflow.yaml) throw new HandlerFailure(409, "Publication changed during execution preflight", { code: "PUBLISHED_SNAPSHOT_REQUIRED" });
+    prepareCompiledExecution(state, services, publication, workflow.yaml, user.role, compilation.receipt);
     state.timelines[executionId] = []; state.executionLogs[executionId] = [];
     if (admission) queue!.store(state, item, admission);
     appendExecutionEvent(state, item, queued ? "run.queued" : "run.started", { profile: "sequential-read-v1", version: workflow.publishedVersion, persistence: item.readProgress.persistence });
@@ -53,7 +63,7 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
   });
   if (queued) { queue!.kick(); return reply.status(202).send(ok(initial, "Published read run admitted; use its execution ID to follow saved progress", { traceId, executionProfile: "sequential-read-v1", admission: "read-job-v1" })); }
   let execution;
-  try { execution = await completeCheckpointedRead(services, initial, input, token, request.signal); }
+  try { execution = await completeCheckpointedRead(services, initial, input, token, request.signal, undefined, compilation.plan); }
   catch { return reply.status(503).send(fail("Execution stopped because a checkpoint could not be confirmed. Inspect recovery state; do not automatically retry.", { executionId, code: "CHECKPOINT_NOT_COMMITTED", traceId })); }
   if (["FAILED", "RECOVERY_REQUIRED"].includes(execution.status)) return reply.status(422).send(fail("Read workflow stopped; inspect recorded node outcomes before starting another run", { executionId, status: execution.status, traceId }));
   return reply.send(ok(execution, execution.status === "CANCELLED" ? "Read workflow cancelled at a tool boundary" : "Published read workflow completed", { traceId, executionProfile: "sequential-read-v1" }));

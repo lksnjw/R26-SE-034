@@ -13,6 +13,7 @@ import type {
 import type { DispatchIdentity } from "./registry.js";
 import type { GovernedMCPClient } from "./mcp-client.js";
 import type { McpNotificationState } from "./mcp-notification-stream.js";
+import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
 
 export type ErpbridgeMcpSdkTool = {
   name: string;
@@ -41,8 +42,8 @@ export type ErpbridgeMcpSession = Readonly<{
   discoveryGeneration?: number;
   // Internal opaque binding only; never expose endpoint credentials in runs.
   admissionBinding?: string;
-  assertAdmission?(definition: ToolDefinition): Promise<void>;
-  clientFor(definition: ToolDefinition): GovernedMCPClient;
+  assertAdmission?(definition: ToolDefinition, expectedPin?: ReadAdmissionPin): Promise<void>;
+  clientFor(definition: ToolDefinition, expectedPin?: ReadAdmissionPin): GovernedMCPClient;
   callToolDirect(toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>>;
   listTools(signal?: AbortSignal): Promise<readonly ErpbridgeMcpSdkTool[]>;
   close(): Promise<void>;
@@ -73,7 +74,7 @@ export async function createErpbridgeMcpSession(options: {
   sdkClient?: ErpbridgeMcpSdkClient;
   fetch?: typeof fetch;
   signal?: AbortSignal;
-  admissionAuthorizer?: (definition: ToolDefinition, connectionBinding: string) => Promise<void>;
+  admissionAuthorizer?: (definition: ToolDefinition, connectionBinding: string, expectedPin?: ReadAdmissionPin) => Promise<void>;
   // Trusted backend lifecycle revision, never a model/client argument.
   connectionRevision?: string;
 }): Promise<ErpbridgeMcpSession> {
@@ -119,10 +120,10 @@ export async function createErpbridgeMcpSession(options: {
   };
   try { await run("ERPBridge MCP initialization", () => sdkClient.connect(), options.signal); }
   catch (error) { void close().catch(() => {}); throw error; }
-  const assertAdmission = async (definition: ToolDefinition): Promise<void> => {
+  const assertAdmission = async (definition: ToolDefinition, expectedPin?: ReadAdmissionPin): Promise<void> => {
     if (unavailable()) throw new Error("ERPBridge MCP session is closed or unavailable");
     if (sdkClient.metadataComplete && !options.admissionAuthorizer) throw new Error("Explicit persisted capability admission is required before ERP dispatch");
-    await options.admissionAuthorizer?.(definition, admissionBinding);
+    await options.admissionAuthorizer?.(definition, admissionBinding, expectedPin);
     if (unavailable()) throw new Error("ERPBridge MCP session is closed or unavailable");
   };
   return Object.freeze({
@@ -137,10 +138,10 @@ export async function createErpbridgeMcpSession(options: {
      *
      * Creates a governed client for the selected ERPBridge tool definition.
      ******************************************************************************/
-    clientFor: (definition: ToolDefinition) =>
+    clientFor: (definition: ToolDefinition, expectedPin?: ReadAdmissionPin) =>
       createToolClient(async (name, args, signal) => {
         if (sdkClient.metadataComplete && !definition.bridge_contract) throw new Error("ERPBridge tool has no reviewed immutable revision");
-        if (sdkClient.metadataComplete || options.admissionAuthorizer) await assertAdmission(definition);
+        if (sdkClient.metadataComplete || options.admissionAuthorizer) await assertAdmission(definition, expectedPin);
         // Discovery admits a reviewed immutable identity. Dispatch pins both
         // exact name and digest; the bridge owns the final active/origin check.
         // An extra tools/list here would add latency without granting authority.

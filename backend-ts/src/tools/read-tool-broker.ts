@@ -9,10 +9,12 @@ import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import type { ValidationToken } from "../validator/registry-validator.js";
 import { attachDispatchAuditTrace } from "../trace/audit-trace.js";
 import { hasReservedBridgeRole } from "./erpbridge-contract.js";
+import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
+import { capabilityContractHash } from "../registry/capability-admission.js";
 
 export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined;
   beforeDispatch?: ((verifiedRole: string) => Promise<void>) | undefined;
-  plan?: { yaml: string; stepIndex: number; token: ValidationToken } };
+  plan?: { yaml: string; stepIndex: number; token: ValidationToken; admissionPin?: ReadAdmissionPin; contractHash?: string; toolId?: string } };
 
 // Phase-0 containment: only explicitly registered, role-granted reads may
 // reach the SDK. Transaction writes await approval/idempotency/recovery.
@@ -34,7 +36,9 @@ export async function dispatchReadTool(
   const matches = tools.filter((tool) => tool.name === toolName || tool.mcp_tool_name === toolName);
   if (matches.length !== 1) throw new Error("Tool dispatch denied: tool has no unique admitted live contract");
   const tool = matches[0]!;
-  await session.assertAdmission?.(tool);
+  const assertContract = () => { if (context.plan?.contractHash && (context.plan.toolId !== tool.tool_id || context.plan.contractHash !== capabilityContractHash(tool))) throw new Error("Compiled tool contract changed; no implicit rebinding is allowed"); };
+  assertContract();
+  await session.assertAdmission?.(tool, context.plan?.admissionPin);
   if (!tool.is_read_only) throw new Error("Live ERP writes are blocked until transaction approval, idempotency and recovery are enforced");
   if (!tool.allowed_roles.includes(actor.role)) throw new Error("Tool dispatch denied: current role has no grant for this tool");
   if (hasReservedBridgeRole(tool) && Object.hasOwn(args, "role")) throw new Error("Tool dispatch denied: model-provided role is not allowed");
@@ -67,7 +71,8 @@ export async function dispatchReadTool(
   // Server-owned checkpoint hook: cancellation and dispatch intent are checked
   // after all awaited policy work, immediately before entering the SDK.
   await beforeDispatch?.(current.role);
-  const envelope = await session.clientFor(tool).execute(authored.action!, resolved.capability, parameters, identity, context.signal);
+  assertContract();
+  const envelope = await session.clientFor(tool, context.plan?.admissionPin).execute(authored.action!, resolved.capability, parameters, identity, context.signal);
   return envelope;
 }
 

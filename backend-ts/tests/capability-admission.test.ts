@@ -14,6 +14,9 @@ import { buildApp } from "../src/http/app.js";
 import { loadConfig } from "../src/config/config.js";
 import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
+import { stringify } from "yaml";
+import { readJobQueue } from "../src/runner/read-jobs.js";
+import type { Workflow } from "../src/models/schemas.js";
 
 const sessions: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { await Promise.all(sessions.splice(0).map(value => value.close())); });
@@ -50,6 +53,71 @@ async function setup(persistence: PersistenceBackend | null = null, noAuthorizer
   return { repository, registries, validator, session, sdk, admin, builder, services, observe, body, review, remote,
     tool: () => tool, changeTool: (patch: Partial<typeof tool>) => { tool = { ...tool, ...patch }; }, changed: () => generationListener?.() };
 }
+
+async function workflowHarness(s: Awaited<ReturnType<typeof setup>>, legacyPublication = false) {
+  const yaml = stringify({ name: "Compiled reads", description: "Two exact fixture reads", trigger: { type: "manual" }, steps: [{ id: "one", action: s.tool().name, parameters: { value: "first" } }, { id: "two", action: s.tool().name, parameters: { value: "second" } }] });
+  const date = new Date().toISOString();
+  const workflow: Workflow = { id: "compiled", name: "Compiled reads", description: "", owner: { id: "admin", name: "admin" }, assignedUserIds: [], status: "PENDING", trigger: { type: "manual" }, steps: 2,
+    successRate: 0, lastRunAt: null, publishedVersion: legacyPublication ? 1 : 0, draftVersion: 1, tags: [], domainTags: [], canRun: false, createdAt: date, updatedAt: date, yaml, archived: false };
+  await s.repository.mutate(state => { state.workflows.compiled = workflow; state.versions.compiled = legacyPublication ? [{ id: "historical", version: 1, artifactState: "PUBLISHED", yaml }] : []; });
+  const app = await buildApp(s.services); sessions.push(app);
+  const headers = { authorization: `Bearer ${jwt.sign({}, s.services.config.jwtSecret, { subject: "admin", expiresIn: 3600 })}` };
+  const publish = () => app.inject({ method: "POST", url: "/api/workflows/compiled/publish", headers, payload: {} });
+  const run = (payload = {}) => app.inject({ method: "POST", url: "/api/workflows/compiled/run", headers, payload });
+  const readiness = () => app.inject({ method: "GET", url: "/api/workflows/compiled/readiness", headers });
+  return { yaml, app, publish, run, readiness, headers };
+}
+
+test("modern publication stores exact compiled/review pins; sync run executes the artifact and repeated publication is immutable/idempotent", async () => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s);
+  const published = await w.publish(); expect(published.statusCode, published.body).toBe(200); const receipt = published.json().data.compiledRead;
+  expect(receipt).toMatchObject({ schemaVersion: "workflow-read-ir/v1", compilerVersion: "read-compiler/v1", origin: "PUBLICATION", admissionMode: "reviewed" });
+  expect(receipt.ir).toBeUndefined(); expect(published.body).not.toMatch(/connectionBinding|private-credential/); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  const state = await s.repository.snapshot(), stored = state.versions.compiled![0]!.compiledRead as any;
+  expect(stored.plan.ir.root.nodes.every((node: any) => node.capability.admission.revisionId === Object.values(state.capabilityRevisions)[0]!.id)).toBe(true);
+  const repeated = await w.publish(); expect(repeated.json().data.id).toBe(published.json().data.id); expect((await s.repository.snapshot()).versions.compiled).toHaveLength(1);
+  const ready = await w.readiness(); expect(ready.json().data).toMatchObject({ can_attempt_run: true, compilation: { state: "CURRENT", receipt } });
+  const run = await w.run(); expect(run.statusCode, run.body).toBe(200); expect(run.json().data.workflowSnapshot.compilation).toEqual(receipt); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("modern historical YAML-only publication is not silently compiled/granted on Run or readiness", async () => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s, true);
+  expect((await w.readiness()).json().data).toMatchObject({ can_attempt_run: false, compilation: { state: "BLOCKED" } });
+  const run = await w.run(); expect(run.statusCode, run.body).toBe(409); expect(run.json().meta.code).toBe("PUBLISHED_COMPILATION_REQUIRED"); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  const publication = await w.publish(); expect(publication.statusCode, publication.body).toBe(200); expect(publication.json().data.version).toBe(2);
+  const versions = (await s.repository.snapshot()).versions.compiled!; expect(versions).toHaveLength(2); expect(versions[0]!.compiledRead).toBeUndefined();
+});
+
+test("a new same-contract review invalidates an old publication and explicit re-publication creates a new immutable version", async () => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s); const first = await w.publish();
+  const before = structuredClone((await s.repository.snapshot()).versions.compiled![0]);
+  await s.review({ decisionKey: "review-fixture-key-0002" });
+  expect((await w.readiness()).json().data.can_attempt_run).toBe(false); expect((await w.run()).statusCode).toBe(409); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  const next = await w.publish(); expect(next.statusCode, next.body).toBe(200); expect(next.json().data.version).toBe(2); expect(next.json().data.compiledRead.semanticHash).not.toBe(first.json().data.compiledRead.semanticHash);
+  expect((await s.repository.snapshot()).versions.compiled![0]).toEqual(before); expect((await w.run()).statusCode).toBe(200); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("changed admission between successful read nodes is rejected by the final SDK pin check, not rebound to the new grant", async () => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s); expect((await w.publish()).statusCode).toBe(200);
+  s.sdk.callTool.mockImplementationOnce(async () => { await s.review({ decisionKey: "review-fixture-key-0002" }); return { content: [{ type: "text", text: "First confirmed" }] }; });
+  const run = await w.run(); expect(run.statusCode, run.body).toBe(422); expect(s.sdk.callTool).toHaveBeenCalledOnce();
+  const execution = Object.values((await s.repository.snapshot()).executions)[0]!; expect(execution).toMatchObject({ status: "FAILED", failure: { failedStepId: "two" } }); expect(execution.stepOutputs?.one).toBeDefined(); expect(execution.stepOutputs?.two).toBeUndefined();
+});
+
+test.each(["plan", "receipt"])("tampered saved compilation %s cannot dispatch and is not repaired by Run", async what => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s); await w.publish();
+  await s.repository.mutate(state => { const compilation = state.versions.compiled![0]!.compiledRead as any; if (what === "plan") compilation.plan.ir.root.nodes[0].inputs.fields.value.value = "forged"; else compilation.receipt.compilerVersion = "unknown-compiler"; });
+  const run = await w.run(); expect(run.statusCode, run.body).toBe(409); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(Object.keys((await s.repository.snapshot()).executions)).toHaveLength(0);
+});
+
+test("queued run retains its compiled publication and stops before dispatch if its admission was replaced", async () => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s); await w.publish();
+  const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const admitted = await w.run({ mode: "async-read", idempotencyKey: "compiled_queue_request_0001" }); expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id;
+  await s.review({ decisionKey: "review-fixture-key-0002" }); expect((await w.publish()).json().data.version).toBe(2);
+  kick.mockRestore(); queue.kick(); await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]?.status).toBe("FAILED"));
+  expect((await s.repository.snapshot()).executions[id]?.failure).toMatchObject({ failureCategory: "READ_JOB_PREPARATION_FAILED", toolWasCalled: false }); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
 
 test("modern discovery is not permission; explicit saved review enables one exact governed read and warm discovery never grants from cache", async () => {
   const s = await setup(); expect(await discoverTools(s.session, s.registries)).toEqual([]);

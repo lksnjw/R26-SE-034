@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { AsyncMutex } from "./async-mutex.js";
 import type { Principal, Workflow } from "../models/schemas.js";
+import type { ReadCompilationReceipt } from "../workflows/compiled-read.js";
 
 export type Role = { id: string; name: string; description: string; permissions: string[]; createdAt: string };
 export type User = {
@@ -45,7 +46,7 @@ export type Execution = {
   approvals?: Array<{ stepId: string; approvedBy: { id: string; name: string }; approvedAt: string; note?: string }>;
   chatSessionId?: string;
   traceId?: string;
-  workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1" };
+  workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1"; compilation?: ReadCompilationReceipt };
   readProgress?: ReadRunProgress;
 };
 

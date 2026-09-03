@@ -10,6 +10,7 @@ import { assertActorAuthority } from "../http/handlers/model-selection.js";
 import { appendAudit, HandlerFailure, nextID, now, type CurrentUser } from "../http/handlers/common.js";
 import type { FastifyRequest } from "fastify";
 import type { AppConfig } from "../config/config.js";
+import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
 
 export const DEFAULT_BRIDGE_CONNECTION = "erpbridge-default";
 export function requireProductionAdmissionProfile(config: Pick<AppConfig, "mcpMode" | "mcpTransport">) {
@@ -177,21 +178,28 @@ export async function disableCapability(input: { repository: Repository; user: C
 
 /** Final application admission gate; no remote call, discovery or replay here. */
 export function admissionAuthorizer(repository: Repository, registries: RegistryService, connectionId = DEFAULT_BRIDGE_CONNECTION) {
-  return async (definition: ToolDefinition, connectionBinding: string): Promise<void> => {
+  return async (definition: ToolDefinition, connectionBinding: string, expectedPin?: ReadAdmissionPin): Promise<void> => {
     requireAdmissionStorage(repository);
     return repository.readAuthoritative(state => {
-      const capabilityId = capabilityIdFor(connectionId, definition.tool_id);
-      const admission = admissionSchema.safeParse(state.capabilityAdmissions[capabilityId]);
-      if (!admission.success || admission.data.state !== "AVAILABLE") throw new Error("Capability is unreviewed, disabled or blocked; no ERP dispatch is authorized");
-      const revision = revisionSchema.safeParse(state.capabilityRevisions[admission.data.revisionId]);
-      const current = registries.snapshot().tools.filter(tool => tool.tool_id === definition.tool_id);
-      if (!revision.success || revision.data.capabilityId !== capabilityId || revision.data.connectionId !== connectionId || revision.data.connectionBinding !== connectionBinding ||
-        revision.data.contractHash !== capabilityContractHash(revision.data.definition) || revision.data.contractHash !== capabilityContractHash(definition) ||
-        current.length !== 1 || capabilityContractHash(current[0]!) !== revision.data.contractHash)
-        throw new Error("Capability review or connection binding changed; no ERP dispatch is authorized");
-      supportedRead(definition);
+      captureReadAdmissionPin(state, registries, definition, connectionBinding, expectedPin, connectionId);
     });
   };
+}
+
+/** Immutable public identifiers only; connection binding remains private.
+ * Compile evidence is not authority: the final SDK gate calls this again. */
+export function captureReadAdmissionPin(state: Readonly<RepositoryState>, registries: RegistryService, definition: ToolDefinition, connectionBinding: string,
+  expectedPin?: ReadAdmissionPin, connectionId = DEFAULT_BRIDGE_CONNECTION): ReadAdmissionPin {
+  const capabilityId = capabilityIdFor(connectionId, definition.tool_id), admission = admissionSchema.safeParse(state.capabilityAdmissions[capabilityId]);
+  if (!admission.success || admission.data.state !== "AVAILABLE") throw new Error("Capability is unreviewed, disabled or blocked; no ERP dispatch is authorized");
+  const revision = revisionSchema.safeParse(state.capabilityRevisions[admission.data.revisionId]), current = registries.snapshot().tools.filter(tool => tool.tool_id === definition.tool_id);
+  if (!revision.success || revision.data.capabilityId !== capabilityId || revision.data.connectionId !== connectionId || revision.data.connectionBinding !== connectionBinding ||
+      revision.data.contractHash !== capabilityContractHash(revision.data.definition) || revision.data.contractHash !== capabilityContractHash(definition) ||
+      current.length !== 1 || capabilityContractHash(current[0]!) !== revision.data.contractHash) throw new Error("Capability review or connection binding changed; no ERP dispatch is authorized");
+  supportedRead(definition);
+  const pin = { connectionId, capabilityId, revisionId: revision.data.id, admissionVersion: admission.data.version, contractHash: revision.data.contractHash };
+  if (expectedPin && !canonicalJSONBytes(pin).equals(canonicalJSONBytes(expectedPin))) throw new Error("Compiled capability admission changed; explicit recompile/publication is required");
+  return pin;
 }
 
 export async function capabilityAdmissionCatalog(repository: Repository, offset = 0, limit = 10,

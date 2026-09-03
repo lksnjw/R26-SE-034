@@ -55,11 +55,11 @@ export function assertCurrentRunController(state: RepositoryState, execution: Ex
 
 export class ReadCheckpoints implements ReadExecutionHooks {
   private readonly contentHash: string;
-  constructor(readonly repository: Repository, readonly executionId: string, readonly epoch: number, readonly yaml: string, readonly signal?: AbortSignal) { this.contentHash = workflowContentHash(yaml); }
+  constructor(readonly repository: Repository, readonly executionId: string, readonly epoch: number, readonly yaml: string, readonly signal?: AbortSignal, readonly semanticHash?: string) { this.contentHash = workflowContentHash(yaml); }
   private current(state: RepositoryState): Execution & { readProgress: ReadRunProgress } {
     const item = state.executions[this.executionId];
     if (!item || item.status !== "RUNNING" || item.readProgress?.profile !== "read-progress-v1" || item.readProgress.epoch !== this.epoch ||
-        item.workflowSnapshot?.yaml !== this.yaml || item.workflowSnapshot.contentHash !== this.contentHash)
+        item.workflowSnapshot?.yaml !== this.yaml || item.workflowSnapshot.contentHash !== this.contentHash || this.semanticHash !== undefined && item.workflowSnapshot.compilation?.semanticHash !== this.semanticHash)
       throw new Error("Read execution is no longer owned by this worker generation");
     return item as Execution & { readProgress: ReadRunProgress };
   }

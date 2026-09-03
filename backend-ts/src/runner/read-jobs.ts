@@ -8,6 +8,7 @@ import { appendExecutionEvent, assertCurrentRunController, reconcileInterruptedE
 import { workflowContentHash, parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import { inspectReadWorkflow } from "./read-workflow.js";
 import { discoverTools } from "../agent/tool-discovery.js";
+import { prepareCompiledExecution } from "../workflows/read-compilation-lifecycle.js";
 
 type Admission = { input: Record<string, unknown>; actorId: string; admittedRole: string; scope: string; fingerprint: string; connectionFingerprint: string };
 const queues = new WeakMap<Repository, ReadJobQueue>();
@@ -125,11 +126,13 @@ export class ReadJobQueue {
       const job = claimed.job, snapshot = initial.workflowSnapshot;
       if (this.#closed || this.#controller.signal.aborted || job.version !== 1 || !snapshot || snapshot.contentHash !== workflowContentHash(snapshot.yaml) ||
           job.actorId !== initial.startedBy.id || !job.inputCiphertext) throw new Error("Invalid queued job");
+      if (this.services.erpbridgeSession?.requiresReviewedRevision && !snapshot.compilation) throw new Error("Queued modern run has no compiled admission receipt");
       const actor = await this.services.repository.effectiveUser(job.actorId);
-      await this.services.repository.read((state) => {
+      const compilation = await this.services.repository.readAuthoritative((state) => {
         assertCurrentRunController(state as RepositoryState, initial!, job.actorId, job.admittedRole);
         const publication = (state.versions[initial!.workflowId] ?? []).findLast((version) => version.version === snapshot.version && version.artifactState === "PUBLISHED");
         if (publication?.yaml !== snapshot.yaml) throw new Error("Pinned publication unavailable");
+        return prepareCompiledExecution(state, this.services, publication, snapshot.yaml, job.admittedRole, snapshot.compilation);
       });
       if (!actor || actor.role !== job.admittedRole || snapshot.registryHash !== this.services.registries.hash() ||
           !this.services.erpbridgeSession?.admissionBinding || job.connectionFingerprint !== this.connectionFingerprint()) throw new Error("Queued authority, connection or registry changed");
@@ -144,7 +147,7 @@ export class ReadJobQueue {
       await completeCheckpointedRead(this.services, initial, privateInput.input, gate.token, this.#controller.signal, () => {
         if (!this.services.erpbridgeSession?.admissionBinding || job.connectionFingerprint !== this.connectionFingerprint())
           throw new Error("Queued connection binding changed; refusing further dispatch");
-      });
+      }, compilation.plan);
     } catch (error) {
       // No confirmed claim means this job may still look QUEUED in rolled-back
       // memory. Propagate to stop the pump rather than repeatedly claiming it
