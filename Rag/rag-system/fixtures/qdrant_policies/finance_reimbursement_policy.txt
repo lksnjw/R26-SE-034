@@ -1,0 +1,174 @@
+ERP document 'finance_reimbursement_policy.pdf' is categorized as policy_document. The source format is pdf. Extracted content: Finance Reimbursement and Payment Processing Policy
+Document ID: FIN-RMB-POL-2026-003
+Department: Finance Operations
+Process Area: Reimbursement, Payment Request, and Settlement
+Version: 1.0
+Effective Date: 01 January 2026
+Document Owner: Finance Operations Manager
+1. Purpose
+This policy defines the process for reimbursing approved business expenses and
+processing payment requests through the ERP system. It ensures that payments are made
+only after proper validation, approval, documentation, and audit checks.
+The policy supports transparent finance operations by maintaining a complete digital
+record of each reimbursement case from submission to payment completion.
+2. Scope
+This policy applies to:
+- Employee reimbursements
+- Travel expense reimbursements
+- Prepaid travel cost settlements
+- Approved declaration payments
+- Local supplier-related reimbursements
+- International payment reimbursements
+- Approved business expense settlements
+This policy does not apply to payroll, salary advances, personal loans, or direct
+procurement payments handled under separate procurement policies.
+3. Reimbursement Eligibility
+An expense is eligible for reimbursement only if:
+- It was incurred for an approved business purpose
+- It is linked to a valid ERP case, declaration, travel permit, or approval record
+- It is supported by a valid receipt, invoice, or scanned document
+- It was submitted within the required time period
+- It complies with finance policy limits
+- It has received the required approvals
+Expenses that do not meet these conditions may be rejected or returned for clarification.
+4. Required Information
+Each reimbursement request must contain:
+- Reimbursement case ID
+- Employee ID or claimant reference
+- Department
+- Cost center
+- Budget number
+- Related declaration ID or travel permit ID
+- Expense date
+- Expense type
+- Claimed amount
+- Approved amount
+- Currency
+- Payment method
+- Bank account reference or employee payment profile
+- Supporting document ID
+- Approval status
+5. Supporting Documents
+The following documents may be required:
+- Receipt
+- Invoice
+- Travel ticket
+- Hotel bill
+- Payment confirmation
+- Approved declaration
+- Approved travel permit
+- Scanned claim form
+- Currency conversion evidence
+- Manager approval note
+Documents must be readable and must match the claimed amount, date, and expense
+type. Finance Officers are responsible for validating supporting documents before
+payment.
+6. Reimbursement Workflow
+The reimbursement workflow is:
+Step 1: Claimant submits reimbursement request in the ERP system.
+Step 2: ERP system checks mandatory fields and linked approval records.
+Step 3: Supervisor confirms business relevance.
+Step 4: Budget Owner validates budget availability.
+Step 5: Finance Officer verifies amount, receipts, tax details, and duplicate risk.
+Step 6: Finance Manager approves payment if required.
+Step 7: Payment Officer schedules payment.
+Step 8: ERP system records payment completion and closes the case.
+7. Approval Thresholds
+The following approval thresholds apply:
+- Up to LKR 15,000: Supervisor approval and Finance Officer validation
+- LKR 15,001 to LKR 75,000: Budget Owner approval required
+- LKR 75,001 to LKR 250,000: Finance Manager approval required
+- Above LKR 250,000: Senior Finance approval required
+- Foreign currency reimbursement: Finance Manager approval required
+- Missing or unclear receipt: Exception approval required
+8. Payment Processing Rules
+Payments must not be processed until the reimbursement case is fully approved. Payment
+Officers must verify:
+- Final approval status
+- Approved amount
+- Payment method
+- Claimant identity
+- Bank or payment profile validity
+- Duplicate payment risk
+- Payment batch status
+Payment status must be updated in the ERP system after the transaction is completed.
+9. Partial Approval
+Finance may partially approve a reimbursement if only part of the claim is valid. In such
+cases, the ERP system must record:
+- Original claimed amount
+- Approved amount
+- Rejected amount
+- Reason for partial rejection
+- Finance Officer comment
+The claimant must be able to view the partial approval reason.
+10. Rejection Reasons
+A reimbursement may be rejected for the following reasons:
+- Missing receipt or invoice
+- Expense is personal or unrelated to business
+- Expense exceeds policy limit
+- Duplicate claim detected
+- Claim submitted after deadline without justification
+- Budget number is invalid
+- Approval record is missing
+- Supporting document does not match claim details
+- Suspected fraud or compliance issue
+11. Duplicate Payment Prevention
+The ERP system must check duplicate risk using:
+- Claimant ID
+- Receipt number
+- Invoice number
+- Expense date
+- Claimed amount
+- Vendor name
+- Declaration ID
+- Travel permit ID
+- Payment reference number
+If a duplicate risk is found, the payment must be placed on hold until Finance reviews it.
+12. Prepaid Travel Cost Settlement
+If an employee has received prepaid travel cost, the final reimbursement must compare:
+- Prepaid amount
+- Actual approved expense
+- Balance payable to employee
+- Balance recoverable from employee
+If actual expense is less than the prepaid amount, the difference must be recovered or
+adjusted through finance settlement. If actual expense is higher, the additional amount
+may be reimbursed after approval.
+13. Audit Trail Requirements
+Each reimbursement case must maintain:
+- Submission timestamp
+- Approval timestamps
+- Reviewer roles
+- Payment processing timestamp
+- Payment reference
+- Status changes
+- Supporting document IDs
+- Finance comments
+- Exception approval notes
+The audit trail must not be manually deleted.
+14. Data Retention
+Reimbursement records and supporting documents must be retained for at least 7 years.
+Historical reimbursement data must remain accessible for audit, reporting, fraud
+investigation, and AI-based knowledge retrieval.
+15. ERP and AI-Ready Data Requirements
+To support AI-based retrieval and analytics, reimbursement records should be transformed
+into a structured format containing:
+- Case ID
+- Process type
+- Activity sequence
+- Claimant details
+- Approved amount
+- Currency
+- Expense category
+- Linked declaration
+- Linked travel permit
+- Linked document IDs
+- Payment status
+- Duration between submission and payment
+- Rejection or exception reason, if applicable
+16. Policy Exceptions
+Any exception to this policy must be approved by the Finance Manager and recorded in the
+ERP system with a reason. Informal approvals outside the ERP system are not valid for
+payment processing.
+17. Review Cycle
+This policy must be reviewed annually by the Finance Operations Manager and updated
+based on audit findings, regulatory requirements, or ERP process changes.

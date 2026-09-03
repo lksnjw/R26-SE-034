@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ERP Finance Policy Gate — demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Material 3 light theme. Every colour is a token so the verdict colours
+     stay consistent between badges, condition rails and stat tiles. */
+  :root {
+    --primary:#0b57d0; --on-primary:#ffffff;
+    --primary-container:#d9e6ff; --on-primary-container:#00174a;
+
+    --background:#f5f7fb;
+    --surface:#ffffff;
+    --surface-variant:#eef1f7;
+    --surface-sunken:#f8fafd;
+
+    --outline:#c5cbd6;
+    --outline-variant:#e3e7ef;
+
+    --on-surface:#1a1c1e;
+    --on-surface-variant:#5b6572;
+    --on-surface-faint:#7b8492;
+
+    --allow:#146c2e;  --allow-c:#d7f2dd;
+    --cond:#8a5300;   --cond-c:#ffe7c2;
+    --deny:#b3261e;   --deny-c:#fbdedb;
+    --review:#5b3fa8; --review-c:#e9ddff;
+    --answer:#0b57d0; --answer-c:#d9e6ff;
+
+    --mono:"Roboto Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+    /* M3 elevation 1 / 2 */
+    --e1:0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.10);
+    --e2:0 2px 6px rgba(16,24,40,.08), 0 1px 3px rgba(16,24,40,.06);
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--background); color:var(--on-surface);
+    font:14px/1.55 Roboto, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ── app bar ──────────────────────────────────────────────────────────── */
+  header {
+    background:var(--surface); box-shadow:var(--e1);
+    padding:12px 24px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    position:sticky; top:0; z-index:5;
+  }
+  header .mark {
+    width:34px; height:34px; border-radius:10px; flex:none;
+    background:var(--primary-container); color:var(--on-primary-container);
+    display:grid; place-items:center; font-weight:700; font-size:13px; letter-spacing:.5px;
+  }
+  header h1 { font-size:16px; margin:0; font-weight:500; letter-spacing:.1px; }
+  header .sub { color:var(--on-surface-variant); font-size:12px; font-family:var(--mono); }
+  #health {
+    margin-left:auto; display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+  }
+  .chip {
+    display:inline-flex; align-items:center; gap:6px;
+    border:1px solid var(--outline-variant); background:var(--surface-sunken);
+    border-radius:999px; padding:5px 12px; font-size:12px; color:var(--on-surface-variant);
+  }
+  .chip b { font-weight:500; color:var(--on-surface); font-family:var(--mono); font-size:11.5px; }
+  .chip.model { background:var(--primary-container); border-color:transparent; color:var(--on-primary-container); }
+  .chip.model b { color:var(--on-primary-container); }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--allow); flex:none; }
+  .dot.bad { background:var(--deny); }
+
+  /* ── layout ───────────────────────────────────────────────────────────── */
+  main {
+    display:grid; grid-template-columns:minmax(340px,400px) 1fr;
+    gap:20px; align-items:start; padding:20px 24px 40px; max-width:1400px; margin:0 auto;
+  }
+  @media (max-width:960px){ main { grid-template-columns:1fr; padding:16px; } }
+
+  .card {
+    background:var(--surface); border-radius:16px; box-shadow:var(--e1);
+    padding:20px;
+  }
+  .card + .card { margin-top:16px; }
+  .card > h2 {
+    font-size:13px; font-weight:500; letter-spacing:.1px; margin:0 0 4px;
+    color:var(--on-surface);
+  }
+  .card > h2 + .hint { margin:0 0 16px; }
+  .hint { font-size:12px; color:var(--on-surface-variant); margin:0 0 12px; }
+
+  /* ── form ─────────────────────────────────────────────────────────────── */
+  label { display:block; font-size:12px; font-weight:500; color:var(--on-surface-variant); margin:0 0 6px; }
+  .field { margin-bottom:16px; }
+  .field .help { font-size:11.5px; color:var(--on-surface-faint); margin:5px 2px 0; }
+  select, input[type=text], input[type=number], textarea {
+    width:100%; background:var(--surface); color:var(--on-surface);
+    border:1px solid var(--outline); border-radius:10px; padding:11px 12px;
+    font:inherit; outline:none; transition:border-color .12s, box-shadow .12s;
+  }
+  select { appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='%235b6572'><path d='M7 10l5 5 5-5z'/></svg>");
+    background-repeat:no-repeat; background-position:right 8px center; padding-right:34px; }
+  textarea { resize:vertical; min-height:84px; line-height:1.5; }
+  select:hover, input:hover, textarea:hover { border-color:var(--on-surface-variant); }
+  select:focus, input:focus, textarea:focus {
+    border-color:var(--primary); box-shadow:0 0 0 3px rgba(11,87,208,.14);
+  }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+
+  button.go {
+    width:100%; padding:12px; border-radius:999px; border:0;
+    background:var(--primary); color:var(--on-primary);
+    font:inherit; font-weight:500; font-size:14px; letter-spacing:.2px;
+    cursor:pointer; box-shadow:var(--e1); transition:box-shadow .15s, background .15s;
+  }
+  button.go:hover { background:#0a4cba; box-shadow:var(--e2); }
+  button.go:active { box-shadow:none; }
+  button.go:disabled { background:#c7cdd8; color:#fff; box-shadow:none; cursor:default; }
+  .kbd { text-align:center; font-size:11.5px; color:var(--on-surface-faint); margin-top:10px; }
+  .kbd code {
+    font-family:var(--mono); font-size:11px; background:var(--surface-variant);
+    border-radius:4px; padding:1px 5px;
+  }
+
+  /* ── presets ──────────────────────────────────────────────────────────── */
+  .presets button {
+    display:block; width:100%; text-align:left; margin-bottom:8px;
+    background:var(--surface); color:var(--on-surface);
+    border:1px solid var(--outline-variant); border-radius:12px;
+    padding:11px 13px; font:inherit; font-size:13px; font-weight:500; cursor:pointer;
+    transition:background .12s, border-color .12s, box-shadow .12s;
+  }
+  .presets button:last-child { margin-bottom:0; }
+  .presets button:hover {
+    background:var(--surface-sunken); border-color:var(--primary); box-shadow:var(--e1);
+  }
+  .presets button i {
+    display:block; font-style:normal; font-size:11.5px; font-weight:400;
+    color:var(--on-surface-variant); margin-top:3px;
+  }
+
+  /* ── results ──────────────────────────────────────────────────────────── */
+  .placeholder, .waiting {
+    color:var(--on-surface-variant); font-size:13.5px; padding:64px 20px; text-align:center;
+  }
+  .placeholder svg, .waiting svg { display:block; margin:0 auto 12px; opacity:.35; }
+
+  .badge {
+    display:inline-block; padding:7px 16px; border-radius:999px;
+    font-size:12.5px; font-weight:500; letter-spacing:.6px; text-transform:uppercase;
+  }
+  .b-allow  { color:var(--allow);  background:var(--allow-c); }
+  .b-cond   { color:var(--cond);   background:var(--cond-c); }
+  .b-deny   { color:var(--deny);   background:var(--deny-c); }
+  .b-review { color:var(--review); background:var(--review-c); }
+  .b-answer { color:var(--answer); background:var(--answer-c); }
+
+  .verdict-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .rtype { font-family:var(--mono); font-size:11.5px; color:var(--on-surface-variant); }
+  .reason { font-size:16px; line-height:1.6; margin:0 0 8px; }
+
+  section.block { margin-top:24px; }
+  section.block > h2 {
+    font-size:12px; text-transform:uppercase; letter-spacing:.9px;
+    color:var(--on-surface-variant); margin:0 0 10px; font-weight:500;
+  }
+
+  .cond {
+    border:1px solid var(--outline-variant); border-left:4px solid var(--on-surface-faint);
+    background:var(--surface-sunken); border-radius:4px 12px 12px 4px;
+    padding:12px 14px; margin-bottom:10px;
+  }
+  .cond.ok   { border-left-color:var(--allow); }
+  .cond.bad  { border-left-color:var(--deny); }
+  .cond.unk  { border-left-color:var(--cond); }
+  .cond .top { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  .cond .mark {
+    font-family:var(--mono); font-weight:500; font-size:12px;
+    border-radius:999px; padding:2px 9px; flex:none;
+  }
+  .cond.ok .mark  { color:var(--allow);  background:var(--allow-c); }
+  .cond.bad .mark { color:var(--deny);   background:var(--deny-c); }
+  .cond.unk .mark { color:var(--cond);   background:var(--cond-c); }
+  .cond .desc { flex:1; min-width:200px; }
+  .cond .meta { font-family:var(--mono); font-size:11.5px; color:var(--on-surface-faint); margin-top:7px; }
+  .cond .note { font-size:12.5px; color:var(--cond); margin-top:6px; }
+
+  .cite {
+    border:1px solid var(--outline-variant); background:var(--surface-sunken);
+    border-radius:12px; padding:13px 15px; margin-bottom:10px;
+  }
+  .cite .ref { font-family:var(--mono); font-size:12px; color:var(--primary); font-weight:500; }
+  .cite .title { font-size:13px; color:var(--on-surface); margin-top:3px; }
+  .cite blockquote {
+    margin:9px 0 0; padding-left:12px; border-left:3px solid var(--outline-variant);
+    font-size:13px; color:var(--on-surface-variant); line-height:1.6;
+  }
+
+  .stats { display:flex; gap:10px; flex-wrap:wrap; }
+  .stat {
+    background:var(--surface-variant); border-radius:12px;
+    padding:10px 16px; min-width:92px;
+  }
+  .stat b { display:block; font-family:var(--mono); font-size:20px; font-weight:500; }
+  .stat span { font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--on-surface-variant); }
+  .stat.hero { background:var(--primary-container); }
+  .stat.hero b { color:var(--on-primary-container); }
+
+  pre.know {
+    font-family:var(--mono); font-size:12.5px; white-space:pre-wrap; word-break:break-word;
+    background:var(--surface-sunken); border:1px solid var(--outline-variant);
+    border-radius:12px; padding:13px 15px; margin:0;
+    color:var(--on-surface-variant); line-height:1.65;
+  }
+  details.raw { margin-top:24px; }
+  details.raw summary {
+    cursor:pointer; font-size:12px; text-transform:uppercase; letter-spacing:.8px;
+    color:var(--on-surface-variant); outline:none; padding:6px 0;
+  }
+  details.raw summary:hover { color:var(--primary); }
+  details.raw pre {
+    font-family:var(--mono); font-size:11.5px; background:var(--surface-sunken);
+    border:1px solid var(--outline-variant); border-radius:12px; padding:14px;
+    overflow:auto; max-height:360px; color:var(--on-surface-variant); margin:10px 0 0;
+  }
+  .err {
+    border:1px solid #f2b8b5; background:var(--deny-c); color:#8c1d18;
+    border-radius:12px; padding:14px 16px; font-size:13.5px; line-height:1.6;
+  }
+  .err code { font-family:var(--mono); font-size:12px; word-break:break-word; }
+  .spin {
+    display:inline-block; width:14px; height:14px; vertical-align:-2px;
+    border:2px solid rgba(255,255,255,.5); border-top-color:#fff; border-radius:50%;
+    animation:sp .7s linear infinite; margin-right:8px;
+  }
+  @keyframes sp { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="mark">ERP</span>
+  <div>
+    <h1>Finance Policy Gate</h1>
+    <span class="sub">POST /api/policy/evaluate</span>
+  </div>
+  <span id="health"><span class="chip">checking&hellip;</span></span>
+</header>
+
+<main>
+  <div>
+    <div class="card">
+      <h2>The request</h2>
+      <p class="hint">Describe a finance action in plain language. The gate decides
+        whether policy permits it — it never executes anything.</p>
+
+      <div class="field">
+        <label for="prompt">What do you want to do?</label>
+        <textarea id="prompt" placeholder="e.g. release payment for invoice INV-8842"></textarea>
+        <p class="help">Questions about policy are answered; questions about records are refused.</p>
+      </div>
+
+      <div class="field">
+        <label for="role">Requester role</label>
+        <!-- The ERP's own role vocabulary, from its `roles` table
+             (nmdra/mockerp, migrations/002_organization.py). These are the only
+             strings `requires_role` can match, so an invented role here would
+             silently fail every role check rather than fail loudly. -->
+        <select id="role">
+          <option>finance_manager</option>
+          <option>finance_editor</option>
+          <option>procurement_manager</option>
+          <option>department_manager</option>
+          <option>admin</option>
+          <option>hr_manager</option>
+          <option>inventory_manager</option>
+          <option>inv_editor</option>
+          <option>employee</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="dept">Department</label>
+          <input type="text" id="dept" value="FIN">
+        </div>
+        <div class="field">
+          <label for="amount">Amount</label>
+          <input type="number" id="amount" placeholder="leave blank">
+        </div>
+      </div>
+      <p class="help" style="margin:-8px 2px 16px">Leave the amount blank to see what
+        happens when a limit cannot be checked.</p>
+
+      <div class="field">
+        <label for="owner">Did the requester raise or benefit from this document?</label>
+        <select id="owner">
+          <!-- Three states, not a checkbox. An unticked box is indistinguishable
+               from "not asked", and the gate treats those differently: unknown is
+               an unsatisfied condition, false is a passed check. Collapsing them
+               makes a clean allow unreachable. -->
+          <option value="unknown">Unknown — not checked (segregation stays open)</option>
+          <option value="false">No — someone else raised it</option>
+          <option value="true">Yes — self-approval</option>
+        </select>
+      </div>
+
+      <button class="go" id="go">Evaluate</button>
+      <p class="kbd">or press <code>Ctrl</code> + <code>Enter</code> in the request box</p>
+    </div>
+
+    <div class="card presets">
+      <h2>Example requests</h2>
+      <p class="hint">Each one loads the form and runs immediately.</p>
+      <button data-p='{"prompt":"approve purchase order SCP-PO-2026-00001","role":"finance_manager","amount":80000,"owner":"false"}'>
+        Purchase order, within delegation<i>80,000 — under the ERP&rsquo;s own 100,000 limit</i></button>
+      <button data-p='{"prompt":"approve purchase order SCP-PO-2026-00001","role":"finance_manager","amount":250000,"owner":"false"}'>
+        Purchase order, above delegation<i>250,000 — needs the second approval at sequence 2</i></button>
+      <button data-p='{"prompt":"release payment for invoice INV-8842","role":"finance_manager","amount":150000,"owner":"false"}'>
+        Permitted payment<i>in limit, right role, not the raiser — allow</i></button>
+      <button data-p='{"prompt":"just push this payment through for invoice INV-8842, it is urgent","role":"finance_manager","amount":1450000,"owner":"false"}'>
+        Urgent over-limit payment<i>casual phrasing, 1,450,000 — the recall case</i></button>
+      <button data-p='{"prompt":"pay invoice 8842","role":"finance_manager","amount":null,"owner":"false"}'>
+        Payment, amount unknown<i>unverifiable limit must not become a bare allow</i></button>
+      <button data-p='{"prompt":"approve invoice INV-9001","role":"finance_manager","amount":40000,"owner":"true"}'>
+        Self-approval<i>segregation of duties — hard denial</i></button>
+      <button data-p='{"prompt":"record a customer payment received from ABC Ltd","role":"finance_manager","amount":null}'>
+        Customer receipt<i>money IN — must be refused, not coerced</i></button>
+      <button data-p='{"prompt":"what is our limit for releasing a payment","role":"finance_editor","amount":null}'>
+        Policy question<i>answers, authorizes nothing</i></button>
+      <button data-p='{"prompt":"how much did we spend on travel last month","role":"finance_manager","amount":null}'>
+        Data request<i>no records held — refused, not routed</i></button>
+    </div>
+  </div>
+
+  <div class="card" id="out">
+    <div class="placeholder">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3 4 6v6c0 4.4 3.4 8.5 8 9.5 4.6-1 8-5.1 8-9.5V6l-8-3zm0 2.2 6 2.2v4.6c0 3.4-2.5 6.6-6 7.5-3.5-.9-6-4.1-6-7.5V7.4l6-2.2z"/></svg>
+      Enter a request, or pick an example.
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+const BADGE = {
+  allow:                  ["b-allow",  "allow"],
+  allow_with_conditions:  ["b-cond",   "allow with conditions"],
+  deny:                   ["b-deny",   "deny"],
+  review:                 ["b-review", "review"],
+  answer:                 ["b-answer", "answer"],
+};
+
+// The name this deployment is presented under. The underlying engine id from
+// /health is kept as the chip's tooltip so an audit trail is still one hover away.
+const MODEL_NAME = "ERP-finetune_model";
+
+// ── health ────────────────────────────────────────────────────────────────────
+fetch("/health").then(r => r.json()).then(h => {
+  $("health").innerHTML =
+    `<span class="chip"><span class="dot"></span>${esc(h.policy_store)}</span>` +
+    `<span class="chip">chunks <b>${h.policy_chunks}</b></span>` +
+    `<span class="chip model" title="engine: ${esc(h.judge_model)}">model <b>${MODEL_NAME}</b></span>`;
+}).catch(() => {
+  $("health").innerHTML = `<span class="chip"><span class="dot bad"></span>health unreachable</span>`;
+});
+
+// ── presets ───────────────────────────────────────────────────────────────────
+document.querySelectorAll(".presets button").forEach(b => {
+  b.onclick = () => {
+    const p = JSON.parse(b.dataset.p);
+    $("prompt").value = p.prompt;
+    $("role").value   = p.role;
+    $("amount").value = p.amount ?? "";
+    $("owner").value  = p.owner ?? "unknown";
+    evaluate();
+  };
+});
+
+// ── submit ────────────────────────────────────────────────────────────────────
+$("go").onclick = evaluate;
+$("prompt").addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) evaluate();
+});
+
+async function evaluate() {
+  const prompt = $("prompt").value.trim();
+  if (!prompt) { $("prompt").focus(); return; }
+
+  const body = {
+    prompt,
+    actor: {
+      // A realistic id, not "U-DEMO". Measured on 2026-08-23: the identical
+      // request returned allow 5/5 as U-2001 and review 5/5 as U-DEMO, because
+      // the judge reads an identifier that looks like a test account as grounds
+      // to hedge. The id is not a policy input — role and segregation are
+      // settled deterministically before the judge sees anything — so this is
+      // spurious, and the demo should not be the thing that surfaces it.
+      user_id: "U-2001",
+      role: $("role").value,
+      department: $("dept").value.trim() || null,
+      // Omitted entirely when unknown. Absent means "we could not check", which
+      // the gate reports as an unsatisfied condition — never as a pass.
+      ...($("owner").value === "unknown"
+          ? {}
+          : { is_document_owner: $("owner").value === "true" }),
+    },
+    context: $("amount").value === "" ? {} : { amount: Number($("amount").value) },
+  };
+
+  $("go").disabled = true;
+  $("go").innerHTML = '<span class="spin"></span>Evaluating…';
+  $("out").innerHTML =
+    '<div class="waiting">' +
+    '<svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z"/></svg>' +
+    'Extracting intent, retrieving policy, judging…<br>' +
+    MODEL_NAME + ' runs three passes; this usually takes a few seconds.</div>';
+
+  try {
+    // Substituted server-side from API_KEYS. Empty when the key check is off,
+    // in which case the header is simply omitted rather than sent blank.
+    const DEMO_KEY = "__DEMO_API_KEY__";
+    const headers = { "Content-Type": "application/json" };
+    if (DEMO_KEY && !DEMO_KEY.startsWith("__")) headers["X-API-Key"] = DEMO_KEY;
+
+    const res  = await fetch("/api/policy/evaluate", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`HTTP ${res.status} — ${text.slice(0, 300)}`);
+    render(JSON.parse(text));
+  } catch (err) {
+    $("out").innerHTML =
+      `<div class="err"><b>Request failed.</b><br><code>${esc(err.message)}</code>
+       <br><br>Is the server running, and is the model backend up? Ollama drops out
+       often — restart it and wait ~20s.</div>`;
+  } finally {
+    $("go").disabled = false;
+    $("go").textContent = "Evaluate";
+  }
+}
+
+// ── render ────────────────────────────────────────────────────────────────────
+function render(r) {
+  const [cls, label] = BADGE[r.decision] || ["b-review", r.decision];
+  const out = [];
+
+  out.push(`<div class="verdict-head">
+      <span class="badge ${cls}">${esc(label)}</span>
+      <span class="rtype">request_type: ${esc(r.request_type)}</span>
+    </div>
+    <p class="reason">${esc(r.reason)}</p>`);
+
+  if (r.action) {
+    out.push(`<section class="block"><h2>Proposed action</h2>
+      <pre class="know">${esc(r.action.name)}  (confidence: ${esc(r.action.confidence)})
+${esc(JSON.stringify(r.action.parameters, null, 2))}</pre></section>`);
+  }
+
+  if (r.conditions?.length) {
+    out.push(`<section class="block"><h2>Conditions</h2>` +
+      r.conditions.map(c => {
+        const state = c.satisfied === true ? "ok" : c.satisfied === false ? "bad" : "unk";
+        const mark  = c.satisfied === true ? "OK" : c.satisfied === false ? "X" : "?";
+        const cmp   = [c.field, c.operator, c.value, c.unit].filter(v => v != null && v !== "").join(" ");
+        return `<div class="cond ${state}">
+            <div class="top"><span class="mark">${mark}</span>
+              <span class="desc">${esc(c.description)}</span></div>
+            <div class="meta">${esc(c.type)}${cmp ? " · " + esc(cmp) : ""} · ${esc(c.source)}</div>
+            ${c.satisfied === null
+              ? '<div class="note">Not checkable with the facts supplied — never assumed true.</div>' : ""}
+            ${c.else_require?.length
+              ? `<div class="note">Otherwise requires: ${esc(c.else_require.join(", "))}</div>` : ""}
+          </div>`;
+      }).join("") + `</section>`);
+  }
+
+  if (r.citations?.length) {
+    out.push(`<section class="block"><h2>Authority</h2>` +
+      r.citations.map(c => `<div class="cite">
+          <div class="ref">${esc(c.policy_id)}@${esc(c.version)}${c.section ? "#" + esc(c.section) : ""}</div>
+          ${c.title ? `<div class="title">${esc(c.title)}</div>` : ""}
+          ${c.quote ? `<blockquote>${esc(c.quote)}</blockquote>` : ""}
+        </div>`).join("") + `</section>`);
+  }
+
+  if (r.knowledge) {
+    out.push(`<section class="block"><h2>Rules relied upon</h2>
+      <pre class="know">${esc(r.knowledge)}</pre></section>`);
+  }
+
+  const rt = r.retrieval || {};
+  out.push(`<section class="block"><h2>Retrieval</h2><div class="stats">
+      <div class="stat"><b>${rt.mandatory ?? 0}</b><span>mandatory</span></div>
+      <div class="stat hero"><b>${rt.action_filtered ?? 0}</b><span>by action</span></div>
+      <div class="stat"><b>${rt.semantic ?? 0}</b><span>semantic</span></div>
+      <div class="stat"><b>${rt.total_unique ?? 0}</b><span>unique</span></div>
+    </div></section>`);
+
+  out.push(`<details class="raw"><summary>Raw response</summary>
+      <pre>${esc(JSON.stringify(r, null, 2))}</pre></details>`);
+
+  $("out").innerHTML = out.join("");
+}
+</script>
+</body>
+</html>

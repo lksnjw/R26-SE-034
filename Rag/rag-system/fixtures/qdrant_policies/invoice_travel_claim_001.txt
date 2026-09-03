@@ -1,0 +1,53 @@
+ERP document 'invoice_travel_claim_001.png' is categorized as invoice_or_receipt. The source format is image. Extracted content: wp Grand City Hotel (Pvt) Ltd.
+No. 01, Galle Road,
+Colombo 03, Sri Lanka.
+Tel: +94 11 234 5678
+Email: reservations @grandcityhotel.Ik
+VAT Registration No: 114447770-7000
+SVAT Registration No: SVAT/0410/2020
+Bill To
+Mr. Asanka Perera
+Finance Department
+DataPro Solutions (
+No. 75, Braybrooke
+Colombo 02, Sri Lar
+VAT Registration N.
+Employee ID: EMP-09218
+it
+Pvt) Ltd.
+Place,
+inka.
+lo: 114447770-7000
+TAX INVOICE
+Cost Center
+Project Code
+Invoice No GCH/INV/2026/03321
+Invoice Date 5 May 2026
+Room No + 805
+Arrival | 03 May 2026
+Departure : 05 May 2026
+No. of Nights 22
+Cashier : Nadeesha
+Payment Details
+Payment Method : Corporate Account
+Reference No : DP-FIN-TRV-7781
+: FIN-DEPT
+: PRJ-TRAVEL-2605
+Date Description Quantity Unit Rate (LKR) Amount (LKR)
+03 May 2026 Deluxe Room Charge 1 15,000.00 15,000.00
+03 May 2026 Breakfast 2 11,800.00 3,600.00
+03 May 2026 Laundry Service 1 950.00 950.00
+04 May 2026 Deluxe Room Charge 1 15,000.00 15,000.00
+04 May 2026 Breakfast 2 1,800.00 3,600.00
+04 May 2026 _| Airport Taxi (Receipt No. 784512) 1 2,500.00 2,500.00
+Total (LKR) 40,650.00
+Discount 0.00
+Amount in Words : Forty Five Thousand Two Hundred Fifty Rupees Only Taxable Amount 40,650.00
+VAT (18%) 7,317.00
+Grand Total (LKR) 47,967.00
+Notes: D
+1. Please settle the bill within 14 days. PAI
+2. This is a computer generated invoice. 05 MAY 2026
+3. No signature is required. : Lid.
+fe Grand City Hotel (Pvt) Authorized Signatory
+Thank you for staying with us!

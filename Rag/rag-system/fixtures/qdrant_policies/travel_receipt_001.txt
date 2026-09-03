@@ -1,0 +1,46 @@
+ERP document 'travel_receipt_001.png' is categorized as invoice_or_receipt. The source format is image. Extracted content: Gea
+CEYLON TAXI SERVICES (PVT) LTD.
+No. 27, Station Road, Colombo 04, Sri Lanka.
+Tel: +94 11 7 432 432 | Email: info@ceylontaxi.lk
+VAT Registration No: 114447770-7000
+TAXI RECEIPT
+CTS-TR-2026-0503-001245
+03 May 2026
+08:45 AM
+WP CAB 1234
+R. Perera
+D-4587
+077 123 4567
+Receipt No
+Date
+Time
+Vehicle No
+Driver Name
+Driver ID
+Contact No
+Bandaranaike International Airport (CMB)
+From
+Grand City Hotel, 01 Galle Road, Colombo 03
+To
+Distance 35.2 km
+1
+ul
+g 4,450.00
+Fare (Meter) Se
+Airport Surcharge LKR 300.00
+LKR 150.00
+Waiting Charges
+LKR 0.00
+Toll Charges
+i nnn
+LKR 4,900.00
+Subtotal
+VAT (18%) LKR 882.00
+TOTAL
+Payment Method: Card CEYLON TAXI SERVICES (PVT) LTD.
+Card No (Last 4) : 5678
+03 MAY 2026
+Approval Code : 123456
+Thank you for travelling with us! THANK YOU
+SAFE JOURNEY!
+LKR 5,782.00

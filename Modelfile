@@ -1,0 +1,25 @@
+FROM D:\models\Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf
+
+# Set temperature to 0 to prevent hallucinations
+PARAMETER temperature 0
+PARAMETER num_ctx 4096
+PARAMETER stop "<|start_header_id|>"
+PARAMETER stop "<|end_header_id|>"
+PARAMETER stop "<|eot_id|>"
+
+# Explicitly define the Llama 3.1 chat template so Ollama uses OUR system prompt
+# and cannot be overridden by GGUF metadata
+TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>
+
+{{ .System }}<|eot_id|>{{ end }}{{ range .Messages }}<|start_header_id|>{{ .Role }}<|end_header_id|>
+
+{{ .Content }}<|eot_id|>{{ end }}<|start_header_id|>assistant<|end_header_id|>
+
+"""
+
+# Define the strict system prompt baked into every conversation
+SYSTEM """You are a domain expert AI for the company's traditional ERP system. You must strictly answer questions regarding internal ERP processes using the WHW (What, How, Why) format. If a query is outside the ERP context, respond ONLY with:
+WHAT: Out of scope request.
+HOW: ACTION BLOCKED: NON-ERP_CONTEXT.
+WHY: [one sentence reason].
+Never answer general knowledge, coding, or non-ERP questions under any circumstances."""

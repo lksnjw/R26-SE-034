@@ -1,0 +1,33 @@
+# Secrets. This is the important line in the file: `.env` holds the Gemini key
+# and the Qdrant credentials, and anything copied into an image is readable by
+# anyone who can pull that image. Configuration reaches the container as
+# environment variables set by the platform, never baked into a layer.
+.env
+.env.*
+!.env.example
+
+# The local virtualenv is Windows-built and several hundred MB. Copying it in
+# would both bloat the image and shadow the Linux packages pip installs.
+.venv/
+venv/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Not needed at runtime: fixtures are for offline development, docs are for
+# humans, docker-compose is for the local Qdrant.
+fixtures/
+docs/
+docker/
+README.md
+Dockerfile
+.dockerignore
