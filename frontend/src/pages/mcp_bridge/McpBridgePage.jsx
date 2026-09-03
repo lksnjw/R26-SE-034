@@ -32,7 +32,6 @@ function McpBridgePage() {
  * Performs the mcp operation on the application for the McpBridgePage module.
  ******************************************************************************/
   const mcp = query.data.health.services?.find((service) => service.name === "MCP Bridge");
-  const configured = mcp?.status === "healthy";
 
   return (
     <div className="space-y-6 pb-10">
@@ -40,17 +39,17 @@ function McpBridgePage() {
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-primary">Infrastructure & Integration</p>
           <h1 className="page-heading mt-3 text-gray-950 dark:text-white">MCP Bridge</h1>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-gray-500 dark:text-gray-400">Runtime configuration and the registered workflow tool catalog.</p>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-gray-500 dark:text-gray-400">Service health and the local workflow catalog. Neither proves live ERP authorization or reviewed tool readiness.</p>
         </div>
-        <span className={`inline-flex w-fit items-center gap-2 rounded-full border px-4 py-2 text-sm font-bold ${configured ? "border-green-200 bg-green-50 text-green-700 dark:border-green-900/60 dark:bg-green-950/30 dark:text-green-300" : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300"}`}>
+        <span className="inline-flex w-fit items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
           <Icon icon="mdi:server-network" className="h-5 w-5" />
-          {configured ? "Configured" : "Not configured"}
+          Live tool readiness unverified
         </span>
       </section>
 
       <section className="grid gap-4 md:grid-cols-3">
-        <Metric label="Bridge status" value={mcp?.status || "unknown"} />
-        <Metric label="Registered tools" value={query.data.tools.length} />
+        <Metric label="Reported service health" value={mcp?.status || "unknown"} />
+        <Metric label="Local registered tools (not admissions)" value={query.data.tools.length} />
         <Metric label="Platform health" value={query.data.health.overall || "unknown"} />
       </section>
 

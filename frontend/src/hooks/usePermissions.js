@@ -16,6 +16,7 @@ export function usePermissions() {
       hasAny: (permissions) => hasAnyPermission(user, permissions),
       role: user?.role ?? "",
       roleId: user?.roleId ?? "",
+      actorId: user?.id ?? "",
     }),
     [user]
   );

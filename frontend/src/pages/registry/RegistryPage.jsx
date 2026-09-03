@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import RegistryBulkImportPanel from "../../components/registry/RegistryBulkImportPanel";
 import RegistryGenerationContextViewer from "../../components/registry/RegistryGenerationContextViewer";
 import RegistryStatusBanner from "../../components/registry/RegistryStatusBanner";
+import CapabilityReviewPanel from "../../components/registry/CapabilityReviewPanel";
 import { ErrorState, EmptyState, LoadingState } from "../../components/shared/ResourceState";
 import DataTable from "../../components/shared/tables/DataTable";
 import Button from "../../components/shared/ui/Button";
@@ -219,6 +220,8 @@ function RegistryPage({ initialKind = "tools" }) {
       </section>
 
       <RegistryStatusBanner />
+
+      {kind === "tools" ? <CapabilityReviewPanel /> : null}
 
       <Tabs
         tabs={TABS}

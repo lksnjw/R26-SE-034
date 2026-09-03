@@ -194,13 +194,40 @@ export function admissionAuthorizer(repository: Repository, registries: Registry
   };
 }
 
-export async function capabilityAdmissionCatalog(repository: Repository, offset = 0, limit = 10) {
+export async function capabilityAdmissionCatalog(repository: Repository, offset = 0, limit = 10,
+  context?: { registries: RegistryService; session?: ErpbridgeMcpSession | undefined }) {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 10) throw new HandlerFailure(400, "Invalid review catalog page; limit must be 1–10");
   return repository.readAuthoritative(state => {
     const observations = Object.values(state.capabilityObservations).reverse(), revisions = Object.values(state.capabilityRevisions).reverse(), admissions = Object.values(state.capabilityAdmissions);
+    const persistence = repository.persistence === null ? "memory-only" : repository.persistence.readQueueDurability === "encrypted-single-writer" ? "durable-single-writer" : "unsupported-for-admission";
+    const session = context?.session;
+    const connection = { state: !session ? "NO_SESSION" : session.available === false ? "CLOSED" : session.requiresReviewedRevision !== true || !binding.safeParse(session.admissionBinding).success ? "UNSUPPORTED_PROFILE" : "INITIALIZED_NOT_QUALIFIED",
+      discoveryAvailable: Boolean(session && session.available !== false && session.requiresReviewedRevision === true && binding.safeParse(session.admissionBinding).success),
+      qualification: "Not a live ERP authorization or tool execution test" };
+    const latest = new Map<string, ReturnType<typeof publicObservation>>();
+    for (const raw of observations) { const observation = publicObservation(raw); if (!latest.has(observation.capabilityId)) latest.set(observation.capabilityId, observation); }
+    const capabilityIds = [...new Set([...latest.keys(), ...admissions.map(raw => admissionSchema.parse(raw).capabilityId)])];
+    const capabilities = capabilityIds.slice(offset, offset + limit).map(capabilityId => {
+      const observation = latest.get(capabilityId) ?? null;
+      const admission = state.capabilityAdmissions[capabilityId] ? admissionSchema.parse(state.capabilityAdmissions[capabilityId]) : null;
+      const revision = admission ? publicRevision(state.capabilityRevisions[admission.revisionId]) : null;
+      const rawRevision = admission ? revisionSchema.parse(state.capabilityRevisions[admission.revisionId]) : null;
+      const current = context?.registries.snapshot().tools.filter(tool => tool.tool_id === (observation?.toolId ?? revision?.toolId));
+      const sameLocal = current?.length === 1 && capabilityContractHash(current[0]!) === observation?.contractHash;
+      const privateObservation = observation ? observationSchema.parse(state.capabilityObservations[observation.id]) : null;
+      const sameConnection = connection.discoveryAvailable && privateObservation?.connectionBinding === session?.admissionBinding;
+      const fresh = observation && Date.now() - Date.parse(observation.discoveredAt) <= 600000 && Date.parse(observation.discoveredAt) <= Date.now();
+      let reviewReason = !context ? "REVIEW_CONTEXT_UNAVAILABLE" : persistence === "unsupported-for-admission" ? "UNSUPPORTED_STORAGE" : !connection.discoveryAvailable ? "CONNECTION_UNAVAILABLE" : !observation ? "NO_OBSERVATION" : !observation.remoteMatches ? "REMOTE_CONTRACT_DRIFT" : !sameLocal ? "LOCAL_CONTRACT_CHANGED" : !sameConnection ? "CONNECTION_CHANGED" : !fresh || privateObservation?.discoveryGeneration !== (session?.discoveryGeneration ?? 0) ? "OBSERVATION_STALE" : null;
+      if (!reviewReason && current?.[0]) { try { supportedRead(current[0]); } catch { reviewReason = "UNSUPPORTED_EFFECT_OR_RISK"; } }
+      // Current local/binding drift blocks the display even before a refresh
+      // persists the BLOCKED transition. It never grants authority from a GET.
+      const currentMatchesRevision = current?.length === 1 && rawRevision && capabilityContractHash(current[0]!) === rawRevision.contractHash && rawRevision.contractHash === capabilityContractHash(rawRevision.definition);
+      const effectiveState = admission?.state === "AVAILABLE" && (!context || persistence === "unsupported-for-admission" || !connection.discoveryAvailable || rawRevision?.connectionBinding !== session?.admissionBinding || !currentMatchesRevision) ? "BLOCKED" : admission?.state ?? observation?.state ?? "BLOCKED";
+      return { capabilityId, observation, admission, revision, effectiveState, reviewEligible: reviewReason === null, reviewReason };
+    });
     return { observations: observations.slice(offset, offset + limit).map(publicObservation), revisions: revisions.slice(offset, offset + limit).map(publicRevision),
       admissions: admissions.slice(offset, offset + limit).map(value => admissionSchema.parse(value)), offset, limit,
-      persistence: repository.persistence === null ? "memory-only" : repository.persistence.readQueueDurability === "encrypted-single-writer" ? "durable-single-writer" : "unsupported-for-admission",
+      persistence, connection, capabilities, hasMoreCapabilities: capabilityIds.length > offset + limit,
       hasMoreObservations: observations.length > offset + limit, hasMoreRevisions: revisions.length > offset + limit, hasMoreAdmissions: admissions.length > offset + limit };
   });
 }

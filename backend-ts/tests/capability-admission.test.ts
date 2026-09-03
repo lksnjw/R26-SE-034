@@ -185,3 +185,45 @@ test("unqualified multi-writer storage cannot admit or execute using a process-l
   await expect(s.session.assertAdmission!(s.tool())).rejects.toThrow(/single-writer storage/);
   expect((await capabilityAdmissionCatalog(s.repository)).persistence).toBe("unsupported-for-admission"); expect(s.sdk.callTool).not.toHaveBeenCalled();
 });
+
+test("joined review view pairs latest unique observation with the actual active revision independently of history paging", async () => {
+  const s = await setup(), reviewed = await s.review();
+  for (let index = 0; index < 12; index++) await s.observe();
+  const view = await capabilityAdmissionCatalog(s.repository, 0, 10, { registries: s.registries, session: s.session });
+  expect(view.observations).toHaveLength(10); expect(view.capabilities).toHaveLength(1); expect(view.hasMoreCapabilities).toBe(false);
+  expect(view.capabilities[0]).toMatchObject({ effectiveState: "AVAILABLE", reviewEligible: true, admission: reviewed.admission, revision: { id: reviewed.revision.id } });
+  expect(view.capabilities[0]!.observation!.id).not.toBe(reviewed.revision.observationId);
+  expect(JSON.stringify(view)).not.toMatch(/connectionBinding|decisionScope|decisionHash|private-credential/);
+  expect((await capabilityAdmissionCatalog(s.repository, 10, 10, { registries: s.registries, session: s.session })).capabilities).toEqual([]);
+});
+
+test("review eligibility and displayed current drift are honest snapshots; a GET never modifies stored authority", async () => {
+  const s = await setup(), reviewed = await s.review();
+  s.changeTool({ description: "Updated local contract" });
+  const view = await capabilityAdmissionCatalog(s.repository, 0, 10, { registries: s.registries, session: s.session });
+  expect(view.capabilities[0]).toMatchObject({ effectiveState: "BLOCKED", reviewEligible: false, reviewReason: "LOCAL_CONTRACT_CHANGED", admission: { state: "AVAILABLE" } });
+  expect((await s.repository.snapshot()).capabilityAdmissions[reviewed.admission.capabilityId]!.state).toBe("AVAILABLE");
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test("closed/missing/unsupported sessions never appear live-qualified and cannot be reviewed from catalog hints", async () => {
+  const s = await setup(); await s.review();
+  const absent = await capabilityAdmissionCatalog(s.repository, 0, 10, { registries: s.registries });
+  expect(absent.connection).toMatchObject({ state: "NO_SESSION", discoveryAvailable: false });
+  expect(absent.capabilities[0]).toMatchObject({ effectiveState: "BLOCKED", reviewEligible: false, reviewReason: "CONNECTION_UNAVAILABLE" });
+  const unsupported = await capabilityAdmissionCatalog(s.repository, 0, 10, { registries: s.registries, session: { ...s.session, requiresReviewedRevision: false } });
+  expect(unsupported.connection.state).toBe("UNSUPPORTED_PROFILE");
+  const initialized = await capabilityAdmissionCatalog(s.repository, 0, 10, { registries: s.registries, session: s.session });
+  expect(initialized.connection.state).toBe("INITIALIZED_NOT_QUALIFIED");
+  await s.session.close();
+  expect((await capabilityAdmissionCatalog(s.repository, 0, 10, { registries: s.registries, session: s.session })).connection).toMatchObject({ state: "CLOSED", discoveryAvailable: false });
+});
+
+test("catalog rejects fresh review on stale generations or unsupported effect classes without hiding saved history", async () => {
+  const s = await setup(); await s.review(); s.changed();
+  expect((await capabilityAdmissionCatalog(s.repository, 0, 10, { registries: s.registries, session: s.session })).capabilities[0]).toMatchObject({ reviewEligible: false, reviewReason: "OBSERVATION_STALE" });
+  s.changeTool({ is_read_only: false }); await s.observe();
+  const view = await capabilityAdmissionCatalog(s.repository, 0, 10, { registries: s.registries, session: s.session });
+  expect(view.capabilities[0]).toMatchObject({ effectiveState: "BLOCKED", reviewEligible: false, reviewReason: "UNSUPPORTED_EFFECT_OR_RISK", revision: { policy: { effectClass: "read" } } });
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
