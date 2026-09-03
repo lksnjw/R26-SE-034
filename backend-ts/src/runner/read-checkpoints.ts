@@ -3,6 +3,8 @@ import type { Execution, Repository, RepositoryState, ReadRunProgress } from "..
 import type { RunnerLog, RunnerTimelineEntry } from "./executor.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
+import type { CompiledReadPlan } from "../workflows/compiled-read.js";
+import { assertReadFlowCompletion, assertSelectedReadNode, skippedActions, controlNodes } from "../workflows/read-control-flow.js";
 
 export class ReadRunCancelled extends Error {
   constructor() { super("Cancellation requested; no further read calls will start"); }
@@ -15,6 +17,8 @@ export type ReadExecutionHooks = {
   dispatchIntent(index: number, nodeId: string, verifiedRole: string): Promise<void>;
   completed(index: number, entry: RunnerTimelineEntry, log: RunnerLog): Promise<void>;
   failed(index: number, entry: RunnerTimelineEntry, log: RunnerLog, knownToolFailure: boolean): Promise<void>;
+  condition?(index: number, nodeId: string, predicate: boolean | undefined, verifiedRole: string): Promise<void>;
+  skipped?(index: number, nodeId: string, label: string, conditionId: string, selected: "then" | "else", verifiedRole: string): Promise<void>;
 };
 
 /** Event and transition share the repository persistence transaction. No raw
@@ -55,7 +59,7 @@ export function assertCurrentRunController(state: RepositoryState, execution: Ex
 
 export class ReadCheckpoints implements ReadExecutionHooks {
   private readonly contentHash: string;
-  constructor(readonly repository: Repository, readonly executionId: string, readonly epoch: number, readonly yaml: string, readonly signal?: AbortSignal, readonly semanticHash?: string) { this.contentHash = workflowContentHash(yaml); }
+  constructor(readonly repository: Repository, readonly executionId: string, readonly epoch: number, readonly yaml: string, readonly signal?: AbortSignal, readonly semanticHash?: string, readonly compiledPlan?: CompiledReadPlan) { this.contentHash = workflowContentHash(yaml); }
   private current(state: RepositoryState): Execution & { readProgress: ReadRunProgress } {
     const item = state.executions[this.executionId];
     if (!item || item.status !== "RUNNING" || item.readProgress?.profile !== "read-progress-v1" || item.readProgress.epoch !== this.epoch ||
@@ -72,6 +76,7 @@ export class ReadCheckpoints implements ReadExecutionHooks {
       const item = this.current(state), progress = item.readProgress;
       if (progress.cancellation || this.signal?.aborted) throw new ReadRunCancelled();
       if (progress.nextStepIndex !== index || Object.hasOwn(progress.attempts, nodeId)) throw new Error("Read node cannot be replayed");
+      if (this.compiledPlan?.ir.flow) assertSelectedReadNode(this.compiledPlan.ir.flow, nodeId, progress.decisions ?? {});
       const attempt = { id: `attempt-${randomBytes(8).toString("hex")}`, nodeId, stepIndex: index, status: "PREPARING" as const, startedAt };
       progress.attempts[nodeId] = attempt;
       (state.timelines[item.id] ??= []).push({ id: `tl_${index + 1}`, nodeId, label, attemptId: attempt.id, status: "RUNNING", phase: "PREPARING", startedAt, completedAt: null, durationMs: 0, sideEffect: false });
@@ -83,6 +88,7 @@ export class ReadCheckpoints implements ReadExecutionHooks {
       const item = this.current(state), progress = item.readProgress;
       if (progress.cancellation || this.signal?.aborted) throw new ReadRunCancelled();
       assertCurrentRunController(state, item, item.startedBy.id, verifiedRole);
+      if (this.compiledPlan?.ir.flow) assertSelectedReadNode(this.compiledPlan.ir.flow, nodeId, progress.decisions ?? {});
       const attempt = progress.attempts[nodeId];
       if (!attempt || attempt.stepIndex !== index || attempt.status !== "PREPARING" || progress.nextStepIndex !== index) throw new Error("Invalid dispatch checkpoint");
       attempt.status = "DISPATCH_INTENT"; attempt.dispatchIntentAt = new Date().toISOString();
@@ -97,6 +103,34 @@ export class ReadCheckpoints implements ReadExecutionHooks {
   }
   async failed(index: number, entry: RunnerTimelineEntry, log: RunnerLog, knownToolFailure: boolean): Promise<void> {
     await this.record(index, entry, log, false, knownToolFailure);
+  }
+  async condition(index: number, nodeId: string, predicate: boolean | undefined, verifiedRole: string): Promise<void> {
+    await this.commit(state => {
+      const item = this.current(state), progress = item.readProgress, flow = this.compiledPlan?.ir.flow;
+      if (progress.cancellation || this.signal?.aborted) throw new ReadRunCancelled();
+      assertCurrentRunController(state, item, item.startedBy.id, verifiedRole);
+      if (!flow || !controlNodes(flow).some(node => node.id === nodeId) || progress.nextStepIndex !== index || Object.hasOwn(progress.decisions ?? {}, nodeId)) throw new Error("Invalid condition checkpoint");
+      assertSelectedReadNode(flow, nodeId, progress.decisions ?? {});
+      const evaluatedAt = new Date().toISOString(), selected = predicate === undefined ? undefined : predicate ? "then" as const : "else" as const;
+      (progress.decisions ??= {})[nodeId] = { status: selected ? "DONE" : "FAILED", ...(selected ? { selected } : {}), evaluatedAt, stepIndex: index };
+      (state.timelines[item.id] ??= []).push({ id: `control_${nodeId}`, nodeId, label: `If ${nodeId}`, status: selected ? "DONE" : "FAILED", startedAt: evaluatedAt, completedAt: evaluatedAt, durationMs: 0, sideEffect: false,
+        outcome: selected ? "CONDITION_SELECTED" : "NOT_DISPATCHED", ...(selected ? { output: { selectedBranch: selected === "then" ? "If yes" : "If no" } } : {}) });
+      appendExecutionEvent(state, item, selected ? "condition.selected" : "condition.failed", { stepIndex: index, selectedBranch: selected ?? null, outcome: "NO_TOOL_DISPATCH" }, nodeId);
+    });
+  }
+  async skipped(index: number, nodeId: string, label: string, conditionId: string, selected: "then" | "else", verifiedRole: string): Promise<void> {
+    await this.commit(state => {
+      const item = this.current(state), progress = item.readProgress, flow = this.compiledPlan?.ir.flow;
+      if (progress.cancellation || this.signal?.aborted) throw new ReadRunCancelled();
+      assertCurrentRunController(state, item, item.startedBy.id, verifiedRole);
+      const decision = progress.decisions?.[conditionId];
+      if (!flow || decision?.status !== "DONE" || decision.selected !== selected || !skippedActions(flow, conditionId, selected).includes(nodeId) || progress.nextStepIndex !== index || Object.hasOwn(progress.attempts, nodeId)) throw new Error("Invalid branch skip checkpoint");
+      const timestamp = new Date().toISOString(), id = `attempt-${randomBytes(8).toString("hex")}`;
+      progress.attempts[nodeId] = { id, nodeId, stepIndex: index, status: "SKIPPED", startedAt: timestamp, completedAt: timestamp };
+      (state.timelines[item.id] ??= []).push({ id: `tl_${index + 1}`, nodeId, label, attemptId: id, status: "SKIPPED", outcome: "NOT_SELECTED", startedAt: timestamp, completedAt: timestamp, durationMs: 0, sideEffect: false, conditionId, selectedBranch: selected });
+      progress.nextStepIndex = index + 1;
+      appendExecutionEvent(state, item, "node.skipped", { stepIndex: index, conditionId, selectedBranch: selected, outcome: "NOT_DISPATCHED" }, nodeId, id);
+    });
   }
   private async record(index: number, entry: RunnerTimelineEntry, log: RunnerLog, done: boolean, knownToolFailure = false): Promise<void> {
     await this.commit((state) => {
@@ -124,8 +158,10 @@ export class ReadCheckpoints implements ReadExecutionHooks {
       const unknown = Object.values(progress.attempts).find((attempt) => attempt.status === "UNKNOWN");
       const stopped = Object.values(progress.attempts).findLast((attempt) => attempt.status === "FAILED");
       item.status = unknown ? "RECOVERY_REQUIRED" : progress.cancellation || this.signal?.aborted ? "CANCELLED" : failed ? "FAILED" : "DONE";
-      if (item.status === "DONE" && (progress.nextStepIndex !== parseWorkflowYAMLStrict(this.yaml).steps.length || Object.values(progress.attempts).some((attempt) => attempt.status !== "DONE")))
+      if (item.status === "DONE" && (progress.nextStepIndex !== parseWorkflowYAMLStrict(this.yaml).steps.length || Object.values(progress.attempts).some((attempt) => !["DONE", ...(this.compiledPlan?.ir.flow ? ["SKIPPED"] : [])].includes(attempt.status))))
         throw new Error("Cannot complete a read run with missing or unconfirmed node checkpoints");
+      if (item.status === "DONE" && this.compiledPlan?.ir.flow) assertReadFlowCompletion(this.compiledPlan.ir.flow, progress.decisions ?? {}, progress.attempts);
+      if (item.status === "DONE" && item.workflowSnapshot?.compilation?.schemaVersion === "workflow-read-ir/v2" && !this.compiledPlan?.ir.flow) throw new Error("Conditional completion requires the pinned compiled flow");
       item.completedAt = new Date().toISOString(); item.durationMs = Math.max(0, Date.parse(item.completedAt) - Date.parse(item.startedAt));
       if (item.status === "CANCELLED") {
         for (const attempt of Object.values(progress.attempts)) if (attempt.status === "PREPARING") {
@@ -137,7 +173,7 @@ export class ReadCheckpoints implements ReadExecutionHooks {
         item.agentSummary = "Cancellation was observed at a read boundary. No further reads will start; confirmed saved answers are retained. This does not confirm that remote processing stopped.";
       } else item.agentSummary = item.status === "DONE" ? "Published read workflow completed with deterministic execution." : "Read workflow stopped. No automatic replay was performed; saved completed answers are retained.";
       if (item.status === "RECOVERY_REQUIRED") progress.recoveryReason = "READ_OUTCOME_UNKNOWN";
-      if (failed || unknown) item.failure = { failureCategory: unknown ? "READ_OUTCOME_UNKNOWN" : "READ_EXECUTION_FAILED", failedStepId: unknown?.nodeId ?? stopped?.nodeId ?? "preflight" };
+      if (failed || unknown) item.failure = { failureCategory: unknown ? "READ_OUTCOME_UNKNOWN" : "READ_EXECUTION_FAILED", failedStepId: unknown?.nodeId ?? stopped?.nodeId ?? Object.entries(progress.decisions ?? {}).findLast(([, decision]) => decision.status === "FAILED")?.[0] ?? "preflight" };
       appendExecutionEvent(state, item, item.status === "RECOVERY_REQUIRED" ? "run.recovery_required" : "run.completed", { status: item.status, nextStepIndex: progress.nextStepIndex });
       appendRunAudit(state, item, "execution.completed");
       return structuredClone(item);

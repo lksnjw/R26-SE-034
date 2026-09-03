@@ -7,13 +7,14 @@ import { exactBridgeName } from "../tools/erpbridge-contract.js";
 import { validateToolInput, validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
+import { parseReadControlFlow, validateReadControlFlow, type ReadSequence } from "./read-control-flow.js";
 
 export type ReadReference = { kind: "ref"; source: "workflowInput" | "nodeOutput"; nodeId?: string; path: string[] };
 export type ReadBinding = ReadReference | { kind: "literal"; value: string | number | boolean | null } |
   { kind: "object"; fields: Record<string, ReadBinding> } | { kind: "array"; items: ReadBinding[] } |
   { kind: "template"; parts: Array<string | ReadReference> };
 export type ReadAdmissionPin = { connectionId: string; capabilityId: string; revisionId: string; admissionVersion: number; contractHash: string };
-export type ReadIR = { schemaVersion: "workflow-read-ir/v1"; compilerVersion: "read-compiler/v1"; trigger: { kind: "manual" };
+export type ReadIR = { schemaVersion: "workflow-read-ir/v1" | "workflow-read-ir/v2"; compilerVersion: "read-compiler/v1" | "read-compiler/v2"; trigger: { kind: "manual" }; flow?: ReadSequence;
   inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: Array<{ id: string; kind: "action";
     capability: { toolId: string; action: string; remoteName: string; contractHash: string; admission?: ReadAdmissionPin };
     inputs: ReadBinding }> } };
@@ -89,6 +90,11 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
   }
   // Bound the projection as well as its source: reference expansion/metadata
   // cannot turn a bounded YAML file into an unbounded saved artifact.
+  if (blueprint.metadata?.controlFlow !== undefined) {
+    ir.schemaVersion = "workflow-read-ir/v2"; ir.compilerVersion = "read-compiler/v2";
+    try { ir.flow = parseReadControlFlow(blueprint.metadata.controlFlow).root; issues.push(...validateReadControlFlow(ir.flow, ir, outputs).issues); }
+    catch { issues.push("Structured control flow is malformed or exceeds supported limits"); }
+  }
   if (canonicalJSONBytes(ir).length > 1_000_000) issues.push("Compiled read artifact exceeds supported size");
   return { ir, semanticHash: hashIR(ir), issues: [...new Set(issues)] };
 }

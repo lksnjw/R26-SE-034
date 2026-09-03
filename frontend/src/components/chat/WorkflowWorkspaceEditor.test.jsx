@@ -233,3 +233,14 @@ test("compiler and publication readiness reasons are visible and not hidden behi
   expect(screen.getByText(/Published execution artifact needs current capability review/)).toBeTruthy();
   expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
 });
+
+test("workspace renders confirmed branch scopes, selectable action nodes and truthful skipped-node status", async () => {
+  const flow = { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "last" }] } }] };
+  workflowService.readiness.mockResolvedValue({ ...record, authoring: { profile: "read-authoring/v1", nodes: [], controlFlow: flow } });
+  executionService.list.mockResolvedValue([{ id: "branch-run", workflowId: "report", startedAt: "2026-10-05T00:00:00Z", status: "DONE", workflowSnapshot: { yaml }, readProgress: { decisions: { gate: { status: "DONE", selected: "then" } } }, stepOutputs: { first: { structuredContent: { value: "selected answer" } } } }]);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "gate", status: "DONE", outcome: "CONDITION_SELECTED" }, { nodeId: "first", status: "DONE" }, { nodeId: "last", status: "SKIPPED" }]);
+  await open(); await screen.findByText("If yes · Selected");
+  expect(screen.getByText(/another branch was selected.*no answer/)).toBeTruthy(); expect(screen.getByText("selected answer")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /first demo.echo/ })); expect(screen.getByRole("textbox", { name: "Node label" })).toBeTruthy();
+  expect(workflowService.run).not.toHaveBeenCalled();
+});

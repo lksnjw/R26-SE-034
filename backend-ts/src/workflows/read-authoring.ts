@@ -4,7 +4,8 @@ import type { ToolDefinition } from "../registry/schemas.js";
 import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
-import type { ReadReference } from "./compiled-read.js";
+import { buildReadIR, type ReadReference } from "./compiled-read.js";
+import { validateReadControlFlow } from "./read-control-flow.js";
 import { isSecretField } from "../redact/secrets.js";
 
 type Schema = Record<string, unknown>;
@@ -57,6 +58,8 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   const declaredInput = blueprint.trigger.config?.inputSchema as Schema | undefined;
   const inputSchema = declaredInput?.type === "object" ? project(declaredInput) : undefined;
   const upstream = sources(inputSchema, { kind: "ref", source: "workflowInput", path: [] }, "Workflow input");
+  const compiled = blueprint.metadata?.controlFlow === undefined ? undefined : buildReadIR(blueprint, tools, role);
+  const scopes = compiled?.ir.flow && !compiled.issues.length ? validateReadControlFlow(compiled.ir.flow, compiled.ir, new Map()).scopes : undefined;
   let prefix = blueprint.trigger.type === "manual" && Object.keys(blueprint.trigger.config ?? {}).every(key => key === "inputSchema"), seen = new Set<string>();
   const nodes = blueprint.steps.slice(0, 200).map(step => {
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action), tool = matches.length === 1 ? matches[0] : undefined;
@@ -65,7 +68,7 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     const validScope = prefix && safeID(step.id) && !seen.has(step.id) && Object.keys(step).every(key => ["id", "kind", "action", "parameters", "description"].includes(key));
     const result = { nodeId: step.id, sourceAction: step.action ?? "", state: schema ? "LOCAL_CONTRACT" : "UNAVAILABLE",
       ...(schema && tool ? { inputSchema: schema, contractHash: capabilityContractHash(tool), actions: [tool.name, tool.mcp_tool_name] } : {}),
-      dataSources: validScope ? upstream.slice(-32).map(source => structuredClone(source)) : [],
+      dataSources: validScope && (!compiled || scopes) ? upstream.filter(source => !scopes || source.binding.source === "workflowInput" || scopes.get(step.id)?.has(source.binding.nodeId!)).slice(-32).map(source => structuredClone(source)) : [],
       reason: schema ? "Local schema guidance only; live admission and runtime checks are separate" : "No supported role-granted local read schema; existing values are preserved" };
     prefix = validScope && granted && !!schema;
     if (prefix && tool?.bridge_contract?.output_schema) {
@@ -75,7 +78,7 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     seen.add(step.id);
     return result;
   });
-  const value = { profile: "read-authoring/v1", registryHash, ...(inputSchema ? { inputSchema } : {}), nodes };
-  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, nodes: [], reason: "Schema guidance exceeds supported size; values remain preserved" };
+  const value = { profile: "read-authoring/v1", registryHash, ...(inputSchema ? { inputSchema } : {}), nodes, ...(compiled?.ir.flow && !compiled.issues.length ? { controlFlow: compiled.ir.flow } : {}) };
+  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, nodes: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
   return value;
 }

@@ -82,7 +82,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation, authoring,
         can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
-        authorization: "rechecked_at_dispatch", executionProfile: "sequential-read-v1" }, "Readiness checked", { traceId }));
+        authorization: "rechecked_at_dispatch", executionProfile: "controlFlow" in authoring ? "conditional-read-v1" : "sequential-read-v1" }, "Readiness checked", { traceId }));
     }
     if (kind === "node-proposals") {
       const parsed = proposalSchema.safeParse(request.body);

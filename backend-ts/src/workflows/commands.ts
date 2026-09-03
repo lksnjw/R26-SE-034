@@ -3,6 +3,7 @@ import { jsonObjectSchema, workflowStepBlueprintSchema, type Workflow } from "..
 import { parseWorkflowYAMLStrict, stringifyWorkflowYAML, workflowContentHash } from "../parser/workflow.js";
 import { HandlerFailure, type CurrentUser } from "../http/handlers/common.js";
 import type { RepositoryState } from "../repository/store.js";
+import { readControlFlowSchema } from "./read-control-flow.js";
 
 export const nodeIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 export const nodePatchSchema = z.object({ action: z.string().min(1).max(128).optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
@@ -15,6 +16,7 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("removeNode"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("moveNode"), nodeId: nodeIdSchema, beforeNodeId: nodeIdSchema.nullable() }).strict(),
   z.object({ type: z.literal("restoreDraft"), yaml: z.string().min(1).max(200000) }).strict(),
+  z.object({ type: z.literal("setControlFlow"), flow: readControlFlowSchema }).strict(),
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
 export function permittedWorkflow(workflow: Workflow, user: CurrentUser, editing: boolean): boolean {
@@ -46,6 +48,7 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
   if (change.type === "discardProposal") return source;
   const blueprint = parseWorkflowYAMLStrict(change.type === "restoreDraft" ? change.yaml : source);
   if (change.type === "restoreDraft") return stringifyWorkflowYAML(blueprint);
+  if (change.type === "setControlFlow") { blueprint.metadata = { ...blueprint.metadata, controlFlow: change.flow }; return stringifyWorkflowYAML(blueprint); }
   if (change.type === "addNode") {
     if (blueprint.steps.some(step => step.id === change.node.id)) throw new HandlerFailure(422, "Node ID already exists");
     const index = change.beforeNodeId === null ? blueprint.steps.length : blueprint.steps.findIndex(step => step.id === change.beforeNodeId);

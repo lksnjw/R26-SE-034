@@ -8,6 +8,13 @@ import ExecutionTimeline from "./ExecutionTimeline";
 import GovernanceBlockPanel from "./GovernanceBlockPanel";
 afterEach(cleanup);
 
+test("conditions and skipped branches are not presented as ERP answers or failures", () => {
+  render(<ExecutionTimeline timeline={[{ nodeId: "gate", status: "DONE", outcome: "CONDITION_SELECTED", output: { selectedBranch: "If yes" } }, { nodeId: "no", status: "SKIPPED", outcome: "NOT_SELECTED" }]} />);
+  expect(screen.getByText(/deterministic condition, not an ERP tool result/)).toBeTruthy();
+  expect(screen.getByText(/Not selected.*No tool call or answer/)).toBeTruthy();
+  expect(screen.queryByText("Saved tool failure response")).toBeNull();
+});
+
 const policyFailure = {
   failureCategory: "POLICY_VIOLATION",
   failedStepId: "node-2",

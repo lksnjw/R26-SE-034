@@ -8,7 +8,7 @@ import { ReadCheckpoints, reconcileInterruptedExecutions } from "../src/runner/r
 import { readJobQueue } from "../src/runner/read-jobs.js";
 import type { ApplicationServices } from "../src/http/app.js";
 import { RegistryService } from "../src/registry/service.js";
-import { toolSchema } from "../src/registry/schemas.js";
+import { toolSchema, ruleSchema } from "../src/registry/schemas.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
@@ -75,6 +75,117 @@ test.each([false, true])("published two-node read executes exact bindings with p
   }
   expect(s.listTools).toHaveBeenCalledTimes(1);
   expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
+const conditionalYAML = (predicate: unknown = { kind: "ref", source: "workflowInput", path: ["enabled"] }) => stringify({ name: "Branch report", description: "Read exactly one branch", trigger: { type: "manual" }, steps: ["yes", "no", "after"].map(id => ({ id, action: "finance.read", parameters: { id } })), metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "yes" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "no" }] } }, { kind: "action", nodeId: "after" }] } } } });
+
+test.each([true, false])("conditional read chooses exactly one path with enabled=%s, preserves source indexes and records the other path as skipped", async enabled => {
+  const s = await setup({ provider: true }); await s.seed(conditionalYAML());
+  const response = await s.run({ input: { enabled } }); expect(response.statusCode, response.body).toBe(200);
+  const execution = response.json().data, state = await s.repository.snapshot();
+  expect(execution).toMatchObject({ status: "DONE", workflowSnapshot: { executionProfile: "conditional-read-v1", compilation: { schemaVersion: "workflow-read-ir/v2" } }, readProgress: { nextStepIndex: 3, decisions: { gate: { status: "DONE", selected: enabled ? "then" : "else" } } } });
+  expect(s.callTool.mock.calls.map(call => call[1].id)).toEqual([enabled ? "yes" : "no", "after"]);
+  expect(Object.keys(execution.stepOutputs)).toEqual([enabled ? "yes" : "no", "after"]);
+  const skipped = enabled ? "no" : "yes";
+  expect(execution.readProgress.attempts[skipped]).toMatchObject({ status: "SKIPPED", stepIndex: enabled ? 1 : 0 });
+  expect(execution.readProgress.attempts[skipped].dispatchIntentAt).toBeUndefined();
+  expect(state.timelines[execution.id]!.find(entry => entry.nodeId === "gate")).toMatchObject({ outcome: "CONDITION_SELECTED", output: { selectedBranch: enabled ? "If yes" : "If no" } });
+  expect(state.executionEvents[execution.id]!.findIndex(event => event.type === "condition.selected")).toBeLessThan(state.executionEvents[execution.id]!.findIndex(event => event.type === "node.dispatch_intent"));
+  expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
+test.each([[true, true], [true, false], [false, true]])("nested conditions with outer=%s inner=%s evaluate only the selected scope", async (outer, inner) => {
+  const s = await setup();
+  const action = (nodeId: string) => ({ kind: "action", nodeId });
+  const block = (...nodes: unknown[]) => ({ kind: "sequence", nodes });
+  await s.seed(stringify({ name: "Nested read", description: "Select one nested path", trigger: { type: "manual" },
+    steps: ["first", "yes", "no", "outside", "after"].map(id => ({ id, action: "finance.read", parameters: { id } })),
+    metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: block({ kind: "if", id: "outerGate", predicate: { kind: "ref", source: "workflowInput", path: ["outer"] },
+      then: block(action("first"), { kind: "if", id: "innerGate", predicate: { kind: "ref", source: "workflowInput", path: ["inner"] }, then: block(action("yes")), else: block(action("no")) }),
+      else: block(action("outside")) }, action("after")) } } }));
+  const response = await s.run({ input: { outer, inner } }); expect(response.statusCode, response.body).toBe(200);
+  const item = response.json().data;
+  expect(item.status).toBe("DONE"); expect(item.readProgress.nextStepIndex).toBe(5);
+  expect(s.callTool.mock.calls.map(call => call[1].id)).toEqual(outer ? ["first", inner ? "yes" : "no", "after"] : ["outside", "after"]);
+  expect(Object.keys(item.readProgress.decisions)).toEqual(outer ? ["outerGate", "innerGate"] : ["outerGate"]);
+  for (const id of ["first", "yes", "no", "outside", "after"]) {
+    const called = s.callTool.mock.calls.some(call => call[1].id === id);
+    expect(item.readProgress.attempts[id].status).toBe(called ? "DONE" : "SKIPPED");
+    if (!called) { expect(item.readProgress.attempts[id].dispatchIntentAt).toBeUndefined(); expect(item.stepOutputs[id]).toBeUndefined(); }
+  }
+});
+
+test("condition and skipped action IDs can match inherited object members without false replay detection", async () => {
+  const s = await setup(), blueprint = parseWorkflowYAMLStrict(conditionalYAML());
+  blueprint.steps[0]!.id = "valueOf";
+  const flow = blueprint.metadata!.controlFlow as { root: { nodes: Array<{ id?: string; then?: { nodes: Array<{ nodeId: string }> } }> } };
+  flow.root.nodes[0]!.id = "toString"; flow.root.nodes[0]!.then!.nodes[0]!.nodeId = "valueOf";
+  await s.seed(stringify(blueprint)); const response = await s.run({ input: { enabled: false } });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.readProgress).toMatchObject({ decisions: { toString: { status: "DONE", selected: "else" } }, attempts: { valueOf: { status: "SKIPPED" } } });
+  expect(s.callTool.mock.calls.map(call => call[1].id)).toEqual(["no", "after"]);
+});
+
+test.each([undefined, null, "true", 1, {}, []])("condition input %j fails without truthiness coercion or a branch SDK call", async enabled => {
+  const s = await setup(); await s.seed(conditionalYAML());
+  const response = await s.run({ input: enabled === undefined ? {} : { enabled } }); expect(response.statusCode, response.body).toBe(422);
+  const execution = Object.values((await s.repository.snapshot()).executions)[0]!;
+  expect(execution).toMatchObject({ status: "FAILED", failure: { failedStepId: "gate" }, readProgress: { decisions: { gate: { status: "FAILED" } }, nextStepIndex: 0 } });
+  expect(execution.stepOutputs).toEqual({}); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("condition checkpoint lost acknowledgement stops all branch work and never replays the decision or reads", async () => {
+  const s = await setup(); await s.seed(conditionalYAML());
+  const original = s.repository.mutate.bind(s.repository);
+  vi.spyOn(s.repository, "mutate").mockImplementation(async mutation => {
+    let decisionWritten = false;
+    const result = await original(state => { const before = Object.values(state.executions).some(item => item.readProgress?.decisions?.gate); const value = mutation(state); decisionWritten = !before && Object.values(state.executions).some(item => item.readProgress?.decisions?.gate); return value; });
+    if (decisionWritten) throw new Error("Lost decision acknowledgement"); return result;
+  });
+  const response = await s.run({ input: { enabled: true } }); expect(response.statusCode).toBe(503);
+  expect(s.callTool).not.toHaveBeenCalled();
+  expect(Object.values((await s.repository.snapshot()).executions)[0]!.status).toBe("RECOVERY_REQUIRED");
+});
+
+test("conditional read cancellation after decision stops before any branch dispatch", async () => {
+  const s = await setup(); await s.seed(conditionalYAML());
+  const original = s.repository.mutate.bind(s.repository);
+  vi.spyOn(s.repository, "mutate").mockImplementation(mutation => original(state => { const value = mutation(state); const item = Object.values(state.executions).find(item => item.readProgress?.decisions?.gate); if (item?.readProgress && item.status === "RUNNING") item.readProgress.cancellation = { requestedAt: new Date().toISOString(), requestedBy: item.startedBy }; return value; }));
+  const response = await s.run({ input: { enabled: true } }); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.status).toBe("CANCELLED"); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("a skipped prerequisite cannot satisfy process order merely because it is earlier in the source catalog", async () => {
+  const s = await setup();
+  const rule = ruleSchema.parse({ rule_id: "CONFIRMED-PATH-ORDER", rule_type: "process_order", enabled: true, enforcement_action: "block", condition: { value: ["finance.read", "invoice-read"] } });
+  vi.spyOn(s.services.registries, "enabledRules").mockReturnValue([rule]);
+  const blueprint = parseWorkflowYAMLStrict(conditionalYAML()); blueprint.steps[1]!.action = "invoice-read"; blueprint.steps[2]!.action = "invoice-read";
+  const source = stringify(blueprint); expect(s.validator.validatePlan("Original declarations", source, "Platform Admin").passed).toBe(true);
+  await s.seed(source); const response = await s.run({ input: { enabled: false } }); expect(response.statusCode, response.body).toBe(422);
+  expect(s.callTool).not.toHaveBeenCalled();
+  const execution = Object.values((await s.repository.snapshot()).executions)[0]!;
+  expect(execution).toMatchObject({ status: "FAILED", readProgress: { attempts: { yes: { status: "SKIPPED" }, no: { status: "FAILED" } } } });
+});
+
+test("queued conditional execution preserves the same selected-path checkpoints without invoking a model", async () => {
+  const s = await setup({ provider: true }); await s.seed(conditionalYAML());
+  const response = await s.run({ input: { enabled: false }, mode: "async-read", idempotencyKey: "conditional_job_request_0001" }); expect(response.statusCode, response.body).toBe(202);
+  const id = response.json().data.id;
+  await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("DONE"));
+  expect(s.callTool.mock.calls.map(call => call[1].id)).toEqual(["no", "after"]); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
+test("lost branch-skip acknowledgement retains its receipt and stops before a dependent branch SDK read", async () => {
+  const s = await setup(); await s.seed(conditionalYAML()); const original = s.repository.mutate.bind(s.repository);
+  vi.spyOn(s.repository, "mutate").mockImplementation(async mutation => {
+    let skipWritten = false;
+    const result = await original(state => { const before = Object.values(state.executions).some(item => item.readProgress?.attempts.yes?.status === "SKIPPED"); const value = mutation(state); skipWritten = !before && Object.values(state.executions).some(item => item.readProgress?.attempts.yes?.status === "SKIPPED"); return value; });
+    if (skipWritten) throw new Error("Lost skip acknowledgement"); return result;
+  });
+  expect((await s.run({ input: { enabled: false } })).statusCode).toBe(503); expect(s.callTool).not.toHaveBeenCalled();
+  const execution = Object.values((await s.repository.snapshot()).executions)[0]!;
+  expect(execution).toMatchObject({ status: "RECOVERY_REQUIRED", readProgress: { attempts: { yes: { status: "SKIPPED" } } } });
+  await reconcileInterruptedExecutions(s.repository); expect(s.callTool).not.toHaveBeenCalled();
 });
 
 test("candidate stays a draft until explicit publication, then runs without a provider", async () => {

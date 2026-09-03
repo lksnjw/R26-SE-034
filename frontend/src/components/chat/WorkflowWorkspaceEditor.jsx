@@ -8,6 +8,7 @@ import "./workflowWorkspace.css";
 import ReadableValue, { ReadableResult } from "./ReadableValue";
 import ValueFields from "./ValueFields";
 import SchemaFields from "./SchemaFields";
+import ReadFlowTree from "./ReadFlowTree";
 import { useExecutionMonitor } from "../../hooks/useExecutionMonitor";
 import ExecutionRunControls from "../executions/ExecutionRunControls";
 import { isActiveExecution } from "../../utils/executionEvents";
@@ -125,9 +126,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
         <input className={input} aria-label="New node tool" placeholder="Exact registered tool name" value={newAction} onChange={(event) => setNewAction(event.target.value)} required />
         <button className={`${button} bg-primary/10 text-primary`} disabled={busy}>Add draft node</button><p className="text-[10px] text-gray-500">Fill required parameters in the inspector. Unavailable tools remain blocked drafts.</p>
       </form>}
-      <p className="mb-4 text-[10px] leading-4 text-gray-500">Source-order flow · conditions and approvals are preserved, not inferred as branch paths.</p>
-      <ol className="workspace-flow space-y-4">
-        {preview.steps.map((step, index) => {
+      <p className="mb-4 text-[10px] leading-4 text-gray-500">{authoring?.controlFlow ? "Structured read flow · exactly one path per boolean condition. Branch outputs remain in scope." : "Source-order flow · conditions and approvals are preserved, not inferred as branch paths."}</p>
+      <ReadFlowTree flow={authoring?.controlFlow} steps={preview.steps} decisions={snapshotMatches ? shownRun?.readProgress?.decisions : undefined} renderAction={(step, index) => {
           const attempt = shownTimeline.find((item) => item.nodeId === step.id);
           const output = shownRun?.stepOutputs?.[step.id] ?? (attempt?.status === "FAILED" ? attempt.output : undefined);
           return <li key={step.id} className="relative">
@@ -142,9 +142,9 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
             {attempt?.status === "UNKNOWN" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-amber-700 dark:text-amber-300">Outcome unknown · the read may have reached ERP, but no confirmed answer was saved. No automatic replay.</p>}
             {attempt?.status === "RUNNING" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">{attempt.phase === "DISPATCH_INTENT" ? "Read dispatch recorded · waiting for a saved answer" : "Checking this node before dispatch"}</p>}
             {attempt?.outcome === "NOT_DISPATCHED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">No dispatch was recorded for this attempt.</p>}
+            {attempt?.status === "SKIPPED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">Skipped in this run · another branch was selected. This node was not called and has no answer.</p>}
           </li>;
-        })}
-      </ol>
+        }} />
       {node && <><details key={`${node.id}:${record.version}`} open={!onNodeContext} className="mt-5 border-t border-gray-200 pt-3 text-xs dark:border-gray-700"><summary className="cursor-pointer font-medium">Node settings · {node.id}</summary><NodeInspector node={node} canEdit={canEdit} busy={busy} sessionId={sessionId} context={{ workflowId, nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash }} onProposal={setProposal} sharedChat={Boolean(onNodeContext)} draftStorageKey={selectionStorageKey ? `${selectionStorageKey}.node-prompt.${node.id}` : null} authoring={authoring?.nodes?.find(item => item.nodeId === node.id)} onPreview={(patch) => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "updateNode", nodeId: node.id, patch }, before: node.source, after: { ...node.source, ...patch } })} /></details>
         {canEdit && <div className="mt-3 flex flex-wrap gap-1">{onFocusChat && <button className={`${button} text-primary lg:hidden`} onClick={onFocusChat}>Edit this node in chat</button>}<button className={button} disabled={busy || preview.steps.at(-1)?.id === node.id} onClick={() => perform(() => save({ type: "moveNode", nodeId: node.id, beforeNodeId: null }))}>Move to end</button><button className={`${button} text-red-600`} disabled={busy} onClick={() => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "removeNode", nodeId: node.id }, before: node.source, after: null })}>Remove node…</button></div>}</>}
       {canEdit && pendingProposal && <section aria-label="Node change preview" className="workspace-reveal mt-5 border-y border-primary/25 py-4">

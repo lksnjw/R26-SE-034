@@ -31,6 +31,8 @@ function ExecutionTimeline({ timeline = [] }) {
               </p>
             ) : null}
             {step.status === "UNKNOWN" && <p className="ml-9 mt-1 text-xs text-amber-700 dark:text-amber-300">The read may have reached ERP, but no confirmed answer was saved. Do not assume success or retry it automatically.</p>}
+            {step.status === "SKIPPED" && <p className="ml-9 mt-1 text-xs text-gray-500">Not selected by the recorded condition. No tool call or answer.</p>}
+            {step.outcome === "CONDITION_SELECTED" && <p className="ml-9 mt-1 text-xs text-gray-500">{step.output?.selectedBranch} selected · deterministic condition, not an ERP tool result.</p>}
             {step.outcome === "NOT_DISPATCHED" && <p className="ml-9 mt-1 text-xs text-gray-500">No dispatch was recorded for this attempt.</p>}
             {step.status === "FAILED" && step.output?.isError === true && <details className="ml-9 mt-2 text-xs"><summary className="cursor-pointer">Saved tool failure response</summary><div className="mt-2"><ReadableResult value={step.output} /></div></details>}
           </div>

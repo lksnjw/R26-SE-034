@@ -29,6 +29,7 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
     if (publication?.yaml !== workflow.yaml) throw new HandlerFailure(409, "Publication changed during compilation preflight", { code: "PUBLISHED_SNAPSHOT_REQUIRED" });
     return prepareCompiledExecution(state, services, publication, workflow.yaml, user.role);
   });
+  const profile = compilation.plan.ir.flow ? "conditional-read-v1" as const : "sequential-read-v1" as const;
   if (compilation.plan.ir.inputSchema && validateToolInput(compilation.plan.ir.inputSchema, input).length)
     return reply.status(422).send(fail("Workflow input does not meet its declared schema; no run was admitted", { code: "WORKFLOW_INPUT_INVALID", traceId }));
   const queued = (request.body as { mode?: string } | undefined)?.mode === "async-read";
@@ -49,7 +50,7 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
       readProgress: newReadProgress(services.repository), stepOutputs: {},
       ...(workflow.chatSessionId === undefined ? {} : { chatSessionId: workflow.chatSessionId }),
       workflowSnapshot: { version: workflow.publishedVersion, contentHash: workflowContentHash(workflow.yaml), registryHash: token.registry_hash,
-        yaml: workflow.yaml, input: withoutSecretFields(input) as Record<string, unknown>, executionProfile: "sequential-read-v1", compilation: compilation.receipt } };
+        yaml: workflow.yaml, input: withoutSecretFields(input) as Record<string, unknown>, executionProfile: profile, compilation: compilation.receipt } };
     try { assertCurrentRunController(state, item, user.id, user.role); }
     catch { throw new HandlerFailure(403, "Current execution authority changed during preflight", { code: "EXECUTION_AUTHORITY_CHANGED" }); }
     const publication = (state.versions[workflow.id] ?? []).findLast((version) => version.version === workflow.publishedVersion && version.artifactState === "PUBLISHED");
@@ -57,14 +58,14 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
     prepareCompiledExecution(state, services, publication, workflow.yaml, user.role, compilation.receipt);
     state.timelines[executionId] = []; state.executionLogs[executionId] = [];
     if (admission) queue!.store(state, item, admission);
-    appendExecutionEvent(state, item, queued ? "run.queued" : "run.started", { profile: "sequential-read-v1", version: workflow.publishedVersion, persistence: item.readProgress.persistence });
-    appendAudit(state, user, queued ? "execution.queued" : "execution.started", "execution", executionId, null, { workflowId: workflow.id, profile: "sequential-read-v1" }, request);
+    appendExecutionEvent(state, item, queued ? "run.queued" : "run.started", { profile, version: workflow.publishedVersion, persistence: item.readProgress.persistence });
+    appendAudit(state, user, queued ? "execution.queued" : "execution.started", "execution", executionId, null, { workflowId: workflow.id, profile }, request);
     return structuredClone(item);
   });
-  if (queued) { queue!.kick(); return reply.status(202).send(ok(initial, "Published read run admitted; use its execution ID to follow saved progress", { traceId, executionProfile: "sequential-read-v1", admission: "read-job-v1" })); }
+  if (queued) { queue!.kick(); return reply.status(202).send(ok(initial, "Published read run admitted; use its execution ID to follow saved progress", { traceId, executionProfile: profile, admission: "read-job-v1" })); }
   let execution;
   try { execution = await completeCheckpointedRead(services, initial, input, token, request.signal, undefined, compilation.plan); }
   catch { return reply.status(503).send(fail("Execution stopped because a checkpoint could not be confirmed. Inspect recovery state; do not automatically retry.", { executionId, code: "CHECKPOINT_NOT_COMMITTED", traceId })); }
   if (["FAILED", "RECOVERY_REQUIRED"].includes(execution.status)) return reply.status(422).send(fail("Read workflow stopped; inspect recorded node outcomes before starting another run", { executionId, status: execution.status, traceId }));
-  return reply.send(ok(execution, execution.status === "CANCELLED" ? "Read workflow cancelled at a tool boundary" : "Published read workflow completed", { traceId, executionProfile: "sequential-read-v1" }));
+  return reply.send(ok(execution, execution.status === "CANCELLED" ? "Read workflow cancelled at a tool boundary" : "Published read workflow completed", { traceId, executionProfile: profile }));
 }

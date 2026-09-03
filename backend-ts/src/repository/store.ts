@@ -46,14 +46,15 @@ export type Execution = {
   approvals?: Array<{ stepId: string; approvedBy: { id: string; name: string }; approvedAt: string; note?: string }>;
   chatSessionId?: string;
   traceId?: string;
-  workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1"; compilation?: ReadCompilationReceipt };
+  workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1" | "conditional-read-v1"; compilation?: ReadCompilationReceipt };
   readProgress?: ReadRunProgress;
 };
 
-export type ReadRunAttempt = { id: string; nodeId: string; stepIndex: number; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN" | "CANCELLED";
+export type ReadRunAttempt = { id: string; nodeId: string; stepIndex: number; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN" | "CANCELLED" | "SKIPPED";
   startedAt: string; dispatchIntentAt?: string; completedAt?: string };
 export type ReadRunProgress = { profile: "read-progress-v1"; epoch: number; nextStepIndex: number; lastSequence: number;
   persistence: "durable" | "memory-only"; attempts: Record<string, ReadRunAttempt>;
+  decisions?: Record<string, { status: "DONE" | "FAILED"; selected?: "then" | "else"; evaluatedAt: string; stepIndex: number }>;
   cancellation?: { requestedAt: string; requestedBy: Principal }; recoveryReason?: string };
 export type ExecutionEvent = { version: 1; executionId: string; workflowId: string; sequence: number; timestamp: string; type: string;
   traceId?: string; nodeId?: string; attemptId?: string; payload: Record<string, unknown> };

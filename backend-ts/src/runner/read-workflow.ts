@@ -9,8 +9,9 @@ import type { ValidationToken } from "../validator/registry-validator.js";
 import type { RunnerResult } from "./executor.js";
 import { ReadCheckpointFailure, ReadRunCancelled, type ReadExecutionHooks } from "./read-checkpoints.js";
 import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
+import { actionOrder, type ReadSequence } from "../workflows/read-control-flow.js";
 
-/** Explicit first execution profile: sequential reads only. Unsupported logic
+/** Explicit read profiles: sequential actions and structured boolean branches. Unsupported logic
  * is rejected before any dispatch, never reinterpreted by an agent. */
 export function inspectReadWorkflow(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string): string[] {
   return buildReadIR(blueprint, tools, role).issues;
@@ -30,7 +31,11 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
   const plan = expectedPlan ?? currentPlan;
   if (plan.ir.inputSchema && validateToolInput(plan.ir.inputSchema, input).length) throw new Error("Workflow input does not meet the declared schema");
   const result: RunnerResult = { state: { input: structuredClone(input) }, timeline: [], logs: [], tokens: { input: 0, output: 0, total: 0 } };
-  for (const [index, node] of plan.ir.root.nodes.entries()) {
+  const definitions = new Map(plan.ir.root.nodes.map((node, index) => [node.id, { node, index }]));
+  let cursor = 0;
+  async function runAction(nodeId: string) {
+    const { node, index } = definitions.get(nodeId)!;
+    if (cursor !== index) throw new Error("Compiled action order changed");
     const step = blueprint.steps[index]!; // Labels only; executable order/inputs come from IR.
     const started = new Date();
     try {
@@ -47,6 +52,7 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
       await hooks?.completed(index, entry, log);
       result.state[step.id] = output;
       result.timeline.push(entry); result.logs.push(log);
+      cursor = index + 1;
     } catch (cause) {
       if (cause instanceof ReadCheckpointFailure || cause instanceof ReadRunCancelled) {
         Object.defineProperty(cause, "runnerResult", { value: result }); throw cause;
@@ -65,5 +71,35 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
       throw error;
     }
   }
+  async function skip(block: ReadSequence, conditionId: string, selected: "then" | "else") {
+    for (const nodeId of actionOrder(block)) {
+      if (context.signal?.aborted) throw new ReadRunCancelled();
+      const { index } = definitions.get(nodeId)!;
+      if (cursor !== index) throw new Error("Compiled branch order changed");
+      const step = blueprint.steps[index]!;
+      if (hooks && !hooks.skipped) throw new Error("Conditional execution requires skip checkpoints");
+      await hooks?.skipped?.(index, nodeId, step.description ?? step.action!, conditionId, selected, actor!.role);
+      cursor = index + 1;
+    }
+  }
+  async function visit(block: ReadSequence) {
+    for (const node of block.nodes) {
+      if (context.signal?.aborted) throw new ReadRunCancelled();
+      if (node.kind === "action") { await runAction(node.nodeId); continue; }
+      if (hooks && !hooks.condition) throw new Error("Conditional execution requires decision checkpoints");
+      let value: unknown;
+      try { value = resolveReadBinding(node.predicate, result.state); } catch { /* Missing is not false. */ }
+      if (typeof value !== "boolean") {
+        await hooks?.condition?.(cursor, node.id, undefined, actor!.role);
+        throw new Error(`Condition ${node.id} failed: predicate requires a present boolean; no implicit branch or tool dispatch`);
+      }
+      await hooks?.condition?.(cursor, node.id, value, actor!.role);
+      const outer = new Set(Object.keys(result.state));
+      if (value) { await visit(node.then); await skip(node.else, node.id, "then"); }
+      else { await skip(node.then, node.id, "else"); await visit(node.else); }
+      for (const key of Object.keys(result.state)) if (!outer.has(key)) delete result.state[key];
+    }
+  }
+  await visit(plan.ir.flow ?? { kind: "sequence", nodes: plan.ir.root.nodes.map(node => ({ kind: "action", nodeId: node.id })) });
   return result;
 }

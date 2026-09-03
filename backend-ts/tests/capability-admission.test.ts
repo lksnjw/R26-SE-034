@@ -54,8 +54,8 @@ async function setup(persistence: PersistenceBackend | null = null, noAuthorizer
     tool: () => tool, changeTool: (patch: Partial<typeof tool>) => { tool = { ...tool, ...patch }; }, changed: () => generationListener?.() };
 }
 
-async function workflowHarness(s: Awaited<ReturnType<typeof setup>>, legacyPublication = false) {
-  const yaml = stringify({ name: "Compiled reads", description: "Two exact fixture reads", trigger: { type: "manual" }, steps: [{ id: "one", action: s.tool().name, parameters: { value: "first" } }, { id: "two", action: s.tool().name, parameters: { value: "second" } }] });
+async function workflowHarness(s: Awaited<ReturnType<typeof setup>>, legacyPublication = false, controlFlow?: unknown) {
+  const yaml = stringify({ name: "Compiled reads", description: "Two exact fixture reads", trigger: { type: "manual" }, steps: [{ id: "one", action: s.tool().name, parameters: { value: "first" } }, { id: "two", action: s.tool().name, parameters: { value: "second" } }], ...(controlFlow ? { metadata: { controlFlow } } : {}) });
   const date = new Date().toISOString();
   const workflow: Workflow = { id: "compiled", name: "Compiled reads", description: "", owner: { id: "admin", name: "admin" }, assignedUserIds: [], status: "PENDING", trigger: { type: "manual" }, steps: 2,
     successRate: 0, lastRunAt: null, publishedVersion: legacyPublication ? 1 : 0, draftVersion: 1, tags: [], domainTags: [], canRun: false, createdAt: date, updatedAt: date, yaml, archived: false };
@@ -67,6 +67,17 @@ async function workflowHarness(s: Awaited<ReturnType<typeof setup>>, legacyPubli
   const readiness = () => app.inject({ method: "GET", url: "/api/workflows/compiled/readiness", headers });
   return { yaml, app, publish, run, readiness, headers };
 }
+
+test.each([true, false])("modern compiled conditional publication with enabled=%s preserves exact review pins and dispatches only its selected branch", async enabled => {
+  const s = await setup(); await s.review();
+  const flow = { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["enabled"] }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "one" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "two" }] } }] } };
+  const w = await workflowHarness(s, false, flow), published = await w.publish(); expect(published.statusCode, published.body).toBe(200);
+  expect(published.json().data.compiledRead).toMatchObject({ schemaVersion: "workflow-read-ir/v2", origin: "PUBLICATION", admissionMode: "reviewed" });
+  const response = await w.run({ input: { enabled } }); expect(response.statusCode, response.body).toBe(200);
+  expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.sdk.callTool.mock.calls[0]).toEqual([exactBridgeName(s.tool()), { value: enabled ? "first" : "second" }, { "toolplane.resourceDigest": "a".repeat(64) }]);
+  expect(response.json().data.workflowSnapshot.compilation).toEqual(published.json().data.compiledRead);
+  expect(response.json().data.readProgress.attempts[enabled ? "two" : "one"].status).toBe("SKIPPED");
+});
 
 test("modern publication stores exact compiled/review pins; sync run executes the artifact and repeated publication is immutable/idempotent", async () => {
   const s = await setup(); await s.review(); const w = await workflowHarness(s);

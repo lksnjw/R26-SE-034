@@ -48,8 +48,22 @@ export async function dispatchReadTool(
   if (issues.missing.length || issues.invalid.length) throw new Error("Tool dispatch denied: arguments failed runtime validation");
   const yaml = context.plan?.yaml ?? stringify({ name: "Authorized read", description: "One exact read proposed by the workspace agent", trigger: { type: "manual" }, steps: [{ id: "read", action: tool.name, parameters }] });
   const index = context.plan?.stepIndex ?? 0;
-  const authored = parseWorkflowYAMLStrict(yaml).steps[index];
+  const blueprint = parseWorkflowYAMLStrict(yaml), authored = blueprint.steps[index];
   if (authored === undefined || ![tool.name, tool.mcp_tool_name].includes(authored.action ?? "")) throw new Error("Tool dispatch denied: authored action does not match requested tool");
+  if (blueprint.metadata?.controlFlow !== undefined) {
+    if (!context.executionId) throw new Error("Conditional reads require a checkpointed execution identity");
+    const completed = await services.repository.readAuthoritative(state => {
+      const execution = state.executions[context.executionId!];
+      if (execution?.status !== "RUNNING" || execution.workflowSnapshot?.yaml !== yaml || !execution.readProgress) throw new Error("Conditional execution is not current");
+      return new Set(Object.values(execution.readProgress.attempts).filter(attempt => attempt.status === "DONE").map(attempt => attempt.nodeId));
+    });
+    // Original frozen verification still validates ALL declarations and mints
+    // the exact-source capability below. This extra denial-only check proves
+    // process prerequisites on the actual confirmed path, never on a skipped
+    // branch that happened to appear earlier in the declaration catalog.
+    const prefix = stringify({ ...blueprint, steps: blueprint.steps.filter(step => step.id === authored.id || completed.has(step.id)) });
+    if (!services.validator.validatePlan("ReadConfirmedPath", prefix, actor.role).passed) throw new Error("Selected read path does not meet confirmed process prerequisites");
+  }
   const { signal, plan, beforeDispatch, ...metadata } = context;
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
