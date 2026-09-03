@@ -197,3 +197,39 @@ test("async-ready workspace admits once, receives the run ID and starts monitori
   expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
   expect(workflowService.run).toHaveBeenCalledTimes(1);
 });
+
+test("schema guidance selects readable data and applies only the reviewed revision-bound draft", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, authoring: { profile: "read-authoring/v1", nodes: [{ nodeId: "first", actions: ["demo.echo"], inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false }, dataSources: [{ expression: "{{input.report}}", label: "Workflow input · report", schema: { type: "string" } }] }] } });
+  await open(); await selectNode();
+  fireEvent.change(screen.getByRole("combobox", { name: "Parameters · value input mode" }), { target: { value: "data" } });
+  expect(screen.getByRole("combobox", { name: "Parameters · value data source" }).textContent).toContain("Workflow input · report · string");
+  fireEvent.click(screen.getByRole("button", { name: "Preview manual edit" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: record.contentHash }), { type: "updateNode", nodeId: "first", patch: { description: "", action: "demo.echo", parameters: { value: "{{input.report}}" } } }));
+  expect(workflowService.run).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled();
+});
+
+test("changing the tool never applies the former tool schema or erases old parameters", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, authoring: { profile: "read-authoring/v1", nodes: [{ nodeId: "first", actions: ["demo.echo"], inputSchema: { type: "object", properties: { value: { type: "string" } } }, dataSources: [] }] } });
+  await open(); await selectNode();
+  fireEvent.change(screen.getByRole("textbox", { name: "Node tool" }), { target: { value: "unknown.tool" } });
+  expect(screen.getByText(/No current supported schema guidance for this tool/)).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Parameters · value" }).value).toBe("original");
+  expect(workflowService.command).not.toHaveBeenCalled();
+});
+
+test("stale compiled publication can explicitly republish instead of leaving the workspace unable to repair it", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, compilation: { state: "BLOCKED" } });
+  await open(); fireEvent.click(screen.getByRole("button", { name: "Republish reviewed draft" }));
+  await waitFor(() => expect(workflowService.publish).toHaveBeenCalledWith("report", "Explicitly reviewed in chat workspace", expect.objectContaining({ version: 1, contentHash: record.contentHash })));
+  expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("compiler and publication readiness reasons are visible and not hidden behind successful original validation", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, compilation: { state: "BLOCKED" }, issues: ["Published execution artifact needs current capability review and explicit re-publication"] });
+  await open();
+  expect(screen.getByText("Execution readiness issues (1)")).toBeTruthy();
+  expect(screen.getByText(/Published execution artifact needs current capability review/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
+});

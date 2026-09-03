@@ -188,3 +188,23 @@ test("publication with a reviewed revision rejects stale or malformed review evi
   expect((await publish(1, workflowContentHash(yaml))).statusCode).toBe(409);
   expect((await s.repository.snapshot()).workflows.report?.publishedVersion).toBe(1);
 });
+
+test("offline readiness returns local schema guidance without a provider call, mutation or runnable grant", async () => {
+  const s = await setup(), before = await s.repository.snapshot();
+  const response = await s.app.inject({ method: "GET", url: "/api/workflows/report/readiness", headers: s.headers() });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.authoring).toMatchObject({ profile: "read-authoring/v1", nodes: [{ nodeId: "first", state: "LOCAL_CONTRACT", inputSchema: { properties: { value: { type: "string" } } } }, { nodeId: "approval", state: "UNAVAILABLE" }, { nodeId: "last", dataSources: [] }] });
+  expect(response.json().data.can_attempt_run).toBe(false);
+  expect((await s.repository.snapshot()).workflows).toEqual(before.workflows); expect(s.fetchImplementation).not.toHaveBeenCalled();
+});
+
+test.each(["actor", "revision"])("readiness rechecks %s after awaited work before returning authoring context", async change => {
+  const s = await setup();
+  vi.spyOn(s.repository, "readAuthoritative").mockImplementationOnce(async callback => {
+    await s.repository.mutate(state => { if (change === "actor") state.users.admin!.status = "Disabled"; else state.workflows.report!.draftVersion++; });
+    return s.repository.read(callback);
+  });
+  const response = await s.app.inject({ method: "GET", url: "/api/workflows/report/readiness", headers: s.headers() });
+  expect(response.statusCode, response.body).toBe(change === "actor" ? 403 : 409);
+  expect(response.json().data).toBeNull(); expect(s.fetchImplementation).not.toHaveBeenCalled();
+});

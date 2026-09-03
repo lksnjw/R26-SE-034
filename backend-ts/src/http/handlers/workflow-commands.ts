@@ -11,9 +11,10 @@ import type { RepositoryState } from "../../repository/store.js";
 import { canonicalJSONBytes } from "../../core/canonical-json.js";
 import { supportsReadJobs } from "../../runner/read-jobs.js";
 import { promptData } from "../../prompts/contracts.js";
-import { assertChatAuthority, selectProvider } from "./model-selection.js";
+import { assertActorAuthority, assertChatAuthority, selectProvider } from "./model-selection.js";
 import { activeChatStatus } from "../../agent/chat-jobs.js";
 import { prepareCompiledExecution } from "../../workflows/read-compilation-lifecycle.js";
+import { readAuthoringContract } from "../../workflows/read-authoring.js";
 import { nodeIdSchema as id, nodePatchSchema as patch, workflowRevisionSchema as base, workflowCommandSchema as command,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
@@ -45,6 +46,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
     if (current.yaml.length > 200000) throw new HandlerFailure(422, "Workflow source exceeds supported limits");
     const traceId = requestTraceId(request, current.traceId);
     if (kind === "readiness") {
+      const registryHash = services.registries.hash();
       const validation = services.validator.validatePlan("WorkspaceReadiness", current.yaml, user.role);
       let issues: string[] = [], bridge = "not_connected";
       try {
@@ -66,7 +68,18 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       if (compilation.state === "BLOCKED") issues.push("Published execution artifact needs current capability review and explicit re-publication");
       const canAttempt = user.permissions.some((permission) => ["workflow:run", "workflow:run_own"].includes(permission)) &&
         (user.permissions.includes("workflow:run") || current.owner.id === user.id || (current.assignedUserIds ?? []).includes(user.id));
-      return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation,
+      const authoring = await services.repository.readAuthoritative(state => {
+        assertActorAuthority(state, user);
+        const fresh = state.workflows[workflowId];
+        if (!fresh || !permitted(fresh, user, false)) throw new HandlerFailure(404, "Workflow not found");
+        requireBase(fresh, current.draftVersion, workflowContentHash(current.yaml));
+        if (registryHash !== services.registries.hash()) throw new HandlerFailure(409, "Registry changed during readiness. Reload before continuing", { code: "READINESS_CONTEXT_CHANGED" });
+        let blueprint;
+        try { blueprint = parseWorkflowYAMLStrict(current.yaml); }
+        catch { return { profile: "read-authoring/v1", registryHash: services.registries.hash(), nodes: [], reason: "Workflow source cannot be parsed; existing values are preserved" }; }
+        return readAuthoringContract(blueprint, services.registries.snapshot().tools, user.role, services.registries.hash());
+      });
+      return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation, authoring,
         can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
         authorization: "rechecked_at_dispatch", executionProfile: "sequential-read-v1" }, "Readiness checked", { traceId }));
