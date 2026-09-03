@@ -10,21 +10,33 @@ import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js"
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import type { ToolDefinition } from "../src/registry/schemas.js";
+import { admissionAuthorizer, observeCapabilities, reviewCapability, capabilityContractHash } from "../src/registry/capability-admission.js";
 
 async function setup(options: { write?: boolean; schema?: Record<string, unknown>; roles?: string[]; result?: unknown; contract?: ToolDefinition["bridge_contract"]; metadataComplete?: boolean; drift?: boolean; remoteFailure?: boolean } = {}) {
   const tool = toolSchema.parse({ tool_id: "READ-1", name: "finance.read", mcp_tool_name: "finance.read", allowed_roles: options.roles ?? ["Workflow Builder"],
-    is_read_only: !options.write, ...(options.contract ? { bridge_contract: options.contract } : {}), input_schema: options.schema ?? { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
-  const registries = { snapshot: () => ({ tools: [tool], rules: [], versions: { tools: "v1", rules: "v1" } }), hash: () => "sha256:test",
+    is_read_only: !options.write, risk_level: "low", ...(options.contract ? { bridge_contract: options.contract } : {}), input_schema: options.schema ?? { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
+  const registries = { snapshot: () => ({ tools: [tool], rules: [], versions: { tools: "v1", rules: "v1" } }), hash: () => capabilityContractHash(tool),
     findTool: (name: string) => name === tool.name ? tool : undefined, findRule: () => undefined, enabledRules: () => [] } as unknown as RegistryService;
   const repository = new Repository(null);
   await repository.mutate((state) => { state.users.builder = { id: "builder", name: "Builder", email: "builder@example.test", roleId: "role_builder", permissionOverrides: [],
     status: "Active", initials: "B", departmentId: null, lastLoginAt: null, createdAt: new Date().toISOString() }; });
+  await repository.mutate(state => { state.users.admin = { ...state.users.builder!, id: "admin", roleId: "role_admin" }; });
   const validator = new RegistryValidator(registries, repository);
   const callTool = vi.fn(async () => options.remoteFailure ? { content: [{ type: "text", text: "Revision withdrawn" }], isError: true } : options.result ?? { content: [], structuredContent: { id: "invoice-1" } });
   const listTools = vi.fn(async () => [{ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool),
     ...(options.contract ? { ...(options.contract.output_schema ? { outputSchema: options.contract.output_schema } : {}), _meta: { "toolplane.resourceVersion": options.contract.resource_version, "toolplane.resourceDigest": (options.drift ? "b".repeat(64) : options.contract.resource_digest), "io.erpbridge/allowedRoles": options.contract.remote_roles } } : {}) }]);
   const erpbridgeSession = await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "test-token", timeoutMs: 1000, validator,
+    ...(options.metadataComplete ? { admissionAuthorizer: admissionAuthorizer(repository, registries) } : {}),
     sdkClient: { connect: async () => {}, close: async () => {}, ...(options.metadataComplete !== undefined ? { metadataComplete: options.metadataComplete } : {}), listTools, callTool } });
+  if (options.metadataComplete && options.contract && !options.drift) {
+    const user = (await repository.effectiveUser("admin"))!;
+    const observation = (await observeCapabilities({ repository, registries, session: erpbridgeSession, user })).observations[0]!;
+    await reviewCapability({ repository, registries, session: erpbridgeSession, user, capabilityId: observation.capabilityId, body: {
+      observationId: observation.id, contractHash: observation.contractHash, decisionKey: "broker-fixture-review-0001", effectClass: "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Explicit offline fixture review" } });
+    // The following assertions measure business discovery/dispatch, not the
+    // separate administrator observation used to establish reviewed authority.
+    listTools.mockClear();
+  }
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "test-broker-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }),
     erpbridgeRoleMap: { "Workflow Builder": "workflow_builder" } };
   return { services: { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator), erpbridgeSession }, callTool, listTools };

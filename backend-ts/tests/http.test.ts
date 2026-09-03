@@ -127,6 +127,7 @@ describe("complete HTTP route graph", () => {
       "GET /api/executions/:id/events",
       "GET /api/chat/models",
       "GET /api/chat/capabilities",
+      "GET /api/registry/capabilities", "POST /api/registry/capabilities/discovery", "POST /api/registry/capabilities/:id/review", "POST /api/registry/capabilities/:id/disable",
       "GET /api/chat/sessions/:id/operations", "GET /api/chat/operations/:id", "POST /api/chat/operations/:id/cancel",
     ].sort());
   });

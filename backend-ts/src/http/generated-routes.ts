@@ -714,6 +714,22 @@ export const routeTable = [
   },
   {
     "method": "GET",
+    "path": "/api/registry/capabilities"
+  },
+  {
+    "method": "POST",
+    "path": "/api/registry/capabilities/discovery"
+  },
+  {
+    "method": "POST",
+    "path": "/api/registry/capabilities/:id/review"
+  },
+  {
+    "method": "POST",
+    "path": "/api/registry/capabilities/:id/disable"
+  },
+  {
+    "method": "GET",
     "path": "/api/chat/sessions/:id/operations"
   },
   {

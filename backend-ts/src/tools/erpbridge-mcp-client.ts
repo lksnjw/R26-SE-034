@@ -37,6 +37,7 @@ export type ErpbridgeMcpSession = Readonly<{
   discoveryGeneration?: number;
   // Internal opaque binding only; never expose endpoint credentials in runs.
   admissionBinding?: string;
+  assertAdmission?(definition: ToolDefinition): Promise<void>;
   clientFor(definition: ToolDefinition): GovernedMCPClient;
   callToolDirect(toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>>;
   listTools(signal?: AbortSignal): Promise<readonly ErpbridgeMcpSdkTool[]>;
@@ -68,6 +69,7 @@ export async function createErpbridgeMcpSession(options: {
   sdkClient?: ErpbridgeMcpSdkClient;
   fetch?: typeof fetch;
   signal?: AbortSignal;
+  admissionAuthorizer?: (definition: ToolDefinition, connectionBinding: string) => Promise<void>;
 }): Promise<ErpbridgeMcpSession> {
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 2_147_483_647)
     throw new Error("ERPBridge MCP timeout must be a positive supported integer");
@@ -110,11 +112,18 @@ export async function createErpbridgeMcpSession(options: {
   };
   try { await run("ERPBridge MCP initialization", () => sdkClient.connect(), options.signal); }
   catch (error) { void close().catch(() => {}); throw error; }
+  const assertAdmission = async (definition: ToolDefinition): Promise<void> => {
+    if (closed) throw new Error("ERPBridge MCP session is closed");
+    if (sdkClient.metadataComplete && !options.admissionAuthorizer) throw new Error("Explicit persisted capability admission is required before ERP dispatch");
+    await options.admissionAuthorizer?.(definition, admissionBinding);
+    if (closed) throw new Error("ERPBridge MCP session is closed");
+  };
   return Object.freeze({
     get available() { return !closed; },
     get discoveryGeneration() { return discoveryGeneration; },
     requiresReviewedRevision: sdkClient.metadataComplete === true,
     admissionBinding,
+    assertAdmission,
     /*******************************************************************************
      * Function: clientFor
      *
@@ -123,6 +132,7 @@ export async function createErpbridgeMcpSession(options: {
     clientFor: (definition: ToolDefinition) =>
       createToolClient(async (name, args, signal) => {
         if (sdkClient.metadataComplete && !definition.bridge_contract) throw new Error("ERPBridge tool has no reviewed immutable revision");
+        if (sdkClient.metadataComplete || options.admissionAuthorizer) await assertAdmission(definition);
         // Discovery admits a reviewed immutable identity. Dispatch pins both
         // exact name and digest; the bridge owns the final active/origin check.
         // An extra tools/list here would add latency without granting authority.
@@ -148,6 +158,7 @@ export async function createErpbridgeMcpSession(options: {
           throw new Error("ERPBridge policy tool requires a reviewed read-only unguarded contract and valid arguments");
       }
       const admitted = definition;
+      if (admitted) await assertAdmission(admitted);
       const result = await run("ERPBridge MCP direct tool call", () => admitted?.bridge_contract
         ? sdkClient.callTool(exactBridgeName(admitted), args, { "toolplane.resourceDigest": admitted.bridge_contract.resource_digest })
         : sdkClient.callTool(toolName, args), signal);

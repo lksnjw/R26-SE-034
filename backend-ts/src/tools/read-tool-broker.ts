@@ -34,6 +34,7 @@ export async function dispatchReadTool(
   const matches = tools.filter((tool) => tool.name === toolName || tool.mcp_tool_name === toolName);
   if (matches.length !== 1) throw new Error("Tool dispatch denied: tool has no unique admitted live contract");
   const tool = matches[0]!;
+  await session.assertAdmission?.(tool);
   if (!tool.is_read_only) throw new Error("Live ERP writes are blocked until transaction approval, idempotency and recovery are enforced");
   if (!tool.allowed_roles.includes(actor.role)) throw new Error("Tool dispatch denied: current role has no grant for this tool");
   if (hasReservedBridgeRole(tool) && Object.hasOwn(args, "role")) throw new Error("Tool dispatch denied: model-provided role is not allowed");

@@ -117,6 +117,8 @@ await withTimeout(
 );
 console.log("[startup] Executions reconciled.");
 const validator = new RegistryValidator(registries, repository);
+const { admissionAuthorizer, requireProductionAdmissionProfile } = await import("../registry/capability-admission.js");
+requireProductionAdmissionProfile(config);
 const legacyMcp =
   config.mcpTransport === "bridge-v1"
     ? createGovernedMCPClient({
@@ -136,6 +138,7 @@ if (config.mcpTransport === "erpbridge-mcp") {
         token: config.erpbridgeMcpToken,
         timeoutMs: config.mcpTimeoutMs,
         validator,
+        admissionAuthorizer: admissionAuthorizer(repository, registries),
       });
   } catch (err) {
     console.warn("[erpbridge] MCP session failed to start — ERP tools will be unavailable:", err instanceof Error ? err.message : String(err));

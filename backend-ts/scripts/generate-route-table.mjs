@@ -15,6 +15,7 @@ routes.push(...[
   "/api/executions/:id/events",
   "/api/chat/models",
   "/api/chat/capabilities",
+  "/api/registry/capabilities", "/api/registry/capabilities/discovery", "/api/registry/capabilities/:id/review", "/api/registry/capabilities/:id/disable",
   "/api/chat/sessions/:id/operations", "/api/chat/operations/:id", "/api/chat/operations/:id/cancel",
 ].map((path) => ({ method: /\/(readiness|events|models|operations|capabilities)$/.test(path) || path === "/api/chat/operations/:id" ? "GET" : "POST", path })));
 const content = `// Generated from frozen Go routes plus named product extensions. Do not hand-edit.\n` +

@@ -30,7 +30,7 @@ export async function discoverTools(
   const registryHash = registries.hash();
   const cached = sessionCaches.get(session);
   const generation = session.discoveryGeneration ?? 0;
-  if (cached !== undefined && cached.registryHash === registryHash && cached.generation === generation && cached.expiresAt > Date.now()) return cached.result;
+  if (cached !== undefined && cached.registryHash === registryHash && cached.generation === generation && cached.expiresAt > Date.now()) return admitted(session, await cached.result);
   const byMcpName = new Map<string, ToolDefinition>();
   for (const tool of registries.snapshot().tools) {
     // Discovery is not admission. Legacy entries without identity, role
@@ -60,10 +60,21 @@ export async function discoverTools(
   })();
   const entry = { registryHash, generation, expiresAt: Date.now() + CACHE_TTL_MS, result };
   sessionCaches.set(session, entry);
-  try { return await result; } catch (error) {
+  try { return await admitted(session, await result); } catch (error) {
     if (sessionCaches.get(session) === entry) sessionCaches.delete(session);
     throw error;
   }
+}
+
+// Remote metadata may be cached, but local review/revocation is never cached.
+async function admitted(session: ErpbridgeMcpSession, tools: readonly ToolDefinition[]) {
+  if (!session.assertAdmission) return tools; // Injected legacy fixtures only.
+  const approved: ToolDefinition[] = [];
+  for (const tool of tools) {
+    try { await session.assertAdmission(tool); approved.push(tool); }
+    catch { /* Unreviewed/disabled/binding-changed capabilities are not model tools. */ }
+  }
+  return Object.freeze(approved);
 }
 
 /*******************************************************************************

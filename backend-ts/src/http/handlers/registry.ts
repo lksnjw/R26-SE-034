@@ -6,6 +6,7 @@ import { fail, ok } from "../../models/schemas.js";
 import { ruleArraySchema, toolArraySchema } from "../../registry/schemas.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, queryRecord, requestParam, stringValue } from "./common.js";
+import { capabilityAdmissionCatalog, observeCapabilities, reviewCapability, disableCapability } from "../../registry/capability-admission.js";
 
 export const REGISTRY_UNHANDLED = Symbol("registry-unhandled");
 
@@ -20,6 +21,10 @@ const importDrafts = new Map<string, ImportDraft>();
 export async function handleRegistryRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown | typeof REGISTRY_UNHANDLED> {
   const base = services.config.apiBasePath;
   try {
+    if (route.path === `${base}/registry/capabilities` && route.method === "GET") { const query = queryRecord(request); return reply.send(ok(await capabilityAdmissionCatalog(services.repository, Number(query.offset ?? 0), Number(query.limit ?? 10)), "Review records loaded; discovery is not permission", null)); }
+    if (route.path === `${base}/registry/capabilities/discovery`) return reply.send(ok(await observeCapabilities({ repository: services.repository, registries: services.registries, session: services.erpbridgeSession, user, request, ...(request.signal ? { signal: request.signal } : {}) }), "Discovery observations saved; no authority granted; drift may block existing review", null));
+    if (route.path === `${base}/registry/capabilities/:id/review`) return reply.send(ok(await reviewCapability({ repository: services.repository, registries: services.registries, session: services.erpbridgeSession, user, capabilityId: requestParam(request, "id"), body: request.body, request }), "Explicit capability review saved", null));
+    if (route.path === `${base}/registry/capabilities/:id/disable`) return reply.send(ok(await disableCapability({ repository: services.repository, user, capabilityId: requestParam(request, "id"), body: request.body, request }), "Capability disabled for new dispatch; remote rollback is not implied", null));
     if (route.path === `${base}/registry/status`) return registryStatus(reply, services);
     if (route.path === `${base}/registry/tools` && route.method === "POST") return createTool(request, reply, user, services);
     if (route.path === `${base}/registry/tools/:id` && route.method === "PUT") return updateTool(request, reply, user, services);

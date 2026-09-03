@@ -132,6 +132,9 @@ export type RepositoryState = {
   company: StoredRecord | null;
   providers: Record<string, StoredRecord>;
   integrations: Record<string, StoredRecord>;
+  capabilityObservations: Record<string, StoredRecord>;
+  capabilityRevisions: Record<string, StoredRecord>;
+  capabilityAdmissions: Record<string, StoredRecord>;
   webhooks: Record<string, StoredRecord>;
   refreshSessions: Record<string, { userId: string; expiresAt: string }>;
   auditLogs: Record<string, unknown>[];
@@ -209,6 +212,15 @@ export class Repository {
    ******************************************************************************/
   async read<T>(reader: (state: Readonly<RepositoryState>) => T): Promise<T> {
     return this.#mutex.runExclusive(() => reader(this.#state));
+  }
+
+  /** Security decisions must not use the rolled-back local image after an
+   * uncertain durable save (for example, a remotely committed revocation). */
+  async readAuthoritative<T>(reader: (state: Readonly<RepositoryState>) => T): Promise<T> {
+    return this.#mutex.runExclusive(() => {
+      if (this.#writeUncertain || !this.#healthy) throw new Error("Authoritative storage is unavailable; dispatch is fenced");
+      return reader(this.#state);
+    });
   }
 
   /*******************************************************************************
@@ -324,6 +336,8 @@ function restoreState(payload: Uint8Array): RepositoryState {
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) restored[key] = defaults[key] as never;
   }
   if (restored.governancePolicy !== null && (typeof restored.governancePolicy !== "object" || Array.isArray(restored.governancePolicy))) restored.governancePolicy = null;
+  for (const key of ["capabilityObservations", "capabilityRevisions", "capabilityAdmissions"] as const)
+    if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) throw new Error(`Invalid stored ${key}; admission recovery requires repair`);
   for (const role of Object.values(defaults.roles)) if (restored.roles[role.id] === undefined) restored.roles[role.id] = role;
   const knownPermissions = new Set(restored.permissions.map((item) => item.key));
   for (const permission of defaults.permissions) if (!knownPermissions.has(permission.key)) restored.permissions.push(permission);
@@ -363,6 +377,9 @@ export function initialState(): RepositoryState {
     company: null,
     providers: {},
     integrations: {},
+    capabilityObservations: {},
+    capabilityRevisions: {},
+    capabilityAdmissions: {},
     webhooks: {},
     auditLogs: [],
     settings: { general: {}, llm: {}, rbac: {} },
