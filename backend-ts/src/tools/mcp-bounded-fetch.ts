@@ -2,7 +2,7 @@ import { boundedOperation, OperationDeadlineExceeded } from "../core/bounded-ope
 
 /** Bound RPC response bytes before SDK parsing (including POST SSE), and use
  * one header/body deadline. GET is the long-lived notification stream: its
- * per-event resource budget requires a separate supervised connection design.
+ * per-event resource budget is owned by superviseMcpNotifications separately.
  * Neither cancellation nor a size error proves remote rollback. */
 export function boundedMcpFetch(fetchImplementation: typeof fetch, timeoutMs: number, maxBytes = 2_100_000): typeof fetch {
   return async (input, init) => {

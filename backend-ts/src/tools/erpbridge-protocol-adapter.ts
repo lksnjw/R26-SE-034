@@ -1,9 +1,11 @@
 import { Client, StreamableHTTPClientTransport, SdkHttpError } from "@modelcontextprotocol/client";
 import type { ErpbridgeMcpSdkClient, ErpbridgeMcpSdkTool } from "./erpbridge-mcp-client.js";
 import { boundedMcpFetch } from "./mcp-bounded-fetch.js";
+import { superviseMcpNotifications } from "./mcp-notification-stream.js";
 
 /** Engine-owned adapter: preserve ToolPlane fields absent from SDK 1.1.0's
- * projection. No reconnect/replay, OAuth step-up, sampling or elicitation. */
+ * projection. Notification GET recovery only; no business replay, OAuth
+ * step-up, sampling or elicitation. */
 export function createBridgeProtocolAdapter(options: { baseURL: string; token: string; timeoutMs: number; fetch?: typeof fetch }): ErpbridgeMcpSdkClient {
   const root = new URL(options.baseURL);
   if (!/^https?:$/.test(root.protocol) || root.username || root.password || root.search || root.hash || !["", "/"].includes(root.pathname))
@@ -12,20 +14,28 @@ export function createBridgeProtocolAdapter(options: { baseURL: string; token: s
     versionNegotiation: { mode: "legacy" }, // MCP 2025 initialize, not legacy SSE.
     inputRequired: { autoFulfill: false }, listMaxPages: 16,
   });
+  const listeners = new Set<() => void>();
+  let closed = false;
+  const notifications = superviseMcpNotifications({ fetch: boundedMcpFetch(options.fetch ?? fetch, options.timeoutMs), endpoint: new URL("/mcp/", root).href, timeoutMs: options.timeoutMs,
+    onGap: () => { for (const listener of listeners) listener(); },
+    onFatal: () => { closed = true; void transport.close().catch(() => {}); void client.close().catch(() => {}); },
+  });
   const transport = new StreamableHTTPClientTransport(new URL("/mcp/", root), {
     requestInit: { headers: { Authorization: `Bearer ${options.token}` }, redirect: "error" },
-    fetch: boundedMcpFetch(options.fetch ?? fetch, options.timeoutMs),
+    fetch: notifications.fetch,
     onInsufficientScope: "throw", maxStepUpRetries: 0,
     reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
   });
-  const listeners = new Set<() => void>();
   client.setNotificationHandler("notifications/tools/list_changed", () => { for (const listener of listeners) listener(); });
   const requestOptions = { timeout: options.timeoutMs };
   return {
     metadataComplete: true,
-    connect: () => client.connect(transport, requestOptions),
-    close: async () => { try { await transport.close(); } finally { try { await client.close(); } finally { listeners.clear(); } } },
+    get available() { return !closed; },
+    get notificationState() { return notifications.state; },
+    connect: async () => { if (closed) throw new Error("ERPBridge MCP session is closed"); await client.connect(transport, requestOptions); if (closed) throw new Error("ERPBridge MCP session is unavailable"); },
+    close: async () => { closed = true; notifications.close(); try { await transport.close(); } finally { try { await client.close(); } finally { listeners.clear(); } } },
     listTools: async () => {
+      if (closed) throw new Error("ERPBridge MCP session is unavailable");
       // Own pagination: SDK aggregation silently returns a partial inventory
       // on repeated cursors/page exhaustion, which is not complete discovery.
       const tools: ErpbridgeMcpSdkTool[] = [], cursors = new Set<string>();
@@ -44,6 +54,7 @@ export function createBridgeProtocolAdapter(options: { baseURL: string; token: s
     // mismatch replay. The engine validates the actual reviewed output schema
     // and preserves failure envelopes before exposing any results.
     callTool: async (name, args, meta) => {
+      if (closed) throw new Error("ERPBridge MCP session is unavailable");
       try { return await client.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) }, { ...requestOptions, toolDefinition: { name, inputSchema: { type: "object" } } }); }
       catch (error) {
         // SDK HTTP/protocol exceptions may embed the entire upstream body.

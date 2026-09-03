@@ -8,6 +8,7 @@ import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { loadConfig } from "../src/config/config.js";
 import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
 import { McpConnectionRuntime } from "../src/tools/mcp-connection-runtime.js";
+import type { McpNotificationState } from "../src/tools/mcp-notification-stream.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import { capabilityContractHash, observeCapabilities, reviewCapability } from "../src/registry/capability-admission.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
@@ -64,6 +65,18 @@ test("disconnect fences captured old clients and a reconnect has a new admission
   expect(s.runtime.session).toBeUndefined(); await expect(old.assertAdmission!(s.tool)).rejects.toThrow(); expect(old.available).toBe(false);
   await s.command("connect", 3, "fixture_connect_request_0002"); expect(s.runtime.session!.admissionBinding).not.toBe(binding);
   await expect(s.runtime.session!.assertAdmission!(s.tool)).rejects.toThrow(/binding changed/); expect(s.sdkClients.every(client => client.callTool.mock.calls.length === 0)).toBe(true);
+});
+
+test("fatal notification status reaches administration and fences captured admission/discovery without any business call", async () => {
+  const s = await setup(), client = { ...s.sdk(), available: true, notificationState: { state: "ACTIVE", recoveryAttempts: 0 } as McpNotificationState };
+  s.factory.mockImplementationOnce(options => createErpbridgeMcpSession({ ...options, sdkClient: client }));
+  await s.connect(); await s.review(); const captured = s.runtime.session!;
+  expect((await s.runtime.status(s.admin)).connections[0]?.notificationStream).toEqual(client.notificationState);
+  client.available = false; client.notificationState = { state: "FAILED", reason: "SESSION_EXPIRED", recoveryAttempts: 1 };
+  expect(s.runtime.session).toBeUndefined(); expect(captured.available).toBe(false);
+  await expect(captured.assertAdmission!(s.tool)).rejects.toThrow(/unavailable/); await expect(captured.listTools()).rejects.toThrow(/unavailable/);
+  const status = await s.runtime.status(s.admin); expect(status.connections[0]).toMatchObject({ state: "DEGRADED", initialized: false, discoveryAvailable: false, notificationStream: client.notificationState });
+  expect(JSON.stringify(status)).not.toContain("fixture-private-credential"); expect(client.callTool).not.toHaveBeenCalled();
 });
 
 test("exact connect retries after disconnect return history/current state without reconnecting; request conflicts and stale commands have no side effect", async () => {

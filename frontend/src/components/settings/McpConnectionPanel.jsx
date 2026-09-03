@@ -7,6 +7,18 @@ import Button from "../shared/ui/Button";
 
 const readable = (value) => String(value ?? "Unknown").replaceAll("_", " ").toLowerCase().replace(/^./, (letter) => letter.toUpperCase());
 const keyFor = (actorId) => `workflow.mcp-operation.${encodeURIComponent(actorId)}`;
+const streamHelp = {
+  STARTING: "Notification readiness is not yet confirmed.",
+  ACTIVE: "Stream connected. This is not a live ERP health or delivery receipt.",
+  RECOVERING: "Recovering the same notification session; discovery was invalidated. Business calls are not replayed.",
+  UNSUPPORTED: "This server does not support notification GET. Discovery refreshes on requests/cache expiry, not continuous updates.",
+  FAILED: "The agent session is unavailable. Review the reason and reconnect explicitly; reconnect does not retry ERP work.",
+  CLOSED: "The notification stream is closed. No notification readiness is assumed.",
+};
+const streamReason = {
+  STREAM_GAP: "Notification gap", STREAM_UNAUTHORIZED: "Notification access denied", SESSION_EXPIRED: "Remote session expired",
+  STREAM_PROTOCOL: "Unsupported or malformed stream", STREAM_BUDGET: "Notification safety limit reached", RECOVERY_EXHAUSTED: "Notification recovery limit reached",
+};
 function restore(actorId) {
   try {
     const text = sessionStorage.getItem(keyFor(actorId)); if (!text) return null;
@@ -32,7 +44,9 @@ function ConnectionWorkspace({ actorId, canManage }) {
   const lock = useRef(false);
   const query = useQuery({ queryKey: ["mcp-connections", actorId], queryFn: mcpConnectionService.status, retry: false,
     refetchInterval: (state) => {
-      if (!pending || pending.invalid || state.state.error) return false;
+      if (state.state.error) return false;
+      if (state.state.data?.connections[0]?.state === "CONNECTED") return 5000;
+      if (!pending || pending.invalid) return false;
       const operation = state.state.data?.recentOperations.find((item) => item.requestId === pending.body.requestId && item.actorId === actorId);
       return operation?.state === "RUNNING" || busy ? 5000 : false;
     } });
@@ -73,6 +87,7 @@ function ConnectionWorkspace({ actorId, canManage }) {
     {connection ? <>
       <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-3"><div><dt className="text-xs text-gray-500">Actual local state</dt><dd className="mt-1 font-semibold">{readable(connection.state)}</dd></div><div><dt className="text-xs text-gray-500">Connection revision</dt><dd className="mt-1">{connection.revision}</dd></div><div><dt className="text-xs text-gray-500">Storage</dt><dd className="mt-1">{readable(connection.persistence)}</dd></div></dl>
       <p className="mt-3 text-sm text-gray-500">{connection.initialized ? "MCP initialized and discovery completed. ERP tool permissions, contracts, and each dispatch still need verification." : "No initialized agent session is confirmed."}</p>
+      {connection.notificationStream ? <div className="mt-3 text-sm" role="status" aria-label="MCP notification stream"><p className="font-medium">Last confirmed notification stream: {readable(connection.notificationStream.state)} · {connection.notificationStream.recoveryAttempts} recovery attempts in this cycle</p><p className="mt-1 text-gray-500">{streamHelp[connection.notificationStream.state]}{connection.notificationStream.reason ? ` ${streamReason[connection.notificationStream.reason]}.` : ""}</p></div> : null}
       <p className="mt-2 text-xs text-gray-500">Endpoint and token are backend-owned environment configuration, not browser fields. Rotation requires backend configuration and restart. {connection.persistence === "memory-only" ? "Connection intent and operations do not survive a server restart in memory-only mode." : "Distributed lifecycle/revocation is not qualified."}</p>
       {canManage ? <div className="mt-4 flex flex-wrap gap-2">{["connect", "test", "disconnect"].map((value) => <Button key={value} variant={value === "disconnect" ? "secondary" : value === "connect" ? "primary" : "ghost"} disabled={!current || busy || Boolean(pending) || !connection.supports[value]} onClick={() => setAction(value)}>{value === "connect" && connection.initialized ? "Reconnect MCP" : value === "connect" ? "Connect MCP" : value === "test" ? "Test MCP initialization" : "Disconnect MCP"}</Button>)}</div> : <p className="mt-3 text-sm text-gray-500">Read only. Platform Admin authority is required for lifecycle changes.</p>}
     </> : null}

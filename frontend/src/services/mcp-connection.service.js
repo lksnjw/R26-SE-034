@@ -7,6 +7,10 @@ export const mcpConnectionService = {
     if (!value || !Array.isArray(value.connections) || !Array.isArray(value.recentOperations) || value.connections.length !== 1 ||
         value.connections[0]?.id !== "erpbridge-default" || !Number.isSafeInteger(value.connections[0]?.revision) ||
         typeof value.connections[0]?.initialized !== "boolean" || !value.connections[0]?.supports) throw new Error("Supported MCP lifecycle status is unavailable");
+    const stream = value.connections[0].notificationStream;
+    if (stream != null && (!["STARTING", "ACTIVE", "RECOVERING", "UNSUPPORTED", "FAILED", "CLOSED"].includes(stream.state) ||
+        !Number.isSafeInteger(stream.recoveryAttempts) || stream.recoveryAttempts < 0 || stream.recoveryAttempts > 8 ||
+        (stream.reason !== undefined && !["STREAM_GAP", "STREAM_UNAUTHORIZED", "SESSION_EXPIRED", "STREAM_PROTOCOL", "STREAM_BUDGET", "RECOVERY_EXHAUSTED"].includes(stream.reason)))) throw new Error("Supported MCP notification status is unavailable");
     return value;
   },
   async command(action, id, body) {

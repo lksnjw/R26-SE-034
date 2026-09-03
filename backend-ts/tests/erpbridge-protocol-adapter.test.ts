@@ -1,14 +1,14 @@
 import { expect, test, vi } from "vitest";
 import { createBridgeProtocolAdapter } from "../src/tools/erpbridge-protocol-adapter.js";
 
-function fixture(options: { failure?: number; notification?: boolean; loop?: boolean; exhaust?: boolean; wrongProtocol?: boolean } = {}) {
+function fixture(options: { failure?: number; notification?: boolean; loop?: boolean; exhaust?: boolean; wrongProtocol?: boolean; get?: () => Response } = {}) {
   const descriptor = { name: "read.rev_MS4wLjA", inputSchema: { type: "object" }, outputSchema: { type: "object" },
     annotations: { readOnlyHint: true }, _meta: { "toolplane.resourceVersion": "1.0.0", "toolplane.resourceDigest": "a".repeat(64), "io.erpbridge/allowedRoles": [] } };
   const calls: { url: string; method: string; headers: Headers; body?: Record<string, any> }[] = [];
   const fetchImplementation = vi.fn<typeof fetch>(async (url, init) => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ url: String(url), method: init?.method ?? "GET", headers: new Headers(init?.headers), ...(body ? { body } : {}) });
-    if (!body) return new Response(null, { status: 405 });
+    if (!body) return options.get?.() ?? new Response(null, { status: 405 });
     if (body.id === undefined) return new Response(null, { status: 202 });
     let result: unknown;
     if (body.method === "initialize") result = { protocolVersion: options.wrongProtocol ? "2026-07-28" : "2025-11-25", capabilities: { tools: { listChanged: true } }, serverInfo: { name: "ERPBridge", version: "1.0.0" } };
@@ -70,4 +70,40 @@ test("page exhaustion rejects partial discovery, and wrong protocol never downgr
 });
 test.each(["https://u:p@example.test", "https://example.test/mcp/", "https://example.test/?token=x", "file:///mcp"])("rejects ambiguous/credential-bearing base URL: %s", baseURL => {
   expect(() => createBridgeProtocolAdapter({ baseURL, token: "fixture", timeoutMs: 1000 })).toThrow(/base URL/);
+});
+
+test("actual SDK notification reader invalidates discovery and a malformed stream fences dispatch with safe status", async () => {
+  let target!: ReadableStreamDefaultController<Uint8Array>;
+  const f = fixture({ get: () => new Response(new ReadableStream({ start(c) { target = c; } }), { headers: { "content-type": "text/event-stream" } }) });
+  const changed = vi.fn(); f.adapter.onToolsChanged!(changed);
+  try {
+    await f.adapter.connect(); await f.adapter.listTools(); await vi.waitFor(() => expect(f.adapter.notificationState?.state).toBe("ACTIVE"));
+    target.enqueue(new TextEncoder().encode('event: message\ndata: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n\n'));
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce());
+    target.enqueue(new TextEncoder().encode("data: private-malformed-reply\n\n"));
+    await vi.waitFor(() => expect(f.adapter.available).toBe(false));
+    expect(f.adapter.notificationState).toEqual({ state: "FAILED", reason: "STREAM_PROTOCOL", recoveryAttempts: 0 });
+    await expect(f.adapter.callTool("read.rev_MS4wLjA", {})).rejects.toThrow(/unavailable/);
+    await expect(f.adapter.listTools()).rejects.toThrow(/unavailable/);
+    expect(f.calls.filter(c => c.body?.method === "tools/call")).toHaveLength(0);
+    expect(JSON.stringify(f.adapter.notificationState)).not.toContain("private");
+  } finally { await f.adapter.close(); }
+});
+
+test("SDK notification GET recovers a gap without reinitializing, background discovery, or business replay", async () => {
+  let count = 0; const f = fixture({ get: () => new Response(new ReadableStream({ start(c) {
+    c.enqueue(new TextEncoder().encode(`id: event-${++count}\ndata: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n\n`));
+    if (count === 1) c.close();
+  } }), { headers: { "content-type": "text/event-stream" } }) });
+  const changed = vi.fn(); f.adapter.onToolsChanged!(changed);
+  try {
+    await f.adapter.connect(); await f.adapter.listTools(); await f.adapter.callTool("read.rev_MS4wLjA", {});
+    await vi.waitFor(() => expect(count).toBe(2)); await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(3));
+    expect(f.adapter.notificationState).toEqual({ state: "ACTIVE", recoveryAttempts: 1 }); expect(f.adapter.available).toBe(true);
+    const gets = f.calls.filter(c => c.method === "GET"); expect(gets).toHaveLength(2); expect(gets[1]!.headers.get("last-event-id")).toBe("event-1");
+    expect(gets[1]!.headers.get("mcp-session-id")).toBe("fixture-session");
+    expect(f.calls.filter(c => c.body?.method === "initialize")).toHaveLength(1);
+    expect(f.calls.filter(c => c.body?.method === "tools/list")).toHaveLength(2);
+    expect(f.calls.filter(c => c.body?.method === "tools/call")).toHaveLength(1);
+  } finally { await f.adapter.close(); }
 });

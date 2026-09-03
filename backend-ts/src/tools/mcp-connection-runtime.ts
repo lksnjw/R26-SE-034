@@ -29,7 +29,8 @@ type RuntimeOptions = { repository: Repository; registries: RegistryService; val
 
 /** One backend-owned environment-backed modern connection. This is not a
  * generic URL registry: browser/model supplied endpoints and credentials are
- * rejected. No business call, automatic reconnect loop, or tool grant here. */
+ * rejected. No business call, automatic new-session reconnect, or tool grant
+ * here. The adapter may recover only an existing notification GET stream. */
 export class McpConnectionRuntime {
   #session: ErpbridgeMcpSession | undefined;
   #state: RuntimeState = "DISCONNECTED";
@@ -131,6 +132,7 @@ export class McpConnectionRuntime {
     return { id: DEFAULT_BRIDGE_CONNECTION, transport: "erpbridge-mcp", configurationSource: "backend-environment", configured: this.#configured,
       revision: record?.revision ?? this.#revision, desiredEnabled: record?.desiredEnabled ?? false, state,
       initialized: state === "CONNECTED" && Boolean(this.session), discoveryAvailable: state === "CONNECTED" && Boolean(this.session), qualification: "Initialization/discovery only; not live ERP tool authorization or delivery",
+      notificationStream: this.#session?.notificationState ?? null,
       persistence: !this.supportedStorage() ? "unsupported" : this.options.repository.persistence === null ? "memory-only" : "durable-single-writer",
       operationInProgress: this.#probeBusy || this.#state === "CONNECTING",
       supports: { connect: canInitialize, test: canInitialize, disconnect: this.supportedStorage() && !this.#stopped },

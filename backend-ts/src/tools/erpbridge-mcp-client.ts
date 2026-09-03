@@ -12,6 +12,7 @@ import type {
 } from "../validator/registry-validator.js";
 import type { DispatchIdentity } from "./registry.js";
 import type { GovernedMCPClient } from "./mcp-client.js";
+import type { McpNotificationState } from "./mcp-notification-stream.js";
 
 export type ErpbridgeMcpSdkTool = {
   name: string;
@@ -26,6 +27,8 @@ export type ErpbridgeMcpSdkClient = Readonly<{
   connect(): Promise<void>;
   close(): Promise<void>;
   metadataComplete?: boolean;
+  available?: boolean;
+  notificationState?: McpNotificationState | undefined;
   callTool(name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<unknown>;
   listTools(): Promise<readonly ErpbridgeMcpSdkTool[]>;
   onToolsChanged?(listener: () => void): () => void;
@@ -33,6 +36,7 @@ export type ErpbridgeMcpSdkClient = Readonly<{
 
 export type ErpbridgeMcpSession = Readonly<{
   available?: boolean;
+  notificationState?: McpNotificationState | undefined;
   requiresReviewedRevision?: boolean;
   discoveryGeneration?: number;
   // Internal opaque binding only; never expose endpoint credentials in runs.
@@ -87,6 +91,7 @@ export async function createErpbridgeMcpSession(options: {
   let discoveryGeneration = 0;
   const unsubscribe = sdkClient.onToolsChanged?.(() => { discoveryGeneration++; });
   let closed = false;
+  const unavailable = () => closed || sdkClient.available === false;
   let closePromise: Promise<void> | undefined;
   const lifecycle = new AbortController();
   const cleanup = () => boundedOperation(() => sdkClient.close(), {
@@ -102,7 +107,7 @@ export async function createErpbridgeMcpSession(options: {
   };
   const abandon = () => { if (!closed) void close().catch(() => {}); };
   const run = <T>(label: string, start: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
-    if (closed) return Promise.reject(new Error("ERPBridge MCP session is closed"));
+    if (unavailable()) return Promise.reject(new Error("ERPBridge MCP session is closed or unavailable"));
     return boundedOperation(start, {
       timeoutMs: options.timeoutMs, label,
       signal: signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal,
@@ -115,13 +120,14 @@ export async function createErpbridgeMcpSession(options: {
   try { await run("ERPBridge MCP initialization", () => sdkClient.connect(), options.signal); }
   catch (error) { void close().catch(() => {}); throw error; }
   const assertAdmission = async (definition: ToolDefinition): Promise<void> => {
-    if (closed) throw new Error("ERPBridge MCP session is closed");
+    if (unavailable()) throw new Error("ERPBridge MCP session is closed or unavailable");
     if (sdkClient.metadataComplete && !options.admissionAuthorizer) throw new Error("Explicit persisted capability admission is required before ERP dispatch");
     await options.admissionAuthorizer?.(definition, admissionBinding);
-    if (closed) throw new Error("ERPBridge MCP session is closed");
+    if (unavailable()) throw new Error("ERPBridge MCP session is closed or unavailable");
   };
   return Object.freeze({
-    get available() { return !closed; },
+    get available() { return !closed && sdkClient.available !== false; },
+    get notificationState() { return sdkClient.notificationState; },
     get discoveryGeneration() { return discoveryGeneration; },
     requiresReviewedRevision: sdkClient.metadataComplete === true,
     admissionBinding,
@@ -141,7 +147,7 @@ export async function createErpbridgeMcpSession(options: {
         return run("ERPBridge MCP tool call", () => definition.bridge_contract
           ? sdkClient.callTool(name, args, { "toolplane.resourceDigest": definition.bridge_contract.resource_digest })
           : sdkClient.callTool(name, args), signal);
-      }, options.validator, definition, () => closed),
+      }, options.validator, definition, () => closed || sdkClient.available === false),
     /*******************************************************************************
      * Function: callToolDirect
      *

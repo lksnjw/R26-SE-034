@@ -13,3 +13,11 @@ test("typed lifecycle endpoints preserve exact request identity and revision", a
   const post = jest.spyOn(apiClient, "post").mockResolvedValue({ data: { data: {} } }); const body = { baseRevision: 2, requestId: "fixture_request_0001" };
   await mcpConnectionService.command("disconnect", "erpbridge-default", body); expect(post).toHaveBeenCalledWith("/settings/mcp-connections/erpbridge-default/disconnect", body);
 });
+
+test("unsafe or malformed notification status cannot become a ready-looking frontend status", async () => {
+  const get = jest.spyOn(apiClient, "get");
+  for (const notificationStream of [{ state: "raw-private-upstream-body", recoveryAttempts: 0 }, { state: "ACTIVE", recoveryAttempts: -1 }, { state: "FAILED", reason: "raw-error", recoveryAttempts: 1 }]) {
+    get.mockResolvedValue({ data: { data: { connections: [{ id: "erpbridge-default", revision: 2, initialized: false, supports: {}, notificationStream }], recentOperations: [] } } });
+    await expect(mcpConnectionService.status()).rejects.toThrow(/notification status/);
+  }
+});

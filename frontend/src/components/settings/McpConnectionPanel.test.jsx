@@ -60,3 +60,20 @@ test("disconnect warns about in-flight unknown outcomes; test is disposable and 
   cleanup(); status.mockResolvedValue(page({ configured: false, state: "UNCONFIGURED", supports: { connect: false, test: false, disconnect: true } })); mount();
   expect((await screen.findByRole("button", { name: "Connect MCP" })).disabled).toBe(true); expect(screen.getByRole("button", { name: "Test MCP initialization" }).disabled).toBe(true);
 });
+
+test("notification gaps and failures are readable and separate from initialization, with no automatic mutation", async () => {
+  status.mockResolvedValue(page({ state: "CONNECTED", initialized: true, notificationStream: { state: "RECOVERING", reason: "STREAM_GAP", recoveryAttempts: 1 } }));
+  mount(); expect(await screen.findByText(/Last confirmed notification stream: Recovering/)).not.toBeNull();
+  expect(screen.getByText(/Business calls are not replayed/)).not.toBeNull(); expect(command).not.toHaveBeenCalled();
+  status.mockResolvedValue(page({ state: "DEGRADED", initialized: false, notificationStream: { state: "FAILED", reason: "SESSION_EXPIRED", recoveryAttempts: 1 } }));
+  fireEvent.click(screen.getByRole("button", { name: "Reload MCP status" }));
+  expect(await screen.findByText(/Last confirmed notification stream: Failed/)).not.toBeNull();
+  expect(screen.getByText(/Remote session expired/)).not.toBeNull(); expect(screen.getByText("No initialized agent session is confirmed.")).not.toBeNull();
+  expect(command).not.toHaveBeenCalled();
+});
+
+test("optional notification support is not falsely reported as unavailable MCP tools", async () => {
+  status.mockResolvedValue(page({ state: "CONNECTED", initialized: true, notificationStream: { state: "UNSUPPORTED", recoveryAttempts: 0 } }));
+  mount(); expect(await screen.findByText(/does not support notification GET/)).not.toBeNull();
+  expect(screen.getByText(/MCP initialized and discovery completed/)).not.toBeNull(); expect(command).not.toHaveBeenCalled();
+});
