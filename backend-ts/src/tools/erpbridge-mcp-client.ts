@@ -70,10 +70,12 @@ export async function createErpbridgeMcpSession(options: {
   fetch?: typeof fetch;
   signal?: AbortSignal;
   admissionAuthorizer?: (definition: ToolDefinition, connectionBinding: string) => Promise<void>;
+  // Trusted backend lifecycle revision, never a model/client argument.
+  connectionRevision?: string;
 }): Promise<ErpbridgeMcpSession> {
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 2_147_483_647)
     throw new Error("ERPBridge MCP timeout must be a positive supported integer");
-  const admissionBinding = createHash("sha256").update(JSON.stringify([options.baseURL.trim(), options.token])).digest("hex");
+  const admissionBinding = createHash("sha256").update(JSON.stringify(options.connectionRevision === undefined ? [options.baseURL.trim(), options.token] : [options.baseURL.trim(), options.token, options.connectionRevision])).digest("hex");
   const sdkClient =
     options.sdkClient ??
     createBridgeProtocolAdapter({

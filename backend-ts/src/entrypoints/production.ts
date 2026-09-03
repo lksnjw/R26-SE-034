@@ -11,10 +11,7 @@ import type { ToolDefinition } from "../registry/schemas.js";
 import { Repository } from "../repository/store.js";
 import { Executor } from "../runner/executor.js";
 import { GenericMCPTool } from "../tools/generic-mcp-tool.js";
-import {
-  createErpbridgeMcpSession,
-  type ErpbridgeMcpSession,
-} from "../tools/erpbridge-mcp-client.js";
+import { McpConnectionRuntime } from "../tools/mcp-connection-runtime.js";
 import {
   createGovernedMCPClient,
   type GovernedMCPClient,
@@ -34,7 +31,6 @@ import { GovernanceService } from "../governance/service.js";
 import { GovernedValidationGate } from "../governance/gate.js";
 import { LlmPolicyFallback } from "../governance/llm-fallback.js";
 import { PolicyGateClient } from "../governance/policy-gate-client.js";
-import { discoverTools } from "../agent/tool-discovery.js";
 import { reconcileInterruptedExecutions } from "../runner/read-checkpoints.js";
 
 // Storage startup waits are bounded here; storage late-resource disposal and
@@ -117,7 +113,7 @@ await withTimeout(
 );
 console.log("[startup] Executions reconciled.");
 const validator = new RegistryValidator(registries, repository);
-const { admissionAuthorizer, requireProductionAdmissionProfile } = await import("../registry/capability-admission.js");
+const { requireProductionAdmissionProfile } = await import("../registry/capability-admission.js");
 requireProductionAdmissionProfile(config);
 const legacyMcp =
   config.mcpTransport === "bridge-v1"
@@ -128,31 +124,18 @@ const legacyMcp =
         validator,
       })
     : null;
-let erpbridgeSession: ErpbridgeMcpSession | null = null;
-if (config.mcpTransport === "erpbridge-mcp") {
-  try {
-    // The session owns its bounded initialization and late-resource cleanup.
-    // An outer race would abandon that lifecycle and leak a late connection.
-    erpbridgeSession = await createErpbridgeMcpSession({
-        baseURL: config.erpbridgeBaseURL,
-        token: config.erpbridgeMcpToken,
-        timeoutMs: config.mcpTimeoutMs,
-        validator,
-        admissionAuthorizer: admissionAuthorizer(repository, registries),
-      });
-  } catch (err) {
-    console.warn("[erpbridge] MCP session failed to start — ERP tools will be unavailable:", err instanceof Error ? err.message : String(err));
-  }
-}
+const mcpConnectionRuntime = await McpConnectionRuntime.open({ config, repository, registries, validator });
 /*******************************************************************************
  * Function: clientFor
  *
  * Selects the MCP client for the supplied tool definition.
  ******************************************************************************/
-const clientFor = (definition: ToolDefinition): GovernedMCPClient | null =>
-  erpbridgeSession !== null
-    ? erpbridgeSession.clientFor(definition)
-    : legacyMcp;
+const clientFor = (definition: ToolDefinition): GovernedMCPClient | null => config.mcpTransport === "erpbridge-mcp"
+  ? Object.freeze({ execute: async (action, capability, parameters, identity, signal) => {
+      const session = mcpConnectionRuntime.session;
+      if (!session) throw new Error("ERPBridge MCP is disconnected; no dispatch is available");
+      return session.clientFor(definition).execute(action, capability, parameters, identity, signal);
+    } }) : legacyMcp;
 const toolRegistry = new ToolRegistry();
 for (const definition of registries.snapshot().tools) {
   const client = clientFor(definition);
@@ -160,30 +143,9 @@ for (const definition of registries.snapshot().tools) {
     toolRegistry.register(new GenericMCPTool(definition.name, definition.description, client));
 }
 registries.onToolUpsert((definition) => {
-  if (!toolRegistry.has(definition.name)) {
-    const client = clientFor(definition);
-    if (client !== null)
-      toolRegistry.register(new GenericMCPTool(definition.name, definition.description, client));
-  }
+  const client = clientFor(definition);
+  if (client !== null) toolRegistry.register(new GenericMCPTool(definition.name, definition.description, client));
 });
-
-// Discovery may reconcile registered contracts, never invent minimally guarded
-// tool definitions for live-only names. Unknown tools remain unavailable.
-if (erpbridgeSession !== null) {
-  try {
-    const liveErpTools = await discoverTools(erpbridgeSession, registries);
-    for (const definition of liveErpTools) {
-      if (!toolRegistry.has(definition.name)) {
-        const client = clientFor(definition);
-        if (client !== null)
-          toolRegistry.register(new GenericMCPTool(definition.name, definition.description, client));
-      }
-    }
-    console.log(`[erpbridge] Reconciled ${liveErpTools.length} registered live contracts`);
-  } catch (err) {
-    console.warn("[erpbridge] Could not bootstrap live tools into executor:", err instanceof Error ? err.message : String(err));
-  }
-}
 
 const executor = new Executor(toolRegistry, validator);
 const providerRuntime = new ProviderRuntime(repository, executor);
@@ -253,7 +215,8 @@ const app = await buildApp({
   providerRuntime,
   synthesis,
   contextAvailable: true,
-  ...(erpbridgeSession !== null ? { erpbridgeSession } : {}),
+  mcpConnectionRuntime,
+  get erpbridgeSession() { return mcpConnectionRuntime.session; },
 });
 let shuttingDown = false;
 // The legacy scheduler uses a fabricated admin identity and no durable lease,
@@ -267,7 +230,7 @@ const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
   await app.close();
-  try { await erpbridgeSession?.close(); }
+  try { await mcpConnectionRuntime.stop(); }
   catch { console.warn("[erpbridge] MCP cleanup could not be confirmed; continuing shutdown without replay"); }
   await repository.close();
   // Explicit exit so lingering async handles (Firestore listeners, timers) don't keep the

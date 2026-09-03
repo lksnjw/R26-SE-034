@@ -135,6 +135,8 @@ export type RepositoryState = {
   capabilityObservations: Record<string, StoredRecord>;
   capabilityRevisions: Record<string, StoredRecord>;
   capabilityAdmissions: Record<string, StoredRecord>;
+  mcpConnections: Record<string, StoredRecord>;
+  mcpConnectionOperations: Record<string, StoredRecord>;
   webhooks: Record<string, StoredRecord>;
   refreshSessions: Record<string, { userId: string; expiresAt: string }>;
   auditLogs: Record<string, unknown>[];
@@ -336,7 +338,7 @@ function restoreState(payload: Uint8Array): RepositoryState {
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) restored[key] = defaults[key] as never;
   }
   if (restored.governancePolicy !== null && (typeof restored.governancePolicy !== "object" || Array.isArray(restored.governancePolicy))) restored.governancePolicy = null;
-  for (const key of ["capabilityObservations", "capabilityRevisions", "capabilityAdmissions"] as const)
+  for (const key of ["capabilityObservations", "capabilityRevisions", "capabilityAdmissions", "mcpConnections", "mcpConnectionOperations"] as const)
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) throw new Error(`Invalid stored ${key}; admission recovery requires repair`);
   for (const role of Object.values(defaults.roles)) if (restored.roles[role.id] === undefined) restored.roles[role.id] = role;
   const knownPermissions = new Set(restored.permissions.map((item) => item.key));
@@ -380,6 +382,8 @@ export function initialState(): RepositoryState {
     capabilityObservations: {},
     capabilityRevisions: {},
     capabilityAdmissions: {},
+    mcpConnections: {},
+    mcpConnectionOperations: {},
     webhooks: {},
     auditLogs: [],
     settings: { general: {}, llm: {}, rbac: {} },

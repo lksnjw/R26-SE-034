@@ -730,6 +730,22 @@ export const routeTable = [
   },
   {
     "method": "GET",
+    "path": "/api/settings/mcp-connections"
+  },
+  {
+    "method": "POST",
+    "path": "/api/settings/mcp-connections/:id/connect"
+  },
+  {
+    "method": "POST",
+    "path": "/api/settings/mcp-connections/:id/disconnect"
+  },
+  {
+    "method": "POST",
+    "path": "/api/settings/mcp-connections/:id/test"
+  },
+  {
+    "method": "GET",
     "path": "/api/chat/sessions/:id/operations"
   },
   {

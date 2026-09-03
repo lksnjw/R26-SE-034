@@ -88,7 +88,8 @@ export type ApplicationServices = {
   executor: Executor;
   providerRuntime?: ProviderRuntime;
   synthesis?: SynthesisService;
-  erpbridgeSession?: ErpbridgeMcpSession;
+  erpbridgeSession?: ErpbridgeMcpSession | undefined;
+  mcpConnectionRuntime?: import("../tools/mcp-connection-runtime.js").McpConnectionRuntime;
   contextAvailable?: boolean;
 };
 
@@ -284,7 +285,7 @@ export async function buildApp(
        * Dispatches the registered HTTP route to its application handler.
        ******************************************************************************/
       handler: async (request, reply) => {
-        if (route.method === "GET" || /\/(commands|node-proposals|run|retry)$/.test(route.path))
+        if (route.method === "GET" || route.path.includes("/settings/mcp-connections") || /\/(commands|node-proposals|run|retry)$/.test(route.path))
           return handleRoute(route, request, reply, services);
         const params = request.params as Record<string, unknown>;
         const family = route.path.split("/")[2] ?? route.path;
@@ -293,9 +294,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 185)
+  if (routeTable.length !== 189)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 185`,
+      `route table has ${routeTable.length} routes, expected 189`,
     );
   return app;
 }

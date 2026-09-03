@@ -23,7 +23,8 @@ export type HandlerServices = {
   executor: Executor;
   providerRuntime?: ProviderRuntime;
   synthesis?: SynthesisService;
-  erpbridgeSession?: ErpbridgeMcpSession;
+  erpbridgeSession?: ErpbridgeMcpSession | undefined;
+  mcpConnectionRuntime?: import("../../tools/mcp-connection-runtime.js").McpConnectionRuntime;
   contextAvailable?: boolean;
 };
 

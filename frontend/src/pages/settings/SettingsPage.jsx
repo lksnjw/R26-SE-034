@@ -3,6 +3,7 @@ import Card from "../../components/shared/ui/Card";
 import Toggle from "../../components/shared/ui/Toggle";
 import ApiKeyCard from "../../components/settings/ApiKeyCard";
 import IntegrationCard from "../../components/settings/IntegrationCard";
+import McpConnectionPanel from "../../components/settings/McpConnectionPanel";
 import LlmModelSelector from "../../components/settings/LlmModelSelector";
 import WebhookForm from "../../components/settings/WebhookForm";
 import { EmptyState, ErrorState, LoadingState } from "../../components/shared/ResourceState";
@@ -23,7 +24,7 @@ function SettingsPage({ view = "general" }) {
 
   const headings = {
     general: ["General Settings", "Effective platform values and API credentials returned by the settings service."],
-    integrations: ["Integrations", "Configured integration records and webhook delivery endpoints."],
+    integrations: ["Integrations", "Actual backend MCP lifecycle, saved integration metadata, and webhook endpoints."],
     llm: ["LLM Policy", "The environment fallback used when no active runtime provider is configured."],
   };
   const [title, description] = headings[view] || headings.general;
@@ -48,8 +49,9 @@ function SettingsPage({ view = "general" }) {
       {view === "integrations" ? (
         <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
           <div className="space-y-4">
+            <McpConnectionPanel />
             {(data?.integrations || []).length === 0 ? (
-              <EmptyState title="No integrations" description="Create integrations through the integration API." />
+              <EmptyState title="No integration metadata" description="Saved integration records are separate from actual MCP readiness." />
             ) : (
               data.integrations.map((integration) => (
                 <IntegrationCard key={integration.id} integration={integration} />
@@ -98,8 +100,8 @@ function SettingsPage({ view = "general" }) {
  *
  * Toggles the runtime Policy Checker (state.settings.rbac.enabled) — when on,
  * chat, workflow generation, and workflow runs are gated by role/ownership
- * checks and the ERP Bridge's policy-gate tools; when off, everything is
- * allowed through. Stored in the database, not hardcoded in source.
+ * checks and the ERP Bridge's advisory policy-gate tools. Mandatory actor,
+ * registry, approval and dispatch authorization cannot be disabled here.
  ******************************************************************************/
 function PolicyCheckerCard({ enabled, onChanged }) {
   const [saving, setSaving] = useState(false);
@@ -124,9 +126,8 @@ function PolicyCheckerCard({ enabled, onChanged }) {
         <div>
           <h2 className="section-title">Policy Checker</h2>
           <p className="mt-2 max-w-md text-sm leading-6 text-gray-500 dark:text-gray-400">
-            When on, chat requests, workflow generation, and workflow runs are checked against role
-            permissions and your ERP Bridge&apos;s policy rules before they proceed. When off, every
-            request is allowed through without a policy check.
+            Controls additional advisory policy checks. Mandatory role, registry, approval, and
+            dispatch authorization remain enforced whether this toggle is on or off.
           </p>
         </div>
         <Toggle checked={enabled} onChange={saving ? undefined : handleToggle} label={saving ? "Saving…" : enabled ? "On" : "Off"} />

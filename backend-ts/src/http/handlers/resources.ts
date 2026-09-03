@@ -139,6 +139,14 @@ export const RESOURCE_UNHANDLED = Symbol("resource-unhandled");
 export async function handleResourceRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown | typeof RESOURCE_UNHANDLED> {
   const base = services.config.apiBasePath;
   try {
+    if (route.path.startsWith(`${base}/settings/mcp-connections`)) {
+      const runtime = services.mcpConnectionRuntime;
+      if (!runtime) throw new HandlerFailure(503, "This backend has no supported MCP lifecycle service", { code: "MCP_LIFECYCLE_UNAVAILABLE" });
+      if (route.method === "GET") return reply.send(ok(await runtime.status(user), "Backend-owned MCP state; initialization is not ERP delivery", null));
+      if (requestParam(request, "id") !== "erpbridge-default") throw new HandlerFailure(404, "MCP connection not found");
+      const action = route.path.endsWith("/disconnect") ? "disconnect" : route.path.endsWith("/test") ? "test" : "connect";
+      return reply.send(ok(await runtime.command(action, user, request.body, request), "MCP lifecycle operation acknowledged; no business tool was invoked", null));
+    }
     const operationResponse = await handleChatOperationRoute(route, request, reply, user, services);
     if (operationResponse !== CHAT_OPERATION_UNHANDLED) return operationResponse;
     if (route.path === `${base}/company` && route.method === "GET") return getCompany(reply, user, services);
@@ -1101,7 +1109,17 @@ async function deleteIntegration(request: FastifyRequest, reply: FastifyReply, s
  *
  * Checks the configured integration and records its connection status.
  ******************************************************************************/
-async function testIntegration(request: FastifyRequest, reply: FastifyReply, services: HandlerServices, connect: boolean): Promise<unknown> { const id = requestParam(request, "id"); const item = await services.repository.read((state) => state.integrations[id] ?? null); if (item === null) throw new HandlerFailure(404, "Integration not found"); const config = isRecord(item.config) ? item.config : {}; const endpoint = [config.baseUrl, config.url, config.endpoint].map(stringValue).find((value) => value.trim() !== ""); if (endpoint === undefined) throw new HandlerFailure(400, "Integration endpoint is not configured"); try { const response = await fetch(endpoint, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(10_000) }); if (!response.ok) throw new Error(`HTTP ${response.status}`); const tested = await services.repository.mutate((state) => { const value = state.integrations[id]!; value.lastTestedAt = now(); if (connect) value.status = "Connected"; return structuredClone(value); }); if (connect) return reply.send(ok(withoutSecretFields(tested), "Integration connected", null)); return reply.send(ok({ ok: true, status: response.status }, "Integration test succeeded", null)); } catch (error) { throw new HandlerFailure(502, `Integration test failed: ${errorText(error)}`); } }
+async function testIntegration(request: FastifyRequest, _reply: FastifyReply, services: HandlerServices, _connect: boolean): Promise<unknown> {
+  const item = await services.repository.read((state) => state.integrations[requestParam(request, "id")] ?? null);
+  if (item === null) throw new HandlerFailure(404, "Integration not found");
+  const config = isRecord(item.config) ? item.config : {};
+  const endpoint = [config.baseUrl, config.url, config.endpoint].map(stringValue).find(value => value.trim() !== "");
+  if (endpoint === undefined) throw new HandlerFailure(400, "Integration endpoint is not configured");
+  // Generic URL records have no protocol, credential, endpoint/SSRF policy or
+  // agent-session authority. Never probe arbitrary saved URLs or label them
+  // Connected. Explicit adapters own their authenticated lifecycle instead.
+  throw new HandlerFailure(501, "A typed integration adapter is required. Use the backend MCP connection lifecycle for ERPBridge; this URL record cannot establish agent readiness", { code: "INTEGRATION_ADAPTER_REQUIRED" });
+}
 /*******************************************************************************
  * Function: disconnectIntegration
  *

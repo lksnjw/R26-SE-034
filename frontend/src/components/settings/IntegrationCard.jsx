@@ -14,15 +14,16 @@ function IntegrationCard({ integration }) {
         <span className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/10 text-primary">
           <Icon icon={integration.icon} className="h-5 w-5" />
         </span>
-        <span className="rounded-full bg-green-100 px-2.5 py-1 text-xs font-bold text-green-700 dark:bg-green-500/15 dark:text-green-300">
-          {integration.status}
+        <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-bold text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+          Metadata only
         </span>
       </div>
       <h3 className="mt-4 text-base font-bold text-gray-950 dark:text-white">
         {integration.name}
       </h3>
       <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{integration.type}</p>
-      <Button variant="secondary" className="mt-5 w-full" disabled>Use integration API to configure</Button>
+      <p className="mt-2 text-xs text-gray-500">Stored label: {integration.status || "Not recorded"}. This is not a live agent connection.</p>
+      <Button variant="secondary" className="mt-5 w-full" disabled>Typed adapter required</Button>
     </Card>
   );
 }
