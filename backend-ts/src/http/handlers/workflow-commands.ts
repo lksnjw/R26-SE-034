@@ -15,7 +15,7 @@ import { assertActorAuthority, assertChatAuthority, selectProvider } from "./mod
 import { activeChatStatus } from "../../agent/chat-jobs.js";
 import { prepareCompiledExecution } from "../../workflows/read-compilation-lifecycle.js";
 import { readAuthoringContract } from "../../workflows/read-authoring.js";
-import { nodeIdSchema as id, nodePatchSchema as patch, workflowRevisionSchema as base, workflowCommandSchema as command,
+import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
 
@@ -89,8 +89,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       if (!parsed.success) throw new HandlerFailure(400, "Invalid node proposal request");
       const value = parsed.data;
       requireBase(current, value.baseVersion, value.baseHash);
-      const node = parseWorkflowYAMLStrict(current.yaml).steps.find((step) => step.id === value.nodeId);
-      if (!node) throw new HandlerFailure(422, "Selected node does not exist");
+      const { node } = await services.repository.read(state => assertNodeContext(state, { workflowId, nodeId: value.nodeId, baseVersion: value.baseVersion, baseHash: value.baseHash }, user));
       if (!(await services.repository.read((state) => state.chats[value.sessionId]?.ownerId === user.id))) throw new HandlerFailure(404, "Chat session not found");
       if (!services.providerRuntime?.configured) throw new HandlerFailure(503, "Configure a model provider before requesting a node proposal", { code: "PROVIDER_NOT_CONFIGURED" });
       const sessionModel = await services.repository.read((state) => {
@@ -98,14 +97,17 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         return assertChatAuthority(state, user, value.sessionId).selectedModel;
       });
       const provider = selectProvider(services, value.model ?? sessionModel)!;
-      const prompt = promptData({ instruction: value.prompt, node: withoutSecretFields(node), tools: services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role)).map((tool) => ({ name: tool.name, inputSchema: tool.input_schema })) });
-      let proposed: z.infer<typeof patch>;
+      const prompt = promptData({ instruction: value.prompt, node: withoutSecretFields(node),
+        ...(node.kind === "if" ? { allowedBooleanSources: readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()).conditions?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
+        tools: node.kind === "if" ? [] : services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role)).map((tool) => ({ name: tool.name, inputSchema: tool.input_schema })) });
+      const patch = selectedNodePatchSchema(node);
+      let proposed: ReturnType<typeof patch.parse>;
       try {
-        const response = await provider.generateCandidate(prompt, "prompt/node-patch/v2", (output) => { patch.parse(JSON.parse(output.text)); }, request.signal,
+        const response = await provider.generateCandidate(prompt, selectedNodePatchVersion(node), (output) => { patch.parse(JSON.parse(output.text)); }, request.signal,
           { traceId, workflowId, ...(value.sessionId ? { sessionId: value.sessionId } : {}), actor: { id: user.id, role: user.role } });
         proposed = patch.parse(JSON.parse(response.text));
       } catch { throw new HandlerFailure(422, "The model did not return a supported node patch; nothing was changed", { code: "NODE_PROPOSAL_INVALID" }); }
-      const change = { type: "updateNode" as const, nodeId: node.id, patch: proposed };
+      const change = selectedNodePatchCommand(node, proposed);
       const yaml = apply(current.yaml, change);
       const validation = services.validator.validatePlan("NodeProposal", yaml, user.role);
       const proposal = await services.repository.mutate((state) => {

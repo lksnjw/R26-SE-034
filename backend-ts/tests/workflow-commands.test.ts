@@ -58,6 +58,41 @@ test("scoped node edit preserves unrelated nodes and control flow and creates a 
   expect(state.executions).toEqual({}); expect(s.fetchImplementation).not.toHaveBeenCalled();
 });
 
+async function conditionSetup(output: unknown = { predicate: { kind: "literal", value: false } }) {
+  const s = await setup(output);
+  const source = stringify({ name: "Conditional report", trigger: { type: "manual" }, steps: ["first", "last"].map(id => ({ id, action: "demo.echo", parameters: { value: id } })),
+    metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "last" }] } }] } } } });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
+  return { ...s, source, hash: workflowContentHash(source) };
+}
+test("manual conditional HTTP commands create a revision-bound draft and preserve the immutable publication", async () => {
+  const s = await conditionSetup();
+  const response = await s.edit({ type: "updateCondition", nodeId: "gate", patch: { predicate: { kind: "literal", value: false } } }, 1, s.hash);
+  expect(response.statusCode, response.body).toBe(200); expect(response.json().data).toMatchObject({ version: 2, canRun: false, publishedVersion: 1 });
+  const state = await s.repository.snapshot(); expect(state.versions.report![0]!.yaml).toBe(s.source);
+  expect(parseWorkflowYAMLStrict(response.json().data.yaml).steps).toEqual(parseWorkflowYAMLStrict(s.source).steps);
+  expect((await s.edit({ type: "updateCondition", nodeId: "gate", patch: { predicate: { kind: "literal", value: true } } }, 1, s.hash)).statusCode).toBe(409);
+  expect((await s.edit({ type: "removeCondition", nodeId: "gate" }, 1, s.hash, "client")).statusCode).toBe(403);
+  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(state.executions).toEqual({});
+});
+test("selected condition model proposals change only the predicate and acceptance matches the saved exact command", async () => {
+  const s = await conditionSetup(), response = await s.propose({ nodeId: "gate", baseHash: s.hash });
+  expect(response.statusCode, response.body).toBe(200);
+  const proposal = response.json().data; expect(proposal.command).toEqual({ type: "updateCondition", nodeId: "gate", patch: { predicate: { kind: "literal", value: false } } });
+  expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(s.source);
+  const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
+  expect(body.messages[0].content).toContain("ONE SELECTED CONDITION PATCH"); expect(body.messages[0].content).toContain("Branch contents and scope are immutable");
+  expect(JSON.parse(body.messages[1].content).tools).toEqual([]);
+  const applied = await s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(), payload: { baseVersion: 1, baseHash: s.hash, command: proposal.command, proposalId: proposal.id } });
+  expect(applied.statusCode, applied.body).toBe(200);
+  expect(parseWorkflowYAMLStrict(applied.json().data.yaml).steps).toEqual(parseWorkflowYAMLStrict(s.source).steps);
+  expect((await s.repository.snapshot()).executions).toEqual({});
+});
+test.each([{ predicate: { kind: "literal", value: false }, then: { kind: "sequence", nodes: [] } }, { action: "demo.echo" }, { predicate: { kind: "literal", value: "false" } }, { predicate: { kind: "ref", source: "workflowInput", path: ["__proto__"] } }])("condition proposal %j cannot escape its narrow patch contract", async output => {
+  const s = await conditionSetup(output); expect((await s.propose({ nodeId: "gate", baseHash: s.hash })).statusCode).toBe(422);
+  expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(s.source); expect((await s.repository.snapshot()).chats.chat!.messages).toHaveLength(0);
+});
+
 test("same-base concurrent edits yield exactly one saved revision and one conflict", async () => {
   const s = await setup();
   const responses = await Promise.all(["a", "b"].map((description) => s.edit({ type: "updateNode", nodeId: "first", patch: { description } })));

@@ -5,7 +5,8 @@ import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { buildReadIR, type ReadReference } from "./compiled-read.js";
-import { validateReadControlFlow } from "./read-control-flow.js";
+import { validateReadControlFlow, controlNodes, type ReadSequence } from "./read-control-flow.js";
+import { draftFlow } from "./draft-control-edits.js";
 import { isSecretField } from "../redact/secrets.js";
 
 type Schema = Record<string, unknown>;
@@ -60,6 +61,8 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   const upstream = sources(inputSchema, { kind: "ref", source: "workflowInput", path: [] }, "Workflow input");
   const compiled = blueprint.metadata?.controlFlow === undefined ? undefined : buildReadIR(blueprint, tools, role);
   const scopes = compiled?.ir.flow && !compiled.issues.length ? validateReadControlFlow(compiled.ir.flow, compiled.ir, new Map()).scopes : undefined;
+  let editableFlow: ReadSequence | undefined;
+  try { if (blueprint.metadata?.controlFlow !== undefined) editableFlow = draftFlow(blueprint); } catch { /* Invalid ownership is never depicted as executable structure. */ }
   let prefix = blueprint.trigger.type === "manual" && Object.keys(blueprint.trigger.config ?? {}).every(key => key === "inputSchema"), seen = new Set<string>();
   const nodes = blueprint.steps.slice(0, 200).map(step => {
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action), tool = matches.length === 1 ? matches[0] : undefined;
@@ -78,7 +81,9 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     seen.add(step.id);
     return result;
   });
-  const value = { profile: "read-authoring/v1", registryHash, ...(inputSchema ? { inputSchema } : {}), nodes, ...(compiled?.ir.flow && !compiled.issues.length ? { controlFlow: compiled.ir.flow } : {}) };
-  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, nodes: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
+  const conditionScopes = editableFlow && compiled ? validateReadControlFlow(editableFlow, compiled.ir, new Map()).scopes : undefined;
+  const conditions = editableFlow ? controlNodes(editableFlow).map(node => ({ nodeId: node.id, dataSources: upstream.filter(source => source.schema.type === "boolean" && (source.binding.source === "workflowInput" || conditionScopes?.get(node.id)?.has(source.binding.nodeId!))).slice(-32).map(source => structuredClone(source)) })) : [];
+  const value = { profile: "read-authoring/v1", registryHash, ...(inputSchema ? { inputSchema } : {}), nodes, ...(editableFlow ? { controlFlow: editableFlow, conditions } : {}) };
+  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, nodes: [], conditions: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
   return value;
 }

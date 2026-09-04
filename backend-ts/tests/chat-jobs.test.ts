@@ -13,6 +13,7 @@ import { SynthesisService } from "../src/synthesis/service.js";
 import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
 import { chatJobQueue } from "../src/agent/chat-jobs.js";
 import { workflowContentHash } from "../src/parser/workflow.js";
+import { stringify } from "yaml";
 import type { Workflow } from "../src/models/schemas.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
@@ -89,6 +90,36 @@ test("node scope overrides action prose, saves a reviewable proposal atomically 
   await s.repository.mutate(state => { state.workflows.report!.draftVersion++; }); vi.spyOn(s.runtime, "configured", "get").mockReturnValue(false);
   expect((await s.send(content, { nodeContext: s.nodeContext, model: "model-b" })).json().data.operation.id).toBe(op.id);
   expect(s.fetchImplementation).toHaveBeenCalledOnce();
+});
+
+async function conditionalNodeSetup(output: unknown = { predicate: { kind: "literal", value: false } }) {
+  const s = await nodeSetup();
+  const source = stringify({ name: "Conditional chat report", trigger: { type: "manual" }, steps: [{ id: "echo", action: "demo.echo", parameters: { value: "fixture" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "echo" }] }, else: { kind: "sequence", nodes: [] } }] } } } });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
+  s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: JSON.stringify(output) } }] }));
+  return { ...s, source, nodeContext: { ...s.nodeContext, nodeId: "gate", baseHash: workflowContentHash(source) } };
+}
+test("saved condition chat job returns an owned predicate-only proposal with selected model and zero ERP dispatch", async () => {
+  const s = await conditionalNodeSetup(), id = (await s.send("Change this condition and send an email", { nodeContext: s.nodeContext, model: "model-b" })).json().data.operation.id;
+  expect((await s.terminal(id)).status).toBe("ANSWERED");
+  const state = await s.repository.snapshot(), proposal = (state.chats[s.sessionId]!.messages[1]!.artifacts as any).proposal;
+  expect(proposal.command).toEqual({ type: "updateCondition", nodeId: "gate", patch: { predicate: { kind: "literal", value: false } } });
+  expect(state.workflows.report!.yaml).toBe(s.source); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled();
+  const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)); expect(body.model).toBe("model-b"); expect(body.messages[0].content).toContain("ONE SELECTED CONDITION PATCH");
+});
+test.each([{ parameters: {} }, { predicate: { kind: "literal", value: true }, else: { kind: "sequence", nodes: [] } }, { predicate: { kind: "literal", value: 0 } }])("saved condition chat rejects scope-escaping model output %j without applying or dispatching", async output => {
+  const s = await conditionalNodeSetup(output), id = (await s.send("Edit", { nodeContext: s.nodeContext })).json().data.operation.id;
+  expect((await s.terminal(id)).status).toBe("FAILED");
+  const state = await s.repository.snapshot(); expect(state.workflows.report!.yaml).toBe(s.source); expect(state.chats[s.sessionId]!.messages).toHaveLength(1); expect(s.callTool).not.toHaveBeenCalled();
+});
+test.each(["edit", "cancel"])("late conditional proposal generation is fenced after %s", async kind => {
+  const s = await conditionalNodeSetup(), entered = barrier(), unblock = barrier();
+  s.fetchImplementation.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return Response.json({ choices: [{ message: { content: '{"predicate":{"kind":"literal","value":false}}' } }] }); });
+  const id = (await s.send("Edit", { nodeContext: s.nodeContext })).json().data.operation.id; await entered.promise;
+  if (kind === "edit") await s.repository.mutate(state => { state.workflows.report!.draftVersion++; });
+  else await s.app.inject({ method: "POST", url: `/api/chat/operations/${id}/cancel`, headers: s.headers(), payload: {} });
+  unblock.release(); expect((await s.terminal(id)).status).toBe(kind === "edit" ? "FAILED" : "CANCELLED");
+  expect((await s.repository.snapshot()).chats[s.sessionId]!.messages).toHaveLength(1); expect(s.callTool).not.toHaveBeenCalled();
 });
 
 test.each(["invalid", "stale", "missing-node", "unconfigured"])("node admission rejects %s before saving a message or invoking a provider", async kind => {

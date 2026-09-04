@@ -4,6 +4,7 @@ import { jest, test, expect, beforeEach, afterEach } from "@jest/globals";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { workflowService } from "../../services/workflow.service";
 import { executionService } from "../../services/execution.service";
+import { within } from "@testing-library/react";
 
 const yaml = "name: Report\ntrigger:\n  type: manual\nsteps:\n - id: first\n   action: demo.echo\n   parameters:\n     value: original\n - id: last\n   action: demo.echo\n   parameters:\n     value: tail\n";
 const record = { workflowId: "report", version: 1, contentHash: `sha256:${"a".repeat(64)}`, yaml, validation: { passed: true, errors: [] }, published: false, bridge: "not_connected", can_attempt_run: false };
@@ -243,4 +244,86 @@ test("workspace renders confirmed branch scopes, selectable action nodes and tru
   expect(screen.getByText(/another branch was selected.*no answer/)).toBeTruthy(); expect(screen.getByText("selected answer")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: /first demo.echo/ })); expect(screen.getByRole("textbox", { name: "Node label" })).toBeTruthy();
   expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+const conditionFlow = { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "last" }] } }] };
+function showConditions(extra = {}) { workflowService.readiness.mockResolvedValue({ ...record, authoring: { profile: "read-authoring/v1", nodes: [], controlFlow: conditionFlow, conditions: [{ nodeId: "gate", dataSources: [] }] }, ...extra }); }
+
+test("condition selection forwards stable revision-bound scope to main chat and manual edits stay previews", async () => {
+  showConditions(); const onNodeContext = jest.fn(); await open({ onNodeContext });
+  fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
+  await waitFor(() => expect(onNodeContext).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "gate", workflowId: "report", version: 1, contentHash: record.contentHash })));
+  fireEvent.change(screen.getByRole("combobox", { name: "Condition value" }), { target: { value: "false" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview condition edit" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  expect(screen.getByRole("region", { name: "Node change preview" }).querySelector("pre")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: record.contentHash }), { type: "updateCondition", nodeId: "gate", patch: { predicate: { kind: "literal", value: false } } }));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("condition prompts use the saved asynchronous node scope and do not call tools or the legacy proposal route", async () => {
+  showConditions(); await open(); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Selected node prompt" }), { target: { value: "Select yes only when enabled" } });
+  fireEvent.click(screen.getByRole("button", { name: "Propose change" }));
+  await waitFor(() => expect(send).toHaveBeenCalledWith("Select yes only when enabled", undefined, { nodeContext: { workflowId: "report", nodeId: "gate", baseVersion: 1, baseHash: record.contentHash } }));
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.proposeNode).not.toHaveBeenCalled();
+});
+
+test("adding an action into an explicit branch submits its destination instead of a detached flat declaration", async () => {
+  showConditions(); await open(); fireEvent.click(screen.getByRole("button", { name: "Add node" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New node ID" }), { target: { value: "more" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "New node tool" }), { target: { value: "demo.echo" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "New node destination" }), { target: { value: "gate:else" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add draft node" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "addNode", node: { id: "more", action: "demo.echo", parameters: {} }, beforeNodeId: null, destination: { conditionId: "gate", branch: "else" } }));
+});
+const recordExpect = () => expect.objectContaining({ version: 1, contentHash: record.contentHash });
+
+test("moving an action selects a named branch scope and keeps the action ID", async () => {
+  showConditions(); await open(); await selectNode();
+  fireEvent.change(screen.getByRole("combobox", { name: "Move node destination" }), { target: { value: "gate:else" } });
+  fireEvent.click(screen.getByRole("button", { name: "Move to selected scope end" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "moveNode", nodeId: "first", beforeNodeId: null, destination: { conditionId: "gate", branch: "else" } }));
+});
+
+test("wrapping an action requires a reviewed preview before saving its explicit branch meaning", async () => {
+  await open(); await selectNode(); fireEvent.click(screen.getByRole("button", { name: "Wrap node in condition" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New condition ID" }), { target: { value: "newGate" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Condition value" }), { target: { value: "true" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Wrapped node branch" }), { target: { value: "else" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview new condition" })); expect(workflowService.command).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "wrapNode", nodeId: "first", conditionId: "newGate", predicate: { kind: "literal", value: true }, branch: "else" }));
+});
+
+test("empty condition creation is previewed with readable scope rather than raw source", async () => {
+  showConditions(); await open(); fireEvent.click(screen.getByRole("button", { name: "Add condition" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New condition ID" }), { target: { value: "inner" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "New condition destination" }), { target: { value: "gate:then" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview new condition" }));
+  expect(within(screen.getByRole("region", { name: "Node change preview" })).getByText(/gate · If yes.*empty paths/)).toBeTruthy();
+  expect(workflowService.command).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "addCondition", conditionId: "inner", predicate: { kind: "literal", value: false }, beforeNodeId: null, destination: { conditionId: "gate", branch: "then" } }));
+});
+
+test("nonempty conditions cannot be removed or silently flattened", async () => {
+  showConditions(); await open(); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
+  expect(screen.getByRole("button", { name: "Remove empty condition…" }).disabled).toBe(true);
+  expect(screen.getByText(/Nothing is silently flattened/)).toBeTruthy(); expect(workflowService.command).not.toHaveBeenCalled();
+});
+
+test("read-only condition inspection exposes no predicate form or mutation controls", async () => {
+  showConditions(); await open({ canEdit: false }); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
+  expect(screen.getByRole("complementary", { name: "Selected condition details" })).toBeTruthy();
+  expect(screen.queryByRole("combobox", { name: "Condition value" })).toBeNull(); expect(screen.queryByRole("button", { name: "Add condition" })).toBeNull();
+});
+
+test("stale condition apply retains the exact unapplied predicate proposal", async () => {
+  showConditions(); workflowService.command.mockRejectedValue({ response: { data: { message: "Draft changed. Reload." } } });
+  await open(); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Condition value" }), { target: { value: "false" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview condition edit" })); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await screen.findByRole("alert"); expect(screen.getByRole("region", { name: "Node change preview" })).toBeTruthy();
+  expect(workflowService.command).toHaveBeenCalledTimes(1); expect(workflowService.run).not.toHaveBeenCalled();
 });

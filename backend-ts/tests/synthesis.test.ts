@@ -8,6 +8,7 @@ import { SynthesisFailure, SynthesisService, assembleCandidatePrompt } from "../
 import { ToolRegistry } from "../src/tools/registry.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { stringify } from "yaml";
 
 const configuration: RuntimeProviderConfiguration = { id: "provider_test", name: "Test", type: "openai_compatible", baseURL: "https://openrouter.ai/api/v1", apiKey: "test-key", model: "openai/gpt-4o-mini-2024-07-18", temperature: 0, timeoutMs: 1_000 };
 
@@ -55,7 +56,7 @@ describe("single-candidate synthesis", () => {
     expect(result.canExecute).toBe(true);
     expect(result.candidates).toHaveLength(1);
     expect(result.validation.passed).toBe(true);
-    expect(result.candidate.generation_metadata).toMatchObject({ measured: true, inputTokens: 30, outputTokens: 20, promptTemplateVersion: "prompt/candidate/v3" });
+    expect(result.candidate.generation_metadata).toMatchObject({ measured: true, inputTokens: 30, outputTokens: 20, promptTemplateVersion: "prompt/candidate/v4" });
   });
 
   test("a self-approval candidate is rejected with the governing rule ID", async () => {
@@ -105,6 +106,18 @@ describe("single-candidate synthesis", () => {
     expect(result.canExecute).toBe(true);
     expect(result.candidate.yaml).toBe(yaml.trim());
   });
+});
+
+test.each(["valid", "branch-escape", "string-predicate"])("structured generation %s is preserved and receives compiler readiness checks without a second model call", async kind => {
+  const first = { id: "first", action: "demo.echo", parameters: { value: "first" } }, last = { id: "last", action: "demo.echo", parameters: { value: kind === "branch-escape" ? "{{first.structuredContent.value}}" : "last" } };
+  const source = stringify({ name: "Conditional proposal", description: "Read conditionally", trigger: { type: "manual" }, steps: [first, last], metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "literal", value: kind === "string-predicate" ? "true" : true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] }, else: { kind: "sequence", nodes: [] } }, { kind: "action", nodeId: "last" }] } } } });
+  const fetchImplementation = vi.fn<typeof fetch>(async () => providerResponse(source));
+  const { service, repository } = await setup("tests/fixtures/chat-read-tools.json", "tests/fixtures/rules.json", fetchImplementation);
+  const result = await service.synthesize({ prompt: "Read the report only if enabled", userRole: "Platform Admin" });
+  expect(result.yaml).toBe(source.trim()); expect(result.canExecute).toBe(kind === "valid");
+  expect(result.execution_profile_issues.length === 0).toBe(kind === "valid");
+  expect(fetchImplementation).toHaveBeenCalledOnce(); expect((await repository.snapshot()).executions).toEqual({});
+  const body = JSON.parse(String(fetchImplementation.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toContain("metadata.controlFlow"); expect(body.messages[0].content).toContain("Never flatten requested unsupported logic");
 });
 
 /*******************************************************************************

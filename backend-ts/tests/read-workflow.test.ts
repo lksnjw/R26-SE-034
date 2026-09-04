@@ -14,7 +14,7 @@ import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
-import { parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
+import { parseWorkflowYAMLStrict, workflowContentHash } from "../src/parser/workflow.js";
 import { inspectReadWorkflow } from "../src/runner/read-workflow.js";
 import type { ProviderRuntime } from "../src/providers/runtime.js";
 import type { Workflow } from "../src/models/schemas.js";
@@ -78,6 +78,27 @@ test.each([false, true])("published two-node read executes exact bindings with p
 });
 
 const conditionalYAML = (predicate: unknown = { kind: "ref", source: "workflowInput", path: ["enabled"] }) => stringify({ name: "Branch report", description: "Read exactly one branch", trigger: { type: "manual" }, steps: ["yes", "no", "after"].map(id => ({ id, action: "finance.read", parameters: { id } })), metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "yes" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "no" }] } }, { kind: "action", nodeId: "after" }] } } } });
+
+test("structure-aware authoring creates a publishable branch workflow that runs only its selected path", async () => {
+  const s = await setup({ provider: true }), blueprint = parseWorkflowYAMLStrict(conditionalYAML()); delete blueprint.metadata;
+  let source = stringify(blueprint), revision = 1; await s.seed(source, false);
+  for (const command of [
+    { type: "wrapNode", nodeId: "yes", conditionId: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["enabled"] }, branch: "then" },
+    { type: "moveNode", nodeId: "no", beforeNodeId: null, destination: { conditionId: "gate", branch: "else" } },
+  ]) {
+    const result = await s.app.inject({ method: "POST", url: "/api/workflows/read/commands", headers: s.headers, payload: { baseVersion: revision, baseHash: workflowContentHash(source), command } });
+    expect(result.statusCode, result.body).toBe(200); source = result.json().data.yaml; revision = result.json().data.version;
+    expect(result.json().data.canRun).toBe(false);
+  }
+  expect(s.callTool).not.toHaveBeenCalled();
+  const readiness = await s.app.inject({ method: "GET", url: "/api/workflows/read/readiness", headers: s.headers });
+  expect(readiness.json().data.issues).toEqual([]); expect(readiness.json().data.authoring.controlFlow).toBeTruthy();
+  const published = await s.app.inject({ method: "POST", url: "/api/workflows/read/publish", headers: s.headers, payload: {} });
+  expect(published.statusCode, published.body).toBe(200); expect(s.callTool).not.toHaveBeenCalled();
+  const response = await s.run({ input: { enabled: false } }); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ status: "DONE", workflowSnapshot: { yaml: source, executionProfile: "conditional-read-v1" }, readProgress: { attempts: { yes: { status: "SKIPPED" }, no: { status: "DONE" }, after: { status: "DONE" } } } });
+  expect(s.callTool.mock.calls.map(call => call[1].id)).toEqual(["no", "after"]); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
 
 test.each([true, false])("conditional read chooses exactly one path with enabled=%s, preserves source indexes and records the other path as skipped", async enabled => {
   const s = await setup({ provider: true }); await s.seed(conditionalYAML());

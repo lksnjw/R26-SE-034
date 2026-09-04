@@ -6,14 +6,14 @@ export type ReadControlNode = { kind: "action"; nodeId: string } | { kind: "if";
 export type ReadControlFlow = { schemaVersion: "read-control-flow/v1"; root: ReadSequence };
 const identifier = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/).refine(value => !["input", "__proto__", "constructor", "prototype"].includes(value));
 const path = z.array(z.string().regex(/^[A-Za-z0-9_-]+$/).refine(value => !["__proto__", "constructor", "prototype"].includes(value))).max(16);
-const predicate = z.union([
+export const readPredicateSchema = z.union([
   z.object({ kind: z.literal("literal"), value: z.boolean() }).strict(),
   z.object({ kind: z.literal("ref"), source: z.literal("workflowInput"), path }).strict(),
   z.object({ kind: z.literal("ref"), source: z.literal("nodeOutput"), nodeId: identifier, path }).strict(),
 ]);
 const sequence: z.ZodType<ReadSequence> = z.lazy(() => z.object({ kind: z.literal("sequence"), nodes: z.array(z.union([
   z.object({ kind: z.literal("action"), nodeId: identifier }).strict(),
-  z.object({ kind: z.literal("if"), id: identifier, predicate, then: sequence, else: sequence }).strict(),
+  z.object({ kind: z.literal("if"), id: identifier, predicate: readPredicateSchema, then: sequence, else: sequence }).strict(),
 ])).max(200) }).strict());
 const flow = z.object({ schemaVersion: z.literal("read-control-flow/v1"), root: sequence }).strict();
 
@@ -88,6 +88,7 @@ export function validateReadControlFlow(root: ReadSequence, ir: ReadIR, outputSc
         for (const ref of references(action.inputs)) checkReference(ref, available, `Step ${node.nodeId}`);
         available.add(node.nodeId);
       } else {
+        scopes.set(node.id, new Set(available));
         if (++controlCount > 100 || seen.has(node.id)) issues.push("Conditions require unique IDs and at most 100 nodes");
         seen.add(node.id);
         if (node.predicate.kind === "ref") {

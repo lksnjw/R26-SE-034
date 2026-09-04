@@ -3,22 +3,34 @@ import { jsonObjectSchema, workflowStepBlueprintSchema, type Workflow } from "..
 import { parseWorkflowYAMLStrict, stringifyWorkflowYAML, workflowContentHash } from "../parser/workflow.js";
 import { HandlerFailure, type CurrentUser } from "../http/handlers/common.js";
 import type { RepositoryState } from "../repository/store.js";
-import { readControlFlowSchema } from "./read-control-flow.js";
+import { readControlFlowSchema, readPredicateSchema, controlNodes } from "./read-control-flow.js";
+import { draftFlow, locateFlowNode, insertionScope, saveDraftFlow } from "./draft-control-edits.js";
 
 export const nodeIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 export const nodePatchSchema = z.object({ action: z.string().min(1).max(128).optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
+export const conditionPatchSchema = z.object({ predicate: readPredicateSchema }).strict();
+const destinationSchema = z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict();
 export const workflowRevisionSchema = { baseVersion: z.number().int().min(1), baseHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) };
 export const nodeContextSchema = z.object({ workflowId: z.string().min(1).max(128), nodeId: nodeIdSchema, ...workflowRevisionSchema }).strict();
 export type NodeContext = z.infer<typeof nodeContextSchema>;
 export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("updateNode"), nodeId: nodeIdSchema, patch: nodePatchSchema }).strict(),
-  z.object({ type: z.literal("addNode"), node: workflowStepBlueprintSchema, beforeNodeId: nodeIdSchema.nullable() }).strict(),
+  z.object({ type: z.literal("addNode"), node: workflowStepBlueprintSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
   z.object({ type: z.literal("removeNode"), nodeId: nodeIdSchema }).strict(),
-  z.object({ type: z.literal("moveNode"), nodeId: nodeIdSchema, beforeNodeId: nodeIdSchema.nullable() }).strict(),
+  z.object({ type: z.literal("moveNode"), nodeId: nodeIdSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
+  z.object({ type: z.literal("addCondition"), conditionId: nodeIdSchema, predicate: readPredicateSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
+  z.object({ type: z.literal("wrapNode"), nodeId: nodeIdSchema, conditionId: nodeIdSchema, predicate: readPredicateSchema, branch: z.enum(["then", "else"]) }).strict(),
+  z.object({ type: z.literal("updateCondition"), nodeId: nodeIdSchema, patch: conditionPatchSchema }).strict(),
+  z.object({ type: z.literal("removeCondition"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("restoreDraft"), yaml: z.string().min(1).max(200000) }).strict(),
   z.object({ type: z.literal("setControlFlow"), flow: readControlFlowSchema }).strict(),
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
+export function selectedNodePatchSchema(node: { kind?: string | undefined }) { return node.kind === "if" ? conditionPatchSchema : nodePatchSchema; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "if" ? "prompt/condition-patch/v1" : "prompt/node-patch/v2"; }
+export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
+  return workflowCommandSchema.parse({ type: node.kind === "if" ? "updateCondition" : "updateNode", nodeId: node.id, patch });
+}
 export function permittedWorkflow(workflow: Workflow, user: CurrentUser, editing: boolean): boolean {
   return !workflow.archived && (!editing || user.permissions.includes("workflow:write")) &&
     (user.permissions.includes("workflow:read") || workflow.owner.id === user.id || (workflow.assignedUserIds ?? []).includes(user.id));
@@ -40,7 +52,8 @@ export function assertNodeContext(state: Readonly<RepositoryState>, context: Nod
   assertCurrentWorkflowEditor(state, workflow, user);
   requireWorkflowBase(workflow, context.baseVersion, context.baseHash);
   if (workflow.yaml.length > 200000) throw new HandlerFailure(422, "Workflow source exceeds supported limits");
-  const node = parseWorkflowYAMLStrict(workflow.yaml).steps.find(step => step.id === context.nodeId);
+  const blueprint = parseWorkflowYAMLStrict(workflow.yaml);
+  const node = blueprint.steps.find(step => step.id === context.nodeId) ?? (blueprint.metadata?.controlFlow === undefined ? undefined : controlNodes(draftFlow(blueprint)).find(node => node.id === context.nodeId));
   if (!node) throw new HandlerFailure(422, "Selected node does not exist");
   return { workflow: structuredClone(workflow), node: structuredClone(node) };
 }
@@ -49,6 +62,43 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
   const blueprint = parseWorkflowYAMLStrict(change.type === "restoreDraft" ? change.yaml : source);
   if (change.type === "restoreDraft") return stringifyWorkflowYAML(blueprint);
   if (change.type === "setControlFlow") { blueprint.metadata = { ...blueprint.metadata, controlFlow: change.flow }; return stringifyWorkflowYAML(blueprint); }
+  if (["addCondition", "wrapNode", "updateCondition", "removeCondition"].includes(change.type) ||
+      blueprint.metadata?.controlFlow !== undefined && ["addNode", "moveNode", "removeNode"].includes(change.type) ||
+      (change.type === "addNode" || change.type === "moveNode") && change.destination) {
+    const root = draftFlow(blueprint);
+    if (change.type === "addCondition" || change.type === "wrapNode") {
+      if (locateFlowNode(root, change.conditionId)) throw new HandlerFailure(422, "Structural ID already exists");
+      const node = { kind: "if" as const, id: change.conditionId, predicate: change.predicate, then: { kind: "sequence" as const, nodes: [] as import("./read-control-flow.js").ReadControlNode[] }, else: { kind: "sequence" as const, nodes: [] as import("./read-control-flow.js").ReadControlNode[] } };
+      if (change.type === "wrapNode") {
+        const found = locateFlowNode(root, change.nodeId);
+        if (!found || found.node.kind !== "action") throw new HandlerFailure(422, "Select an action to wrap in a condition");
+        node[change.branch].nodes.push(found.node); found.block.nodes[found.index] = node;
+      } else { const target = insertionScope(root, change.beforeNodeId, change.destination); target.block.nodes.splice(target.index, 0, node); }
+    } else if (change.type === "updateCondition" || change.type === "removeCondition") {
+      const found = locateFlowNode(root, change.nodeId);
+      if (!found || found.node.kind !== "if") throw new HandlerFailure(422, "Selected condition does not exist");
+      if (change.type === "updateCondition") found.node.predicate = change.patch.predicate;
+      else {
+        if (found.node.then.nodes.length || found.node.else.nodes.length) throw new HandlerFailure(422, "Move or remove the contents of both paths before removing this condition");
+        found.block.nodes.splice(found.index, 1);
+      }
+    } else if (change.type === "addNode") {
+      if (locateFlowNode(root, change.node.id)) throw new HandlerFailure(422, "Structural ID already exists");
+      const target = insertionScope(root, change.beforeNodeId, change.destination);
+      target.block.nodes.splice(target.index, 0, { kind: "action", nodeId: change.node.id }); blueprint.steps.push(change.node);
+    } else if (change.type === "removeNode" || change.type === "moveNode") {
+      const found = locateFlowNode(root, change.nodeId);
+      if (!found || found.node.kind !== "action") throw new HandlerFailure(422, "Selected action does not exist");
+      if (change.type === "moveNode" && change.beforeNodeId === change.nodeId) throw new HandlerFailure(422, "A node cannot move before itself");
+      found.block.nodes.splice(found.index, 1);
+      if (change.type === "removeNode") blueprint.steps = blueprint.steps.filter(step => step.id !== change.nodeId);
+      else { const target = insertionScope(root, change.beforeNodeId, change.destination); target.block.nodes.splice(target.index, 0, found.node); }
+    }
+    if (blueprint.steps.length > 200) throw new HandlerFailure(422, "Draft must have at most 200 uniquely identified nodes");
+    saveDraftFlow(blueprint, root); return stringifyWorkflowYAML(blueprint);
+  }
+  if (!["updateNode", "addNode", "removeNode", "moveNode"].includes(change.type)) throw new HandlerFailure(422, "Unsupported structural command");
+  if (change.type === "addCondition" || change.type === "wrapNode" || change.type === "updateCondition" || change.type === "removeCondition") throw new HandlerFailure(422, "Unsupported structural command");
   if (change.type === "addNode") {
     if (blueprint.steps.some(step => step.id === change.node.id)) throw new HandlerFailure(422, "Node ID already exists");
     const index = change.beforeNodeId === null ? blueprint.steps.length : blueprint.steps.findIndex(step => step.id === change.beforeNodeId);

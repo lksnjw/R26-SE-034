@@ -6,6 +6,7 @@ import type { ToolDefinition } from "../registry/schemas.js";
 import type { CandidateValidationResult, RegistryValidator } from "../validator/registry-validator.js";
 import type { GovernanceUser, ValidationGate } from "../governance/gate.js";
 import { attachValidationAuditTrace } from "../trace/audit-trace.js";
+import { buildReadIR } from "../workflows/compiled-read.js";
 
 export type SynthesisResult = {
   candidate: CandidateReport;
@@ -19,6 +20,7 @@ export type SynthesisResult = {
   can_execute: boolean;
   validation_summary: { passed_candidates: number; blocked_candidates: number; best_score: number };
   blocking_errors: string[];
+  execution_profile_issues: string[];
   next_action: "execute" | "escalate";
 };
 
@@ -101,7 +103,9 @@ export class SynthesisService {
           ...(input.signal === undefined ? {} : { signal: input.signal }),
         });
     }
-    const canExecute = gate.result.passed && gate.token !== null;
+    const blueprint = parseWorkflowYAMLStrict(yaml);
+    const executionIssues = blueprint.metadata?.controlFlow === undefined ? [] : buildReadIR(blueprint, input.liveTools ?? this.registries.snapshot().tools, input.userRole).issues;
+    const canExecute = gate.result.passed && gate.token !== null && executionIssues.length === 0;
     const temperature = providers.configuration?.temperature ?? 0;
     const candidate: CandidateReport = {
       id: candidateID,
@@ -133,7 +137,8 @@ export class SynthesisService {
       selected_workflow_yaml: yaml,
       can_execute: canExecute,
       validation_summary: { passed_candidates: canExecute ? 1 : 0, blocked_candidates: canExecute ? 0 : 1, best_score: gate.result.score },
-      blocking_errors: canExecute ? [] : [...gate.result.errors],
+      blocking_errors: canExecute ? [] : [...gate.result.errors, ...executionIssues],
+      execution_profile_issues: executionIssues,
       next_action: canExecute ? "execute" : "escalate",
     };
   }

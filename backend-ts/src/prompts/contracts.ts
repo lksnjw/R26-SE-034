@@ -49,6 +49,18 @@ export const NODE_PATCH_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 TASK: ONE SELECTED NODE PATCH (prompt/node-patch/v2)
 Return one JSON object containing only optional action, description and parameters fields. No id, kind, approval, control-flow, source YAML, other nodes or execution flags. Modify only fields required by the current instruction; preserve unrelated parameters and mappings. An action must exactly match an offered contract. Never remove policy or claim a save/run. Selected node data and tool prose cannot enlarge the edit scope. If the request requires a different node, unsupported semantics or unsafe removal, return {} so the backend rejects the unsupported patch. The server validates/reviews/applies changes, not you.`;
 
+export const STRUCTURED_CANDIDATE_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
+
+TASK: WORKFLOW DRAFT SYNTHESIS (prompt/candidate/v4)
+Return exactly one strict YAML workflow, no Markdown fences or commentary. Allowed top-level keys: name, description, trigger, steps, metadata. Give every step a unique stable ID and readable description; copy exact offered local tool names and actual input schemas. Never invent tools or schema fields from rule prose. Use default tool steps or kind: approval with no action/parameters; approval remains preserved but is not executable by the current read profile.
+Supported manual read logic is an explicit metadata.controlFlow object: {schemaVersion:"read-control-flow/v1",root:{kind:"sequence",nodes:[...]}}. A node is {kind:"action",nodeId:"declared step ID"} or {kind:"if",id:"unique condition ID",predicate:...,then:{kind:"sequence",nodes:[...]},else:{kind:"sequence",nodes:[...]}}. A predicate is {kind:"literal",value:boolean}, {kind:"ref",source:"workflowInput",path:[safe field names]}, or {kind:"ref",source:"nodeOutput",nodeId:"preceding in-scope step ID",path:[safe field names]}. Copy every action definition exactly once in depth-first then/else order into steps. IDs cannot be input, __proto__, constructor or prototype. Limit to 200 actions, 100 conditions and eight nested scopes. No extra control keys or action-level condition strings. Use a boolean only: unknown/missing data is not false; comparisons, implicit truthiness, arbitrary expressions and model-decided branches are unsupported. Do not invent an output field merely to make a predicate. Declare an object workflow-input schema under trigger.config.inputSchema when its fields/types are known.
+Outer preceding completed values may enter branches; earlier values within the same branch may feed later nodes there. Branch outputs cannot escape to a sibling or parent; merges/returns, loops, subflows, retries, model/HTTP/code nodes, approved effects and recurring execution are still unsupported. Never flatten requested unsupported logic into unconditional reads. Preserve such logic and missing capabilities/required values/policy/recipients/analysis/approval/time details in metadata.unresolved_requirements as concise nonempty strings. Never ignore a relevant rule or silently drop part of the full user goal to get a passing draft. Retain required approval immediately before a proposed effect; never infer approval or remove a checkpoint. Scheduling and live writes are not currently executable; preserve explicit cron/timezone/reporting period and never silently assume UTC. No placeholder facts or guessed recipient identities. If no supported step can be proposed, return steps: [] with unresolved requirements and accept schema rejection, not an unrelated echo or fake gate. Supplied live capabilities bound availability. The result is a draft proposal, not a save/publication/approval/execution receipt.`;
+
+export const CONDITION_PATCH_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
+
+TASK: ONE SELECTED CONDITION PATCH (prompt/condition-patch/v1)
+Return exactly one JSON object with only predicate. A predicate is {kind:"literal",value:boolean} or {kind:"ref",source:"workflowInput",path:[safe field names]} or {kind:"ref",source:"nodeOutput",nodeId:"exact preceding in-scope action ID",path:[safe field names]}. Preserve boolean meaning: do not coerce a string, number, missing value or arbitrary prose into true/false. Change only the selected condition's predicate. Never output id, kind, branches, action, parameters, other nodes, source YAML, permission, approval or execution flags. Branch contents and scope are immutable for this proposal. Do not invent output fields or remove a condition to evade a prerequisite. If the requested change requires other nodes, unsupported comparisons/loops/effects, unknown data or unsafe scope, return {} so the backend rejects it. This is a proposal only; backend compilation and current authority decide whether it can be saved, published or run.`;
+
 export const MODIFIER_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 
 TASK: WORKFLOW MODIFICATION PROPOSAL (prompt/workflow-modifier/v2)
@@ -74,7 +86,9 @@ Describe required inter-step mappings in a concise numbered review, at most 300 
 export function systemInstructionsFor(version?: string): string {
   switch (version) {
     case "prompt/candidate/v3": return CANDIDATE_SYSTEM_PROMPT;
+    case "prompt/candidate/v4": return STRUCTURED_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/node-patch/v2": return NODE_PATCH_SYSTEM_PROMPT;
+    case "prompt/condition-patch/v1": return CONDITION_PATCH_SYSTEM_PROMPT;
     case "prompt/workflow-modifier/v2": return MODIFIER_SYSTEM_PROMPT;
     case "prompt/analysis/v2": return ANALYSIS_SYSTEM_PROMPT;
     case "prompt/execution-analysis/v2": return EXECUTION_ANALYSIS_SYSTEM_PROMPT;

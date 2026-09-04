@@ -6,7 +6,7 @@ function predicateLabel(predicate) {
 
 // Saved compiled structural view, not edge-based execution inference. The
 // backend remains the authority for scopes, selection, publication and runs.
-export default function ReadFlowTree({ flow, steps, renderAction, decisions = {} }) {
+export default function ReadFlowTree({ flow, steps, renderAction, decisions = {}, onSelectCondition, selectedId }) {
   const definitions = new Map(steps.map((step, index) => [step.id, { step, index }]));
   if (!flow) return <ol className="workspace-flow space-y-4">{steps.map(renderAction)}</ol>;
   let count = 0;
@@ -28,7 +28,7 @@ export default function ReadFlowTree({ flow, steps, renderAction, decisions = {}
     if (node.kind === "action") { const { step, index } = definitions.get(node.nodeId); return renderAction(step, index); }
     const receipt = decisions[node.id], selected = receipt?.status === "DONE" && ["then", "else"].includes(receipt.selected) ? receipt.selected : null;
     return <li key={node.id} className="relative"><section aria-label={`Condition ${node.id}`} className="workspace-reveal relative z-10 bg-gray-50 py-2 dark:bg-darkBackgroundVery">
-      <h4 className="text-xs font-semibold">If · {node.id}</h4><p className="mt-1 break-words text-[10px] text-gray-500">{predicateLabel(node.predicate)} must be Yes or No.</p>
+      <h4 className="text-xs font-semibold">{onSelectCondition ? <button type="button" aria-label={`Select condition ${node.id}`} aria-pressed={selectedId === node.id} onClick={() => onSelectCondition(node.id)} className={`workspace-node w-full rounded-md py-2 text-left transition-colors hover:text-primary focus-visible:outline-primary ${selectedId === node.id ? "text-primary" : ""}`}>If · {node.id}</button> : <>If · {node.id}</>}</h4><p className="mt-1 break-words text-[10px] text-gray-500">{predicateLabel(node.predicate)} must be Yes or No.</p>
       <p className="mt-2 text-[10px] text-gray-500">{selected ? `Recorded decision: ${selected === "then" ? "If yes" : "If no"} · no tool call` : receipt?.status === "FAILED" ? "Condition failed · no branch selected" : "No decision recorded for this snapshot"}</p>
       {["then", "else"].map(branch => <section key={branch} aria-label={`${node.id} ${branch === "then" ? "If yes" : "If no"}`} className={`mt-4 border-l pl-3 ${selected === branch ? "border-primary" : "border-gray-200 dark:border-gray-700"}`}><h5 className="mb-3 text-[10px] font-medium">{branch === "then" ? "If yes" : "If no"}{selected ? selected === branch ? " · Selected" : " · Not selected" : ""}</h5>{node[branch].nodes.length ? show(node[branch]) : <p className="text-[10px] text-gray-500">No actions in this path</p>}</section>)}
     </section></li>;
