@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Execution, Repository, RepositoryState, ReadRunAttempt } from "../repository/store.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
+import { canonicalJSONByteLength, exactJSONCacheKey, JSONProofCache } from "../core/json-proof-cache.js";
 import { workflowContentHash } from "../parser/workflow.js";
 import { interpretReadPlan, type ReadVisit } from "../workflows/read-interpreter.js";
 import { assertCompiledReadMatches, compileReadWorkflow, resolveReadBinding, type CompiledReadPlan } from "../workflows/compiled-read.js";
@@ -50,35 +51,52 @@ export function newReadIterationLedger(executionId: string, plan: CompiledReadPl
 
 /** Server-only journal foundation. It has no SDK, provider, live admission or
  * network authority. v4 live fences remain until a governed driver is wired.
- * Next boundaries are replayed through the pure interpreter from committed
- * receipts; no caller-supplied cursor/branch/collection value is trusted. */
+ * New boundaries are replayed through the pure interpreter from committed
+ * receipts. A pending point can reuse its exact private snapshot proof; no
+ * caller-supplied cursor/branch/collection value is trusted. */
 export class ReadIterationCheckpoints {
   readonly #plan: CompiledReadPlan;
   readonly #input: Record<string, unknown>;
   readonly #tools: readonly ToolDefinition[];
   readonly #bindingKey: string;
+  readonly #sourceHash: string;
+  readonly #capturedYaml: string;
+  readonly #loops: Map<string, ReturnType<typeof loopNodes>[number]>;
+  readonly #valueNodes: Map<string, ReturnType<typeof structuralNodes>[number]>;
   #validatedPlanRole: string | undefined;
+  readonly #receiptProofs = new JSONProofCache<true>(1_000_000, 5000);
+  readonly #valueBindings = new JSONProofCache<string>();
+  #pendingProof: { key: string; point: IterationBoundary } | undefined;
   constructor(readonly repository: Repository, readonly executionId: string, readonly epoch: number, readonly yaml: string,
     plan: CompiledReadPlan, input: Record<string, unknown>, tools: readonly ToolDefinition[], bindingKey: string, readonly signal?: AbortSignal) {
     this.#plan = structuredClone(plan); this.#input = privateInput(input); this.#tools = structuredClone(tools); this.#bindingKey = bindingKey;
+    this.#capturedYaml = yaml; this.#sourceHash = workflowContentHash(yaml);
+    this.#loops = new Map(this.#plan.ir.flow ? loopNodes(this.#plan.ir.flow).map(node => [node.id, node]) : []);
+    this.#valueNodes = new Map(this.#plan.ir.flow ? structuralNodes(this.#plan.ir.flow).map(node => [node.id, node]) : []);
   }
   private current(state: RepositoryState): BoundExecution {
     const item = state.executions[this.executionId], ledger = item?.iterationProgress;
-    if (!item || item.status !== "RUNNING" || !item.readProgress || item.readProgress.profile !== "read-progress-v1" || item.readProgress.epoch !== this.epoch ||
-        item.workflowSnapshot?.yaml !== this.yaml || item.workflowSnapshot.executionProfile !== "collection-read-v1" || item.workflowSnapshot.contentHash !== workflowContentHash(this.yaml) || item.workflowSnapshot.compilation?.schemaVersion !== "workflow-read-ir/v4" ||
+    if (this.yaml !== this.#capturedYaml || !item || item.status !== "RUNNING" || !item.readProgress || item.readProgress.profile !== "read-progress-v1" || item.readProgress.epoch !== this.epoch ||
+        item.workflowSnapshot?.yaml !== this.yaml || item.workflowSnapshot.executionProfile !== "collection-read-v1" || item.workflowSnapshot.contentHash !== this.#sourceHash || item.workflowSnapshot.compilation?.schemaVersion !== "workflow-read-ir/v4" ||
         item.workflowSnapshot.compilation.semanticHash !== this.#plan.semanticHash || !ledger || ledger.profile !== "read-iterations/v1" || ledger.sourceHash !== this.#plan.sourceHash || ledger.semanticHash !== this.#plan.semanticHash ||
-        ledger.interruptedAt || ledger.recoveryReason || this.#plan.ir.schemaVersion !== "workflow-read-ir/v4" || !this.#plan.ir.flow || !loopNodes(this.#plan.ir.flow).length || this.#plan.sourceHash !== workflowContentHash(this.yaml) ||
+        ledger.interruptedAt || ledger.recoveryReason || this.#plan.ir.schemaVersion !== "workflow-read-ir/v4" || !this.#plan.ir.flow || !this.#loops.size || this.#plan.sourceHash !== this.#sourceHash ||
         ledger.inputBinding !== inputDigest(this.#bindingKey, item.id, this.#plan, this.#input, ledger.admittedRole))
       throw new Error("Iteration worker identity, epoch, source or private input changed");
-    const pins = new Map(this.#plan.ir.root.nodes.flatMap(node => node.capability.admission ? [[node.capability.toolId, node.capability.admission] as const] : []));
     // These projections are private cloned immutable inputs. Validate once per
     // captured role; volatile execution/authority/evidence is checked every time.
-    if (this.#validatedPlanRole !== ledger.admittedRole) { assertCompiledReadMatches(this.#plan, compileReadWorkflow(this.yaml, this.#tools, ledger.admittedRole, pins)); this.#validatedPlanRole = ledger.admittedRole; }
-    if (Object.keys(ledger.receipts).length > 5000 || canonicalJSONBytes(ledger).length > 1_000_000) throw new Error("Iteration journal exceeds bounded limits");
+    if (this.#validatedPlanRole !== ledger.admittedRole) {
+      const pins = new Map(this.#plan.ir.root.nodes.flatMap(node => node.capability.admission ? [[node.capability.toolId, node.capability.admission] as const] : []));
+      assertCompiledReadMatches(this.#plan, compileReadWorkflow(this.yaml, this.#tools, ledger.admittedRole, pins)); this.#validatedPlanRole = ledger.admittedRole;
+    }
+    if (Object.keys(ledger.receipts).length > 5000 || canonicalJSONByteLength(ledger) > 1_000_000) throw new Error("Iteration journal exceeds bounded limits");
     for (const [address, receipt] of Object.entries(ledger.receipts)) {
-      const { seal, ...record } = receipt;
-      const expected = this.receiptSeal(ledger, record);
-      if (address !== receiptKey(receipt.kind, receipt.invocationId) || typeof seal !== "string" || Buffer.byteLength(seal) !== Buffer.byteLength(expected) || !timingSafeEqual(Buffer.from(seal), Buffer.from(expected))) throw new Error("Iteration receipt is not authentic for this run");
+      const witness = { inputBinding: ledger.inputBinding, address, receipt };
+      this.#receiptProofs.getOrCompute(witness, () => {
+        const { seal, ...record } = receipt;
+        const expected = this.receiptSeal(ledger, record);
+        if (address !== receiptKey(receipt.kind, receipt.invocationId) || typeof seal !== "string" || Buffer.byteLength(seal) !== Buffer.byteLength(expected) || !timingSafeEqual(Buffer.from(seal), Buffer.from(expected))) throw new Error("Iteration receipt is not authentic for this run");
+        return true;
+      });
     }
     const actionOutputs = new Set<string>(), valueOutputs = new Set<string>();
     const actionReceipts = Object.values(ledger.receipts).filter(receipt => receipt.kind === "action");
@@ -97,7 +115,10 @@ export class ReadIterationCheckpoints {
   private receiptSeal(ledger: ReadIterationLedger, value: Omit<IterationReceipt, "seal">): string {
     return digest(this.#bindingKey, { executionId: this.executionId, inputBinding: ledger.inputBinding, receipt: value });
   }
-  private outputBinding(value: unknown): string { return digest(this.#bindingKey, { executionId: this.executionId, output: value }); }
+  private outputBinding(value: unknown): string {
+    const witness = { executionId: this.executionId, output: value };
+    return this.#valueBindings.getOrCompute(witness, () => digest(this.#bindingKey, witness));
+  }
   private put(item: BoundExecution, receipt: Omit<IterationReceipt, "seal">): void { item.iterationProgress.receipts[receiptKey(receipt.kind, receipt.invocationId)] = { ...receipt, seal: this.receiptSeal(item.iterationProgress, receipt) }; }
   private assertAuthority(state: RepositoryState, item: BoundExecution): void {
     if (item.readProgress.cancellation || this.signal?.aborted) throw new ReadRunCancelled();
@@ -108,12 +129,33 @@ export class ReadIterationCheckpoints {
     if (raw === undefined || receipt.outputBinding !== this.outputBinding(raw)) throw new Error("Iteration receipt lacks its authentic saved output");
     return raw;
   }
+  private pendingWitness(item: BoundExecution, journal: RepositoryState): unknown {
+    return { inputBinding: item.iterationProgress.inputBinding, receipts: item.iterationProgress.receipts,
+      attempts: item.readProgress.attempts, stepOutputs: item.stepOutputs, valueOutputs: item.valueOutputs,
+      hasFinalOutput: Object.hasOwn(item, "finalOutput"), finalOutput: item.finalOutput, timeline: journal.timelines[item.id] ?? [] };
+  }
+  private rememberPending(item: BoundExecution, journal: RepositoryState, point: IterationBoundary): void {
+    // This is a private, exact snapshot proof of the pending action already
+    // computed by the interpreter, not an accepted caller cursor. Saving it
+    // before persistence acknowledgement cannot bypass the repository fence.
+    const key = exactJSONCacheKey(this.pendingWitness(item, journal));
+    this.#pendingProof = key !== undefined && Buffer.byteLength(key) + canonicalJSONByteLength(point) <= 2_000_000
+      ? { key, point: structuredClone(point) } : undefined;
+  }
   private async next(item: BoundExecution, journal: RepositoryState): Promise<IterationBoundary | null> {
+    if (this.#pendingProof && exactJSONCacheKey(this.pendingWitness(item, journal)) === this.#pendingProof.key) return structuredClone(this.#pendingProof.point);
     const used = new Set<string>(), state: Record<string, unknown> = { input: structuredClone(this.#input) };
+    // Index this fresh transaction's timeline, not a cached authoritative
+    // snapshot. Multiple witnesses for one boundary are ambiguous evidence.
+    const timelines = new Map<string, RepositoryState["timelines"][string][number]>();
+    for (const entry of journal.timelines[item.id] ?? []) if (typeof entry.boundaryKey === "string") {
+      if (timelines.has(entry.boundaryKey)) throw new Error("Duplicate iteration timeline boundary");
+      timelines.set(entry.boundaryKey, entry);
+    }
     let observedFinal: unknown, hasFinal = false;
     const assertFinal = () => { if (hasFinal !== Object.hasOwn(item, "finalOutput") || hasFinal && !same(observedFinal, item.finalOutput)) throw new Error("Final answer differs from its last confirmed action or workflow return"); };
     const timeline = (receipt: IterationReceipt) => {
-      const entry = journal.timelines[item.id]?.find(entry => entry.boundaryKey === receiptKey(receipt.kind, receipt.invocationId));
+      const entry = timelines.get(receiptKey(receipt.kind, receipt.invocationId));
       if (entry && (entry.nodeId !== receipt.nodeId || entry.invocationId !== receipt.invocationId || !same(entry.iterations, receipt.iterations) || receipt.attemptId && entry.attemptId !== receipt.attemptId)) throw new Error("Iteration timeline identity differs from its authenticated receipt");
       return entry;
     };
@@ -163,7 +205,7 @@ export class ReadIterationCheckpoints {
           const entry = timeline(receipt); if (!entry || entry.status !== "SKIPPED" || !same(entry.reason, reason)) throw new Error("Skip lacks its matching declaration timeline");
         },
         collectionStarted: async (sourceIndex, nodeId, count, valid, visit) => {
-          const loop = loopNodes(this.#plan.ir.flow!).find(value => value.id === nodeId)!;
+          const loop = this.#loops.get(nodeId)!;
           let items: unknown; try { items = resolveReadBinding(loop.items.value, state); } catch { /* Missing stays invalid. */ }
           const point: IterationBoundary = { kind: "collection", nodeId, sourceIndex, visit, phase: "start", valid, ...(count === undefined ? {} : { count }), ...(valid ? { dataBinding: this.outputBinding(items) } : {}) };
           const receipt = receiptFor(point); if (!receipt) return pending(point);
@@ -171,7 +213,7 @@ export class ReadIterationCheckpoints {
         },
         value: async (sourceIndex, nodeId, kind, value, valid, visit) => {
           const safe = valid ? withoutSecretFields({ value }) as { value: unknown } : undefined;
-          const node = structuralNodes(this.#plan.ir.flow!).find(value => value.id === nodeId)!;
+          const node = this.#valueNodes.get(nodeId)!;
           const schema = node.kind === "return" ? node.output.schema : node.kind === "if" ? node.merge?.schema : kind === "collection" ? { type: "array", items: node.collect.schema } : node.collect.schema;
           valid = !!safe && !!schema && !validateToolInput(schema, safe.value).length;
           const point: IterationBoundary = { kind, nodeId, sourceIndex, visit, valid, ...(safe ? { value: safe.value } : {}), ...(kind === "collection" ? { phase: "complete" } : {}) };
@@ -196,7 +238,7 @@ export class ReadIterationCheckpoints {
   }
   private async commit<T>(mutation: (state: RepositoryState, item: BoundExecution) => Promise<T> | T): Promise<T> {
     try { return await this.repository.mutate(async state => { const item = this.current(state), result = await mutation(state, item);
-      if (canonicalJSONBytes({ ledger: item.iterationProgress, outputs: item.stepOutputs ?? {}, values: item.valueOutputs ?? {} }).length > 2_000_000) throw new Error("Iteration evidence exceeds aggregate storage limits");
+      if (canonicalJSONByteLength({ ledger: item.iterationProgress, outputs: item.stepOutputs ?? {}, values: item.valueOutputs ?? {} }) > 2_000_000) throw new Error("Iteration evidence exceeds aggregate storage limits");
       return result;
     }); } catch (cause) { if (cause instanceof ReadRunCancelled) throw cause; throw new ReadCheckpointFailure(cause); }
   }
@@ -234,6 +276,8 @@ export class ReadIterationCheckpoints {
         Object.assign(entry, { status: receipt.status === "STARTED" ? "RUNNING" : receipt.status, completedAt: receipt.status === "STARTED" ? null : timestamp, outcome: `ITERATION_${point.kind.toUpperCase().replaceAll("-", "_")}`, ...(point.count !== undefined ? { count: point.count } : {}), ...(point.selected ? { selectedBranch: point.selected } : {}), ...(point.valid && point.kind !== "condition" && point.phase !== "start" ? { output: { value: point.value } } : {}) });
       }
       this.put(item, receipt); this.emit(state, item, `iteration.${point.kind}.${receipt.status.toLowerCase()}`, point, receipt.attemptId);
+      if (point.kind === "action" && point.valid) this.rememberPending(item, state, point);
+      else this.#pendingProof = undefined;
       return structuredClone(point);
     });
   }
@@ -252,6 +296,7 @@ export class ReadIterationCheckpoints {
       Object.assign(entry, { phase: "DISPATCH_INTENT", outcome: "DISPATCH_INTENT" });
       const { seal: _seal, ...record } = receipt; this.put(item, { ...record, status: "DISPATCH_INTENT", recordedAt: timestamp });
       this.emit(state, item, "iteration.action.dispatch_intent", point, attempt.id);
+      this.rememberPending(item, state, point);
     });
   }
   async completed(visit: ReadVisit, rawOutput: unknown): Promise<void> {
@@ -267,6 +312,7 @@ export class ReadIterationCheckpoints {
       Object.assign(entry, { status: attempt.status, outcome: error ? "TOOL_REPORTED_ERROR" : "ITERATION_READ_COMPLETED", completedAt: timestamp, durationMs: Math.max(0, Date.parse(timestamp) - Date.parse(attempt.startedAt)), output });
       if (!error) { (item.stepOutputs ??= {})[visit.invocationId] = output; item.finalOutput = output; }
       this.emit(state, item, error ? "iteration.action.failed" : "iteration.action.completed", point, attempt.id);
+      this.#pendingProof = undefined;
     });
   }
   async failed(visit: ReadVisit): Promise<void> {
@@ -279,6 +325,7 @@ export class ReadIterationCheckpoints {
       const entry = state.timelines[item.id]?.find(value => value.attemptId === attempt.id); if (!entry) throw new Error("Iteration attempt lacks its timeline");
       Object.assign(entry, { status: attempt.status, outcome: attempt.status === "UNKNOWN" ? "UNKNOWN" : "NOT_DISPATCHED", completedAt: timestamp });
       this.emit(state, item, attempt.status === "UNKNOWN" ? "iteration.action.outcome_unknown" : "iteration.action.failed", point, attempt.id);
+      this.#pendingProof = undefined;
     });
   }
   async finish(failed = false): Promise<Execution> {

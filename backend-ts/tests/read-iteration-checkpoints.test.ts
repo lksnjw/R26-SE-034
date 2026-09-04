@@ -1,10 +1,11 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { stringify } from "yaml";
 import { Repository, type RepositoryState, type PersistenceBackend, type Execution } from "../src/repository/store.js";
 import { toolSchema } from "../src/registry/schemas.js";
 import { compileReadWorkflow, readCompilationReceipt } from "../src/workflows/compiled-read.js";
 import { newReadProgress, reconcileInterruptedExecutions } from "../src/runner/read-checkpoints.js";
 import { ReadIterationCheckpoints, newReadIterationLedger, type IterationBoundary } from "../src/runner/read-iteration-checkpoints.js";
+import * as interpreter from "../src/workflows/read-interpreter.js";
 
 const role = "Platform Admin", key = "server-held-iteration-fixture-key-32-bytes";
 const tool = toolSchema.parse({ tool_id: "READ", name: "read", mcp_tool_name: "read", is_read_only: true, allowed_roles: [role], input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
@@ -182,4 +183,93 @@ test("the maximum declared collection size retains every bounded invocation and 
 test("an aborted worker cannot prepare or authorize a new action, but may retain an already confirmed response", async () => {
   const s = await setup(), controller = new AbortController(), w = new ReadIterationCheckpoints(s.repository, "run", 1, s.yaml, s.plan, s.input, [tool], key, controller.signal);
   await w.advance(); const point = await w.advance(); await w.dispatchIntent(point!.visit, role); controller.abort(); await w.completed(point!.visit, output("confirmed")); await expect(w.advance()).rejects.toThrow(); expect((await w.finish()).status).toBe("CANCELLED");
+});
+
+test("an exact pending snapshot avoids repeated interpretation but never certifies the next item", async () => {
+  const spy = vi.spyOn(interpreter, "interpretReadPlan");
+  try {
+    const s = await setup(), w = s.worker(); await w.advance(); const point = await w.advance(); expect(spy).toHaveBeenCalledTimes(2);
+    await w.dispatchIntent(point!.visit, role); await w.completed(point!.visit, output("A")); expect(spy).toHaveBeenCalledTimes(2);
+    expect(await w.advance()).toMatchObject({ kind: "collection-item", visit: { invocationId: "each/0/each" } }); expect(spy).toHaveBeenCalledTimes(3);
+    expect(await w.advance()).toMatchObject({ kind: "action", visit: { invocationId: "each/1/read" }, arguments: { id: "b" } }); expect(spy).toHaveBeenCalledTimes(4);
+  } finally { spy.mockRestore(); }
+});
+
+test("a fresh worker reconstructs pending arguments and cannot rely on another worker's memo", async () => {
+  const spy = vi.spyOn(interpreter, "interpretReadPlan");
+  try {
+    const s = await setup(), first = s.worker(); await first.advance(); const point = await first.advance(); expect(spy).toHaveBeenCalledTimes(2);
+    await s.worker().dispatchIntent(point!.visit, role); expect(spy).toHaveBeenCalledTimes(3);
+    await s.worker().completed(point!.visit, output("A")); expect(spy).toHaveBeenCalledTimes(4);
+    await drain(s.worker()); expect((await s.worker().finish()).finalOutput).toEqual(["A", "B"]);
+  } finally { spy.mockRestore(); }
+});
+
+test.each(["timeline-status", "timeline-output", "duplicate-timeline", "attempt-status", "final", "missing-output", "extra-value"])("a warmed pending proof cannot hide changed %s evidence", async damage => {
+  const s = await setup(), w = s.worker(); await w.advance(); await perform(w, "A"); await w.advance(); const point = await w.advance();
+  await s.repository.mutate(state => {
+    const item = state.executions.run!, entries = state.timelines.run!, entry = entries.find(value => value.invocationId === "each/0/read")!;
+    if (damage === "timeline-status") entry.status = "RUNNING";
+    if (damage === "timeline-output") entry.output = output("forged");
+    if (damage === "duplicate-timeline") entries.push(structuredClone(entry));
+    if (damage === "attempt-status") item.readProgress!.attempts[point!.visit.invocationId]!.status = "DONE";
+    if (damage === "final") item.finalOutput = "forged";
+    if (damage === "missing-output") delete item.stepOutputs!["each/0/read"];
+    if (damage === "extra-value") item.valueOutputs!.extra = { value: "forged" };
+  });
+  await expect(w.dispatchIntent(point!.visit, role)).rejects.toThrow(); expect((await s.get()).readProgress!.attempts[point!.visit.invocationId]!.dispatchIntentAt).toBeUndefined();
+});
+
+test("volatile actor/cancellation checks run even on a warmed pending proof", async () => {
+  const s = await setup(), w = s.worker(); await w.advance(); const point = await w.advance();
+  await s.repository.mutate(state => { state.users.actor!.status = "Inactive"; }); await expect(w.dispatchIntent(point!.visit, role)).rejects.toThrow();
+  await s.repository.mutate(state => { state.users.actor!.status = "Active"; state.executions.run!.readProgress!.cancellation = { requestedAt: new Date().toISOString(), requestedBy: { id: "actor", name: "Actor" } }; });
+  await expect(w.dispatchIntent(point!.visit, role)).rejects.toThrow(); expect((await s.get()).readProgress!.attempts[point!.visit.invocationId]!.status).toBe("PREPARING");
+});
+
+test("caller mutations of a returned pending action cannot alter the memo's arguments or scope", async () => {
+  const s = await setup(), w = s.worker(); await w.advance(); const point = await w.advance(), visit = structuredClone(point!.visit);
+  point!.arguments!.id = "forged"; (point!.visit.iterations as any[])[0].index = 99; point!.dataBinding = "forged";
+  await w.dispatchIntent(visit, role); await w.completed(visit, output("A")); await drain(w); expect((await w.finish()).finalOutput).toEqual(["A", "B"]);
+});
+
+test.each(["empty", "nested", "branches", "early-return", "null-values"])("warm and reconstructed workers have the same %s traversal and saved semantic evidence", async scenario => {
+  const src = source(); let input: Record<string, unknown> = { rows: ["a", "b"] };
+  const loop = src.metadata.controlFlow.root.nodes[0], answer = src.metadata.controlFlow.root.nodes[1];
+  if (scenario === "empty") input.rows = [];
+  if (scenario === "nested") {
+    loop.items.schema = { type: "array", items: array }; input.rows = [["a"], ["b", "c"]];
+    loop.body = seq({ kind: "foreach", id: "inner", items: { schema: array, value: ref("each", ["item"]) }, maxItems: 3, body: seq(action("read")), collect: loop.collect });
+    loop.collect = { schema: array, value: ref("inner", ["value"]) }; src.steps[0].parameters.id = "{{inner.item}}"; answer.output.schema = { type: "array", items: array };
+  }
+  if (scenario === "branches") {
+    loop.body = seq({ kind: "if", id: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["enabled"] }, then: seq(action("read")), else: seq(), merge: { schema: { type: "string" }, then: ref("read", ["structuredContent", "id"]), else: ref("each", ["item"]) } });
+    loop.collect.value = ref("gate", ["value"]); input.enabled = false;
+  }
+  if (scenario === "early-return") src.metadata.controlFlow.root.nodes.unshift({ kind: "return", id: "early", output: { schema: { type: "boolean" }, value: { kind: "literal", value: false } } });
+  if (scenario === "null-values") { loop.collect = { schema: { type: "null" }, value: { kind: "literal", value: null } }; answer.output.schema = { type: "array", items: { type: "null" } }; }
+  const warm = await setup(src, input), cold = await setup(src, input), worker = warm.worker(), warmPoints = await drain(worker), coldPoints: IterationBoundary[] = [];
+  for (let index = 0; index < 100; index++) {
+    const point = await cold.worker().advance(); if (!point) break; coldPoints.push(point);
+    if (point.kind === "action") { await cold.worker().dispatchIntent(point.visit, role); await cold.worker().completed(point.visit, output(String(point.arguments!.id).toUpperCase())); }
+  }
+  expect(coldPoints).toEqual(warmPoints);
+  const project = (item: Execution) => ({ status: item.status, final: item.finalOutput, outputs: item.stepOutputs, values: item.valueOutputs,
+    receipts: Object.entries(item.iterationProgress!.receipts).map(([address, { recordedAt: _time, seal: _seal, attemptId: _id, ...receipt }]) => [address, receipt]),
+    attempts: Object.values(item.readProgress!.attempts).map(({ id: _id, startedAt: _start, completedAt: _end, dispatchIntentAt: _intent, ...attempt }) => attempt) });
+  expect(project(await cold.worker().finish())).toEqual(project(await worker.finish()));
+});
+
+test("captured indexes and proof caches do not trust later mutations of constructor inputs", async () => {
+  const s = await setup(), plan = structuredClone(s.plan), input = structuredClone(s.input), tools = [structuredClone(tool)];
+  const w = new ReadIterationCheckpoints(s.repository, "run", 1, s.yaml, plan, input, tools, key);
+  input.rows = ["forged"]; (plan.ir.flow!.nodes[0] as any).maxItems = 0; tools[0]!.input_schema = { type: "null" }; plan.semanticHash = "forged";
+  await drain(w); expect((await w.finish()).finalOutput).toEqual(["A", "B"]);
+});
+
+test("a mutated public source property cannot combine with a changed snapshot to bypass the captured hash", async () => {
+  const s = await setup(), w = s.worker(); await w.advance(); const changed = s.yaml.replace("Read bounded invoices", "Forged source");
+  (w as any).yaml = changed;
+  await s.repository.mutate(state => { state.executions.run!.workflowSnapshot!.yaml = changed; });
+  await expect(w.advance()).rejects.toThrow(); expect((await s.get()).readProgress!.attempts).toEqual({});
 });
