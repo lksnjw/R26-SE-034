@@ -1,6 +1,6 @@
 import type { WorkflowBlueprint } from "../models/schemas.js";
 import { HandlerFailure } from "../http/handlers/common.js";
-import { actionOrder, controlNodes, parseReadControlFlow, type ReadControlNode, type ReadSequence } from "./read-control-flow.js";
+import { actionOrder, structuralNodes, valueNodes, parseReadControlFlow, type ReadControlNode, type ReadSequence } from "./read-control-flow.js";
 
 export type BranchDestination = { conditionId: string; branch: "then" | "else" };
 function reject(message: string): never { throw new HandlerFailure(422, message); }
@@ -11,7 +11,7 @@ export function draftFlow(blueprint: WorkflowBlueprint): ReadSequence {
   const ids = actionOrder(root);
   if (ids.length !== blueprint.steps.length || ids.some((id, index) => id !== blueprint.steps[index]?.id) || new Set(ids).size !== ids.length)
     reject("Repair structural ownership before editing this flow");
-  const controls = controlNodes(root).map(node => node.id);
+  const controls = structuralNodes(root).map(node => node.id);
   if (new Set(controls).size !== controls.length || controls.some(id => ids.includes(id))) reject("Repair duplicate structural IDs before editing this flow");
   return root;
 }
@@ -39,8 +39,8 @@ export function insertionScope(root: ReadSequence, beforeNodeId: string | null, 
   return { block, index: block.nodes.length };
 }
 export function saveDraftFlow(blueprint: WorkflowBlueprint, root: ReadSequence): void {
-  const parsed = parseReadControlFlow({ schemaVersion: "read-control-flow/v1", root });
-  const controls = controlNodes(parsed.root), ids = actionOrder(parsed.root);
+  const parsed = parseReadControlFlow({ schemaVersion: valueNodes(root).length || (blueprint.metadata?.controlFlow as { schemaVersion?: string } | undefined)?.schemaVersion === "read-control-flow/v2" ? "read-control-flow/v2" : "read-control-flow/v1", root });
+  const controls = structuralNodes(parsed.root), ids = actionOrder(parsed.root);
   if (controls.length > 100 || new Set([...ids, ...controls.map(node => node.id)]).size !== ids.length + controls.length)
     reject("Structural IDs must be unique and at most 100 conditions are supported");
   const bound = (block: ReadSequence, depth: number) => {

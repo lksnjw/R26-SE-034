@@ -35,6 +35,17 @@ export function flowConditions(flow) {
   };
   visit(flow, 0); return result;
 }
+export function flowReturns(flow) {
+  const result = [];
+  const visit = (block, depth) => {
+    if (depth > 8 || !Array.isArray(block?.nodes) || result.length > 100) return;
+    for (const node of block.nodes) {
+      if (node?.kind === "return") result.push(node);
+      if (node?.kind === "if") { visit(node.then, depth + 1); visit(node.else, depth + 1); }
+    }
+  };
+  visit(flow, 0); return result;
+}
 export function branchDestination(value) {
   if (!value || value === "root") return {};
   const [conditionId, branch] = value.split(":");

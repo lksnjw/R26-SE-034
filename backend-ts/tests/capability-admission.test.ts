@@ -79,6 +79,22 @@ test.each([true, false])("modern compiled conditional publication with enabled=%
   expect(response.json().data.readProgress.attempts[enabled ? "two" : "one"].status).toBe("SKIPPED");
 });
 
+test.each([false, true])("reviewed typed merge/return publication preserves exact MCP digest and immutable compiled receipts, async=%s", async queued => {
+  const s = await setup(); await s.review();
+  const read = (nodeId: string) => ({ kind: "action", nodeId }), block = (...nodes: unknown[]) => ({ kind: "sequence", nodes });
+  const ref = (nodeId: string) => ({ kind: "ref", source: "nodeOutput", nodeId, path: ["content", "0", "text"] });
+  const flow = { schemaVersion: "read-control-flow/v2", root: block({ kind: "if", id: "gate", predicate: { kind: "literal", value: false }, then: block(read("one")), else: block(read("two")), merge: { schema: { type: "string" }, then: ref("one"), else: ref("two") } }, { kind: "return", id: "answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "gate", path: ["value"] } } }) };
+  const w = await workflowHarness(s, false, flow), published = await w.publish(); expect(published.statusCode, published.body).toBe(200);
+  expect(published.json().data.compiledRead).toMatchObject({ schemaVersion: "workflow-read-ir/v3", origin: "PUBLICATION", admissionMode: "reviewed" });
+  expect((await w.readiness()).json().data.executionProfile).toBe("structured-read-v1");
+  const response = await w.run(queued ? { mode: "async-read", idempotencyKey: "typed_review_job_0001" } : {}); expect(response.statusCode, response.body).toBe(queued ? 202 : 200);
+  const id = response.json().data.id; await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("DONE"));
+  const item = (await s.repository.snapshot()).executions[id]!;
+  expect(item).toMatchObject({ finalOutput: "Confirmed fixture", valueOutputs: { gate: { value: "Confirmed fixture" }, answer: { value: "Confirmed fixture" } } }); expect(item.workflowSnapshot!.compilation).toEqual(published.json().data.compiledRead);
+  expect(s.sdk.callTool.mock.calls).toEqual([[exactBridgeName(s.tool()), { value: "second" }, { "toolplane.resourceDigest": "a".repeat(64) }]]);
+  await s.review({ decisionKey: "review-typed-replacement-0002" }); expect((await w.run()).statusCode).toBe(409); expect(s.sdk.callTool).toHaveBeenCalledOnce();
+});
+
 test("modern publication stores exact compiled/review pins; sync run executes the artifact and repeated publication is immutable/idempotent", async () => {
   const s = await setup(); await s.review(); const w = await workflowHarness(s);
   const published = await w.publish(); expect(published.statusCode, published.body).toBe(200); const receipt = published.json().data.compiledRead;

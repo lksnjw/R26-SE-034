@@ -3,12 +3,14 @@ import { jsonObjectSchema, workflowStepBlueprintSchema, type Workflow } from "..
 import { parseWorkflowYAMLStrict, stringifyWorkflowYAML, workflowContentHash } from "../parser/workflow.js";
 import { HandlerFailure, type CurrentUser } from "../http/handlers/common.js";
 import type { RepositoryState } from "../repository/store.js";
-import { readControlFlowSchema, readPredicateSchema, controlNodes } from "./read-control-flow.js";
+import { readControlFlowSchema, readPredicateSchema, structuralNodes } from "./read-control-flow.js";
 import { draftFlow, locateFlowNode, insertionScope, saveDraftFlow } from "./draft-control-edits.js";
+import { readMergeSchema, readReturnSchema } from "./read-values.js";
 
 export const nodeIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 export const nodePatchSchema = z.object({ action: z.string().min(1).max(128).optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
 export const conditionPatchSchema = z.object({ predicate: readPredicateSchema }).strict();
+export const returnPatchSchema = z.object({ output: readReturnSchema }).strict();
 const destinationSchema = z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict();
 export const workflowRevisionSchema = { baseVersion: z.number().int().min(1), baseHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) };
 export const nodeContextSchema = z.object({ workflowId: z.string().min(1).max(128), nodeId: nodeIdSchema, ...workflowRevisionSchema }).strict();
@@ -22,14 +24,18 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("wrapNode"), nodeId: nodeIdSchema, conditionId: nodeIdSchema, predicate: readPredicateSchema, branch: z.enum(["then", "else"]) }).strict(),
   z.object({ type: z.literal("updateCondition"), nodeId: nodeIdSchema, patch: conditionPatchSchema }).strict(),
   z.object({ type: z.literal("removeCondition"), nodeId: nodeIdSchema }).strict(),
+  z.object({ type: z.literal("setConditionMerge"), nodeId: nodeIdSchema, merge: readMergeSchema.nullable() }).strict(),
+  z.object({ type: z.literal("addReturn"), nodeId: nodeIdSchema, output: readReturnSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
+  z.object({ type: z.literal("updateReturn"), nodeId: nodeIdSchema, patch: returnPatchSchema }).strict(),
+  z.object({ type: z.literal("removeReturn"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("restoreDraft"), yaml: z.string().min(1).max(200000) }).strict(),
   z.object({ type: z.literal("setControlFlow"), flow: readControlFlowSchema }).strict(),
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
-export function selectedNodePatchSchema(node: { kind?: string | undefined }) { return node.kind === "if" ? conditionPatchSchema : nodePatchSchema; }
-export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "if" ? "prompt/condition-patch/v1" : "prompt/node-patch/v2"; }
+export function selectedNodePatchSchema(node: { kind?: string | undefined }) { return node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : nodePatchSchema; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : "prompt/node-patch/v2"; }
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
-  return workflowCommandSchema.parse({ type: node.kind === "if" ? "updateCondition" : "updateNode", nodeId: node.id, patch });
+  return workflowCommandSchema.parse({ type: node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : "updateNode", nodeId: node.id, patch });
 }
 export function permittedWorkflow(workflow: Workflow, user: CurrentUser, editing: boolean): boolean {
   return !workflow.archived && (!editing || user.permissions.includes("workflow:write")) &&
@@ -53,7 +59,7 @@ export function assertNodeContext(state: Readonly<RepositoryState>, context: Nod
   requireWorkflowBase(workflow, context.baseVersion, context.baseHash);
   if (workflow.yaml.length > 200000) throw new HandlerFailure(422, "Workflow source exceeds supported limits");
   const blueprint = parseWorkflowYAMLStrict(workflow.yaml);
-  const node = blueprint.steps.find(step => step.id === context.nodeId) ?? (blueprint.metadata?.controlFlow === undefined ? undefined : controlNodes(draftFlow(blueprint)).find(node => node.id === context.nodeId));
+  const node = blueprint.steps.find(step => step.id === context.nodeId) ?? (blueprint.metadata?.controlFlow === undefined ? undefined : structuralNodes(draftFlow(blueprint)).find(node => node.id === context.nodeId));
   if (!node) throw new HandlerFailure(422, "Selected node does not exist");
   return { workflow: structuredClone(workflow), node: structuredClone(node) };
 }
@@ -62,6 +68,20 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
   const blueprint = parseWorkflowYAMLStrict(change.type === "restoreDraft" ? change.yaml : source);
   if (change.type === "restoreDraft") return stringifyWorkflowYAML(blueprint);
   if (change.type === "setControlFlow") { blueprint.metadata = { ...blueprint.metadata, controlFlow: change.flow }; return stringifyWorkflowYAML(blueprint); }
+  if (change.type === "setConditionMerge" || change.type === "addReturn" || change.type === "updateReturn" || change.type === "removeReturn") {
+    const root = draftFlow(blueprint), found = locateFlowNode(root, change.nodeId);
+    if (change.type === "addReturn") {
+      if (found) throw new HandlerFailure(422, "Structural ID already exists");
+      const target = insertionScope(root, change.beforeNodeId, change.destination); target.block.nodes.splice(target.index, 0, { kind: "return", id: change.nodeId, output: change.output });
+    } else if (change.type === "setConditionMerge") {
+      if (!found || found.node.kind !== "if") throw new HandlerFailure(422, "Selected condition does not exist");
+      if (change.merge === null) delete found.node.merge; else found.node.merge = change.merge;
+    } else {
+      if (!found || found.node.kind !== "return") throw new HandlerFailure(422, "Selected return does not exist");
+      if (change.type === "removeReturn") found.block.nodes.splice(found.index, 1); else found.node.output = change.patch.output;
+    }
+    saveDraftFlow(blueprint, root); return stringifyWorkflowYAML(blueprint);
+  }
   if (["addCondition", "wrapNode", "updateCondition", "removeCondition"].includes(change.type) ||
       blueprint.metadata?.controlFlow !== undefined && ["addNode", "moveNode", "removeNode"].includes(change.type) ||
       (change.type === "addNode" || change.type === "moveNode") && change.destination) {

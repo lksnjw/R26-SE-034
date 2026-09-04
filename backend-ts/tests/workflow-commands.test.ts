@@ -65,6 +65,20 @@ async function conditionSetup(output: unknown = { predicate: { kind: "literal", 
   await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
   return { ...s, source, hash: workflowContentHash(source) };
 }
+
+test("return proposals receive no tool definitions, preserve other nodes and apply only exact owned output edits", async () => {
+  const output = { schema: { type: "boolean" }, value: { kind: "literal", value: false } }, s = await conditionSetup({ output });
+  const value = parseWorkflowYAMLStrict(s.source) as any; value.metadata.controlFlow.schemaVersion = "read-control-flow/v2";
+  value.metadata.controlFlow.root.nodes.push({ kind: "return", id: "answer", output: { schema: { type: "boolean" }, value: { kind: "literal", value: true } } });
+  const source = stringify(value), hash = workflowContentHash(source);
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; });
+  const response = await s.propose({ nodeId: "answer", baseHash: hash }); expect(response.statusCode, response.body).toBe(200);
+  const proposal = response.json().data; expect(proposal.command).toEqual({ type: "updateReturn", nodeId: "answer", patch: { output } });
+  const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toContain("ONE SELECTED RETURN PATCH"); expect(JSON.parse(body.messages[1].content).tools).toEqual([]);
+  expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(source);
+  const applied = await s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(), payload: { baseVersion: 1, baseHash: hash, command: proposal.command, proposalId: proposal.id } });
+  expect(applied.statusCode, applied.body).toBe(200); expect(parseWorkflowYAMLStrict(applied.json().data.yaml).steps).toEqual(value.steps); expect((await s.repository.snapshot()).executions).toEqual({});
+});
 test("manual conditional HTTP commands create a revision-bound draft and preserve the immutable publication", async () => {
   const s = await conditionSetup();
   const response = await s.edit({ type: "updateCondition", nodeId: "gate", patch: { predicate: { kind: "literal", value: false } } }, 1, s.hash);

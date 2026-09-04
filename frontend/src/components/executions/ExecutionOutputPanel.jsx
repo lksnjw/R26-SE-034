@@ -29,7 +29,8 @@ function ExecutionOutputPanel({ execution }) {
   if (!execution) return null;
   const { finalOutput, stepOutputs, status } = execution;
   const stepEntries = Object.entries(stepOutputs || {});
-  const hasFinal = finalOutput !== null && finalOutput !== undefined;
+  const returned = Object.values(execution.readProgress?.values || {}).some(receipt => receipt.kind === "return" && receipt.status === "DONE");
+  const hasFinal = finalOutput !== undefined && (finalOutput !== null || returned && Object.hasOwn(execution, "finalOutput"));
 
   if (!hasFinal && stepEntries.length === 0) {
     return (
@@ -62,8 +63,9 @@ function ExecutionOutputPanel({ execution }) {
       {hasFinal ? (
         <div data-testid="final-output" className="mb-5">
           <p className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
-            {partial ? "Last completed step" : "Final output"}
+            {returned ? "Saved workflow return" : partial ? "Last completed step" : "Final output"}
           </p>
+          {returned && finalOutput === null && <p className="mb-2 text-xs text-gray-500">Explicit null returned; this is a confirmed value, not a missing answer.</p>}
           <OutputBlock value={finalOutput} />
         </div>
       ) : null}

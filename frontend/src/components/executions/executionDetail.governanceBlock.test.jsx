@@ -5,6 +5,11 @@ import { cleanup, render, screen } from "@testing-library/react";
 import React from "react";
 import ExecutionStatus from "./ExecutionStatus";
 import ExecutionTimeline from "./ExecutionTimeline";
+
+test("return skips are not described as condition choices, and value receipts are not tool results", () => {
+  render(<ExecutionTimeline timeline={[{ nodeId: "answer", status: "DONE", outcome: "WORKFLOW_RETURNED", output: { value: false } }, { nodeId: "later", status: "SKIPPED", outcome: "AFTER_RETURN", returnId: "answer" }]} />);
+  expect(screen.getByText("Skipped after return answer. No tool call or answer.")).toBeTruthy(); expect(screen.queryByText(/Not selected by the recorded condition/)).toBeNull(); expect(screen.getByText(/Workflow returned.*no tool call/)).toBeTruthy(); expect(screen.getByText("No")).toBeTruthy();
+});
 import GovernanceBlockPanel from "./GovernanceBlockPanel";
 afterEach(cleanup);
 

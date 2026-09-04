@@ -29,7 +29,7 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
     if (publication?.yaml !== workflow.yaml) throw new HandlerFailure(409, "Publication changed during compilation preflight", { code: "PUBLISHED_SNAPSHOT_REQUIRED" });
     return prepareCompiledExecution(state, services, publication, workflow.yaml, user.role);
   });
-  const profile = compilation.plan.ir.flow ? "conditional-read-v1" as const : "sequential-read-v1" as const;
+  const profile = compilation.plan.ir.schemaVersion === "workflow-read-ir/v3" ? "structured-read-v1" as const : compilation.plan.ir.flow ? "conditional-read-v1" as const : "sequential-read-v1" as const;
   if (compilation.plan.ir.inputSchema && validateToolInput(compilation.plan.ir.inputSchema, input).length)
     return reply.status(422).send(fail("Workflow input does not meet its declared schema; no run was admitted", { code: "WORKFLOW_INPUT_INVALID", traceId }));
   const queued = (request.body as { mode?: string } | undefined)?.mode === "async-read";

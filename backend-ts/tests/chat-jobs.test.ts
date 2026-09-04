@@ -99,6 +99,18 @@ async function conditionalNodeSetup(output: unknown = { predicate: { kind: "lite
   s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: JSON.stringify(output) } }] }));
   return { ...s, source, nodeContext: { ...s.nodeContext, nodeId: "gate", baseHash: workflowContentHash(source) } };
 }
+
+test("saved return chat job captures the model, emits only an owned output proposal and never dispatches ERP", async () => {
+  const output = { schema: { type: "boolean" }, value: { kind: "literal", value: false } }, s = await nodeSetup();
+  const source = stringify({ name: "Return chat report", trigger: { type: "manual" }, steps: [{ id: "echo", action: "demo.echo", parameters: { value: "fixture" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v2", root: { kind: "sequence", nodes: [{ kind: "action", nodeId: "echo" }, { kind: "return", id: "answer", output }] } } } });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; });
+  s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: JSON.stringify({ output }) } }] }));
+  const context = { ...s.nodeContext, nodeId: "answer", baseHash: workflowContentHash(source) }, id = (await s.send("Send an email after editing this return", { nodeContext: context, model: "model-b" })).json().data.operation.id;
+  expect((await s.terminal(id)).status).toBe("ANSWERED"); const state = await s.repository.snapshot();
+  const artifact = state.chats[s.sessionId]!.messages[1]!.artifacts as any;
+  expect(artifact.proposal.command).toEqual({ type: "updateReturn", nodeId: "answer", patch: { output } }); expect(state.workflows.report!.yaml).toBe(source); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled();
+  const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)); expect(body.model).toBe("model-b"); expect(body.messages[0].content).toContain("ONE SELECTED RETURN PATCH"); expect(JSON.parse(body.messages[1].content).tools).toEqual([]);
+});
 test("saved condition chat job returns an owned predicate-only proposal with selected model and zero ERP dispatch", async () => {
   const s = await conditionalNodeSetup(), id = (await s.send("Change this condition and send an email", { nodeContext: s.nodeContext, model: "model-b" })).json().data.operation.id;
   expect((await s.terminal(id)).status).toBe("ANSWERED");

@@ -7,6 +7,16 @@ import ExecutionOutputPanel from "./ExecutionOutputPanel";
 
 afterEach(cleanup);
 
+test("a confirmed explicit null return is not hidden as missing output", () => {
+  render(<ExecutionOutputPanel execution={{ status: "DONE", finalOutput: null, readProgress: { values: { answer: { kind: "return", status: "DONE" } } } }} />);
+  expect(screen.getByTestId("final-output").textContent).toContain("Explicit null returned"); expect(screen.queryByTestId("no-output")).toBeNull();
+});
+
+test("a return receipt without a saved final output cannot invent a value", () => {
+  render(<ExecutionOutputPanel execution={{ status: "FAILED", readProgress: { values: { answer: { kind: "return", status: "DONE" } } } }} />);
+  expect(screen.getByTestId("no-output")).toBeTruthy(); expect(screen.queryByTestId("final-output")).toBeNull();
+});
+
 const doneExecution = {
   id: "run-1",
   status: "DONE",

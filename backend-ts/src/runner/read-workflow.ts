@@ -9,7 +9,8 @@ import type { ValidationToken } from "../validator/registry-validator.js";
 import type { RunnerResult } from "./executor.js";
 import { ReadCheckpointFailure, ReadRunCancelled, type ReadExecutionHooks } from "./read-checkpoints.js";
 import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
-import { actionOrder, type ReadSequence } from "../workflows/read-control-flow.js";
+import { actionOrder, valueNodes, type ReadSequence } from "../workflows/read-control-flow.js";
+import type { ReadBinding } from "../workflows/compiled-read.js";
 
 /** Explicit read profiles: sequential actions and structured boolean branches. Unsupported logic
  * is rejected before any dispatch, never reinterpreted by an agent. */
@@ -29,6 +30,7 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
   if (services.erpbridgeSession?.requiresReviewedRevision && !expectedPlan) throw new Error("Modern workflow execution requires a published compiled artifact");
   if (expectedPlan) assertCompiledReadMatches(expectedPlan, currentPlan);
   const plan = expectedPlan ?? currentPlan;
+  if (plan.ir.flow && valueNodes(plan.ir.flow).length && (!hooks?.value || !hooks?.terminated)) throw new Error("Typed read values require checkpointed execution");
   if (plan.ir.inputSchema && validateToolInput(plan.ir.inputSchema, input).length) throw new Error("Workflow input does not meet the declared schema");
   const result: RunnerResult = { state: { input: structuredClone(input) }, timeline: [], logs: [], tokens: { input: 0, output: 0, total: 0 } };
   const definitions = new Map(plan.ir.root.nodes.map((node, index) => [node.id, { node, index }]));
@@ -82,10 +84,30 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
       cursor = index + 1;
     }
   }
-  async function visit(block: ReadSequence) {
+  async function typedValue(id: string, kind: "merge" | "return", binding: ReadBinding, schema: Record<string, unknown>) {
+    let value: unknown, valid = false;
+    try { value = resolveReadBinding(binding, result.state); valid = validateToolInput(schema, value).length === 0; } catch { /* No fabricated default. */ }
+    const receipt = await hooks!.value!(cursor, id, kind, value, valid, actor!.role);
+    if (!valid || !receipt) throw new Error(`Typed ${kind} ${id} failed; no dependent dispatch or implicit default`);
+    return receipt;
+  }
+  async function skipAfterReturn(block: ReadSequence, returnId: string) {
+    for (const nodeId of actionOrder(block)) {
+      if (context.signal?.aborted) throw new ReadRunCancelled();
+      const { index } = definitions.get(nodeId)!;
+      if (cursor !== index) throw new Error("Compiled return order changed");
+      const step = blueprint.steps[index]!;
+      await hooks!.terminated!(index, nodeId, step.description ?? step.action!, returnId, actor!.role);
+      cursor = index + 1;
+    }
+  }
+  async function visit(block: ReadSequence): Promise<string | undefined> {
+    let returned: string | undefined;
     for (const node of block.nodes) {
       if (context.signal?.aborted) throw new ReadRunCancelled();
+      if (returned) { await skipAfterReturn({ kind: "sequence", nodes: [node] }, returned); continue; }
       if (node.kind === "action") { await runAction(node.nodeId); continue; }
+      if (node.kind === "return") { await typedValue(node.id, "return", node.output.value, node.output.schema); returned = node.id; continue; }
       if (hooks && !hooks.condition) throw new Error("Conditional execution requires decision checkpoints");
       let value: unknown;
       try { value = resolveReadBinding(node.predicate, result.state); } catch { /* Missing is not false. */ }
@@ -95,10 +117,13 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
       }
       await hooks?.condition?.(cursor, node.id, value, actor!.role);
       const outer = new Set(Object.keys(result.state));
-      if (value) { await visit(node.then); await skip(node.else, node.id, "then"); }
-      else { await skip(node.then, node.id, "else"); await visit(node.else); }
+      if (value) { returned = await visit(node.then); await skip(node.else, node.id, "then"); }
+      else { await skip(node.then, node.id, "else"); returned = await visit(node.else); }
+      const merged = !returned && node.merge ? await typedValue(node.id, "merge", node.merge[value ? "then" : "else"], node.merge.schema) : undefined;
       for (const key of Object.keys(result.state)) if (!outer.has(key)) delete result.state[key];
+      if (merged) result.state[node.id] = merged;
     }
+    return returned;
   }
   await visit(plan.ir.flow ?? { kind: "sequence", nodes: plan.ir.root.nodes.map(node => ({ kind: "action", nodeId: node.id })) });
   return result;

@@ -47,3 +47,16 @@ test("an invalid saved decision cannot invent a selected false branch", () => {
   expect(screen.getByText("No decision recorded for this snapshot")).toBeTruthy();
   expect(screen.queryByText(/· Selected/)).toBeNull();
 });
+
+test("typed branch values and false returns are separate from condition decisions and ERP answers", () => {
+  const typed = JSON.parse(JSON.stringify(flow)); typed.nodes[0].merge = { schema: { type: "string" } };
+  typed.nodes.push({ kind: "return", id: "answer", output: { schema: { type: "boolean" }, value: { kind: "literal", value: false } } });
+  render(<ReadFlowTree flow={typed} steps={steps} renderAction={renderAction} values={{ gate: { kind: "merge", status: "DONE" }, answer: { kind: "return", status: "DONE" } }} valueOutputs={{ gate: { value: "selected value" }, answer: { value: false } }} />);
+  expect(screen.getByText("selected value")).toBeTruthy(); expect(within(screen.getByRole("region", { name: "Return answer" })).getByText("No")).toBeTruthy();
+  expect(screen.getByText("Saved selected-branch value · no tool call")).toBeTruthy(); expect(screen.getByText("No decision recorded for this snapshot")).toBeTruthy();
+});
+
+test("unconfirmed value payloads never become saved returns", () => {
+  render(<ReadFlowTree flow={sequence(...flow.nodes, { kind: "return", id: "answer", output: { schema: { type: "null" }, value: { kind: "literal", value: null } } })} steps={steps} renderAction={renderAction} valueOutputs={{ answer: { value: "unconfirmed" } }} />);
+  expect(screen.getByText("No return recorded for this snapshot")).toBeTruthy(); expect(screen.queryByText("unconfirmed")).toBeNull();
+});

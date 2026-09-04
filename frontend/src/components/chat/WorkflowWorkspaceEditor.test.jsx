@@ -249,6 +249,33 @@ test("workspace renders confirmed branch scopes, selectable action nodes and tru
 const conditionFlow = { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "last" }] } }] };
 function showConditions(extra = {}) { workflowService.readiness.mockResolvedValue({ ...record, authoring: { profile: "read-authoring/v1", nodes: [], controlFlow: conditionFlow, conditions: [{ nodeId: "gate", dataSources: [] }] }, ...extra }); }
 
+test("return selection scopes chat and previews a false output without saving or executing", async () => {
+  const output = { schema: { type: "boolean" }, value: { kind: "literal", value: true } }, flow = JSON.parse(JSON.stringify(conditionFlow));
+  flow.nodes.push({ kind: "return", id: "answer", output });
+  showConditions({ authoring: { profile: "read-authoring/v1", controlFlow: flow, returns: [{ nodeId: "answer", dataSources: [] }] } });
+  const onNodeContext = jest.fn(); await open({ onNodeContext }); fireEvent.click(screen.getByRole("button", { name: "Select return answer" }));
+  await waitFor(() => expect(onNodeContext).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "answer", version: 1, contentHash: record.contentHash })));
+  fireEvent.change(screen.getByRole("combobox", { name: "Return value" }), { target: { value: "false" } }); fireEvent.click(screen.getByRole("button", { name: "Preview return edit" }));
+  expect(workflowService.command).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "updateReturn", nodeId: "answer", patch: { output: { schema: { type: "boolean" }, value: { kind: "literal", value: false } } } }));
+  expect(workflowService.run).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled();
+});
+
+test("branch merge and new return require explicit reviewed commands", async () => {
+  showConditions(); await open(); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" })); fireEvent.click(screen.getByRole("checkbox", { name: "Declare branch output" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "If yes output" }), { target: { value: "yes value" } }); fireEvent.change(screen.getByRole("textbox", { name: "If no output" }), { target: { value: "no value" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview branch output edit" })); expect(workflowService.command).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "setConditionMerge", nodeId: "gate", merge: { schema: { type: "string" }, then: { kind: "literal", value: "yes value" }, else: { kind: "literal", value: "no value" } } }));
+});
+
+test("a new return preserves its explicit destination in a readable preview", async () => {
+  showConditions(); await open(); fireEvent.click(screen.getByRole("button", { name: "Add return" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New return ID" }), { target: { value: "answer" } }); fireEvent.change(screen.getByRole("combobox", { name: "New return destination" }), { target: { value: "gate:then" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Return value" }), { target: { value: "Explicit output" } }); fireEvent.click(screen.getByRole("button", { name: "Preview new return" }));
+  expect(workflowService.command).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "addReturn", nodeId: "answer", beforeNodeId: null, destination: { conditionId: "gate", branch: "then" }, output: { schema: { type: "string" }, value: { kind: "literal", value: "Explicit output" } } }));
+});
+
 test("condition selection forwards stable revision-bound scope to main chat and manual edits stay previews", async () => {
   showConditions(); const onNodeContext = jest.fn(); await open({ onNodeContext });
   fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));

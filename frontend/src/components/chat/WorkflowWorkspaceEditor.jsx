@@ -13,19 +13,35 @@ import { useExecutionMonitor } from "../../hooks/useExecutionMonitor";
 import ExecutionRunControls from "../executions/ExecutionRunControls";
 import { isActiveExecution } from "../../utils/executionEvents";
 import NodePrompt from "./NodePrompt";
-import ConditionFields, { ScopeSelect, branchDestination, flowConditions } from "./ConditionFields";
+import ConditionFields, { ScopeSelect, branchDestination, flowConditions, flowReturns } from "./ConditionFields";
+import ReadValueFields, { SchemaContractFields, ReadBindingFields } from "./ReadValueFields";
 
 const button = "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800";
 const input = "w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackground";
 const message = (error) => error?.response?.data?.message || error?.message || "The operation could not be completed.";
-function ConditionInspector({ node, canEdit, busy, onPreview, sessionId, context, onProposal, sharedChat, draftStorageKey, authoring }) {
+function ConditionInspector({ node, canEdit, busy, onPreview, onMergePreview, sessionId, context, onProposal, sharedChat, draftStorageKey, authoring }) {
   const [predicate, setPredicate] = useState(node.predicate);
+  const [merge, setMerge] = useState(node.merge || null);
   return <aside aria-label="Selected condition details" className="workspace-reveal mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
     <h4 className="mb-4 text-sm font-semibold">Condition · {node.id}</h4>
     {canEdit ? <><form className="space-y-3" onSubmit={event => { event.preventDefault(); onPreview({ predicate }); }}>
       <ConditionFields value={predicate} onChange={setPredicate} dataSources={authoring?.dataSources} /><button disabled={busy} className={`${button} border border-gray-200 dark:border-gray-700`}>Preview condition edit</button>
     </form>{sharedChat ? <p className="mt-4 text-xs text-gray-500">This condition is selected in the main chat. Requests may change its predicate only; branch contents stay unchanged.</p> : <NodePrompt sessionId={sessionId} context={context} busy={busy} onProposal={onProposal} draftStorageKey={draftStorageKey} />}</> : <ReadableValue value={node.predicate} />}
     <p className="mt-3 text-[10px] text-gray-500">If yes: {node.then.nodes.length} direct items · If no: {node.else.nodes.length} direct items. Move actions explicitly to change their scope.</p>
+    {canEdit ? <form className="mt-4 space-y-4 border-t pt-4" onSubmit={event => { event.preventDefault(); onMergePreview(merge); }}><h5 className="text-xs font-semibold">Branch output</h5>
+      <label className="text-xs text-gray-500"><input type="checkbox" aria-label="Declare branch output" checked={Boolean(merge)} onChange={event => setMerge(event.target.checked ? node.merge || { schema: { type: "string" }, then: { kind: "literal", value: "" }, else: { kind: "literal", value: "" } } : null)} /> Declare one typed output for both paths</label>
+      {merge && <><SchemaContractFields schema={merge.schema} onChange={schema => setMerge({ ...merge, schema })} label="Branch output contract" />{["then", "else"].map(branch => <ReadBindingFields key={branch} value={merge[branch]} onChange={value => setMerge({ ...merge, [branch]: value })} dataSources={authoring?.mergeSources?.[branch]} label={`${branch === "then" ? "If yes" : "If no"} output`} />)}</>}
+      <p className="text-[10px] text-gray-500">Only the selected path's value is exposed as {node.id} → value. Missing data fails; no default is substituted. A return inside a path bypasses this merge.</p>
+      <button disabled={busy} className={button}>Preview branch output edit</button>
+    </form> : node.merge && <ReadableValue value={node.merge} />}
+  </aside>;
+}
+function ReturnInspector({ node, canEdit, busy, onPreview, sessionId, context, onProposal, sharedChat, draftStorageKey, authoring }) {
+  const [output, setOutput] = useState(node.output);
+  return <aside aria-label="Selected return details" className="workspace-reveal mt-5 border-t pt-4"><h4 className="mb-4 text-sm font-semibold">Return · {node.id}</h4>
+    {canEdit ? <><form className="space-y-3" onSubmit={event => { event.preventDefault(); onPreview(output); }}><ReadValueFields value={output} onChange={setOutput} dataSources={authoring?.dataSources} /><button disabled={busy} className={button}>Preview return edit</button></form>
+      {sharedChat ? <p className="mt-4 text-xs text-gray-500">This return is selected in the main chat. Requests may change its output only; location and other nodes stay unchanged.</p> : <NodePrompt sessionId={sessionId} context={context} busy={busy} onProposal={onProposal} draftStorageKey={draftStorageKey} />}</> : <ReadableValue value={node.output} />}
+    <p className="mt-3 text-[10px] text-gray-500">A confirmed return stops all later actions on the selected path. Skipped actions have no tool answer.</p>
   </aside>;
 }
 function NodeInspector({ node, canEdit, busy, onPreview, sessionId, context, onProposal, sharedChat, draftStorageKey, authoring }) {
@@ -67,6 +83,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   const [addScope, setAddScope] = useState("root"), [moveScope, setMoveScope] = useState("root");
   const [conditionMode, setConditionMode] = useState(null), [conditionId, setConditionId] = useState("");
   const [conditionPredicate, setConditionPredicate] = useState({ kind: "literal", value: false }), [conditionBranch, setConditionBranch] = useState("then"), [conditionScope, setConditionScope] = useState("root");
+  const [addingReturn, setAddingReturn] = useState(false), [returnId, setReturnId] = useState(""), [returnScope, setReturnScope] = useState("root");
+  const [returnOutput, setReturnOutput] = useState({ schema: { type: "string" }, value: { kind: "literal", value: "" } });
   const load = useCallback(async () => { const next = await workflowService.readiness(workflowId); setRecord(next); return next; }, [workflowId]);
   useEffect(() => {
     let active = true;
@@ -83,7 +101,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   const authoring = record?.authoring?.profile === "read-authoring/v1" && !record.readinessUnknown ? record.authoring : null;
   const node = preview.steps.find((step) => step.id === selected);
   const condition = flowConditions(authoring?.controlFlow).find(item => item.id === selected);
-  const nodeId = node?.id || condition?.id, nodeLabel = node?.source.description || (condition ? `Condition ${condition.id}` : nodeId);
+  const returnNode = flowReturns(authoring?.controlFlow).find(item => item.id === selected);
+  const nodeId = node?.id || condition?.id || returnNode?.id, nodeLabel = node?.source.description || (condition ? `Condition ${condition.id}` : returnNode ? `Return ${returnNode.id}` : nodeId);
   const version = record?.version, contentHash = record?.contentHash;
   useEffect(() => {
     onNodeContext?.(canEdit && nodeId && contentHash ? { workflowId, sessionId, nodeId, label: nodeLabel, version, contentHash,
@@ -98,7 +117,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
     const next = await workflowService.command(workflowId, revision, command);
     if (history === "edit") { setUndo((items) => [...items.slice(-19), record.yaml]); setRedo([]); }
     if (revision.proposalId) setResolvedProposals((items) => [...items, revision.proposalId]);
-    setRecord({ ...next, readinessUnknown: true }); setProposal(null); setConditionMode(null); setNotice("Draft saved. Publication and execution are separate actions."); onChatChanged?.();
+    setRecord({ ...next, readinessUnknown: true }); setProposal(null); setConditionMode(null); setAddingReturn(false); setNotice("Draft saved. Publication and execution are separate actions."); onChatChanged?.();
     try { await load(); } catch { setNotice("Draft saved, but readiness could not be refreshed. Reload before publishing or running."); }
   };
   const attemptRun = async () => {
@@ -127,6 +146,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
           <button className={button} aria-label="Redo workflow edit" disabled={busy || !redo.length} onClick={() => perform(async () => { await save({ type: "restoreDraft", yaml: redo.at(-1) }, "redo"); setRedo((items) => items.slice(0, -1)); setUndo((items) => [...items, record.yaml]); })}><Icon icon="lucide:redo-2" /></button>
           <button className={button} disabled={busy} onClick={() => setAdding((value) => !value)}><Icon icon="lucide:plus" />Add node</button>
           <button className={button} disabled={busy || record.readinessUnknown || preview.error} onClick={() => setConditionMode(value => value === "add" ? null : "add")}>Add condition</button>
+          <button className={button} disabled={busy || record.readinessUnknown || preview.error} onClick={() => setAddingReturn(value => !value)}>Add return</button>
           <button className={`${button} ml-auto border border-gray-200 dark:border-gray-700`} disabled={busy || record.readinessUnknown || !record.validation?.passed || record.published && record.compilation?.state !== "BLOCKED"} onClick={() => perform(async () => { await workflowService.publish(workflowId, "Explicitly reviewed in chat workspace", record); setNotice("Draft published. Execution has not been requested."); await load(); })}>{record.published && record.compilation?.state === "BLOCKED" ? "Republish reviewed draft" : "Publish reviewed draft"}</button></>}
       </div>
     </div>
@@ -157,7 +177,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
         <button className={button} disabled={busy}>Preview new condition</button><button type="button" className={button} onClick={() => setConditionMode(null)}>Cancel condition creation</button>
       </form>}
       <p className="mb-4 text-[10px] leading-4 text-gray-500">{authoring?.controlFlow ? "Structured read flow · exactly one path per boolean condition. Branch outputs remain in scope." : "Source-order flow · conditions and approvals are preserved, not inferred as branch paths."}</p>
-      <ReadFlowTree flow={authoring?.controlFlow} steps={preview.steps} selectedId={selected} onSelectCondition={select} decisions={snapshotMatches ? shownRun?.readProgress?.decisions : undefined} renderAction={(step, index) => {
+      {addingReturn && <form aria-label="Create return" className="mb-5 space-y-3 border-b pb-4" onSubmit={event => { event.preventDefault(); previewChange(returnId, { type: "addReturn", nodeId: returnId, output: returnOutput, beforeNodeId: null, ...branchDestination(returnScope) }, "No return at this destination", { id: returnId, output: returnOutput, destination: returnScope }); }}><h4 className="text-xs font-semibold">Declare workflow return</h4><input aria-label="New return ID" className={input} value={returnId} onChange={event => setReturnId(event.target.value)} pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" placeholder="Unique stable return ID" required /><ScopeSelect flow={authoring?.controlFlow} value={returnScope} onChange={setReturnScope} label="New return destination" /><ReadValueFields value={returnOutput} onChange={setReturnOutput} /><button disabled={busy} className={button}>Preview new return</button><button type="button" className={button} onClick={() => setAddingReturn(false)}>Cancel return creation</button></form>}
+      <ReadFlowTree flow={authoring?.controlFlow} steps={preview.steps} selectedId={selected} onSelectCondition={select} decisions={snapshotMatches ? shownRun?.readProgress?.decisions : undefined} values={snapshotMatches ? shownRun?.readProgress?.values : undefined} valueOutputs={snapshotMatches ? shownRun?.valueOutputs : undefined} renderAction={(step, index) => {
           const attempt = shownTimeline.find((item) => item.nodeId === step.id);
           const output = shownRun?.stepOutputs?.[step.id] ?? (attempt?.status === "FAILED" ? attempt.output : undefined);
           return <li key={step.id} className="relative">
@@ -172,14 +193,15 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
             {attempt?.status === "UNKNOWN" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-amber-700 dark:text-amber-300">Outcome unknown · the read may have reached ERP, but no confirmed answer was saved. No automatic replay.</p>}
             {attempt?.status === "RUNNING" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">{attempt.phase === "DISPATCH_INTENT" ? "Read dispatch recorded · waiting for a saved answer" : "Checking this node before dispatch"}</p>}
             {attempt?.outcome === "NOT_DISPATCHED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">No dispatch was recorded for this attempt.</p>}
-            {attempt?.status === "SKIPPED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">Skipped in this run · another branch was selected. This node was not called and has no answer.</p>}
+            {attempt?.status === "SKIPPED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">Skipped in this run · {attempt.outcome === "AFTER_RETURN" ? `workflow returned at ${attempt.returnId}` : "another branch was selected"}. This node was not called and has no answer.</p>}
           </li>;
         }} />
       {node && <><details key={`${node.id}:${record.version}`} open={!onNodeContext} className="mt-5 border-t border-gray-200 pt-3 text-xs dark:border-gray-700"><summary className="cursor-pointer font-medium">Node settings · {node.id}</summary><NodeInspector node={node} canEdit={canEdit} busy={busy} sessionId={sessionId} context={{ workflowId, nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash }} onProposal={setProposal} sharedChat={Boolean(onNodeContext)} draftStorageKey={selectionStorageKey ? `${selectionStorageKey}.node-prompt.${node.id}` : null} authoring={authoring?.nodes?.find(item => item.nodeId === node.id)} onPreview={(patch) => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "updateNode", nodeId: node.id, patch }, before: node.source, after: { ...node.source, ...patch } })} /></details>
         {canEdit && <div className="mt-3 flex flex-wrap gap-1">{onFocusChat && <button className={`${button} text-primary lg:hidden`} onClick={onFocusChat}>Edit this node in chat</button>}{authoring?.controlFlow && <ScopeSelect flow={authoring.controlFlow} value={moveScope} onChange={setMoveScope} label="Move node destination" />}<button className={button} disabled={busy || !authoring?.controlFlow && preview.steps.at(-1)?.id === node.id} onClick={() => perform(() => save({ type: "moveNode", nodeId: node.id, beforeNodeId: null, ...branchDestination(moveScope) }))}>{authoring?.controlFlow ? "Move to selected scope end" : "Move to end"}</button><button className={button} disabled={busy} onClick={() => setConditionMode("wrap")}>Wrap node in condition</button><button className={`${button} text-red-600`} disabled={busy} onClick={() => setProposal({ nodeId: node.id, baseVersion: record.version, baseHash: record.contentHash, command: { type: "removeNode", nodeId: node.id }, before: node.source, after: null })}>Remove node…</button></div>}</>}
-      {condition && <><ConditionInspector key={`${condition.id}:${record.version}`} node={condition} canEdit={canEdit} busy={busy} sessionId={sessionId} context={{ workflowId, nodeId: condition.id, baseVersion: record.version, baseHash: record.contentHash }} onProposal={setProposal} sharedChat={Boolean(onNodeContext)} draftStorageKey={selectionStorageKey ? `${selectionStorageKey}.node-prompt.${condition.id}` : null} authoring={authoring?.conditions?.find(item => item.nodeId === condition.id)} onPreview={patch => previewChange(condition.id, { type: "updateCondition", nodeId: condition.id, patch }, condition.predicate, patch.predicate)} />
+      {condition && <><ConditionInspector key={`${condition.id}:${record.version}`} node={condition} canEdit={canEdit} busy={busy} sessionId={sessionId} context={{ workflowId, nodeId: condition.id, baseVersion: record.version, baseHash: record.contentHash }} onProposal={setProposal} sharedChat={Boolean(onNodeContext)} draftStorageKey={selectionStorageKey ? `${selectionStorageKey}.node-prompt.${condition.id}` : null} authoring={authoring?.conditions?.find(item => item.nodeId === condition.id)} onPreview={patch => previewChange(condition.id, { type: "updateCondition", nodeId: condition.id, patch }, condition.predicate, patch.predicate)} onMergePreview={merge => previewChange(condition.id, { type: "setConditionMerge", nodeId: condition.id, merge }, condition.merge || "No declared output", merge)} />
         {canEdit && <><button className={`${button} mt-3 text-red-600`} disabled={busy || condition.then.nodes.length > 0 || condition.else.nodes.length > 0} onClick={() => previewChange(condition.id, { type: "removeCondition", nodeId: condition.id }, condition, null)}>Remove empty condition…</button>{(condition.then.nodes.length > 0 || condition.else.nodes.length > 0) && <p className="mt-1 text-[10px] text-gray-500">Move or remove both paths' contents before removing this condition. Nothing is silently flattened.</p>}</>}
       </>}
+      {returnNode && <><ReturnInspector key={`${returnNode.id}:${record.version}`} node={returnNode} canEdit={canEdit} busy={busy} sessionId={sessionId} context={{ workflowId, nodeId: returnNode.id, baseVersion: record.version, baseHash: record.contentHash }} onProposal={setProposal} sharedChat={Boolean(onNodeContext)} draftStorageKey={selectionStorageKey ? `${selectionStorageKey}.node-prompt.${returnNode.id}` : null} authoring={authoring?.returns?.find(item => item.nodeId === returnNode.id)} onPreview={output => previewChange(returnNode.id, { type: "updateReturn", nodeId: returnNode.id, patch: { output } }, returnNode.output, output)} />{canEdit && <button disabled={busy} className={`${button} mt-3 text-red-600`} onClick={() => previewChange(returnNode.id, { type: "removeReturn", nodeId: returnNode.id }, returnNode, null)}>Remove return…</button>}</>}
       {canEdit && pendingProposal && <section aria-label="Node change preview" className="workspace-reveal mt-5 border-y border-primary/25 py-4">
         <h4 className="text-xs font-semibold">Review change · {pendingProposal.nodeId}</h4><p className="mt-1 text-[10px] text-gray-500">Based on draft v{pendingProposal.baseVersion}. Unrelated nodes are unchanged.</p>
         <details className="mt-3 text-[10px]"><summary className="cursor-pointer">Before</summary><div className="mt-2 max-h-56 overflow-auto"><ReadableValue value={pendingProposal.before} /></div></details>

@@ -7,14 +7,15 @@ import { exactBridgeName } from "../tools/erpbridge-contract.js";
 import { validateToolInput, validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
-import { parseReadControlFlow, validateReadControlFlow, type ReadSequence } from "./read-control-flow.js";
+import { parseReadControlFlow, validateReadControlFlow, controlNodes, type ReadSequence } from "./read-control-flow.js";
+import { checkBinding, schemaAt } from "./read-binding-validation.js";
 
 export type ReadReference = { kind: "ref"; source: "workflowInput" | "nodeOutput"; nodeId?: string; path: string[] };
 export type ReadBinding = ReadReference | { kind: "literal"; value: string | number | boolean | null } |
   { kind: "object"; fields: Record<string, ReadBinding> } | { kind: "array"; items: ReadBinding[] } |
   { kind: "template"; parts: Array<string | ReadReference> };
 export type ReadAdmissionPin = { connectionId: string; capabilityId: string; revisionId: string; admissionVersion: number; contractHash: string };
-export type ReadIR = { schemaVersion: "workflow-read-ir/v1" | "workflow-read-ir/v2"; compilerVersion: "read-compiler/v1" | "read-compiler/v2"; trigger: { kind: "manual" }; flow?: ReadSequence;
+export type ReadIR = { schemaVersion: "workflow-read-ir/v1" | "workflow-read-ir/v2" | "workflow-read-ir/v3"; compilerVersion: "read-compiler/v1" | "read-compiler/v2" | "read-compiler/v3"; trigger: { kind: "manual" }; flow?: ReadSequence;
   inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: Array<{ id: string; kind: "action";
     capability: { toolId: string; action: string; remoteName: string; contractHash: string; admission?: ReadAdmissionPin };
     inputs: ReadBinding }> } };
@@ -41,6 +42,15 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
   if (inputSchema !== undefined && ((inputSchema as Record<string, unknown> | null)?.type !== "object" || validateToolSchemaProfile(inputSchema).length)) issues.push("Workflow input schema is unsupported");
   const ir: ReadIR = { schemaVersion: "workflow-read-ir/v1", compilerVersion: "read-compiler/v1", trigger: { kind: "manual" },
     ...(inputSchema === undefined ? {} : { inputSchema: structuredClone(inputSchema) as Record<string, unknown> }), root: { kind: "sequence", nodes: [] } };
+  const mergedIDs = new Set<string>();
+  if (blueprint.metadata?.controlFlow !== undefined) {
+    ir.schemaVersion = "workflow-read-ir/v2"; ir.compilerVersion = "read-compiler/v2";
+    try {
+      const parsed = parseReadControlFlow(blueprint.metadata.controlFlow); ir.flow = parsed.root;
+      if (parsed.schemaVersion === "read-control-flow/v2") { ir.schemaVersion = "workflow-read-ir/v3"; ir.compilerVersion = "read-compiler/v3"; }
+      for (const node of controlNodes(ir.flow)) if (node.merge) { mergedIDs.add(node.id); outputs.set(node.id, { type: "object", properties: { value: node.merge.schema }, required: ["value"], additionalProperties: false }); }
+    } catch { issues.push("Structured control flow is malformed or exceeds supported limits"); }
+  }
   if (blueprint.steps.length < 1 || blueprint.steps.length > 200) issues.push("Read workflows require 1–200 steps");
   for (const step of blueprint.steps.slice(0, 200)) {
     let localNodes = 0;
@@ -52,7 +62,7 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
     const reference = (expression: string): ReadReference => {
       const path = expression.trim().split("."), root = path.shift()!;
       if (!/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*$/.test(expression.trim()) || [root, ...path].some(part => reserved.has(part))) issues.push(`Step ${step.id} has an unsupported data reference`);
-      if (root !== "input" && !ids.has(root)) issues.push(`Step ${step.id} has an unavailable or forward data reference`);
+      if (root !== "input" && !ids.has(root) && !mergedIDs.has(root)) issues.push(`Step ${step.id} has an unavailable or forward data reference`);
       return root === "input" ? { kind: "ref", source: "workflowInput", path } : { kind: "ref", source: "nodeOutput", nodeId: root, path };
     };
     const binding = (value: unknown, depth: number): ReadBinding => {
@@ -90,11 +100,7 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
   }
   // Bound the projection as well as its source: reference expansion/metadata
   // cannot turn a bounded YAML file into an unbounded saved artifact.
-  if (blueprint.metadata?.controlFlow !== undefined) {
-    ir.schemaVersion = "workflow-read-ir/v2"; ir.compilerVersion = "read-compiler/v2";
-    try { ir.flow = parseReadControlFlow(blueprint.metadata.controlFlow).root; issues.push(...validateReadControlFlow(ir.flow, ir, outputs).issues); }
-    catch { issues.push("Structured control flow is malformed or exceeds supported limits"); }
-  }
+  if (ir.flow) issues.push(...validateReadControlFlow(ir.flow, ir, outputs).issues);
   if (canonicalJSONBytes(ir).length > 1_000_000) issues.push("Compiled read artifact exceeds supported size");
   return { ir, semanticHash: hashIR(ir), issues: [...new Set(issues)] };
 }
@@ -128,51 +134,4 @@ export function resolveReadBinding(binding: ReadBinding, state: Record<string, u
   }
   if (current === undefined) throw new Error("Compiled data reference is unavailable");
   return structuredClone(current);
-}
-
-function schemaAt(schema: Record<string, unknown> | undefined, path: string[]): Record<string, unknown> | undefined {
-  let current = schema;
-  for (const part of path) {
-    if (current?.type === "array" && /^(0|[1-9][0-9]*)$/.test(part)) current = current.items as Record<string, unknown> | undefined;
-    else current = (current?.properties as Record<string, Record<string, unknown>> | undefined)?.[part];
-  }
-  return current;
-}
-function checkBinding(binding: ReadBinding, schema: Record<string, unknown> | undefined, label: string, issues: string[], referenceSchema: (ref: ReadReference) => Record<string, unknown> | undefined) {
-  if (!schema) return; // Unknown reference types must be checked at runtime.
-  if (binding.kind === "ref") {
-    const source = referenceSchema(binding);
-    if (source && !compatibleSchemas(source, schema)) issues.push(`${label} has an incompatible typed reference`);
-    return;
-  }
-  if (binding.kind === "template") {
-    if (schema.type !== "string") issues.push(`${label} has an incompatible string template`);
-    for (const part of binding.parts) if (typeof part !== "string" && referenceSchema(part)?.type !== undefined && referenceSchema(part)?.type !== "string") issues.push(`${label} requires an explicit string conversion`);
-    return;
-  }
-  if (binding.kind === "literal") { if (validateToolInput(schema, binding.value).length) issues.push(`${label} has an invalid literal input`); return; }
-  if (binding.kind === "array") {
-    if (schema.type !== "array") issues.push(`${label} has an incompatible array input`);
-    else for (const child of binding.items) checkBinding(child, schema.items as Record<string, unknown>, label, issues, referenceSchema);
-    return;
-  }
-  if (schema.type !== "object") { issues.push(`${label} has an incompatible object input`); return; }
-  const required = schema.required as string[] | undefined, properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
-  for (const key of required ?? []) if (!Object.hasOwn(binding.fields, key)) issues.push(`${label} is missing required input ${key}`);
-  for (const [key, child] of Object.entries(binding.fields)) {
-    if (!properties?.[key] && schema.additionalProperties === false) issues.push(`${label} contains unsupported input ${key}`);
-    checkBinding(child, properties?.[key], label, issues, referenceSchema);
-  }
-}
-
-function compatibleSchemas(source: Record<string, unknown>, target: Record<string, unknown>, depth = 0): boolean {
-  if (!source || !target) return false;
-  if (depth > 16 || source.type !== target.type && !(source.type === "integer" && target.type === "number")) return false;
-  if (source.type === "array" && target.type === "array") return compatibleSchemas(source.items as Record<string, unknown>, target.items as Record<string, unknown>, depth + 1);
-  if (source.type === "object" && target.type === "object") {
-    const from = source.properties as Record<string, Record<string, unknown>> | undefined, to = target.properties as Record<string, Record<string, unknown>> | undefined;
-    for (const key of target.required as string[] | undefined ?? []) if (!from?.[key] && source.additionalProperties === false) return false;
-    for (const [key, schema] of Object.entries(to ?? {})) if (from?.[key] && !compatibleSchemas(from[key], schema, depth + 1)) return false;
-  }
-  return true; // Optional presence/unknown additional fields remain runtime guards.
 }

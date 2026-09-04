@@ -13,6 +13,7 @@ export async function completeCheckpointedRead(services: HandlerServices, initia
   const hooks: ReadExecutionHooks = {
     preparing: checkpoints.preparing.bind(checkpoints), completed: checkpoints.completed.bind(checkpoints), failed: checkpoints.failed.bind(checkpoints),
     condition: checkpoints.condition.bind(checkpoints), skipped: checkpoints.skipped.bind(checkpoints),
+    value: checkpoints.value.bind(checkpoints), terminated: checkpoints.terminated.bind(checkpoints),
     dispatchIntent: async (index, nodeId, role) => { assertDispatchBinding?.(); await checkpoints.dispatchIntent(index, nodeId, role); },
   };
   let failed = false;

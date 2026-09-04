@@ -79,6 +79,88 @@ test.each([false, true])("published two-node read executes exact bindings with p
 
 const conditionalYAML = (predicate: unknown = { kind: "ref", source: "workflowInput", path: ["enabled"] }) => stringify({ name: "Branch report", description: "Read exactly one branch", trigger: { type: "manual" }, steps: ["yes", "no", "after"].map(id => ({ id, action: "finance.read", parameters: { id } })), metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "yes" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "no" }] } }, { kind: "action", nodeId: "after" }] } } } });
 
+const valueYAML = (output?: unknown, nested = false) => {
+  const value = parseWorkflowYAMLStrict(conditionalYAML()) as any;
+  value.metadata.controlFlow.schemaVersion = "read-control-flow/v2";
+  const nodes = value.metadata.controlFlow.root.nodes, gate = nodes[0];
+  gate.merge = { schema: { type: "string" }, then: { kind: "ref", source: "nodeOutput", nodeId: "yes", path: ["structuredContent", "id"] }, else: { kind: "ref", source: "nodeOutput", nodeId: "no", path: ["structuredContent", "id"] } };
+  value.steps[2].parameters.id = "{{gate.value}}";
+  const answer = { kind: "return", id: "answer", output: output ?? { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "after", path: ["structuredContent", "id"] } } };
+  if (nested) gate.then.nodes.push(answer); else nodes.push(answer);
+  return stringify(value);
+};
+
+test("a root return before any action records every later action as skipped without evaluating future conditions", async () => {
+  const s = await setup({ provider: true }), value = parseWorkflowYAMLStrict(valueYAML()) as any;
+  value.metadata.controlFlow.root.nodes.unshift({ kind: "return", id: "early", output: { schema: { type: "boolean" }, value: { kind: "literal", value: false } } });
+  await s.seed(stringify(value)); const response = await s.run({ input: {} }); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ status: "DONE", finalOutput: false, readProgress: { nextStepIndex: 3, values: { early: { status: "DONE", kind: "return" } } } });
+  expect(response.json().data.readProgress.decisions ?? {}).toEqual({}); expect(Object.keys(response.json().data.valueOutputs)).toEqual(["early"]); expect(s.callTool).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
+test("queued typed workflow uses the same merge and return receipts without model inference", async () => {
+  const s = await setup({ provider: true }); await s.seed(valueYAML());
+  const response = await s.run({ input: { enabled: false }, mode: "async-read", idempotencyKey: "typed_job_request_0001" }); expect(response.statusCode, response.body).toBe(202);
+  const id = response.json().data.id; await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("DONE"));
+  expect((await s.repository.snapshot()).executions[id]).toMatchObject({ finalOutput: "invoice-actual", workflowSnapshot: { executionProfile: "structured-read-v1" }, readProgress: { values: { answer: { kind: "return", status: "DONE" } } } });
+  expect(s.queryWithTools).not.toHaveBeenCalled(); expect(s.callTool).toHaveBeenCalledTimes(2);
+});
+
+test.each(["output", "final", "skip"])("completion denies missing/forged %s evidence rather than marking a typed workflow done", async damage => {
+  const s = await setup(), value = parseWorkflowYAMLStrict(valueYAML()) as any;
+  value.metadata.controlFlow.root.nodes.unshift({ kind: "return", id: "early", output: { schema: { type: "boolean" }, value: { kind: "literal", value: false } } });
+  await s.seed(stringify(value)); const original = s.repository.mutate.bind(s.repository);
+  vi.spyOn(s.repository, "mutate").mockImplementation(mutation => original(state => {
+    const result = mutation(state);
+    const item = Object.values(state.executions).find(item => item.status === "RUNNING" && item.readProgress?.values?.early);
+    if (item) { if (damage === "output") delete item.valueOutputs!.early; else if (damage === "final") item.finalOutput = true; else { const entry = state.timelines[item.id]?.find(entry => entry.status === "SKIPPED"); if (entry) entry.outcome = "NOT_SELECTED"; } }
+    return result;
+  }));
+  expect((await s.run({ input: {} })).statusCode).toBe(503); expect(Object.values((await s.repository.snapshot()).executions)[0]!.status).toBe("RECOVERY_REQUIRED"); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test.each([true, false])("selected typed branch merge feeds a later read and explicit return, enabled=%s", async enabled => {
+  const s = await setup({ provider: true }); await s.seed(valueYAML());
+  s.callTool.mockImplementation(async (_name, args) => ({ content: [], structuredContent: { id: `actual-${args.id}` } }));
+  const response = await s.run({ input: { enabled } }); expect(response.statusCode, response.body).toBe(200);
+  const item = response.json().data, selected = enabled ? "yes" : "no";
+  expect(item).toMatchObject({ status: "DONE", workflowSnapshot: { executionProfile: "structured-read-v1" }, valueOutputs: { gate: { value: `actual-${selected}` }, answer: { value: `actual-actual-${selected}` } }, finalOutput: `actual-actual-${selected}`, readProgress: { values: { gate: { kind: "merge", status: "DONE" }, answer: { kind: "return", status: "DONE" } } } });
+  expect(s.callTool.mock.calls.map(call => call[1].id)).toEqual([selected, `actual-${selected}`]);
+  expect(Object.keys(item.stepOutputs)).toEqual([selected, "after"]); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
+test.each([{ schema: { type: "boolean" }, value: false }, { schema: { type: "number" }, value: 0 }, { schema: { type: "null" }, value: null }])("nested explicit return preserves %j and skips future calls without merging", async ({ schema, value }) => {
+  const s = await setup(); await s.seed(valueYAML({ schema, value: { kind: "literal", value } }, true));
+  const response = await s.run({ input: { enabled: true } }); expect(response.statusCode, response.body).toBe(200);
+  const item = response.json().data, state = await s.repository.snapshot();
+  expect(item.status).toBe("DONE"); expect(item.finalOutput).toEqual(value); expect(item.valueOutputs).toEqual({ answer: { value } });
+  expect(item.readProgress.values.gate).toBeUndefined(); expect(s.callTool.mock.calls.map(call => call[1].id)).toEqual(["yes"]);
+  expect(state.timelines[item.id]!.find(entry => entry.nodeId === "after")).toMatchObject({ status: "SKIPPED", outcome: "AFTER_RETURN", returnId: "answer" });
+  expect(state.timelines[item.id]!.find(entry => entry.nodeId === "no")).toMatchObject({ status: "SKIPPED", outcome: "NOT_SELECTED" });
+  expect(item.stepOutputs.after).toBeUndefined(); expect(item.readProgress.attempts.after.dispatchIntentAt).toBeUndefined();
+});
+
+test("missing selected merge data records a typed failure and retains the confirmed ERP answer without dependent dispatch", async () => {
+  const s = await setup(); await s.seed(valueYAML()); s.callTool.mockResolvedValue({ content: [], structuredContent: {} });
+  const response = await s.run({ input: { enabled: false } }); expect(response.statusCode, response.body).toBe(422);
+  const item = Object.values((await s.repository.snapshot()).executions)[0]!;
+  expect(item).toMatchObject({ status: "FAILED", failure: { failedStepId: "gate" }, readProgress: { values: { gate: { kind: "merge", status: "FAILED" } } } });
+  expect(Object.keys(item.stepOutputs!)).toEqual(["no"]); expect(item.valueOutputs?.gate).toBeUndefined(); expect(s.callTool).toHaveBeenCalledTimes(1);
+});
+
+test.each(["gate", "answer"])("lost %s value acknowledgement preserves the committed receipt and stops without replay", async nodeId => {
+  const s = await setup(); await s.seed(valueYAML()); const original = s.repository.mutate.bind(s.repository);
+  vi.spyOn(s.repository, "mutate").mockImplementation(async mutation => {
+    let written = false;
+    const result = await original(state => { const before = Object.values(state.executions).some(item => item.readProgress?.values?.[nodeId]); const value = mutation(state); written = !before && Object.values(state.executions).some(item => item.readProgress?.values?.[nodeId]); return value; });
+    if (written) throw new Error("Lost typed value acknowledgement"); return result;
+  });
+  const response = await s.run({ input: { enabled: true } }); expect(response.statusCode).toBe(503);
+  const item = Object.values((await s.repository.snapshot()).executions)[0]!;
+  expect(item.status).toBe("RECOVERY_REQUIRED"); expect(item.readProgress!.values![nodeId]!.status).toBe("DONE"); expect(item.valueOutputs?.[nodeId]).toEqual({ value: "invoice-actual" });
+  expect(s.callTool).toHaveBeenCalledTimes(nodeId === "gate" ? 1 : 2);
+});
+
 test("structure-aware authoring creates a publishable branch workflow that runs only its selected path", async () => {
   const s = await setup({ provider: true }), blueprint = parseWorkflowYAMLStrict(conditionalYAML()); delete blueprint.metadata;
   let source = stringify(blueprint), revision = 1; await s.seed(source, false);

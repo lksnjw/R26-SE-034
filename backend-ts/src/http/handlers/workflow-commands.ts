@@ -82,7 +82,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation, authoring,
         can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
-        authorization: "rechecked_at_dispatch", executionProfile: "controlFlow" in authoring ? "conditional-read-v1" : "sequential-read-v1" }, "Readiness checked", { traceId }));
+        authorization: "rechecked_at_dispatch", executionProfile: "executionProfile" in authoring ? authoring.executionProfile : "sequential-read-v1" }, "Readiness checked", { traceId }));
     }
     if (kind === "node-proposals") {
       const parsed = proposalSchema.safeParse(request.body);
@@ -99,7 +99,8 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       const provider = selectProvider(services, value.model ?? sessionModel)!;
       const prompt = promptData({ instruction: value.prompt, node: withoutSecretFields(node),
         ...(node.kind === "if" ? { allowedBooleanSources: readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()).conditions?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
-        tools: node.kind === "if" ? [] : services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role)).map((tool) => ({ name: tool.name, inputSchema: tool.input_schema })) });
+        ...(node.kind === "return" ? { allowedDataSources: readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()).returns?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
+        tools: ["if", "return"].includes(node.kind ?? "") ? [] : services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role)).map((tool) => ({ name: tool.name, inputSchema: tool.input_schema })) });
       const patch = selectedNodePatchSchema(node);
       let proposed: ReturnType<typeof patch.parse>;
       try {

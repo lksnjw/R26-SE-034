@@ -21,7 +21,8 @@ export async function processNodeProposal(input: { context: unknown; content: st
   });
   const prompt = promptData({ instruction: input.content, node: withoutSecretFields(scoped.node),
     ...(scoped.node.kind === "if" ? { allowedBooleanSources: readAuthoringContract(parseWorkflowYAMLStrict(scoped.workflow.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()).conditions?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
-    tools: scoped.node.kind === "if" ? [] : services.registries.snapshot().tools.filter(tool => tool.allowed_roles.includes(user.role)).map(tool => ({ name: tool.name, inputSchema: tool.input_schema })) });
+    ...(scoped.node.kind === "return" ? { allowedDataSources: readAuthoringContract(parseWorkflowYAMLStrict(scoped.workflow.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()).returns?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
+    tools: ["if", "return"].includes(scoped.node.kind ?? "") ? [] : services.registries.snapshot().tools.filter(tool => tool.allowed_roles.includes(user.role)).map(tool => ({ name: tool.name, inputSchema: tool.input_schema })) });
   await hooks.stage("GENERATING_NODE_PROPOSAL");
   const patchSchema = selectedNodePatchSchema(scoped.node);
   let patch: ReturnType<typeof patchSchema.parse>;
