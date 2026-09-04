@@ -3,8 +3,10 @@ import { stringify } from "yaml";
 import { afterEach, expect, test, vi } from "vitest";
 import { loadConfig } from "../src/config/config.js";
 import { buildApp } from "../src/http/app.js";
-import { Repository, type PersistenceBackend, type RepositoryState } from "../src/repository/store.js";
-import { ReadCheckpoints, reconcileInterruptedExecutions } from "../src/runner/read-checkpoints.js";
+import { Repository, type PersistenceBackend, type RepositoryState, type Execution } from "../src/repository/store.js";
+import { ReadCheckpoints, reconcileInterruptedExecutions, newReadProgress } from "../src/runner/read-checkpoints.js";
+import { ReadIterationCheckpoints, newReadIterationLedger } from "../src/runner/read-iteration-checkpoints.js";
+import { compileReadWorkflow, readCompilationReceipt } from "../src/workflows/compiled-read.js";
 import { readJobQueue } from "../src/runner/read-jobs.js";
 import type { ApplicationServices } from "../src/http/app.js";
 import { RegistryService } from "../src/registry/service.js";
@@ -96,6 +98,20 @@ const collectionYAML = () => stringify({ name: "Collection report", description:
   { kind: "foreach", id: "each", items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } }, maxItems: 3, body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "lookup" }] }, collect: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "lookup", path: ["structuredContent", "id"] } } },
   { kind: "return", id: "answer", output: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["value"] } } },
 ] } } } });
+
+test("iteration receipts integrate with existing scoped event replay and cancellation without admitting a live collection", async () => {
+  const s = await setup({ provider: true }); await s.app.ready(); const source = collectionYAML(); await s.seed(source);
+  const input = { rows: ["first", "second"], private_token: "private-journal-input" }, plan = compileReadWorkflow(source, [s.tool], "Platform Admin"), key = "fixture-server-iteration-binding-key-32-bytes", timestamp = new Date().toISOString();
+  const item: Execution = { id: "iteration-run", workflowId: "read", workflowName: "Collection", status: "RUNNING", startedAt: timestamp, completedAt: null, durationMs: 0, costUsd: 0, tokens: { input: 0, output: 0, total: 0 }, startedBy: { id: "actor", name: "Actor" }, workflowSnapshot: { version: 1, contentHash: plan.sourceHash, registryHash: s.services.registries.hash(), yaml: source, input: {}, executionProfile: "collection-read-v1", compilation: readCompilationReceipt(plan, s.services.registries.hash(), "PUBLICATION", "fixture-legacy") }, readProgress: newReadProgress(s.repository), iterationProgress: newReadIterationLedger("iteration-run", plan, input, "Platform Admin", key) };
+  await s.repository.mutate(state => { state.executions[item.id] = item; });
+  const worker = new ReadIterationCheckpoints(s.repository, item.id, 1, source, plan, input, [s.tool], key);
+  await worker.advance(); const first = await worker.advance(); await worker.dispatchIntent(first!.visit, "Platform Admin"); await worker.completed(first!.visit, { content: [], structuredContent: { id: "confirmed-first" } }); await worker.advance(); await worker.advance();
+  const page = await s.app.inject({ method: "GET", url: `/api/executions/${item.id}/events?after=0&limit=100`, headers: s.headers }); expect(page.statusCode, page.body).toBe(200);
+  expect(page.json().data.events.find((event: any) => event.type === "iteration.action.completed").payload).toMatchObject({ invocationId: "each/0/lookup", iterations: [{ loopId: "each", index: 0 }] }); expect(page.body).not.toContain("private-journal-input"); expect(page.body).not.toContain(key);
+  const cancelled = await s.app.inject({ method: "POST", url: `/api/executions/${item.id}/cancel`, headers: s.headers, payload: {} }); expect(cancelled.statusCode, cancelled.body).toBe(202); await expect(worker.advance()).rejects.toThrow();
+  const final = await worker.finish(); expect(final.status).toBe("CANCELLED"); expect(final.stepOutputs?.["each/0/lookup"]).toMatchObject({ structuredContent: { id: "confirmed-first" } }); expect(final.readProgress!.attempts["each/1/lookup"]!.status).toBe("CANCELLED");
+  expect((await s.run({ input: { rows: [] } })).statusCode).toBe(422); expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
 
 test("collection HTTP simulation has separate iteration evidence and performs no live or persisted work", async () => {
   const s = await setup({ provider: true }), source = collectionYAML(); await s.seed(source, false); await s.app.ready();

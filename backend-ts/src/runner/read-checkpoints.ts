@@ -257,16 +257,18 @@ export async function reconcileInterruptedExecutions(repository: Repository, rea
       item.completedAt = timestamp; item.durationMs = Math.max(0, Date.parse(timestamp) - Date.parse(item.startedAt));
       if (progress) {
         progress.epoch += 1; progress.recoveryReason = reason;
+        if (item.iterationProgress) { item.iterationProgress.interruptedAt = timestamp; item.iterationProgress.recoveryReason = reason; }
         for (const attempt of Object.values(progress.attempts)) if (attempt.status === "DISPATCH_INTENT" || attempt.status === "PREPARING") {
           const uncertain = attempt.status === "DISPATCH_INTENT";
           attempt.status = uncertain ? "UNKNOWN" : "FAILED"; attempt.completedAt = timestamp;
           const entry = state.timelines[item.id]?.find((entry) => entry.attemptId === attempt.id);
           if (entry) { entry.status = uncertain ? "UNKNOWN" : "FAILED"; entry.completedAt = timestamp; entry.outcome = uncertain ? "UNKNOWN" : "NOT_DISPATCHED"; entry.durationMs = Math.max(0, Date.parse(timestamp) - Date.parse(attempt.startedAt)); }
-          appendExecutionEvent(state, item, uncertain ? "node.outcome_unknown" : "node.interrupted", { outcome: uncertain ? "UNKNOWN" : "NOT_DISPATCHED", reason }, attempt.nodeId, attempt.id);
+          appendExecutionEvent(state, item, uncertain ? "node.outcome_unknown" : "node.interrupted", { outcome: uncertain ? "UNKNOWN" : "NOT_DISPATCHED", reason, ...(attempt.invocationId ? { invocationId: attempt.invocationId, iterations: attempt.iterations ?? [] } : {}) }, attempt.nodeId, attempt.id);
         }
         const unknown = Object.values(progress.attempts).find((attempt) => attempt.status === "UNKNOWN");
         const stopped = Object.values(progress.attempts).findLast((attempt) => attempt.status === "FAILED");
-        item.failure = { failureCategory: unknown ? "READ_OUTCOME_UNKNOWN" : "READ_INTERRUPTED", failedStepId: unknown?.nodeId ?? stopped?.nodeId ?? "checkpoint", reason };
+        const interrupted = unknown ?? stopped;
+        item.failure = { failureCategory: unknown ? "READ_OUTCOME_UNKNOWN" : "READ_INTERRUPTED", failedStepId: interrupted?.nodeId ?? "checkpoint", ...(interrupted?.invocationId ? { failedInvocationId: interrupted.invocationId } : {}), reason };
         appendExecutionEvent(state, item, "run.recovery_required", { status: item.status, reason, nextStepIndex: progress.nextStepIndex });
       } else item.failure = { failureCategory: "LEGACY_OUTCOME_UNKNOWN", failedStepId: "unknown", reason };
       appendRunAudit(state, item, "execution.recovery_required", true);

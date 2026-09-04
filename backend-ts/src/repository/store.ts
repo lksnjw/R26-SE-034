@@ -46,12 +46,14 @@ export type Execution = {
   approvals?: Array<{ stepId: string; approvedBy: { id: string; name: string }; approvedAt: string; note?: string }>;
   chatSessionId?: string;
   traceId?: string;
-  workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1" | "conditional-read-v1" | "structured-read-v1"; compilation?: ReadCompilationReceipt };
+  workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1" | "conditional-read-v1" | "structured-read-v1" | "collection-read-v1"; compilation?: ReadCompilationReceipt };
   valueOutputs?: Record<string, { value: unknown }>;
   readProgress?: ReadRunProgress;
+  iterationProgress?: import("../runner/read-iteration-checkpoints.js").ReadIterationLedger;
 };
 
 export type ReadRunAttempt = { id: string; nodeId: string; stepIndex: number; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN" | "CANCELLED" | "SKIPPED";
+  invocationId?: string; iterations?: import("../workflows/read-interpreter.js").ReadVisit["iterations"];
   startedAt: string; dispatchIntentAt?: string; completedAt?: string };
 export type ReadRunProgress = { profile: "read-progress-v1"; epoch: number; nextStepIndex: number; lastSequence: number;
   persistence: "durable" | "memory-only"; attempts: Record<string, ReadRunAttempt>;
