@@ -273,3 +273,62 @@ test("a mutated public source property cannot combine with a changed snapshot to
   await s.repository.mutate(state => { state.executions.run!.workflowSnapshot!.yaml = changed; });
   await expect(w.advance()).rejects.toThrow(); expect((await s.get()).readProgress!.attempts).toEqual({});
 });
+
+test("selected evidence is a private read-only reconstruction, not a dispatch grant or pending-point cache hit", async () => {
+  const s = await setup(), w = s.worker(); await w.advance(); await perform(w, "A"); await w.advance(); const point = await w.advance();
+  const before = await s.repository.snapshot(), spy = vi.spyOn(interpreter, "interpretReadPlan");
+  try {
+    const evidence = await w.selectedEvidence(point!.visit); expect(spy).toHaveBeenCalledTimes(1);
+    expect(evidence).toMatchObject({ profile: "read-selected-evidence/v1", executionId: "run", epoch: 1, sourceHash: s.plan.sourceHash, semanticHash: s.plan.semanticHash, actorId: "actor", admittedRole: role, nodeId: "read", sourceIndex: 0, args: { id: "b" }, prior: [] });
+    expect(JSON.stringify(evidence)).not.toContain(key); expect(JSON.stringify(evidence)).not.toContain("never-persist-this-input-secret");
+    evidence.args.id = "forged"; expect((await w.selectedEvidence(point!.visit)).args).toEqual({ id: "b" }); expect(await s.repository.snapshot()).toEqual(before);
+  } finally { spy.mockRestore(); }
+});
+
+test("only fully confirmed item/aggregate receipts expose all concrete body reads to the next root action", async () => {
+  const src = source(); src.steps.push({ id: "after", action: "read", parameters: { id: "after" } }); src.metadata.controlFlow.root.nodes.splice(1, 0, action("after"));
+  const s = await setup(src), w = s.worker(); let point: IterationBoundary | null = null;
+  for (let index = 0; index < 20; index++) { point = await w.advance(); if (point?.nodeId === "after") break; if (point?.kind === "action") { await w.dispatchIntent(point.visit, role); await w.completed(point.visit, output(String(point.arguments!.id))); } }
+  expect(point).toMatchObject({ kind: "action", nodeId: "after" }); const before = await s.repository.snapshot();
+  const evidence = await w.selectedEvidence(point!.visit); expect(evidence.prior.map(item => [item.sourceIndex, item.visit.invocationId, item.args])).toEqual([[0, "each/0/read", { id: "a" }], [0, "each/1/read", { id: "b" }]]);
+  expect(evidence.attemptId).toBe((await s.get()).readProgress!.attempts.after!.id); expect(await s.repository.snapshot()).toEqual(before);
+  await s.repository.mutate(state => { delete state.executions.run!.iterationProgress!.receipts["collection:each"]; }); await expect(w.selectedEvidence(point!.visit)).rejects.toThrow();
+});
+
+test.each(["cancel", "disabled", "wrong-visit", "dispatched", "interrupted", "output"])("selected evidence refuses %s even after the pending proof is warmed", async damage => {
+  const s = await setup(), w = s.worker(); await w.advance(); await perform(w, "A"); await w.advance(); const point = await w.advance();
+  if (damage === "dispatched") await w.dispatchIntent(point!.visit, role);
+  if (damage === "interrupted") await reconcileInterruptedExecutions(s.repository);
+  if (["cancel", "disabled", "output"].includes(damage)) await s.repository.mutate(state => {
+    if (damage === "cancel") state.executions.run!.readProgress!.cancellation = { requestedAt: new Date().toISOString(), requestedBy: { id: "actor", name: "Actor" } };
+    if (damage === "disabled") state.users.actor!.status = "Inactive";
+    if (damage === "output") state.executions.run!.stepOutputs!["each/0/read"] = output("forged");
+  });
+  const target = damage === "wrong-visit" ? { invocationId: "each/0/read", iterations: [{ loopId: "each", index: 0 }] } : point!.visit;
+  await expect(w.selectedEvidence(target)).rejects.toThrow();
+});
+
+test("uncertain storage acknowledgement fences selected evidence even when the local pending snapshot still looks valid", async () => {
+  const persist = new Persistence(), s = await setup(source(), { rows: ["a"] }, persist), w = s.worker(); await w.advance(); const point = await w.advance();
+  persist.fail = true; await expect(s.repository.mutate(state => { state.workflows.flow!.name = "Unacknowledged update"; })).rejects.toThrow();
+  await expect(w.selectedEvidence(point!.visit)).rejects.toThrow(); expect((await s.get()).readProgress!.attempts[point!.visit.invocationId]!.status).toBe("PREPARING");
+});
+
+test("durable nested reconstruction exposes completed child reads only to their enclosing item until the outer aggregate confirms", async () => {
+  const src = source(), outer = src.metadata.controlFlow.root.nodes[0]; outer.items.schema = { type: "array", items: array };
+  outer.body = seq({ kind: "foreach", id: "inner", items: { schema: array, value: ref("each", ["item"]) }, maxItems: 3, body: seq(action("read")), collect: outer.collect }, action("inside"));
+  outer.collect = { schema: array, value: ref("inner", ["value"]) }; src.steps[0].parameters.id = "{{inner.item}}";
+  src.steps.push({ id: "inside", action: "read", parameters: { id: "{{input.summary}}" } }, { id: "after", action: "read", parameters: { id: "after" } }); src.metadata.controlFlow.root.nodes.splice(1, 0, action("after")); src.metadata.controlFlow.root.nodes[2].output.schema = { type: "array", items: array };
+  const s = await setup(src, { rows: [["a"], ["b"]], summary: "summary" }), w = s.worker(), selected: Record<string, string[]> = {};
+  for (let index = 0; index < 50; index++) { const point = await w.advance(); if (!point) break; if (point.kind === "action") { selected[point.visit.invocationId] = (await w.selectedEvidence(point.visit)).prior.map(item => item.visit.invocationId); await w.dispatchIntent(point.visit, role); await w.completed(point.visit, output(String(point.arguments!.id).toUpperCase())); } }
+  expect(selected).toEqual({ "each/0/inner/0/read": [], "each/0/inside": ["each/0/inner/0/read"], "each/1/inner/0/read": [], "each/1/inside": ["each/1/inner/0/read"], after: ["each/0/inner/0/read", "each/0/inside", "each/1/inner/0/read", "each/1/inside"] }); expect((await w.finish()).finalOutput).toEqual([["A"], ["B"]]);
+});
+
+test("durable branch reconstruction omits skipped prerequisites and never borrows the preceding item's reads", async () => {
+  const src = source(), loop = src.metadata.controlFlow.root.nodes[0]; loop.items.schema = { type: "array", items: { type: "object", properties: { id: { type: "string" }, enabled: { type: "boolean" } }, required: ["id", "enabled"], additionalProperties: false } };
+  loop.body = seq({ kind: "if", id: "gate", predicate: ref("each", ["item", "enabled"]), then: seq(action("read")), else: seq(), merge: { schema: { type: "string" }, then: ref("read", ["structuredContent", "id"]), else: ref("each", ["item", "id"]) } }, action("dependent")); loop.collect.value = ref("dependent", ["structuredContent", "id"]);
+  src.steps[0].parameters.id = "{{each.item.id}}"; src.steps.push({ id: "dependent", action: "read", parameters: { id: "{{gate.value}}" } }, { id: "after", action: "read", parameters: { id: "after" } }); src.metadata.controlFlow.root.nodes.splice(1, 0, action("after"));
+  const s = await setup(src, { rows: [{ id: "a", enabled: true }, { id: "b", enabled: false }] }), w = s.worker(), selected: Record<string, string[]> = {};
+  for (let index = 0; index < 50; index++) { const point = await w.advance(); if (!point) break; if (point.kind === "action") { selected[point.visit.invocationId] = (await w.selectedEvidence(point.visit)).prior.map(item => item.visit.invocationId); await w.dispatchIntent(point.visit, role); await w.completed(point.visit, output(String(point.arguments!.id).toUpperCase())); } }
+  expect(selected).toEqual({ "each/0/read": [], "each/0/dependent": ["each/0/read"], "each/1/dependent": [], after: ["each/0/read", "each/0/dependent", "each/1/dependent"] }); expect((await w.finish()).finalOutput).toEqual(["A", "B"]);
+});

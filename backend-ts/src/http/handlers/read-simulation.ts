@@ -1,5 +1,4 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { stringify } from "yaml";
 import type { Workflow } from "../../models/schemas.js";
 import { fail, ok } from "../../models/schemas.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../../parser/workflow.js";
@@ -7,6 +6,7 @@ import { HandlerFailure, type CurrentUser, type HandlerServices } from "./common
 import { assertActorAuthority } from "./model-selection.js";
 import { requireWorkflowBase } from "../../workflows/commands.js";
 import { boundFixtureData, parseReadFixtures, simulateReadWorkflow } from "../../workflows/read-simulation.js";
+import { selectedReadEvidenceYAML } from "../../workflows/read-completion-evidence.js";
 
 /** Bound fixture-bearing bodies before the recursively defined request schema.
  * Legacy non-fixture requests retain their existing validation contract. */
@@ -34,9 +34,8 @@ export async function handleReadFixtureSimulation(request: FastifyRequest, reply
     if (!validation.passed) result = { outcome: "PLAN_BLOCKED", issues: ["Original local verifier rejected this draft"], trace: [], stepOutputs: {}, valueOutputs: {}, usedFixtureIds: [], unusedFixtureIds: Object.keys(fixtures.outputs) };
     else {
       const blueprint = parseWorkflowYAMLStrict(workflow.yaml);
-      result = await simulateReadWorkflow(workflow.yaml, input, fixtures, tools, user.role, (nodeId, args, prior) => {
-        const included = new Map([...prior.map(item => [item.nodeId, item.args] as const), [nodeId, args] as const]);
-        const prefix = stringify({ ...blueprint, steps: blueprint.steps.filter(step => included.has(step.id)).map(step => ({ ...step, parameters: included.get(step.id)! })) });
+      result = await simulateReadWorkflow(workflow.yaml, input, fixtures, tools, user.role, (nodeId, args, prior, visit) => {
+        const prefix = selectedReadEvidenceYAML(blueprint, nodeId, args, visit, prior);
         return services.validator.validatePlan("ReadFixtureSelectedPath", prefix, user.role).passed;
       });
     }

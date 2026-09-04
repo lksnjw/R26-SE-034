@@ -8,6 +8,7 @@ import { validateToolInput } from "../tools/tool-input-schema.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { structuralNodes, loopNodes } from "./read-control-flow.js";
+import { ReadCompletionEvidence, ReadEvidenceLimit, type CompletedRead } from "./read-completion-evidence.js";
 
 const safeID = (value: string) => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value) && !["input", "__proto__", "constructor", "prototype"].includes(value);
 const safeInvocation = (value: string) => {
@@ -42,14 +43,14 @@ class SimulationStop extends Error { constructor(readonly code: string) { super(
 /** No live services are accepted. Fixture outputs are supplied test data,
  * never ERP evidence, capability grants or persisted execution checkpoints. */
 export async function simulateReadWorkflow(yaml: string, input: Record<string, unknown>, fixtures: ReadFixtures, tools: readonly ToolDefinition[], role: string,
-  validateSelected?: (nodeId: string, args: Record<string, unknown>, prior: readonly { nodeId: string; args: Record<string, unknown> }[]) => boolean) {
+  validateSelected?: (nodeId: string, args: Record<string, unknown>, prior: readonly CompletedRead[], visit: ReadVisit) => boolean) {
   const trace: SimulationEntry[] = [], stepOutputs: Record<string, unknown> = {}, valueOutputs: Record<string, { value: unknown }> = {}, used = new Set<string>();
-  const completed: Array<{ nodeId: string; args: Record<string, unknown>; visit: ReadVisit }> = [];
   boundFixtureData({ input, outputs: fixtures.outputs });
   let plan: CompiledReadPlan;
   try { plan = compileReadWorkflow(yaml, tools, role); }
   catch { return { outcome: "PLAN_BLOCKED", issues: ["Workflow does not meet the supported compiled read profile"], trace, stepOutputs, valueOutputs, usedFixtureIds: [], unusedFixtureIds: Object.keys(fixtures.outputs) }; }
   const loops = plan.ir.flow ? loopNodes(plan.ir.flow) : [];
+  const completed = new ReadCompletionEvidence(plan);
   if (loops.length && fixtures.profile !== "read-fixtures/v2") throw new Error("Collection fixtures require explicit per-iteration read-fixtures/v2 identities");
   const owners = new Map<string, string[]>();
   const visitOwners = (block: NonNullable<typeof plan.ir.flow>, outer: string[]) => { for (const node of block.nodes) {
@@ -85,15 +86,16 @@ export async function simulateReadWorkflow(yaml: string, input: Record<string, u
         const tool = tools.find(tool => tool.tool_id === node.capability.toolId)!;
         if (validateToolInput(tool.input_schema, args).length) return fail(entry, "ARGUMENTS_INVALID");
         entry.arguments = withoutSecretFields(args);
-        const prior = completed.filter(item => item.visit.iterations.length <= visit.iterations.length && item.visit.iterations.every((frame, index) => frame.loopId === visit.iterations[index]?.loopId && frame.index === visit.iterations[index]?.index));
-        if (validateSelected && !validateSelected(node.id, args, prior)) return fail(entry, "SELECTED_PATH_RULE_BLOCKED");
+        const prior = completed.prior(node.id, visit);
+        if (validateSelected && !validateSelected(node.id, args, prior, visit)) return fail(entry, "SELECTED_PATH_RULE_BLOCKED");
         const fixtureID = key(visit, node.id);
         if (!Object.hasOwn(fixtures.outputs, fixtureID)) return fail(entry, "MISSING_FIXTURE");
         let output: Record<string, unknown>;
         try { output = safeMcpResult(fixtures.outputs[fixtureID], tool.bridge_contract?.output_schema); } catch { return fail(entry, "FIXTURE_OUTPUT_INVALID"); }
         used.add(fixtureID);
         if (output.isError === true) return fail({ ...entry, output }, "FIXTURE_TOOL_ERROR");
-        append({ ...entry, output }); stepOutputs[fixtureID] = output; finalOutput = output; hasFinal = true; completed.push({ nodeId: node.id, args, visit });
+        completed.actionCompleted(node.id, args, visit);
+        append({ ...entry, output }); stepOutputs[fixtureID] = output; finalOutput = output; hasFinal = true;
         return output;
       },
       condition: async (sourceIndex, id, predicate, visit) => {
@@ -107,6 +109,7 @@ export async function simulateReadWorkflow(yaml: string, input: Record<string, u
         failedNodeId = id;
         const entry: SimulationEntry = { nodeId: id, kind: "collection", sourceIndex, outcome: "SIMULATED_COLLECTION_STARTED", ...location(visit), ...(count === undefined ? {} : { count }) };
         if (!valid) return fail(entry, count !== undefined && count > loops.find(loop => loop.id === id)!.maxItems ? "COLLECTION_LIMIT_EXCEEDED" : "COLLECTION_INPUT_INVALID");
+        completed.collectionStarted(id, count!, visit);
         append(entry);
       },
       value: async (sourceIndex, id, kind, value, valid, visit) => {
@@ -116,6 +119,8 @@ export async function simulateReadWorkflow(yaml: string, input: Record<string, u
         const safe = withoutSecretFields({ value }) as { value: unknown };
         const schema = kind === "collection" ? { type: "array", items: valueSchemas.get(id) } : valueSchemas.get(id);
         if (!schema || validateToolInput(schema, safe.value).length) return fail(entry, "VALUE_INVALID");
+        if (kind === "collection-item") completed.itemCompleted(id, visit);
+        if (kind === "collection") completed.collectionCompleted(id, visit);
         append({ ...entry, output: safe.value }); valueOutputs[key(visit, id)] = safe;
         if (kind === "return") { finalOutput = safe.value; hasFinal = true; }
         return safe;
@@ -123,6 +128,6 @@ export async function simulateReadWorkflow(yaml: string, input: Record<string, u
     });
     return { outcome: "SIMULATED_COMPLETE", trace, stepOutputs, valueOutputs, ...(hasFinal ? { finalOutput } : {}), usedFixtureIds: [...used], unusedFixtureIds: Object.keys(fixtures.outputs).filter(id => !used.has(id)), fixtureHash, sourceHash: plan.sourceHash, semanticHash: plan.semanticHash };
   } catch (error) {
-    return { outcome: "SIMULATED_STOPPED", reason: error instanceof SimulationStop || error instanceof ReadCollectionFailure ? error.code : "SIMULATION_EVALUATION_FAILED", ...(failedNodeId ? { failedNodeId } : {}), trace, stepOutputs, valueOutputs, ...(hasFinal ? { finalOutput } : {}), usedFixtureIds: [...used], unusedFixtureIds: Object.keys(fixtures.outputs).filter(id => !used.has(id)), fixtureHash, sourceHash: plan.sourceHash, semanticHash: plan.semanticHash };
+    return { outcome: "SIMULATED_STOPPED", reason: error instanceof SimulationStop || error instanceof ReadCollectionFailure ? error.code : error instanceof ReadEvidenceLimit ? "SIMULATION_EVIDENCE_LIMIT" : "SIMULATION_EVALUATION_FAILED", ...(failedNodeId ? { failedNodeId } : {}), trace, stepOutputs, valueOutputs, ...(hasFinal ? { finalOutput } : {}), usedFixtureIds: [...used], unusedFixtureIds: Object.keys(fixtures.outputs).filter(id => !used.has(id)), fixtureHash, sourceHash: plan.sourceHash, semanticHash: plan.semanticHash };
   }
 }

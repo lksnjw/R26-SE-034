@@ -4,6 +4,7 @@ import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { canonicalJSONByteLength, exactJSONCacheKey, JSONProofCache } from "../core/json-proof-cache.js";
 import { workflowContentHash } from "../parser/workflow.js";
 import { interpretReadPlan, type ReadVisit } from "../workflows/read-interpreter.js";
+import { ReadCompletionEvidence, type CompletedRead } from "../workflows/read-completion-evidence.js";
 import { assertCompiledReadMatches, compileReadWorkflow, resolveReadBinding, type CompiledReadPlan } from "../workflows/compiled-read.js";
 import { loopNodes, structuralNodes, type ReadSkipReason } from "../workflows/read-control-flow.js";
 import { ReadValueBudget } from "../workflows/read-value-budget.js";
@@ -142,8 +143,11 @@ export class ReadIterationCheckpoints {
     this.#pendingProof = key !== undefined && Buffer.byteLength(key) + canonicalJSONByteLength(point) <= 2_000_000
       ? { key, point: structuredClone(point) } : undefined;
   }
-  private async next(item: BoundExecution, journal: RepositoryState): Promise<IterationBoundary | null> {
-    if (this.#pendingProof && exactJSONCacheKey(this.pendingWitness(item, journal)) === this.#pendingProof.key) return structuredClone(this.#pendingProof.point);
+  private async next(item: BoundExecution, journal: RepositoryState, selected?: { prior: readonly CompletedRead[] }): Promise<IterationBoundary | null> {
+    // A selected-prefix request reconstructs completion scopes from sealed
+    // receipts. The pending-point memo does not attest to prerequisite data.
+    if (!selected && this.#pendingProof && exactJSONCacheKey(this.pendingWitness(item, journal)) === this.#pendingProof.key) return structuredClone(this.#pendingProof.point);
+    const completion = selected ? new ReadCompletionEvidence(this.#plan) : undefined;
     const used = new Set<string>(), state: Record<string, unknown> = { input: structuredClone(this.#input) };
     // Index this fresh transaction's timeline, not a cached authoritative
     // snapshot. Multiple witnesses for one boundary are ambiguous evidence.
@@ -176,6 +180,7 @@ export class ReadIterationCheckpoints {
           try { args = resolveReadBinding(node.inputs, state) as Record<string, unknown>; } catch { /* Missing is not a default argument. */ }
           const tool = this.#tools.find(value => value.tool_id === node.capability.toolId)!;
           const point: IterationBoundary = { kind: "action", nodeId: node.id, sourceIndex, visit, valid: !!args && !validateToolInput(tool.input_schema, args).length, ...(args ? { arguments: args, dataBinding: this.outputBinding(args) } : {}) };
+          if (selected) selected.prior = completion!.prior(node.id, visit);
           const receipt = receiptFor(point);
           if (!receipt) return pending(point);
           if (receipt.dataBinding !== point.dataBinding) throw new Error("Saved iteration arguments no longer match their exact binding");
@@ -187,6 +192,7 @@ export class ReadIterationCheckpoints {
           const entry = timeline(receipt);
           if (!entry || entry.status !== "DONE" || this.outputBinding(entry.output) !== receipt.outputBinding) throw new Error("Iteration answer lacks a matching confirmed timeline receipt");
           if (output.isError === true) throw new Error("A tool error cannot become a completed collection item");
+          completion?.actionCompleted(node.id, args!, visit);
           observedFinal = output; hasFinal = true;
           return output;
         },
@@ -210,6 +216,7 @@ export class ReadIterationCheckpoints {
           const point: IterationBoundary = { kind: "collection", nodeId, sourceIndex, visit, phase: "start", valid, ...(count === undefined ? {} : { count }), ...(valid ? { dataBinding: this.outputBinding(items) } : {}) };
           const receipt = receiptFor(point); if (!receipt) return pending(point);
           if (!valid || !["STARTED", "DONE"].includes(receipt.status) || receipt.count !== count || receipt.dataBinding !== point.dataBinding) throw new Error("Collection input identity or count differs from the committed start");
+          completion?.collectionStarted(nodeId, count!, visit);
         },
         value: async (sourceIndex, nodeId, kind, value, valid, visit) => {
           const safe = valid ? withoutSecretFields({ value }) as { value: unknown } : undefined;
@@ -221,6 +228,8 @@ export class ReadIterationCheckpoints {
           if (!receipt || kind === "collection" && receipt.status === "STARTED") return pending(point);
           if (receipt.status !== "DONE" || !valid || !same(this.output(item, receipt), safe)) throw new Error("Typed receipt differs from its computed scoped value");
           const entry = timeline(receipt); if (!entry || entry.status !== "DONE" || !same(entry.output, safe)) throw new Error("Typed value lacks its matching saved timeline");
+          if (kind === "collection-item") completion?.itemCompleted(nodeId, visit);
+          if (kind === "collection") completion?.collectionCompleted(nodeId, visit);
           if (kind === "return") { observedFinal = safe!.value; hasFinal = true; }
           return safe;
         },
@@ -281,10 +290,23 @@ export class ReadIterationCheckpoints {
       return structuredClone(point);
     });
   }
-  private async actionPoint(item: BoundExecution, journal: RepositoryState, visit: ReadVisit, status: "PREPARING" | "DISPATCH_INTENT"): Promise<{ point: IterationBoundary; receipt: IterationReceipt; attempt: ReadRunAttempt }> {
-    const point = await this.next(item, journal), receipt = item.iterationProgress.receipts[receiptKey("action", visit.invocationId)], attempt = item.readProgress.attempts[visit.invocationId];
+  private async actionPoint(item: BoundExecution, journal: RepositoryState, visit: ReadVisit, status: "PREPARING" | "DISPATCH_INTENT", selected?: { prior: readonly CompletedRead[] }): Promise<{ point: IterationBoundary; receipt: IterationReceipt; attempt: ReadRunAttempt }> {
+    const point = await this.next(item, journal, selected), receipt = item.iterationProgress.receipts[receiptKey("action", visit.invocationId)], attempt = item.readProgress.attempts[visit.invocationId];
     if (!point || point.kind !== "action" || !same(point.visit, visit) || !point.valid || !receipt || receipt.status !== status || !attempt || attempt.status !== status || receipt.attemptId !== attempt.id || attempt.nodeId !== point.nodeId || !same(attempt.iterations, visit.iterations)) throw new Error("Invocation is not the exact current action boundary");
     return { point, receipt, attempt };
+  }
+  /** Private server evidence, not an HTTP payload, token or dispatch grant.
+   * Reconstruct the exact PREPARING action and its visible confirmed reads
+   * under authoritative storage/current controller checks, without a write. */
+  async selectedEvidence(visit: ReadVisit) {
+    try { return await this.repository.readAuthoritative(async state => {
+      const item = this.current(state); this.assertAuthority(state, item);
+      const selected: { prior: readonly CompletedRead[] } = { prior: [] };
+      const { point, attempt } = await this.actionPoint(item, state, visit, "PREPARING", selected); this.assertAuthority(state, item);
+      return { profile: "read-selected-evidence/v1" as const, executionId: item.id, epoch: this.epoch, inputBinding: item.iterationProgress.inputBinding,
+        sourceHash: this.#plan.sourceHash, semanticHash: this.#plan.semanticHash, actorId: item.startedBy.id, admittedRole: item.iterationProgress.admittedRole,
+        nodeId: point.nodeId, sourceIndex: point.sourceIndex, attemptId: attempt.id, visit: structuredClone(point.visit), args: structuredClone(point.arguments!), prior: selected.prior };
+    }); } catch (cause) { if (cause instanceof ReadRunCancelled) throw cause; throw new ReadCheckpointFailure(cause); }
   }
   async dispatchIntent(visit: ReadVisit, verifiedRole: string): Promise<void> {
     await this.commit(async (state, item) => {

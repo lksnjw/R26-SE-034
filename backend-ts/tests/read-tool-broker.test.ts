@@ -10,6 +10,8 @@ import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js"
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import type { ToolDefinition } from "../src/registry/schemas.js";
+import { stringify } from "yaml";
+import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { admissionAuthorizer, observeCapabilities, reviewCapability, capabilityContractHash } from "../src/registry/capability-admission.js";
 
 async function setup(options: { write?: boolean; schema?: Record<string, unknown>; roles?: string[]; result?: unknown; contract?: ToolDefinition["bridge_contract"]; metadataComplete?: boolean; drift?: boolean; remoteFailure?: boolean } = {}) {
@@ -114,5 +116,14 @@ test("modern direct policy path rejects business tools and absent policy contrac
   const s = await setup({ contract, metadataComplete: true });
   for (const name of ["finance.read", "check_policy", "policy-gate-evaluate", "policy-gate-assist"])
     await expect(s.services.erpbridgeSession.callToolDirect(name, {})).rejects.toThrow();
+  expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["loop", "v3-without-loop", "malformed"])("%s cannot enter SDK dispatch through legacy flat completed-node evidence", async scenario => {
+  const s = await setup(), action = { kind: "action", nodeId: "read" }, root = { kind: "sequence", nodes: scenario === "loop" ? [{ kind: "foreach", id: "each", items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } }, maxItems: 3, body: { kind: "sequence", nodes: [action] }, collect: { schema: { type: "string" }, value: { kind: "literal", value: "done" } } }] : [action] };
+  const yaml = stringify({ name: "Collection", description: "A fake DONE declaration is not iteration proof", trigger: { type: "manual" }, steps: [{ id: "read", action: "finance.read", parameters: { id: "x" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v3", root: scenario === "malformed" ? "wrong" : root } } });
+  const gate = await s.services.validator.validateAndIssueToken("Fixture", yaml, "Workflow Builder"); expect(gate.token).not.toBeNull();
+  await s.services.repository.mutate(state => { state.executions.run = { id: "run", status: "RUNNING", workflowSnapshot: { yaml }, readProgress: { ...newReadProgress(s.services.repository), attempts: { read: { id: "fake", nodeId: "read", stepIndex: 0, status: "DONE", startedAt: new Date().toISOString() } } } } as any; });
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "x" }, { executionId: "run", plan: { yaml, stepIndex: 0, token: gate.token! } })).rejects.toThrow();
   expect(s.callTool).not.toHaveBeenCalled();
 });

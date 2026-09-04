@@ -11,6 +11,7 @@ import { attachDispatchAuditTrace } from "../trace/audit-trace.js";
 import { hasReservedBridgeRole } from "./erpbridge-contract.js";
 import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
+import { parseReadControlFlow } from "../workflows/read-control-flow.js";
 
 export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined;
   beforeDispatch?: ((verifiedRole: string) => Promise<void>) | undefined;
@@ -51,6 +52,8 @@ export async function dispatchReadTool(
   const blueprint = parseWorkflowYAMLStrict(yaml), authored = blueprint.steps[index];
   if (authored === undefined || ![tool.name, tool.mcp_tool_name].includes(authored.action ?? "")) throw new Error("Tool dispatch denied: authored action does not match requested tool");
   if (blueprint.metadata?.controlFlow !== undefined) {
+    if (parseReadControlFlow(blueprint.metadata.controlFlow).schemaVersion === "read-control-flow/v3")
+      throw new Error("Collection reads require governed iteration dispatch; flat completed-node evidence is not accepted");
     if (!context.executionId) throw new Error("Conditional reads require a checkpointed execution identity");
     const completed = await services.repository.readAuthoritative(state => {
       const execution = state.executions[context.executionId!];

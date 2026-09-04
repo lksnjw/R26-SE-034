@@ -123,6 +123,41 @@ test("collection HTTP simulation has separate iteration evidence and performs no
   expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled(); expect(mutate).not.toHaveBeenCalled(); expect(await s.repository.snapshot()).toEqual(before);
 });
 
+test.each(["complete", "empty", "all-skipped"])("HTTP selected-path verification uses actual %s collection evidence, not declarations", async scenario => {
+  const s = await setup({ provider: true }), src = parseWorkflowYAMLStrict(collectionYAML()) as any, loop = src.metadata.controlFlow.root.nodes[0];
+  src.steps.push({ id: "details", action: "invoice-read", parameters: { id: "summary" } }); src.metadata.controlFlow.root.nodes.splice(1, 0, { kind: "action", nodeId: "details" });
+  if (scenario === "all-skipped") { const body = structuredClone(loop.body); loop.body.nodes = [{ kind: "if", id: "gate", predicate: { kind: "literal", value: false }, then: body, else: { kind: "sequence", nodes: [] } }]; loop.collect.value = { kind: "literal", value: "skipped" }; }
+  const source = stringify(src); await s.seed(source, false); await s.app.ready();
+  const rule = ruleSchema.parse({ rule_id: "COLLECTION-PREREQUISITE", rule_type: "process_order", enabled: true, enforcement_action: "block", condition: { value: ["finance.read", "invoice-read"] } });
+  vi.spyOn(s.services.registries, "enabledRules").mockReturnValue([rule]);
+  const original = s.validator.validatePlan.bind(s.validator), projections: ReturnType<typeof parseWorkflowYAMLStrict>[] = [];
+  vi.spyOn(s.validator, "validatePlan").mockImplementation((id, yaml, role) => { if (id === "ReadFixtureSelectedPath") projections.push(parseWorkflowYAMLStrict(yaml)); return original(id, yaml, role); });
+  const before = await s.repository.snapshot(), mutate = vi.spyOn(s.repository, "mutate"), outputs = { "each/0/lookup": { content: [], structuredContent: { id: "A" } }, "each/1/lookup": { content: [], structuredContent: { id: "B" } }, details: { content: [], structuredContent: { id: "summary" } } };
+  const response = await s.run({ dryRun: true, input: { rows: scenario === "empty" ? [] : ["first", "second"] }, simulation: { profile: "read-fixtures/v2", baseVersion: 1, baseHash: workflowContentHash(source), outputs } });
+  expect(response.statusCode, response.body).toBe(200); expect(response.json().data.validation.passed).toBe(true);
+  if (scenario === "complete") {
+    expect(response.json().data).toMatchObject({ outcome: "SIMULATED_COMPLETE", finalOutput: ["A", "B"] });
+    expect(projections.at(-1)!.steps.map(step => [step.id, step.parameters])).toEqual([["each/0/lookup", { id: "first" }], ["each/1/lookup", { id: "second" }], ["details", { id: "summary" }]]);
+  } else {
+    expect(response.json().data).toMatchObject({ outcome: "SIMULATED_STOPPED", reason: "SELECTED_PATH_RULE_BLOCKED", failedNodeId: "details", usedFixtureIds: [] });
+    expect(projections.at(-1)!.steps.map(step => step.id)).toEqual(["details"]);
+  }
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled(); expect(mutate).not.toHaveBeenCalled(); expect(await s.repository.snapshot()).toEqual(before);
+});
+
+test("HTTP frozen-verifier supplement never borrows a prerequisite from the previous collection item", async () => {
+  const s = await setup({ provider: true }), src = parseWorkflowYAMLStrict(collectionYAML()) as any, loop = src.metadata.controlFlow.root.nodes[0];
+  loop.items.schema.items = { type: "object", properties: { id: { type: "string" }, enabled: { type: "boolean" } }, required: ["id", "enabled"], additionalProperties: false };
+  src.steps[0].parameters.id = "{{each.item.id}}"; src.steps.push({ id: "details", action: "invoice-read", parameters: { id: "{{each.item.id}}" } });
+  const originalBody = structuredClone(loop.body); loop.body.nodes = [{ kind: "if", id: "gate", predicate: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["item", "enabled"] }, then: originalBody, else: { kind: "sequence", nodes: [] } }, { kind: "action", nodeId: "details" }]; loop.collect.value = { kind: "literal", value: "selected" };
+  const source = stringify(src); await s.seed(source, false); await s.app.ready();
+  const rule = ruleSchema.parse({ rule_id: "ITEM-PREREQUISITE", rule_type: "process_order", enabled: true, enforcement_action: "block", condition: { value: ["finance.read", "invoice-read"] } }); vi.spyOn(s.services.registries, "enabledRules").mockReturnValue([rule]);
+  const before = await s.repository.snapshot(), response = await s.run({ dryRun: true, input: { rows: [{ id: "a", enabled: true }, { id: "b", enabled: false }] }, simulation: { profile: "read-fixtures/v2", baseVersion: 1, baseHash: workflowContentHash(source), outputs: { "each/0/lookup": { content: [], structuredContent: { id: "A" } }, "each/0/details": { content: [], structuredContent: { id: "confirmed" } }, "each/1/details": { content: [], structuredContent: { id: "must-not-use" } } } } });
+  expect(response.statusCode, response.body).toBe(200); expect(response.json().data).toMatchObject({ outcome: "SIMULATED_STOPPED", reason: "SELECTED_PATH_RULE_BLOCKED", usedFixtureIds: ["each/0/lookup", "each/0/details"], unusedFixtureIds: ["each/1/details"] });
+  expect(response.json().data.trace.at(-1)).toMatchObject({ invocationId: "each/1/details", arguments: { id: "b" } }); expect(await s.repository.snapshot()).toEqual(before);
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
 test.each(["legacy-fixtures", "unscoped", "wrong-owner", "stale"])("collection HTTP rejects %s fixture request before side effects", async kind => {
   const s = await setup({ provider: true }), source = collectionYAML(); await s.seed(source, false);
   const simulation: any = { profile: "read-fixtures/v2", baseVersion: 1, baseHash: workflowContentHash(source), outputs: {} };
