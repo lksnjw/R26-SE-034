@@ -70,15 +70,15 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action), tool = matches.length === 1 ? matches[0] : undefined;
     const granted = !!tool && !!tool.tool_id.trim() && !!tool.mcp_tool_name.trim() && tool.input_schema.type === "object" && tool.is_read_only && tool.allowed_roles.includes(role) && effectiveStepKind(step) === "tool";
     const schema = granted ? project(tool.input_schema) : undefined;
+    const outputSchema = granted && tool?.bridge_contract?.output_schema ? project(tool.bridge_contract.output_schema) : undefined;
     const validScope = prefix && safeID(step.id) && !seen.has(step.id) && Object.keys(step).every(key => ["id", "kind", "action", "parameters", "description"].includes(key));
     const result = { nodeId: step.id, sourceAction: step.action ?? "", state: schema ? "LOCAL_CONTRACT" : "UNAVAILABLE",
-      ...(schema && tool ? { inputSchema: schema, contractHash: capabilityContractHash(tool), actions: [tool.name, tool.mcp_tool_name] } : {}),
+      ...(schema && tool ? { inputSchema: schema, ...(outputSchema ? { outputSchema } : {}), contractHash: capabilityContractHash(tool), actions: [tool.name, tool.mcp_tool_name] } : {}),
       dataSources: validScope && (!compiled || scopes) ? upstream.filter(source => !scopes || source.binding.source === "workflowInput" || scopes.get(step.id)?.has(source.binding.nodeId!)).slice(-32).map(source => structuredClone(source)) : [],
       reason: schema ? "Local schema guidance only; live admission and runtime checks are separate" : "No supported role-granted local read schema; existing values are preserved" };
     prefix = validScope && granted && !!schema;
     if (prefix && tool?.bridge_contract?.output_schema) {
-      const output = project(tool.bridge_contract.output_schema);
-      upstream.push(...sources(output, { kind: "ref", source: "nodeOutput", nodeId: step.id, path: ["structuredContent"] }, `Node ${step.id}`));
+      upstream.push(...sources(outputSchema, { kind: "ref", source: "nodeOutput", nodeId: step.id, path: ["structuredContent"] }, `Node ${step.id}`));
     }
     seen.add(step.id);
     return result;

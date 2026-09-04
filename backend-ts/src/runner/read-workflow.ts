@@ -9,8 +9,8 @@ import type { ValidationToken } from "../validator/registry-validator.js";
 import type { RunnerResult } from "./executor.js";
 import { ReadCheckpointFailure, ReadRunCancelled, type ReadExecutionHooks } from "./read-checkpoints.js";
 import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
-import { actionOrder, valueNodes, type ReadSequence } from "../workflows/read-control-flow.js";
-import type { ReadBinding } from "../workflows/compiled-read.js";
+import { valueNodes } from "../workflows/read-control-flow.js";
+import { interpretReadPlan } from "../workflows/read-interpreter.js";
 
 /** Explicit read profiles: sequential actions and structured boolean branches. Unsupported logic
  * is rejected before any dispatch, never reinterpreted by an agent. */
@@ -33,11 +33,7 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
   if (plan.ir.flow && valueNodes(plan.ir.flow).length && (!hooks?.value || !hooks?.terminated)) throw new Error("Typed read values require checkpointed execution");
   if (plan.ir.inputSchema && validateToolInput(plan.ir.inputSchema, input).length) throw new Error("Workflow input does not meet the declared schema");
   const result: RunnerResult = { state: { input: structuredClone(input) }, timeline: [], logs: [], tokens: { input: 0, output: 0, total: 0 } };
-  const definitions = new Map(plan.ir.root.nodes.map((node, index) => [node.id, { node, index }]));
-  let cursor = 0;
-  async function runAction(nodeId: string) {
-    const { node, index } = definitions.get(nodeId)!;
-    if (cursor !== index) throw new Error("Compiled action order changed");
+  async function runAction(node: CompiledReadPlan["ir"]["root"]["nodes"][number], index: number) {
     const step = blueprint.steps[index]!; // Labels only; executable order/inputs come from IR.
     const started = new Date();
     try {
@@ -52,9 +48,8 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
       const log = { timestamp: completed.toISOString(), level: "info" as const, nodeId: step.id, message: "Verified read completed", metadata: { action: step.action!, sideEffect: false } };
       // A result is not exposed to the next node until its checkpoint commits.
       await hooks?.completed(index, entry, log);
-      result.state[step.id] = output;
       result.timeline.push(entry); result.logs.push(log);
-      cursor = index + 1;
+      return output;
     } catch (cause) {
       if (cause instanceof ReadCheckpointFailure || cause instanceof ReadRunCancelled) {
         Object.defineProperty(cause, "runnerResult", { value: result }); throw cause;
@@ -73,58 +68,22 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
       throw error;
     }
   }
-  async function skip(block: ReadSequence, conditionId: string, selected: "then" | "else") {
-    for (const nodeId of actionOrder(block)) {
-      if (context.signal?.aborted) throw new ReadRunCancelled();
-      const { index } = definitions.get(nodeId)!;
-      if (cursor !== index) throw new Error("Compiled branch order changed");
-      const step = blueprint.steps[index]!;
-      if (hooks && !hooks.skipped) throw new Error("Conditional execution requires skip checkpoints");
-      await hooks?.skipped?.(index, nodeId, step.description ?? step.action!, conditionId, selected, actor!.role);
-      cursor = index + 1;
-    }
-  }
-  async function typedValue(id: string, kind: "merge" | "return", binding: ReadBinding, schema: Record<string, unknown>) {
-    let value: unknown, valid = false;
-    try { value = resolveReadBinding(binding, result.state); valid = validateToolInput(schema, value).length === 0; } catch { /* No fabricated default. */ }
-    const receipt = await hooks!.value!(cursor, id, kind, value, valid, actor!.role);
-    if (!valid || !receipt) throw new Error(`Typed ${kind} ${id} failed; no dependent dispatch or implicit default`);
-    return receipt;
-  }
-  async function skipAfterReturn(block: ReadSequence, returnId: string) {
-    for (const nodeId of actionOrder(block)) {
-      if (context.signal?.aborted) throw new ReadRunCancelled();
-      const { index } = definitions.get(nodeId)!;
-      if (cursor !== index) throw new Error("Compiled return order changed");
-      const step = blueprint.steps[index]!;
-      await hooks!.terminated!(index, nodeId, step.description ?? step.action!, returnId, actor!.role);
-      cursor = index + 1;
-    }
-  }
-  async function visit(block: ReadSequence): Promise<string | undefined> {
-    let returned: string | undefined;
-    for (const node of block.nodes) {
-      if (context.signal?.aborted) throw new ReadRunCancelled();
-      if (returned) { await skipAfterReturn({ kind: "sequence", nodes: [node] }, returned); continue; }
-      if (node.kind === "action") { await runAction(node.nodeId); continue; }
-      if (node.kind === "return") { await typedValue(node.id, "return", node.output.value, node.output.schema); returned = node.id; continue; }
+  await interpretReadPlan(plan, result.state, {
+    beforeNode: () => { if (context.signal?.aborted) throw new ReadRunCancelled(); },
+    action: runAction,
+    condition: async (index, id, value) => {
       if (hooks && !hooks.condition) throw new Error("Conditional execution requires decision checkpoints");
-      let value: unknown;
-      try { value = resolveReadBinding(node.predicate, result.state); } catch { /* Missing is not false. */ }
-      if (typeof value !== "boolean") {
-        await hooks?.condition?.(cursor, node.id, undefined, actor!.role);
-        throw new Error(`Condition ${node.id} failed: predicate requires a present boolean; no implicit branch or tool dispatch`);
+      await hooks?.condition?.(index, id, value, actor.role);
+    },
+    skipped: async (index, id, reason) => {
+      const step = blueprint.steps[index]!;
+      if (reason.kind === "return") await hooks!.terminated!(index, id, step.description ?? step.action!, reason.returnId, actor.role);
+      else {
+        if (hooks && !hooks.skipped) throw new Error("Conditional execution requires skip checkpoints");
+        await hooks?.skipped?.(index, id, step.description ?? step.action!, reason.conditionId, reason.selected, actor.role);
       }
-      await hooks?.condition?.(cursor, node.id, value, actor!.role);
-      const outer = new Set(Object.keys(result.state));
-      if (value) { returned = await visit(node.then); await skip(node.else, node.id, "then"); }
-      else { await skip(node.then, node.id, "else"); returned = await visit(node.else); }
-      const merged = !returned && node.merge ? await typedValue(node.id, "merge", node.merge[value ? "then" : "else"], node.merge.schema) : undefined;
-      for (const key of Object.keys(result.state)) if (!outer.has(key)) delete result.state[key];
-      if (merged) result.state[node.id] = merged;
-    }
-    return returned;
-  }
-  await visit(plan.ir.flow ?? { kind: "sequence", nodes: plan.ir.root.nodes.map(node => ({ kind: "action", nodeId: node.id })) });
+    },
+    value: (index, id, kind, value, valid) => hooks!.value!(index, id, kind, value, valid, actor.role),
+  });
   return result;
 }

@@ -15,8 +15,9 @@ test("offline schema guidance is versioned, sanitized, role scoped and never a l
   const value = contract();
   expect(value).toMatchObject({ profile: "read-authoring/v1", registryHash: "registry-test" });
   expect(value.nodes[0]).toMatchObject({ state: "LOCAL_CONTRACT", inputSchema: { properties: { count: { type: "integer" } } }, actions: ["local.read", "exact_read"] });
+  expect(value.nodes[0]).toMatchObject({ outputSchema: { type: "object", properties: { count: { type: "integer" }, privateData: { writeOnly: true }, api_token: { writeOnly: true } } } });
   expect(JSON.stringify(value)).not.toMatch(/PRIVATE_|private.example|default|examples|description/);
-  expect(contract(blueprint, [tool], "Other Role").nodes.every(node => node.state === "UNAVAILABLE" && !("inputSchema" in node))).toBe(true);
+  expect(contract(blueprint, [tool], "Other Role").nodes.every(node => node.state === "UNAVAILABLE" && !("inputSchema" in node) && !("outputSchema" in node))).toBe(true);
 });
 
 test("only declared workflow input and preceding structured outputs are suggested, never credential/writeOnly fields or whole sensitive objects", () => {

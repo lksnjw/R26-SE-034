@@ -53,6 +53,7 @@ import {
 } from "./handlers/analytics-catalog.js";
 import { inspectReadWorkflow } from "../runner/read-workflow.js";
 import { runVerifiedRead } from "./handlers/read-execution.js";
+import { boundedReadFixtureRequest, handleReadFixtureSimulation } from "./handlers/read-simulation.js";
 import { readJobQueue, supportsReadJobs } from "../runner/read-jobs.js";
 import { chatJobQueue, supportsChatJobs } from "../agent/chat-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
@@ -1173,6 +1174,7 @@ async function runWorkflow(
   user: User & { role: string; permissions: string[] },
   services: ApplicationServices,
 ): Promise<unknown> {
+  if (!boundedReadFixtureRequest(request.body)) return reply.status(400).send(fail("Invalid or oversized read simulation fixtures", { code: "SIMULATION_FIXTURES_INVALID" }));
   if (!runWorkflowRequestSchema.safeParse(request.body ?? {}).success)
     return reply.status(400).send(fail("Invalid request body", null));
   const workflow = await services.repository.read(
@@ -1201,6 +1203,7 @@ export async function runWorkflowFor(
   // Repository.read exposes references. Pin before any awaited validation so a
   // concurrent draft edit cannot mutate this run's source/version in place.
   workflow = structuredClone(workflow);
+  if (!boundedReadFixtureRequest(request.body)) return reply.status(400).send(fail("Invalid or oversized read simulation fixtures", { code: "SIMULATION_FIXTURES_INVALID" }));
   const parsed = runWorkflowRequestSchema.safeParse(request.body ?? {});
   if (!parsed.success)
     return reply.status(400).send(fail("Invalid request body", null));
@@ -1218,6 +1221,7 @@ export async function runWorkflowFor(
       .status(403)
       .send(fail("Workflow is not assigned to the current user", null));
   if (workflow.yaml.length > 200_000) return reply.status(422).send(fail("Workflow source exceeds supported limits", { traceId }));
+  if (parsed.data.simulation !== undefined && !parsed.data.dryRun) return reply.status(400).send(fail("Fixture simulation requires dryRun; test data cannot be used for real execution", { code: "SIMULATION_MODE_REQUIRED", traceId }));
   const asyncRead = parsed.data.mode === "async-read";
   if (asyncRead) {
     if (parsed.data.dryRun) return reply.status(422).send(fail("Async admission is not a dry-run mode", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));
@@ -1229,6 +1233,7 @@ export async function runWorkflowFor(
   if (!["", "execute", "deterministic-read", "async-read"].includes(parsed.data.mode) || (!asyncRead && parsed.data.idempotencyKey !== ""))
     return reply.status(422).send(fail("Requested execution mode or idempotency contract is not implemented", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));
   if (parsed.data.dryRun) {
+    if (parsed.data.simulation !== undefined) return handleReadFixtureSimulation(request, reply, services, user, workflow, parsed.data.simulation, parsed.data.input ?? {}, traceId);
     const validation = services.validator.validatePlan("ReadWorkflowSimulation", workflow.yaml, user.role);
     let issues: string[] = [];
     try { issues = inspectReadWorkflow(parseWorkflowYAMLStrict(workflow.yaml), services.registries.snapshot().tools, user.role); }

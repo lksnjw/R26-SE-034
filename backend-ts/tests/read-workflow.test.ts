@@ -90,6 +90,73 @@ const valueYAML = (output?: unknown, nested = false) => {
   return stringify(value);
 };
 
+const simulationPayload = (source: string, outputs: Record<string, unknown> = { yes: { content: [], structuredContent: { id: "fixture-yes" } }, after: { content: [], structuredContent: { id: "fixture-final" } } }) => ({ dryRun: true, input: { enabled: true }, simulation: { profile: "read-fixtures/v1", baseVersion: 1, baseHash: workflowContentHash(source), outputs } });
+
+test("fixture HTTP simulation evaluates an unpublished draft without dispatch, discovery, model calls or repository writes", async () => {
+  const s = await setup({ provider: true }), source = valueYAML(); await s.seed(source, false);
+  await s.app.ready(); // Startup recovery is separate from the simulation request.
+  const before = await s.repository.snapshot(), mutate = vi.spyOn(s.repository, "mutate");
+  const response = await s.run(simulationPayload(source)); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ outcome: "SIMULATED_COMPLETE", simulation: "fixture-read/v1", dry_run: true, can_execute: false, erp_calls: 0, model_calls: 0, persisted_run: false, live_readiness: "not_checked", runtime_authorization: "not_checked", capability_admission: "not_checked", workflowId: "read", baseVersion: 1, baseHash: workflowContentHash(source), finalOutput: "fixture-final", valueOutputs: { gate: { value: "fixture-yes" }, answer: { value: "fixture-final" } } });
+  expect(response.json().data.trace.find((entry: any) => entry.nodeId === "after").arguments).toEqual({ id: "fixture-yes" });
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled(); expect(mutate).not.toHaveBeenCalled(); expect(await s.repository.snapshot()).toEqual(before);
+});
+
+test.each(["stale", "invalid", "live", "async", "unknown"])("fixture HTTP rejects %s requests without dispatch or persisted runs", async kind => {
+  const s = await setup({ provider: true }), source = valueYAML(); await s.seed(source, false);
+  const payload: any = simulationPayload(source);
+  if (kind === "stale") payload.simulation.baseVersion = 2;
+  if (kind === "invalid") payload.simulation.approved = true;
+  if (kind === "live") payload.dryRun = false;
+  if (kind === "async") payload.mode = "async-read";
+  if (kind === "unknown") payload.simulation.outputs.extra = { content: [] };
+  expect((await s.run(payload)).statusCode).toBe(kind === "stale" ? 409 : kind === "async" ? 422 : 400);
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
+test("simulation requires run permission and assigned scope even without a live bridge", async () => {
+  const s = await setup({ noBridge: true, roleId: "role_client" }), source = valueYAML(); await s.seed(source, false);
+  await s.repository.mutate(state => { state.workflows.read!.assignedUserIds = []; });
+  expect((await s.run(simulationPayload(source))).statusCode).toBe(403);
+  await s.repository.mutate(state => { state.workflows.read!.assignedUserIds = ["actor"]; state.roles.role_client!.permissions = ["workflow:read_own", "chat:use"]; });
+  expect((await s.run(simulationPayload(source))).statusCode).toBe(403); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["actor", "draft", "registry"])("simulation delivery fences changed %s context", async kind => {
+  const s = await setup(), source = valueYAML(); await s.seed(source, false);
+  await s.app.ready();
+  const original = s.repository.readAuthoritative.bind(s.repository); let reads = 0;
+  vi.spyOn(s.repository, "readAuthoritative").mockImplementation(async read => {
+    if (++reads === 1) {
+      if (kind === "registry") s.drift();
+      else await s.repository.mutate(state => { if (kind === "actor") state.users.actor!.status = "Inactive"; else state.workflows.read!.draftVersion = 2; });
+    }
+    return original(read);
+  });
+  const response = await s.run(simulationPayload(source)); expect(response.statusCode, response.body).toBe(kind === "actor" ? 403 : 409);
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
+test("simulation bounds deeply nested and oversized inputs before recursive request validation", async () => {
+  const s = await setup(), source = valueYAML(); await s.seed(source, false);
+  let nested: any = {};
+  for (let i = 0; i < 1000; i++) nested = { next: nested };
+  for (const input of [nested, { large: "x".repeat(512000) }]) expect((await s.run({ ...simulationPayload(source), input })).statusCode).toBe(400);
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled();
+});
+
+test("simulation cannot deliver results from uncertain authoritative storage", async () => {
+  const s = await setup(), source = valueYAML(); await s.seed(source, false); await s.app.ready();
+  vi.spyOn(s.repository, "readAuthoritative").mockRejectedValue(new Error("Uncertain storage"));
+  const response = await s.run(simulationPayload(source)); expect(response.statusCode).toBe(503); expect(response.json().meta.code).toBe("SIMULATION_AUTHORITY_UNAVAILABLE"); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("blocked simulation does not echo parser source excerpts or unresolved goals as results", async () => {
+  const s = await setup(), source = "invalid: [PRIVATE_SOURCE_VALUE"; await s.seed(source, false);
+  const response = await s.run(simulationPayload(source, {})); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ outcome: "PLAN_BLOCKED", plan_valid: false, trace: [], validation: { passed: false, errors: ["YAML_PARSE_ERROR"] } }); expect(response.body).not.toContain("PRIVATE_SOURCE_VALUE"); expect(s.callTool).not.toHaveBeenCalled();
+});
+
 test("a root return before any action records every later action as skipped without evaluating future conditions", async () => {
   const s = await setup({ provider: true }), value = parseWorkflowYAMLStrict(valueYAML()) as any;
   value.metadata.controlFlow.root.nodes.unshift({ kind: "return", id: "early", output: { schema: { type: "boolean" }, value: { kind: "literal", value: false } } });

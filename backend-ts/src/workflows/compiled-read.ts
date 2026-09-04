@@ -9,6 +9,7 @@ import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
 import { parseReadControlFlow, validateReadControlFlow, controlNodes, type ReadSequence } from "./read-control-flow.js";
 import { checkBinding, schemaAt } from "./read-binding-validation.js";
+import { ReadValueBudget } from "./read-value-budget.js";
 
 export type ReadReference = { kind: "ref"; source: "workflowInput" | "nodeOutput"; nodeId?: string; path: string[] };
 export type ReadBinding = ReadReference | { kind: "literal"; value: string | number | boolean | null } |
@@ -118,12 +119,16 @@ export function assertCompiledReadMatches(expected: CompiledReadPlan, actual: Co
 }
 
 export function resolveReadBinding(binding: ReadBinding, state: Record<string, unknown>): unknown {
-  if (binding.kind === "literal") return binding.value;
-  if (binding.kind === "object") return Object.fromEntries(Object.entries(binding.fields).map(([key, value]) => [key, resolveReadBinding(value, state)]));
-  if (binding.kind === "array") return binding.items.map(value => resolveReadBinding(value, state));
+  const budget = new ReadValueBudget();
+  const resolve = (binding: ReadBinding, depth: number): unknown => {
+  budget.enter(depth);
+  if (binding.kind === "literal") return budget.scalar(binding.value);
+  if (binding.kind === "object") { budget.add("{}"); return Object.fromEntries(Object.entries(binding.fields).map(([key, value]) => { budget.add(`${JSON.stringify(key)}:,`); return [key, resolve(value, depth + 1)]; })); }
+  if (binding.kind === "array") { budget.add("[]"); return binding.items.map(value => { budget.add(","); return resolve(value, depth + 1); }); }
   if (binding.kind === "template") return binding.parts.map(part => {
-    if (typeof part === "string") return part;
-    const value = resolveReadBinding(part, state); if (typeof value !== "string") throw new Error("String templates require string references; no implicit conversion is allowed"); return value;
+    budget.enter(depth + 1);
+    if (typeof part === "string") { budget.scalar(part); return part; }
+    const value = resolve(part, depth + 1); if (typeof value !== "string") throw new Error("String templates require string references; no implicit conversion is allowed"); return value;
   }).join("");
   const root = binding.source === "workflowInput" ? "input" : binding.nodeId!;
   if (!Object.hasOwn(state, root)) throw new Error("Compiled data reference is unavailable");
@@ -133,5 +138,7 @@ export function resolveReadBinding(binding: ReadBinding, state: Record<string, u
     current = (current as Record<string, unknown>)[part];
   }
   if (current === undefined) throw new Error("Compiled data reference is unavailable");
-  return structuredClone(current);
+  return budget.clone(current, depth);
+  };
+  return resolve(binding, 0);
 }

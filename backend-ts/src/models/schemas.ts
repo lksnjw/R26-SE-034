@@ -114,6 +114,7 @@ export const runWorkflowRequestSchema = z.object({
   input: jsonObjectSchema.nullable().default(null),
   mode: z.string().default(""),
   dryRun: z.boolean().default(false),
+  simulation: z.unknown().optional(),
   idempotencyKey: z.string().default(""),
 }).strict();
 
