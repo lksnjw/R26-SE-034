@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { flowLoops } from "./CollectionFields";
 
 const control = "w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackground";
 const same = (a, b) => a?.source === b?.source && a?.nodeId === b?.nodeId && JSON.stringify(a?.path) === JSON.stringify(b?.path);
@@ -32,6 +33,7 @@ export function flowConditions(flow) {
   const visit = (block, depth) => {
     if (depth > 8 || !Array.isArray(block?.nodes) || result.length > 100) return;
     for (const node of block.nodes) if (node?.kind === "if") { result.push(node); visit(node.then, depth + 1); visit(node.else, depth + 1); }
+    else if (node?.kind === "foreach") visit(node.body, depth + 1);
   };
   visit(flow, 0); return result;
 }
@@ -42,6 +44,7 @@ export function flowReturns(flow) {
     for (const node of block.nodes) {
       if (node?.kind === "return") result.push(node);
       if (node?.kind === "if") { visit(node.then, depth + 1); visit(node.else, depth + 1); }
+      if (node?.kind === "foreach") visit(node.body, depth + 1);
     }
   };
   visit(flow, 0); return result;
@@ -49,8 +52,8 @@ export function flowReturns(flow) {
 export function branchDestination(value) {
   if (!value || value === "root") return {};
   const [conditionId, branch] = value.split(":");
-  return { destination: { conditionId, branch } };
+  return { destination: branch === "body" ? { loopId: conditionId, scope: "body" } : { conditionId, branch } };
 }
 export function ScopeSelect({ flow, value, onChange, label }) {
-  return <label className="block text-xs text-gray-500">{label}<select aria-label={label} className={`${control} mt-1`} value={value} onChange={event => onChange(event.target.value)}><option value="root">Main sequence · end</option>{flowConditions(flow).flatMap(node => ["then", "else"].map(branch => <option key={`${node.id}:${branch}`} value={`${node.id}:${branch}`}>{node.id} · {branch === "then" ? "If yes" : "If no"} · end</option>))}</select></label>;
+  return <label className="block text-xs text-gray-500">{label}<select aria-label={label} className={`${control} mt-1`} value={value} onChange={event => onChange(event.target.value)}><option value="root">Main sequence · end</option>{flowConditions(flow).flatMap(node => ["then", "else"].map(branch => <option key={`${node.id}:${branch}`} value={`${node.id}:${branch}`}>{node.id} · {branch === "then" ? "If yes" : "If no"} · end</option>))}{flowLoops(flow).map(node => <option key={`${node.id}:body`} value={`${node.id}:body`}>{node.id} · collection body · end</option>)}</select></label>;
 }

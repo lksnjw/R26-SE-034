@@ -15,7 +15,8 @@ import { interpretReadPlan } from "../workflows/read-interpreter.js";
 /** Explicit read profiles: sequential actions and structured boolean branches. Unsupported logic
  * is rejected before any dispatch, never reinterpreted by an agent. */
 export function inspectReadWorkflow(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string): string[] {
-  return buildReadIR(blueprint, tools, role).issues;
+  const built = buildReadIR(blueprint, tools, role);
+  return [...built.issues, ...(built.ir.schemaVersion === "workflow-read-ir/v4" ? ["Collection drafts support fixture simulation; durable iteration checkpoints are required for live execution"] : [])];
 }
 
 export async function executeReadWorkflow(services: HandlerServices, actorId: string, yaml: string, input: Record<string, unknown>, token: ValidationToken,
@@ -77,13 +78,17 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
     },
     skipped: async (index, id, reason) => {
       const step = blueprint.steps[index]!;
+      if (reason.kind === "empty-collection") throw new Error("Collection skips require iteration checkpoints");
       if (reason.kind === "return") await hooks!.terminated!(index, id, step.description ?? step.action!, reason.returnId, actor.role);
       else {
         if (hooks && !hooks.skipped) throw new Error("Conditional execution requires skip checkpoints");
         await hooks?.skipped?.(index, id, step.description ?? step.action!, reason.conditionId, reason.selected, actor.role);
       }
     },
-    value: (index, id, kind, value, valid) => hooks!.value!(index, id, kind, value, valid, actor.role),
+    value: (index, id, kind, value, valid) => {
+      if (kind === "collection" || kind === "collection-item") throw new Error("Collection values require iteration checkpoints");
+      return hooks!.value!(index, id, kind, value, valid, actor.role);
+    },
   });
   return result;
 }

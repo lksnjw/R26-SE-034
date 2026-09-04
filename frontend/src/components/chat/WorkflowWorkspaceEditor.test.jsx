@@ -32,6 +32,15 @@ async function open(props = {}) {
 }
 async function selectNode() { fireEvent.click(screen.getByRole("button", { name: /01 first/ })); }
 
+test("canvas collection wrapping remains preview-only until an explicit revision-bound apply", async () => {
+  await open(); await selectNode(); fireEvent.click(screen.getByRole("button", { name: "Wrap node in collection" }));
+  fireEvent.change(screen.getByLabelText("Collection ID"), { target: { value: "each" } }); fireEvent.submit(screen.getByRole("form", { name: "Wrap node in collection" }));
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(screen.getByRole("region", { name: "Node change preview" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: record.contentHash }), expect.objectContaining({ type: "wrapCollection", nodeId: "first", loopId: "each", maxItems: 25 })));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+});
+
 test("an unacknowledged canvas prompt is retained on remount and is not applied", async () => {
   send.mockResolvedValue(null); const view = await open(); await selectNode();
   fireEvent.change(screen.getByRole("textbox", { name: "Selected node prompt" }), { target: { value: "Keep my pending edit" } });

@@ -92,6 +92,75 @@ const valueYAML = (output?: unknown, nested = false) => {
 
 const simulationPayload = (source: string, outputs: Record<string, unknown> = { yes: { content: [], structuredContent: { id: "fixture-yes" } }, after: { content: [], structuredContent: { id: "fixture-final" } } }) => ({ dryRun: true, input: { enabled: true }, simulation: { profile: "read-fixtures/v1", baseVersion: 1, baseHash: workflowContentHash(source), outputs } });
 
+const collectionYAML = () => stringify({ name: "Collection report", description: "Read a bounded list", trigger: { type: "manual" }, steps: [{ id: "lookup", action: "finance.read", parameters: { id: "{{each.item}}" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v3", root: { kind: "sequence", nodes: [
+  { kind: "foreach", id: "each", items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } }, maxItems: 3, body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "lookup" }] }, collect: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "lookup", path: ["structuredContent", "id"] } } },
+  { kind: "return", id: "answer", output: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["value"] } } },
+] } } } });
+
+test("collection HTTP simulation has separate iteration evidence and performs no live or persisted work", async () => {
+  const s = await setup({ provider: true }), source = collectionYAML(); await s.seed(source, false); await s.app.ready();
+  const before = await s.repository.snapshot(), mutate = vi.spyOn(s.repository, "mutate");
+  const response = await s.run({ dryRun: true, input: { rows: ["first", "second"] }, simulation: { profile: "read-fixtures/v2", baseVersion: 1, baseHash: workflowContentHash(source), outputs: { "each/0/lookup": { content: [], structuredContent: { id: "A" } }, "each/1/lookup": { content: [], structuredContent: { id: "B" } } } } });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ simulation: "fixture-read/v2", outcome: "SIMULATED_COMPLETE", finalOutput: ["A", "B"], erp_calls: 0, model_calls: 0, persisted_run: false, can_execute: false });
+  expect(response.json().data.trace.filter((entry: any) => entry.kind === "action").map((entry: any) => [entry.invocationId, entry.arguments])).toEqual([["each/0/lookup", { id: "first" }], ["each/1/lookup", { id: "second" }]]);
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled(); expect(mutate).not.toHaveBeenCalled(); expect(await s.repository.snapshot()).toEqual(before);
+});
+
+test.each(["legacy-fixtures", "unscoped", "wrong-owner", "stale"])("collection HTTP rejects %s fixture request before side effects", async kind => {
+  const s = await setup({ provider: true }), source = collectionYAML(); await s.seed(source, false);
+  const simulation: any = { profile: "read-fixtures/v2", baseVersion: 1, baseHash: workflowContentHash(source), outputs: {} };
+  if (kind === "legacy-fixtures") simulation.profile = "read-fixtures/v1";
+  if (kind === "unscoped") simulation.outputs.lookup = { content: [] };
+  if (kind === "wrong-owner") simulation.outputs["other/0/lookup"] = { content: [] };
+  if (kind === "stale") simulation.baseVersion = 2;
+  const response = await s.run({ dryRun: true, input: { rows: [] }, simulation });
+  expect(response.statusCode, response.body).toBe(kind === "stale" ? 409 : 400);
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
+test.each([undefined, "async-read"])("a legacy published collection cannot run in mode %s or mint live checkpoints", async mode => {
+  const s = await setup({ provider: true }); await s.seed(collectionYAML());
+  const response = await s.run({ input: { rows: ["first"] }, ...(mode ? { mode, idempotencyKey: "collection-live-fence-001" } : {}) });
+  expect(response.statusCode, response.body).toBe(422);
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
+test("publishing a collection saves a design but cannot claim executable readiness or compile a live artifact", async () => {
+  const s = await setup({ provider: true }); await s.seed(collectionYAML(), false);
+  const result = await s.app.inject({ method: "POST", url: "/api/workflows/read/publish", headers: s.headers, payload: {} });
+  expect(result.statusCode, result.body).toBe(200); expect(result.json().data.executionReadiness).toBe("UNSUPPORTED_PROFILE");
+  const state = await s.repository.snapshot(); expect(state.workflows.read!.canRun).toBe(false); expect(state.versions.read!.at(-1)!.compiledRead).toBeUndefined();
+  expect(s.listTools).not.toHaveBeenCalled();
+  const readiness = await s.app.inject({ method: "GET", url: "/api/workflows/read/readiness", headers: s.headers });
+  expect(readiness.json().data.authoring.executionProfile).toBe("collection-simulation-only");
+  expect(readiness.json().data.can_attempt_run).toBe(false);
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).toHaveBeenCalledTimes(1); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
+test("collection commands preserve action ownership, revision fences and never flatten nonempty bodies", async () => {
+  const s = await setup({ provider: true }); await s.seed(yaml, false);
+  let source = yaml, revision = 1;
+  const command = async (value: unknown) => {
+    const result = await s.app.inject({ method: "POST", url: "/api/workflows/read/commands", headers: s.headers, payload: { baseVersion: revision, baseHash: workflowContentHash(source), command: value } });
+    if (result.statusCode === 200) { source = result.json().data.yaml; revision = result.json().data.version; } return result;
+  };
+  const config = { items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "array", items: [] } }, maxItems: 2, collect: { schema: { type: "string" }, value: { kind: "literal", value: "test" } } };
+  const wrapped = await command({ type: "wrapCollection", nodeId: "lookup", loopId: "each", ...config }); expect(wrapped.statusCode, wrapped.body).toBe(200);
+  expect((parseWorkflowYAMLStrict(source) as any).metadata.controlFlow.root.nodes[0].body.nodes).toEqual([{ kind: "action", nodeId: "lookup" }]);
+  expect((await command({ type: "removeCollection", nodeId: "each" })).statusCode).toBe(422);
+  const changed = await command({ type: "updateCollection", nodeId: "each", patch: { ...config, maxItems: 3 } }); expect(changed.statusCode, changed.body).toBe(200);
+  expect((parseWorkflowYAMLStrict(source) as any).metadata.controlFlow.root.nodes[0].maxItems).toBe(3);
+  const stale = await s.app.inject({ method: "POST", url: "/api/workflows/read/commands", headers: s.headers, payload: { baseVersion: 1, baseHash: workflowContentHash(yaml), command: { type: "updateCollection", nodeId: "each", patch: config } } }); expect(stale.statusCode).toBe(409);
+  const added = await command({ type: "addNode", node: { id: "nested", action: "finance.read", parameters: { id: "nested" } }, beforeNodeId: null, destination: { loopId: "each", scope: "body" } }); expect(added.statusCode, added.body).toBe(200);
+  expect((parseWorkflowYAMLStrict(source) as any).metadata.controlFlow.root.nodes[0].body.nodes.map((node: any) => node.nodeId)).toEqual(["lookup", "nested"]);
+  expect((await command({ type: "removeNode", nodeId: "nested" })).statusCode).toBe(200);
+  expect((await command({ type: "moveNode", nodeId: "lookup", beforeNodeId: "details" })).statusCode).toBe(200);
+  const removed = await command({ type: "removeCollection", nodeId: "each" }); expect(removed.statusCode, removed.body).toBe(200);
+  const restored: any = parseWorkflowYAMLStrict(source); expect(restored.metadata.controlFlow.schemaVersion).toBe("read-control-flow/v3"); expect(restored.steps.map((step: any) => step.id)).toEqual(["lookup", "details"]);
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
 test("fixture HTTP simulation evaluates an unpublished draft without dispatch, discovery, model calls or repository writes", async () => {
   const s = await setup({ provider: true }), source = valueYAML(); await s.seed(source, false);
   await s.app.ready(); // Startup recovery is separate from the simulation request.
@@ -873,6 +942,15 @@ test("cancellation control rechecks current assignment, and terminal completion 
   unblock.release(); await running; expect(s.callTool).toHaveBeenCalledTimes(1);
   await s.repository.mutate((state) => { state.workflows.read!.assignedUserIds = ["actor"]; });
   expect((await s.app.inject({ method: "POST", url: `/api/executions/${record.id}/cancel`, headers: s.headers, payload: {} })).statusCode).toBe(409);
+});
+
+test("a legacy worker without a compiled plan cannot advance or certify a forged v4 snapshot", async () => {
+  const s = await setup(); await s.seed(); const response = await s.run(), id = response.json().data.id;
+  await s.repository.mutate(state => { const item = state.executions[id]!; item.status = "RUNNING"; item.workflowSnapshot!.compilation!.schemaVersion = "workflow-read-ir/v4"; });
+  const before = await s.repository.snapshot(), worker = new ReadCheckpoints(s.repository, id, 1, yaml);
+  await expect(worker.preparing(2, "forged", "forged", new Date().toISOString())).rejects.toThrow("checkpoint could not be committed");
+  await expect(worker.finish(false)).rejects.toThrow("checkpoint could not be committed");
+  expect(await s.repository.snapshot()).toEqual(before); expect(s.callTool).toHaveBeenCalledTimes(2);
 });
 
 test("a worker cannot declare DONE when node checkpoints are incomplete", async () => {

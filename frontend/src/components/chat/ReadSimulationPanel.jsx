@@ -3,19 +3,24 @@ import { workflowService } from "../../services/workflow.service";
 import ValueFields from "./ValueFields";
 import SchemaFields from "./SchemaFields";
 import ReadableValue, { ReadableResult } from "./ReadableValue";
+import { collectionOwners, IterationFixturePicker } from "./CollectionFields";
 
 const button = "rounded-md px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-40 disabled:cursor-not-allowed";
 const outcomes = { SIMULATED: "Supplied response accepted", SIMULATED_DECISION: "Condition evaluated", SIMULATED_VALUE: "Typed value evaluated", NOT_SELECTED: "Other path · not evaluated", AFTER_RETURN: "After return · not evaluated", MISSING_FIXTURE: "No test response supplied", FIXTURE_TOOL_ERROR: "Supplied tool error", FIXTURE_OUTPUT_INVALID: "Invalid test response", ARGUMENTS_INVALID: "Arguments do not match the tool schema", BINDING_UNAVAILABLE_OR_LIMITED: "Required data missing or too large", PREDICATE_INVALID: "Condition requires Yes or No", VALUE_INVALID: "Value does not match its declared type", WORKFLOW_INPUT_INVALID: "Inputs do not match the workflow schema", SELECTED_PATH_RULE_BLOCKED: "Selected path violates a local rule", SIMULATION_OUTPUT_LIMIT: "Simulation display budget exceeded", SIMULATION_EVALUATION_FAILED: "Simulation could not continue" };
 const message = cause => cause?.response?.data?.message || cause?.message || "Simulation could not be completed. No automatic retry was sent.";
 const verifierIssue = code => ({ YAML_PARSE_ERROR: "Draft source could not be parsed", SCHEMA_INVALID: "Draft structure is invalid", SCHEMA_DESCRIPTION_REQUIRED: "Workflow description is required", LOCAL_VERIFIER_REJECTED: "A local rule rejected this draft" })[code] || "A local verifier check failed. Review the draft validation details.";
-function validResponse(value, workflowId, record) {
-  return value?.simulation === "fixture-read/v1" && value.dry_run === true && value.can_execute === false && value.erp_calls === 0 && value.model_calls === 0 && value.persisted_run === false && value.live_readiness === "not_checked" && value.runtime_authorization === "not_checked" && value.capability_admission === "not_checked" && !value.id && value.workflowId === workflowId && value.baseVersion === record.version && value.baseHash === record.contentHash && (!record.authoring?.registryHash || value.registryHash === record.authoring.registryHash) && ["PLAN_BLOCKED", "SIMULATED_COMPLETE", "SIMULATED_STOPPED"].includes(value.outcome) && Array.isArray(value.trace) && value.trace.length <= 400 && value.trace.every(entry => entry && ["action", "condition", "merge", "return"].includes(entry.kind) && Object.hasOwn(outcomes, entry.outcome));
+const collectionOutcomes = { SIMULATED_COLLECTION_STARTED: "Collection input checked", EMPTY_COLLECTION: "Empty collection · body not evaluated", COLLECTION_INPUT_INVALID: "Collection requires present, correctly typed list data", COLLECTION_LIMIT_EXCEEDED: "Collection exceeds its declared item limit", COLLECTION_VISIT_LIMIT: "Collection evaluation budget exceeded" };
+const outcomeLabel = code => outcomes[code] || collectionOutcomes[code] || "Simulation could not continue";
+function validResponse(value, workflowId, record, hasLoops) {
+  return value?.simulation === (hasLoops ? "fixture-read/v2" : "fixture-read/v1") && value.dry_run === true && value.can_execute === false && value.erp_calls === 0 && value.model_calls === 0 && value.persisted_run === false && value.live_readiness === "not_checked" && value.runtime_authorization === "not_checked" && value.capability_admission === "not_checked" && !value.id && value.workflowId === workflowId && value.baseVersion === record.version && value.baseHash === record.contentHash && (!record.authoring?.registryHash || value.registryHash === record.authoring.registryHash) && ["PLAN_BLOCKED", "SIMULATED_COMPLETE", "SIMULATED_STOPPED"].includes(value.outcome) && Array.isArray(value.trace) && value.trace.length <= (hasLoops ? 5000 : 400) && value.trace.every(entry => entry && ["action", "condition", "merge", "return", ...(hasLoops ? ["collection", "collection-item"] : [])].includes(entry.kind) && (Object.hasOwn(outcomes, entry.outcome) || hasLoops && Object.hasOwn(collectionOutcomes, entry.outcome)) && (!hasLoops || Array.isArray(entry.iterations) && entry.iterations.length <= 8 && entry.iterations.every(frame => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(frame.loopId) && Number.isInteger(frame.index) && frame.index >= 0 && frame.index < 100) && entry.invocationId === [...entry.iterations.flatMap(frame => [frame.loopId, String(frame.index)]), entry.nodeId].join("/")));
 }
 
 function SimulationWorkspace({ workflowId, record, steps, canControl, disabled }) {
   const [input, setInput] = useState({}), [fixtures, setFixtures] = useState({}), [result, setResult] = useState(null), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const authoring = record.authoring?.profile === "read-authoring/v1" ? record.authoring : null;
+  const owners = collectionOwners(authoring?.controlFlow), hasLoops = [...owners.values()].some(loops => loops.length) || authoring?.executionProfile === "collection-simulation-only";
+  const rows = steps.slice(0, 200).flatMap(step => owners.get(step.id)?.length ? Object.keys(fixtures).filter(address => address.split("/").at(-1) === step.id).map(address => ({ ...step, id: address, nodeId: step.id })) : [{ ...step, nodeId: step.id }]);
   const update = (nodeId, next) => { setFixtures(old => ({ ...old, [nodeId]: next })); setResult(null); setError(""); };
   const changeInput = next => { setInput(next); setResult(null); setError(""); };
   const simulate = async () => {
@@ -23,8 +28,8 @@ function SimulationWorkspace({ workflowId, record, steps, canControl, disabled }
     pending.current = true; setBusy(true); setResult(null); setError("");
     const outputs = Object.fromEntries(Object.entries(fixtures).filter(([, value]) => value.enabled).map(([id, value]) => [id, { content: value.text ? [{ type: "text", text: value.text }] : [], ...(value.structured ? { structuredContent: value.fields } : {}), ...(value.failure ? { isError: true } : {}) }]));
     try {
-      const value = await workflowService.simulate(workflowId, record, input, outputs);
-      if (!validResponse(value, workflowId, record)) throw new Error("Simulation response could not be verified. It is not shown as execution evidence.");
+      const value = await workflowService.simulate(workflowId, record, input, outputs, ...(hasLoops ? ["read-fixtures/v2"] : []));
+      if (!validResponse(value, workflowId, record, hasLoops)) throw new Error("Simulation response could not be verified. It is not shown as execution evidence.");
       setResult(value);
     } catch (cause) { setError(message(cause)); }
     finally { pending.current = false; setBusy(false); }
@@ -38,8 +43,10 @@ function SimulationWorkspace({ workflowId, record, steps, canControl, disabled }
         {authoring?.inputSchema ? <SchemaFields label="Simulation inputs" schema={authoring.inputSchema} value={input} onChange={changeInput} allowReferences={false} /> : <ValueFields label="Simulation inputs" value={input} onChange={changeInput} />}
         <h4 className="border-t pt-4 font-medium">Supplied node responses</h4>
         <p className="text-gray-500">Enable responses explicitly. An unsupplied selected node stops the simulation; unused paths need no response. Use test data, not credentials.</p>
-        {steps.slice(0, 200).map(step => {
-          const value = fixtures[step.id] || { enabled: false, structured: false, fields: {}, text: "", failure: false }, guide = authoring?.nodes?.find(node => node.nodeId === step.id);
+        {hasLoops && <p className="text-gray-500">Collection profile · simulation only. Every selected item needs its own response; one node response is never reused for all items.</p>}
+        {steps.filter(step => owners.get(step.id)?.length).map(step => <IterationFixturePicker key={step.id} nodeId={step.id} loops={owners.get(step.id)} fixtures={fixtures} onAdd={address => update(address, { enabled: true, structured: false, fields: {}, text: "", failure: false })} />)}
+        {rows.map(step => {
+          const value = fixtures[step.id] || { enabled: false, structured: false, fields: {}, text: "", failure: false }, guide = authoring?.nodes?.find(node => node.nodeId === step.nodeId);
           return <details key={step.id} className="border-b border-gray-100 pb-3 dark:border-gray-800"><summary className="cursor-pointer py-1">{step.id} · {value.enabled ? "Test response supplied" : "Not supplied"}</summary><div className="mt-3 space-y-3">
             <label className="flex items-center gap-2"><input type="checkbox" aria-label={`Supply response for ${step.id}`} checked={value.enabled} onChange={event => update(step.id, { ...value, enabled: event.target.checked })} />Supply a test response</label>
             {value.enabled && <>
@@ -57,16 +64,19 @@ function SimulationWorkspace({ workflowId, record, steps, canControl, disabled }
     {error && <p role="alert" className="mt-3 text-red-600">{error}</p>}
     {result && canControl && !disabled && <section aria-label="Simulation results" className="workspace-reveal mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
       <h4 className="font-medium">{result.outcome === "SIMULATED_COMPLETE" ? "Simulation complete" : result.outcome === "PLAN_BLOCKED" ? "Draft cannot be simulated" : "Simulation stopped"} · draft v{result.baseVersion}</h4>
-      <p className="mt-1 text-gray-500">Test data · not a real execution receipt. {result.reason && (outcomes[result.reason] || "Simulation could not continue")}</p>
+      <p className="mt-1 text-gray-500">Test data · not a real execution receipt. {result.reason && outcomeLabel(result.reason)}</p>
       {result.issues?.length > 0 && <ul className="mt-3 list-disc pl-4">{result.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>}
       {result.validation?.errors?.length > 0 && <ul className="mt-3 list-disc pl-4">{result.validation.errors.slice(0, 50).map((code, index) => <li key={index}>{verifierIssue(code)}</li>)}</ul>}
-      <ol className="mt-4 space-y-3">{result.trace.map((entry, index) => <li key={index} className="border-l border-gray-200 pl-3 dark:border-gray-700">
-        <p className="font-medium">{entry.nodeId} · {outcomes[entry.outcome]}</p>
+      <ol className="mt-4 space-y-3">{result.trace.slice(0, 500).map((entry, index) => <li key={index} className="border-l border-gray-200 pl-3 dark:border-gray-700">
+        <p className="font-medium">{entry.nodeId} · {outcomeLabel(entry.outcome)}</p>
+        {entry.iterations?.length > 0 && <p className="text-gray-500">{entry.iterations.map(frame => `${frame.loopId} · item ${frame.index + 1}`).join(" / ")}</p>}
+        {Number.isInteger(entry.count) && <p className="text-gray-500">{entry.count} supplied items</p>}
         {entry.selectedBranch && <p className="mt-1 text-gray-500">{entry.selectedBranch === "then" ? "If yes" : "If no"}</p>}
         {entry.returnId && <p className="mt-1 text-gray-500">Stopped by return · {entry.returnId}</p>}
         {Object.hasOwn(entry, "arguments") && <details className="mt-2"><summary className="cursor-pointer text-gray-500">Evaluated arguments</summary><ReadableValue value={entry.arguments} /></details>}
         {Object.hasOwn(entry, "output") && <details className="mt-2"><summary className="cursor-pointer text-gray-500">{entry.kind === "action" ? "Supplied response" : "Simulated value"}</summary>{entry.output === null ? <p>Explicit null</p> : <ReadableResult value={entry.output} />}</details>}
       </li>)}</ol>
+      {result.trace.length > 500 && <p className="mt-3 text-gray-500">Showing the first 500 simulation events. Final status and collected value apply to the whole bounded evaluation.</p>}
       {Object.hasOwn(result, "finalOutput") && <div className="mt-4 border-t pt-3"><p className="mb-2 font-medium">{result.outcome === "SIMULATED_COMPLETE" ? "Simulated final value" : "Last accepted simulated value · incomplete"}</p>{result.finalOutput === null ? <p>Explicit null</p> : <ReadableResult value={result.finalOutput} />}</div>}
       {result.unusedFixtureIds?.length > 0 && <p className="mt-3 text-gray-500">Unused supplied responses · {result.unusedFixtureIds.join(", ")}</p>}
     </section>}

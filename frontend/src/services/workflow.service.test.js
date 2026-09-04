@@ -2,6 +2,14 @@ import { afterEach, expect, jest, test } from "@jest/globals";
 import { apiClient } from "../config/axios";
 import { workflowService } from "./workflow.service";
 afterEach(() => jest.restoreAllMocks());
+test("iteration fixtures use the explicit v2 profile with unchanged revision and dry-run fences", async () => {
+  const post = jest.spyOn(apiClient, "post").mockResolvedValue({ data: { data: {} } }); const outputs = { "each/0/read": { content: [] } };
+  await workflowService.simulate("flow", { version: 2, contentHash: "hash" }, { rows: [] }, outputs, "read-fixtures/v2");
+  expect(post).toHaveBeenCalledWith("/workflows/flow/run", { dryRun: true, input: { rows: [] }, simulation: { profile: "read-fixtures/v2", baseVersion: 2, baseHash: "hash", outputs } }, { timeout: 30000 });
+});
+test("an unknown fixture profile is rejected before any request", async () => {
+  const post = jest.spyOn(apiClient, "post"); await expect(workflowService.simulate("flow", {}, {}, {}, "live")).rejects.toThrow(); expect(post).not.toHaveBeenCalled();
+});
 test("fixture simulation uses a revision-bound dry request with no live run options", async () => {
   const post = jest.spyOn(apiClient, "post").mockResolvedValue({ data: { data: { outcome: "SIMULATED_COMPLETE" } } });
   const outputs = { first: { content: [], structuredContent: { id: "test" } } };

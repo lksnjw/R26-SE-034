@@ -5,7 +5,7 @@ import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { buildReadIR, type ReadReference } from "./compiled-read.js";
-import { validateReadControlFlow, controlNodes, structuralNodes, type ReadSequence } from "./read-control-flow.js";
+import { validateReadControlFlow, controlNodes, structuralNodes, loopNodes, type ReadSequence } from "./read-control-flow.js";
 import { draftFlow } from "./draft-control-edits.js";
 import { isSecretField } from "../redact/secrets.js";
 
@@ -65,6 +65,26 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   try { if (blueprint.metadata?.controlFlow !== undefined) editableFlow = draftFlow(blueprint); } catch { /* Invalid ownership is never depicted as executable structure. */ }
   if (editableFlow) for (const node of controlNodes(editableFlow)) if (node.merge)
     upstream.push(...sources(project(node.merge.schema), { kind: "ref", source: "nodeOutput", nodeId: node.id, path: ["value"] }, `Branch ${node.id}`));
+  const iterationScopes = new Map<string, Set<string>>();
+  const collections = editableFlow ? loopNodes(editableFlow) : [], collectionIDs = new Set(collections.map(node => node.id));
+  const visitScope = (block: ReadSequence, active: Set<string>) => { for (const node of block.nodes) {
+    iterationScopes.set(node.kind === "action" ? node.nodeId : node.id, new Set(active));
+    if (node.kind === "if") { visitScope(node.then, active); visitScope(node.else, active); }
+    else if (node.kind === "foreach") visitScope(node.body, new Set([...active, node.id]));
+  } };
+  if (editableFlow) {
+    visitScope(editableFlow, new Set());
+    for (const node of collections) {
+      upstream.push(...sources(project(node.items.schema.items), { kind: "ref", source: "nodeOutput", nodeId: node.id, path: ["item"] }, `Collection ${node.id} · current item`));
+      upstream.push(...sources({ type: "integer" }, { kind: "ref", source: "nodeOutput", nodeId: node.id, path: ["index"] }, `Collection ${node.id} · item index`));
+      upstream.push(...sources(project({ type: "array", items: node.collect.schema }), { kind: "ref", source: "nodeOutput", nodeId: node.id, path: ["value"] }, `Collection ${node.id} · collected items`));
+    }
+  }
+  const scopedSource = (source: Source, nodeId: string) => {
+    if (source.binding.source !== "nodeOutput" || !collectionIDs.has(source.binding.nodeId!)) return true;
+    const active = iterationScopes.get(nodeId)?.has(source.binding.nodeId!) ?? false;
+    return source.binding.path[0] === "value" ? !active : active;
+  };
   let prefix = blueprint.trigger.type === "manual" && Object.keys(blueprint.trigger.config ?? {}).every(key => key === "inputSchema"), seen = new Set<string>();
   const nodes = blueprint.steps.slice(0, 200).map(step => {
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action), tool = matches.length === 1 ? matches[0] : undefined;
@@ -74,7 +94,7 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     const validScope = prefix && safeID(step.id) && !seen.has(step.id) && Object.keys(step).every(key => ["id", "kind", "action", "parameters", "description"].includes(key));
     const result = { nodeId: step.id, sourceAction: step.action ?? "", state: schema ? "LOCAL_CONTRACT" : "UNAVAILABLE",
       ...(schema && tool ? { inputSchema: schema, ...(outputSchema ? { outputSchema } : {}), contractHash: capabilityContractHash(tool), actions: [tool.name, tool.mcp_tool_name] } : {}),
-      dataSources: validScope && (!compiled || scopes) ? upstream.filter(source => !scopes || source.binding.source === "workflowInput" || scopes.get(step.id)?.has(source.binding.nodeId!)).slice(-32).map(source => structuredClone(source)) : [],
+      dataSources: validScope && (!compiled || scopes) ? upstream.filter(source => scopedSource(source, step.id) && (!scopes || source.binding.source === "workflowInput" || scopes.get(step.id)?.has(source.binding.nodeId!))).slice(-32).map(source => structuredClone(source)) : [],
       reason: schema ? "Local schema guidance only; live admission and runtime checks are separate" : "No supported role-granted local read schema; existing values are preserved" };
     prefix = validScope && granted && !!schema;
     if (prefix && tool?.bridge_contract?.output_schema) {
@@ -84,10 +104,10 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     return result;
   });
   const controlScopes = editableFlow && compiled ? validateReadControlFlow(editableFlow, compiled.ir, new Map()) : undefined;
-  const dataFor = (scope: Set<string> | undefined) => upstream.filter(source => source.binding.source === "workflowInput" || scope?.has(source.binding.nodeId!)).slice(-32).map(source => structuredClone(source));
-  const conditions = editableFlow ? controlNodes(editableFlow).map(node => ({ nodeId: node.id, dataSources: dataFor(controlScopes?.scopes.get(node.id)).filter(source => source.schema.type === "boolean"), mergeSources: { then: dataFor(controlScopes?.branchScopes.get(node.id)?.then), else: dataFor(controlScopes?.branchScopes.get(node.id)?.else) } })) : [];
-  const returns = editableFlow ? structuralNodes(editableFlow).filter(node => node.kind === "return").map(node => ({ nodeId: node.id, dataSources: dataFor(controlScopes?.scopes.get(node.id)) })) : [];
-  const executionProfile = compiled?.ir.schemaVersion === "workflow-read-ir/v3" ? "structured-read-v1" : editableFlow ? "conditional-read-v1" : "sequential-read-v1";
+  const dataFor = (scope: Set<string> | undefined, nodeId: string) => upstream.filter(source => scopedSource(source, nodeId) && (source.binding.source === "workflowInput" || scope?.has(source.binding.nodeId!))).slice(-32).map(source => structuredClone(source));
+  const conditions = editableFlow ? controlNodes(editableFlow).map(node => ({ nodeId: node.id, dataSources: dataFor(controlScopes?.scopes.get(node.id), node.id).filter(source => source.schema.type === "boolean"), mergeSources: { then: dataFor(controlScopes?.branchScopes.get(node.id)?.then, node.id), else: dataFor(controlScopes?.branchScopes.get(node.id)?.else, node.id) } })) : [];
+  const returns = editableFlow ? structuralNodes(editableFlow).filter(node => node.kind === "return").map(node => ({ nodeId: node.id, dataSources: dataFor(controlScopes?.scopes.get(node.id), node.id) })) : [];
+  const executionProfile = compiled?.ir.schemaVersion === "workflow-read-ir/v4" ? "collection-simulation-only" : compiled?.ir.schemaVersion === "workflow-read-ir/v3" ? "structured-read-v1" : editableFlow ? "conditional-read-v1" : "sequential-read-v1";
   const value = { profile: "read-authoring/v1", registryHash, executionProfile, ...(inputSchema ? { inputSchema } : {}), nodes, ...(editableFlow ? { controlFlow: editableFlow, conditions, returns } : {}) };
   if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, nodes: [], conditions: [], returns: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
   return value;

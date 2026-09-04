@@ -4,8 +4,8 @@ import { mergeSchema, returnSchema, type ReadMerge, type ReadReturn } from "./re
 import { checkBinding, schemaAt } from "./read-binding-validation.js";
 
 export type ReadSequence = { kind: "sequence"; nodes: ReadControlNode[] };
-export type ReadControlNode = { kind: "action"; nodeId: string } | { kind: "if"; id: string; predicate: ReadReference | { kind: "literal"; value: boolean }; then: ReadSequence; else: ReadSequence; merge?: ReadMerge | undefined } | { kind: "return"; id: string; output: ReadReturn };
-export type ReadControlFlow = { schemaVersion: "read-control-flow/v1" | "read-control-flow/v2"; root: ReadSequence };
+export type ReadControlNode = { kind: "action"; nodeId: string } | { kind: "if"; id: string; predicate: ReadReference | { kind: "literal"; value: boolean }; then: ReadSequence; else: ReadSequence; merge?: ReadMerge | undefined } | { kind: "return"; id: string; output: ReadReturn } | { kind: "foreach"; id: string; items: ReadReturn; maxItems: number; body: ReadSequence; collect: ReadReturn };
+export type ReadControlFlow = { schemaVersion: "read-control-flow/v1" | "read-control-flow/v2" | "read-control-flow/v3"; root: ReadSequence };
 const identifier = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/).refine(value => !["input", "__proto__", "constructor", "prototype"].includes(value));
 const path = z.array(z.string().regex(/^[A-Za-z0-9_-]+$/).refine(value => !["__proto__", "constructor", "prototype"].includes(value))).max(16);
 export const readPredicateSchema = z.union([
@@ -17,8 +17,9 @@ const sequence: z.ZodType<ReadSequence> = z.lazy(() => z.object({ kind: z.litera
   z.object({ kind: z.literal("action"), nodeId: identifier }).strict(),
   z.object({ kind: z.literal("if"), id: identifier, predicate: readPredicateSchema, then: sequence, else: sequence, merge: mergeSchema.optional() }).strict(),
   z.object({ kind: z.literal("return"), id: identifier, output: returnSchema }).strict(),
+  z.object({ kind: z.literal("foreach"), id: identifier, items: returnSchema.refine(value => value.schema.type === "array", "Collection requires an array schema"), maxItems: z.number().int().min(1).max(100), body: sequence, collect: returnSchema }).strict(),
 ])).max(200) }).strict());
-const flow = z.object({ schemaVersion: z.enum(["read-control-flow/v1", "read-control-flow/v2"]), root: sequence }).strict();
+const flow = z.object({ schemaVersion: z.enum(["read-control-flow/v1", "read-control-flow/v2", "read-control-flow/v3"]), root: sequence }).strict();
 
 /** Bound unknown input BEFORE recursive schema parsing. A control-flow record
  * is explicit execution meaning, never inferred from visual edges/layout. */
@@ -30,6 +31,7 @@ export function parseReadControlFlow(raw: unknown): ReadControlFlow {
   };
   bound(raw, 0);
   const parsed = flow.parse(raw);
+  if (parsed.schemaVersion !== "read-control-flow/v3" && loopNodes(parsed.root).length) throw new Error("Collection loops require read-control-flow/v3");
   if (parsed.schemaVersion === "read-control-flow/v1" && valueNodes(parsed.root).length) throw new Error("Typed values require read-control-flow/v2");
   return parsed;
 }
@@ -39,21 +41,24 @@ export const readControlFlowSchema = z.unknown().transform((raw, ctx) => {
 });
 
 export function actionOrder(root: ReadSequence): string[] {
-  return root.nodes.flatMap(node => node.kind === "action" ? [node.nodeId] : node.kind === "if" ? [...actionOrder(node.then), ...actionOrder(node.else)] : []);
+  return root.nodes.flatMap(node => node.kind === "action" ? [node.nodeId] : node.kind === "if" ? [...actionOrder(node.then), ...actionOrder(node.else)] : node.kind === "foreach" ? actionOrder(node.body) : []);
 }
 export function controlNodes(root: ReadSequence): Array<Extract<ReadControlNode, { kind: "if" }>> {
-  return root.nodes.flatMap(node => node.kind !== "if" ? [] : [node, ...controlNodes(node.then), ...controlNodes(node.else)]);
+  return root.nodes.flatMap(node => node.kind === "foreach" ? controlNodes(node.body) : node.kind !== "if" ? [] : [node, ...controlNodes(node.then), ...controlNodes(node.else)]);
 }
 export function structuralNodes(root: ReadSequence): Array<Exclude<ReadControlNode, { kind: "action" }>> {
-  return root.nodes.flatMap(node => node.kind === "action" ? [] : node.kind === "return" ? [node] : [node, ...structuralNodes(node.then), ...structuralNodes(node.else)]);
+  return root.nodes.flatMap(node => node.kind === "action" ? [] : node.kind === "return" ? [node] : node.kind === "foreach" ? [node, ...structuralNodes(node.body)] : [node, ...structuralNodes(node.then), ...structuralNodes(node.else)]);
 }
-export function valueNodes(root: ReadSequence) { return structuralNodes(root).filter(node => node.kind === "return" || node.merge); }
+export function loopNodes(root: ReadSequence) { return structuralNodes(root).filter((node): node is Extract<ReadControlNode, { kind: "foreach" }> => node.kind === "foreach"); }
+export function valueNodes(root: ReadSequence) { return structuralNodes(root).filter(node => node.kind === "return" || node.kind === "if" && node.merge); }
+export function assertNoLiveReadLoops(root: ReadSequence): void { if (loopNodes(root).length) throw new Error("Durable per-iteration collection checkpoints are required before live loop execution"); }
 export function skippedActions(root: ReadSequence, conditionId: string, selected: "then" | "else"): string[] {
   const node = controlNodes(root).find(value => value.id === conditionId);
   if (!node) throw new Error("Unknown condition");
   return actionOrder(selected === "then" ? node.else : node.then);
 }
 export function assertSelectedReadNode(root: ReadSequence, nodeId: string, decisions: Record<string, { status: string; selected?: "then" | "else" }>) {
+  assertNoLiveReadLoops(root);
   let found = false;
   const visit = (block: ReadSequence, pathSelected: boolean) => {
     for (const node of block.nodes) {
@@ -76,49 +81,67 @@ function references(binding: ReadBinding): ReadReference[] {
 
 /** Every action has one structural owner. Branch-local outputs cannot escape
  * to siblings/parent scope; an explicit merge primitive is still required. */
-export function validateReadControlFlow(root: ReadSequence, ir: ReadIR, outputSchemas: ReadonlyMap<string, Record<string, unknown>>): { issues: string[]; scopes: Map<string, Set<string>>; branchScopes: Map<string, { then: Set<string>; else: Set<string> }> } {
+export function validateReadControlFlow(root: ReadSequence, ir: ReadIR, outputSchemas: ReadonlyMap<string, Record<string, unknown>>, inputSchemas: ReadonlyMap<string, Record<string, unknown>> = new Map()): { issues: string[]; scopes: Map<string, Set<string>>; branchScopes: Map<string, { then: Set<string>; else: Set<string> }> } {
   const issues: string[] = [], scopes = new Map<string, Set<string>>(), branchScopes = new Map<string, { then: Set<string>; else: Set<string> }>(), seen = new Set(ir.root.nodes.map(node => node.id));
   const definitions = new Map(ir.root.nodes.map(node => [node.id, node]));
   const order = actionOrder(root);
   if (order.length !== ir.root.nodes.length || order.some((id, index) => id !== ir.root.nodes[index]?.id) || new Set(order).size !== order.length)
     issues.push("Control flow must own every declared action exactly once in source declaration order");
   let controlCount = 0;
+  const loops = new Set(loopNodes(root).map(node => node.id));
+  let currentSchemas: ReadonlyMap<string, Record<string, unknown>> = outputSchemas;
   const checkReference = (ref: ReadReference, available: Set<string>, label: string) => {
     if (ref.source === "nodeOutput" && !available.has(ref.nodeId!)) issues.push(`${label} references unavailable branch-local or forward data`);
+    if (ref.source === "nodeOutput" && loops.has(ref.nodeId!) && available.has(ref.nodeId!) && !schemaAt(currentSchemas.get(ref.nodeId!), ref.path)) issues.push(`${label} references a loop item or collection outside its declared scope`);
   };
-  const visit = (block: ReadSequence, outer: Set<string>, depth: number): Set<string> => {
+  const visit = (block: ReadSequence, outer: Set<string>, depth: number, localSchemas: ReadonlyMap<string, Record<string, unknown>> = outputSchemas, inLoop = false): Set<string> => {
     if (depth > 8) { issues.push("Control flow exceeds eight nested scopes"); return new Set(outer); }
     const available = new Set(outer);
     for (const node of block.nodes) {
+      currentSchemas = localSchemas;
       if (node.kind === "action") {
         const action = definitions.get(node.nodeId);
         if (!action) { issues.push("Control flow references an unknown action"); continue; }
         scopes.set(node.nodeId, new Set(available));
         for (const ref of references(action.inputs)) checkReference(ref, available, `Step ${node.nodeId}`);
+        if (loops.size) checkBinding(action.inputs, inputSchemas.get(node.nodeId), `Step ${node.nodeId}`, issues, ref => schemaAt(ref.source === "workflowInput" ? ir.inputSchema : localSchemas.get(ref.nodeId!), ref.path));
         available.add(node.nodeId);
       } else {
         scopes.set(node.id, new Set(available));
         if (++controlCount > 100 || seen.has(node.id)) issues.push("Conditions require unique IDs and at most 100 nodes");
         seen.add(node.id);
         if (node.kind === "return") {
+          if (inLoop) issues.push("Collection bodies cannot contain workflow returns; return the collected value after the loop");
           for (const ref of references(node.output.value)) checkReference(ref, available, `Return ${node.id}`);
-          checkBinding(node.output.value, node.output.schema, `Return ${node.id}`, issues, ref => schemaAt(ref.source === "workflowInput" ? ir.inputSchema : outputSchemas.get(ref.nodeId!), ref.path));
+          checkBinding(node.output.value, node.output.schema, `Return ${node.id}`, issues, ref => schemaAt(ref.source === "workflowInput" ? ir.inputSchema : localSchemas.get(ref.nodeId!), ref.path));
           // Following declarations are still verified; runtime completion must
           // prove they were explicitly skipped after the committed return.
           continue;
         }
+        if (node.kind === "foreach") {
+          for (const ref of references(node.items.value)) checkReference(ref, available, `Collection ${node.id}`);
+          checkBinding(node.items.value, node.items.schema, `Collection ${node.id}`, issues, ref => schemaAt(ref.source === "workflowInput" ? ir.inputSchema : localSchemas.get(ref.nodeId!), ref.path));
+          const bodySchemas = new Map(localSchemas);
+          bodySchemas.set(node.id, { type: "object", properties: { item: node.items.schema.items, index: { type: "integer" } }, required: ["item", "index"], additionalProperties: false });
+          const bodyAvailable = visit(node.body, new Set([...available, node.id]), depth + 1, bodySchemas, true);
+          currentSchemas = bodySchemas;
+          for (const ref of references(node.collect.value)) checkReference(ref, bodyAvailable, `Collection result ${node.id}`);
+          checkBinding(node.collect.value, node.collect.schema, `Collection result ${node.id}`, issues, ref => schemaAt(ref.source === "workflowInput" ? ir.inputSchema : bodySchemas.get(ref.nodeId!), ref.path));
+          available.add(node.id); continue;
+        }
         if (node.predicate.kind === "ref") {
           checkReference(node.predicate, available, `Condition ${node.id}`);
-          let schema = node.predicate.source === "workflowInput" ? ir.inputSchema : outputSchemas.get(node.predicate.nodeId!);
+          let schema = node.predicate.source === "workflowInput" ? ir.inputSchema : localSchemas.get(node.predicate.nodeId!);
           for (const part of node.predicate.path) schema = schema?.type === "array" && /^(0|[1-9][0-9]*)$/.test(part) ? schema.items as Record<string, unknown> : (schema?.properties as Record<string, Record<string, unknown>>)?.[part];
           if (schema && schema.type !== "boolean") issues.push(`Condition ${node.id} requires a boolean predicate, not implicit conversion`);
         }
-        const thenAvailable = visit(node.then, available, depth + 1), elseAvailable = visit(node.else, available, depth + 1);
+        const thenAvailable = visit(node.then, available, depth + 1, localSchemas, inLoop), elseAvailable = visit(node.else, available, depth + 1, localSchemas, inLoop);
         branchScopes.set(node.id, { then: thenAvailable, else: elseAvailable });
+        currentSchemas = localSchemas;
         if (node.merge) {
           for (const [branch, branchAvailable] of [["then", thenAvailable], ["else", elseAvailable]] as const) {
             for (const ref of references(node.merge[branch])) checkReference(ref, branchAvailable ?? new Set(), `Merge ${node.id} ${branch}`);
-            checkBinding(node.merge[branch], node.merge.schema, `Merge ${node.id} ${branch}`, issues, ref => schemaAt(ref.source === "workflowInput" ? ir.inputSchema : outputSchemas.get(ref.nodeId!), ref.path));
+            checkBinding(node.merge[branch], node.merge.schema, `Merge ${node.id} ${branch}`, issues, ref => schemaAt(ref.source === "workflowInput" ? ir.inputSchema : localSchemas.get(ref.nodeId!), ref.path));
           }
           available.add(node.id);
         }
@@ -127,14 +150,17 @@ export function validateReadControlFlow(root: ReadSequence, ir: ReadIR, outputSc
     return available;
   };
   visit(root, new Set(), 0);
+  const cost = (block: ReadSequence): number => block.nodes.reduce((total, node) => total + (node.kind === "foreach" ? 1 + node.maxItems * (1 + cost(node.body)) : node.kind === "if" ? 1 + cost(node.then) + cost(node.else) : 1), 0);
+  if (cost(root) > 2000) issues.push("Collection expansion exceeds the 2000-visit declared execution budget");
   return { issues: [...new Set(issues)], scopes, branchScopes };
 }
 
 export type ReadValueReceipt = { kind: "merge" | "return"; status: "DONE" | "FAILED"; stepIndex: number; completedAt: string };
-export type ReadSkipReason = { kind: "branch"; conditionId: string; selected: "then" | "else" } | { kind: "return"; returnId: string };
+export type ReadSkipReason = { kind: "branch"; conditionId: string; selected: "then" | "else" } | { kind: "return"; returnId: string } | { kind: "empty-collection"; loopId: string };
 /** A value boundary may not jump over an earlier decision, merge, return or
  * action. This is a denial-only check over committed evidence, not execution. */
 export function assertReadValueBoundary(root: ReadSequence, nodeId: string, kind: "merge" | "return", decisions: Record<string, { status: string; selected?: "then" | "else" }>, attempts: Record<string, { status: string }>, values: Record<string, { kind: string; status: string }>) {
+  assertNoLiveReadLoops(root);
   let found = false;
   const requireValue = (id: string, expected: string) => { if (values[id]?.kind !== expected || values[id]?.status !== "DONE") throw new Error("Earlier typed value is not confirmed"); };
   const visit = (block: ReadSequence): void => {
@@ -145,6 +171,7 @@ export function assertReadValueBoundary(root: ReadSequence, nodeId: string, kind
         if (node.id === nodeId && kind === "return") { found = true; return; }
         throw new Error("Value boundary follows an earlier return");
       } else {
+        if (node.kind === "foreach") throw new Error("Collection value boundary requires iteration checkpoints");
         const decision = decisions[node.id];
         if (decision?.status !== "DONE" || !["then", "else"].includes(decision.selected ?? "")) throw new Error("Earlier condition is not confirmed");
         visit(node[decision.selected!]); if (found) return;
@@ -159,6 +186,7 @@ export function assertReadValueBoundary(root: ReadSequence, nodeId: string, kind
   visit(root); if (!found) throw new Error("Value boundary is not on the confirmed path");
 }
 export function readFlowOutcomes(root: ReadSequence, decisions: Record<string, { status: string; selected?: "then" | "else" }>, values: Record<string, { kind: string; status: string }> = {}) {
+  assertNoLiveReadLoops(root);
   const visited = new Set<string>(), selected = new Set<string>(), valueIDs = new Set<string>(), skipped = new Map<string, ReadSkipReason>();
   const skip = (block: ReadSequence, reason: ReadSkipReason) => { for (const id of actionOrder(block)) skipped.set(id, reason); };
   const value = (id: string, kind: string) => {
@@ -171,6 +199,7 @@ export function readFlowOutcomes(root: ReadSequence, decisions: Record<string, {
       if (node.kind === "action") selected.add(node.nodeId);
       else if (node.kind === "return") { value(node.id, "return"); returned = node.id; }
       else {
+        if (node.kind === "foreach") throw new Error("Collection completion requires iteration checkpoints");
         const receipt = decisions[node.id];
         if (!receipt || receipt.status !== "DONE" || !["then", "else"].includes(receipt.selected ?? "")) throw new Error("Condition lacks a confirmed decision");
         visited.add(node.id);
@@ -198,6 +227,7 @@ export function controlPoint(root: ReadSequence, nodeId: string, afterBranches =
       if (id === nodeId && !afterBranches) result = cursor;
       if (node.kind === "action") cursor++;
       else if (node.kind === "if") { visit(node.then); visit(node.else); }
+      else if (node.kind === "foreach") visit(node.body);
       if (id === nodeId && afterBranches) result = cursor;
     }
   };

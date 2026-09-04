@@ -69,6 +69,8 @@ export class ReadCheckpoints implements ReadExecutionHooks {
     if (!item || item.status !== "RUNNING" || item.readProgress?.profile !== "read-progress-v1" || item.readProgress.epoch !== this.epoch ||
         item.workflowSnapshot?.yaml !== this.yaml || item.workflowSnapshot.contentHash !== this.contentHash || this.semanticHash !== undefined && item.workflowSnapshot.compilation?.semanticHash !== this.semanticHash)
       throw new Error("Read execution is no longer owned by this worker generation");
+    if (this.compiledPlan?.ir.schemaVersion === "workflow-read-ir/v4" || item.workflowSnapshot.compilation?.schemaVersion === "workflow-read-ir/v4")
+      throw new Error("Collection drafts require durable iteration checkpoints; the legacy worker cannot advance or complete them");
     return item as Execution & { readProgress: ReadRunProgress };
   }
   private async commit<T>(mutation: (state: RepositoryState) => T): Promise<T> {
@@ -151,6 +153,7 @@ export class ReadCheckpoints implements ReadExecutionHooks {
       assertSelectedReadNode(flow, nodeId, progress.decisions ?? {});
       if (node.kind === "if" && [...actionOrder(node.then), ...actionOrder(node.else)].some(id => !progress.attempts[id])) throw new Error("Merge lacks branch checkpoints");
       assertReadValueBoundary(flow, nodeId, kind, progress.decisions ?? {}, progress.attempts, progress.values ?? {});
+      if (node.kind === "foreach") throw new Error("Collection values require iteration checkpoints");
       const schema = node.kind === "return" ? node.output.schema : node.merge!.schema;
       if (valid && validateToolInput(schema, value).length) throw new Error("Typed value does not match its contract");
       let safe = valid ? withoutSecretFields({ value }) as { value: unknown } : undefined;
@@ -219,6 +222,7 @@ export class ReadCheckpoints implements ReadExecutionHooks {
       }
       if (item.status === "DONE" && this.compiledPlan?.ir.flow) for (const [nodeId, reason] of readFlowOutcomes(this.compiledPlan.ir.flow, progress.decisions ?? {}, progress.values ?? {}).skipped) {
         const entry = state.timelines[item.id]?.find(entry => entry.nodeId === nodeId && entry.status === "SKIPPED");
+        if (reason.kind === "empty-collection") throw new Error("Collection completion requires iteration checkpoints");
         if (!entry || (reason.kind === "return" ? entry.outcome !== "AFTER_RETURN" || entry.returnId !== reason.returnId : entry.outcome !== "NOT_SELECTED" || entry.conditionId !== reason.conditionId || entry.selectedBranch !== reason.selected)) throw new Error("Skip receipt does not match the confirmed structural reason");
       }
       if (item.status === "DONE" && ["workflow-read-ir/v2", "workflow-read-ir/v3"].includes(item.workflowSnapshot?.compilation?.schemaVersion ?? "") && !this.compiledPlan?.ir.flow) throw new Error("Structured completion requires the pinned compiled flow");

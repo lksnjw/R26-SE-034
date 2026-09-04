@@ -13,6 +13,21 @@ afterEach(() => { cleanup(); jest.restoreAllMocks(); sessionStorage.clear(); loc
 const open = (extra = {}) => render(<ReadSimulationPanel workflowId="flow" record={record} steps={steps} canControl {...extra} />);
 const evaluate = () => fireEvent.click(screen.getByRole("button", { name: "Evaluate simulation" }));
 
+const loopRecord = { ...record, authoring: { ...record.authoring, executionProfile: "collection-simulation-only", controlFlow: { kind: "sequence", nodes: [{ kind: "foreach", id: "each", maxItems: 3, body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "read" }] } }] } } };
+const loopResponse = change => response({ simulation: "fixture-read/v2", trace: [{ nodeId: "each", kind: "collection", outcome: "SIMULATED_COLLECTION_STARTED", count: 2, invocationId: "each", iterations: [] }, { nodeId: "read", kind: "action", outcome: "SIMULATED", invocationId: "each/0/read", iterations: [{ loopId: "each", index: 0 }], output: { content: [{ type: "text", text: "First supplied answer" }] } }, { nodeId: "read", kind: "action", outcome: "SIMULATED", invocationId: "each/1/read", iterations: [{ loopId: "each", index: 1 }], output: { content: [{ type: "text", text: "Second supplied answer" }] } }], finalOutput: ["First", "Second"], unusedFixtureIds: [], ...change });
+test("collection forms submit explicit per-item fixtures and display separate readable answers, never a shared node fixture", async () => {
+  workflowService.simulate.mockResolvedValue(loopResponse()); open({ record: loopRecord });
+  expect(screen.queryByLabelText("Supply response for read")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Add item response for read" })); fireEvent.change(screen.getByLabelText("each/0/read test response text"), { target: { value: "First" } });
+  fireEvent.change(screen.getByLabelText("read each fixture item number"), { target: { value: "2" } }); fireEvent.click(screen.getByRole("button", { name: "Add item response for read" })); fireEvent.change(screen.getByLabelText("each/1/read test response text"), { target: { value: "Second" } }); evaluate();
+  const results = await screen.findByRole("region", { name: "Simulation results" });
+  expect(workflowService.simulate).toHaveBeenCalledWith("flow", loopRecord, {}, { "each/0/read": { content: [{ type: "text", text: "First" }] }, "each/1/read": { content: [{ type: "text", text: "Second" }] } }, "read-fixtures/v2");
+  expect(within(results).getByText("each · item 1")).toBeTruthy(); expect(within(results).getByText("each · item 2")).toBeTruthy(); expect(results.textContent).toContain("First supplied answer"); expect(results.textContent).toContain("Second supplied answer"); expect(results.querySelector("pre")).toBeNull(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+test.each([{ simulation: "fixture-read/v1" }, { trace: [{ nodeId: "read", kind: "action", outcome: "SIMULATED", invocationId: "each/0/read", iterations: [{ loopId: "each", index: 1 }] }] }, { trace: [{ nodeId: "read", kind: "action", outcome: "SIMULATED", invocationId: "each/100/read", iterations: [{ loopId: "each", index: 100 }] }] }, { trace: [{ nodeId: "read", kind: "action", outcome: "SIMULATED" }] }])("collection result rejects unverified iteration identity %j", async change => {
+  workflowService.simulate.mockResolvedValue(loopResponse(change)); open({ record: loopRecord }); evaluate(); await screen.findByRole("alert"); expect(screen.queryByRole("region", { name: "Simulation results" })).toBeNull();
+});
+
 test("structured fixture forms require explicit supply and never publish, execute or store test data", async () => {
   const view = open(); fireEvent.click(screen.getByRole("button", { name: "Set enabled" }));
   fireEvent.change(screen.getByLabelText("Simulation inputs · enabled"), { target: { value: "true" } });

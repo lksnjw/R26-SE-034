@@ -11,7 +11,8 @@ export const nodeIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 export const nodePatchSchema = z.object({ action: z.string().min(1).max(128).optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
 export const conditionPatchSchema = z.object({ predicate: readPredicateSchema }).strict();
 export const returnPatchSchema = z.object({ output: readReturnSchema }).strict();
-const destinationSchema = z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict();
+const destinationSchema = z.union([z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict(), z.object({ loopId: nodeIdSchema, scope: z.literal("body") }).strict()]);
+const collectionConfig = { items: readReturnSchema.refine(value => value.schema.type === "array", "Collection requires an array schema"), maxItems: z.number().int().min(1).max(100), collect: readReturnSchema };
 export const workflowRevisionSchema = { baseVersion: z.number().int().min(1), baseHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) };
 export const nodeContextSchema = z.object({ workflowId: z.string().min(1).max(128), nodeId: nodeIdSchema, ...workflowRevisionSchema }).strict();
 export type NodeContext = z.infer<typeof nodeContextSchema>;
@@ -28,11 +29,17 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("addReturn"), nodeId: nodeIdSchema, output: readReturnSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
   z.object({ type: z.literal("updateReturn"), nodeId: nodeIdSchema, patch: returnPatchSchema }).strict(),
   z.object({ type: z.literal("removeReturn"), nodeId: nodeIdSchema }).strict(),
+  z.object({ type: z.literal("wrapCollection"), nodeId: nodeIdSchema, loopId: nodeIdSchema, ...collectionConfig }).strict(),
+  z.object({ type: z.literal("updateCollection"), nodeId: nodeIdSchema, patch: z.object(collectionConfig).strict() }).strict(),
+  z.object({ type: z.literal("removeCollection"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("restoreDraft"), yaml: z.string().min(1).max(200000) }).strict(),
   z.object({ type: z.literal("setControlFlow"), flow: readControlFlowSchema }).strict(),
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
-export function selectedNodePatchSchema(node: { kind?: string | undefined }) { return node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : nodePatchSchema; }
+export function selectedNodePatchSchema(node: { kind?: string | undefined }) {
+  if (node.kind === "foreach") throw new HandlerFailure(422, "Collection-node chat patches require a dedicated scope contract; edit its saved fields explicitly for now");
+  return node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : nodePatchSchema;
+}
 export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : "prompt/node-patch/v2"; }
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
   return workflowCommandSchema.parse({ type: node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : "updateNode", nodeId: node.id, patch });
@@ -68,6 +75,19 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
   const blueprint = parseWorkflowYAMLStrict(change.type === "restoreDraft" ? change.yaml : source);
   if (change.type === "restoreDraft") return stringifyWorkflowYAML(blueprint);
   if (change.type === "setControlFlow") { blueprint.metadata = { ...blueprint.metadata, controlFlow: change.flow }; return stringifyWorkflowYAML(blueprint); }
+  if (change.type === "wrapCollection" || change.type === "updateCollection" || change.type === "removeCollection") {
+    const root = draftFlow(blueprint), found = locateFlowNode(root, change.nodeId);
+    if (change.type === "wrapCollection") {
+      if (!found || found.node.kind !== "action") throw new HandlerFailure(422, "Select one action to wrap in a collection");
+      if (locateFlowNode(root, change.loopId)) throw new HandlerFailure(422, "Structural ID already exists");
+      found.block.nodes[found.index] = { kind: "foreach", id: change.loopId, items: change.items, maxItems: change.maxItems, collect: change.collect, body: { kind: "sequence", nodes: [found.node] } };
+    } else {
+      if (!found || found.node.kind !== "foreach") throw new HandlerFailure(422, "Selected collection does not exist");
+      if (change.type === "updateCollection") Object.assign(found.node, change.patch);
+      else { if (found.node.body.nodes.length) throw new HandlerFailure(422, "Move or remove the collection body before removing its owner"); found.block.nodes.splice(found.index, 1); }
+    }
+    saveDraftFlow(blueprint, root); return stringifyWorkflowYAML(blueprint);
+  }
   if (change.type === "setConditionMerge" || change.type === "addReturn" || change.type === "updateReturn" || change.type === "removeReturn") {
     const root = draftFlow(blueprint), found = locateFlowNode(root, change.nodeId);
     if (change.type === "addReturn") {

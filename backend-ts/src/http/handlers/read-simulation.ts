@@ -51,7 +51,7 @@ export async function handleReadFixtureSimulation(request: FastifyRequest, reply
       if (error instanceof HandlerFailure) throw error;
       throw new HandlerFailure(503, "Simulation authority could not be confirmed; reload after storage recovery", { code: "SIMULATION_AUTHORITY_UNAVAILABLE" });
     }
-    return reply.send(ok({ dry_run: true, simulation: "fixture-read/v1", can_execute: false, plan_valid: validation.passed && result.outcome !== "PLAN_BLOCKED", validation: publicValidation, live_readiness: "not_checked", runtime_authorization: "not_checked", capability_admission: "not_checked", erp_calls: 0, model_calls: 0, persisted_run: false,
+    return reply.send(ok({ dry_run: true, simulation: fixtures.profile === "read-fixtures/v2" ? "fixture-read/v2" : "fixture-read/v1", can_execute: false, plan_valid: validation.passed && result.outcome !== "PLAN_BLOCKED", validation: publicValidation, live_readiness: "not_checked", runtime_authorization: "not_checked", capability_admission: "not_checked", erp_calls: 0, model_calls: 0, persisted_run: false,
       workflowId: workflow.id, baseVersion: fixtures.baseVersion, baseHash: fixtures.baseHash, registryHash, ...result }, "Fixture simulation only; no live service or execution was performed", { traceId }));
   } catch (error) {
     if (error instanceof HandlerFailure) return reply.status(error.status).send(fail(error.message, error.meta));

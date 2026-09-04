@@ -7,7 +7,7 @@ import { exactBridgeName } from "../tools/erpbridge-contract.js";
 import { validateToolInput, validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
-import { parseReadControlFlow, validateReadControlFlow, controlNodes, type ReadSequence } from "./read-control-flow.js";
+import { parseReadControlFlow, validateReadControlFlow, controlNodes, loopNodes, type ReadSequence } from "./read-control-flow.js";
 import { checkBinding, schemaAt } from "./read-binding-validation.js";
 import { ReadValueBudget } from "./read-value-budget.js";
 
@@ -16,7 +16,7 @@ export type ReadBinding = ReadReference | { kind: "literal"; value: string | num
   { kind: "object"; fields: Record<string, ReadBinding> } | { kind: "array"; items: ReadBinding[] } |
   { kind: "template"; parts: Array<string | ReadReference> };
 export type ReadAdmissionPin = { connectionId: string; capabilityId: string; revisionId: string; admissionVersion: number; contractHash: string };
-export type ReadIR = { schemaVersion: "workflow-read-ir/v1" | "workflow-read-ir/v2" | "workflow-read-ir/v3"; compilerVersion: "read-compiler/v1" | "read-compiler/v2" | "read-compiler/v3"; trigger: { kind: "manual" }; flow?: ReadSequence;
+export type ReadIR = { schemaVersion: "workflow-read-ir/v1" | "workflow-read-ir/v2" | "workflow-read-ir/v3" | "workflow-read-ir/v4"; compilerVersion: "read-compiler/v1" | "read-compiler/v2" | "read-compiler/v3" | "read-compiler/v4"; trigger: { kind: "manual" }; flow?: ReadSequence;
   inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: Array<{ id: string; kind: "action";
     capability: { toolId: string; action: string; remoteName: string; contractHash: string; admission?: ReadAdmissionPin };
     inputs: ReadBinding }> } };
@@ -49,7 +49,9 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
     try {
       const parsed = parseReadControlFlow(blueprint.metadata.controlFlow); ir.flow = parsed.root;
       if (parsed.schemaVersion === "read-control-flow/v2") { ir.schemaVersion = "workflow-read-ir/v3"; ir.compilerVersion = "read-compiler/v3"; }
+      if (parsed.schemaVersion === "read-control-flow/v3") { ir.schemaVersion = "workflow-read-ir/v4"; ir.compilerVersion = "read-compiler/v4"; }
       for (const node of controlNodes(ir.flow)) if (node.merge) { mergedIDs.add(node.id); outputs.set(node.id, { type: "object", properties: { value: node.merge.schema }, required: ["value"], additionalProperties: false }); }
+      for (const node of loopNodes(ir.flow)) { mergedIDs.add(node.id); outputs.set(node.id, { type: "object", properties: { value: { type: "array", items: node.collect.schema } }, required: ["value"], additionalProperties: false }); }
     } catch { issues.push("Structured control flow is malformed or exceeds supported limits"); }
   }
   if (blueprint.steps.length < 1 || blueprint.steps.length > 200) issues.push("Read workflows require 1–200 steps");
@@ -101,7 +103,7 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
   }
   // Bound the projection as well as its source: reference expansion/metadata
   // cannot turn a bounded YAML file into an unbounded saved artifact.
-  if (ir.flow) issues.push(...validateReadControlFlow(ir.flow, ir, outputs).issues);
+  if (ir.flow) issues.push(...validateReadControlFlow(ir.flow, ir, outputs, new Map(ir.root.nodes.map(node => [node.id, tools.find(tool => tool.tool_id === node.capability.toolId)?.input_schema ?? {}]))).issues);
   if (canonicalJSONBytes(ir).length > 1_000_000) issues.push("Compiled read artifact exceeds supported size");
   return { ir, semanticHash: hashIR(ir), issues: [...new Set(issues)] };
 }

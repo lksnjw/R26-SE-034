@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 import React from "react";
-import { afterEach, expect, test } from "@jest/globals";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { afterEach, expect, jest, test } from "@jest/globals";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import ReadFlowTree from "./ReadFlowTree";
 afterEach(cleanup);
 const action = nodeId => ({ kind: "action", nodeId });
@@ -9,6 +9,16 @@ const sequence = (...nodes) => ({ kind: "sequence", nodes });
 const flow = sequence({ kind: "if", id: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["enabled"] }, then: sequence(action("yes")), else: sequence(action("no")) }, action("after"));
 const steps = ["yes", "no", "after"].map(id => ({ id }));
 const renderAction = step => <li key={step.id}><button>{step.id}</button></li>;
+
+const collection = maxItems => sequence({ kind: "foreach", id: "each", maxItems, items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "array", items: [] } }, collect: { schema: { type: "string" }, value: { kind: "literal", value: "" } }, body: flow });
+test("collections remain nested and selectable without inventing real iteration answers", () => {
+  const select = jest.fn(); render(<ReadFlowTree flow={collection(3)} steps={steps} renderAction={renderAction} onSelectCondition={select} values={{ each: { kind: "collection", status: "DONE" } }} valueOutputs={{ each: { value: "forged receipt" } }} />);
+  expect(within(screen.getByRole("region", { name: "each collection body" })).getByRole("region", { name: "gate If yes" })).toBeTruthy(); fireEvent.click(screen.getByRole("button", { name: "Select collection each" })); expect(select).toHaveBeenCalledWith("each");
+  expect(screen.getByText(/Draft simulation only; no real iteration receipts/)).toBeTruthy(); expect(screen.queryByText("forged receipt")).toBeNull();
+});
+test.each([0, 101, 1.5])("invalid collection budget %s falls back to visibly unconfirmed declarations", maximum => {
+  render(<ReadFlowTree flow={collection(maximum)} steps={steps} renderAction={renderAction} />); expect(screen.getByRole("alert")).toBeTruthy(); expect(screen.queryByRole("region", { name: "Collection each" })).toBeNull();
+});
 
 test("structured branches are nested and both remain inspectable without claiming execution", () => {
   const { container } = render(<ReadFlowTree flow={flow} steps={steps} renderAction={renderAction} />);

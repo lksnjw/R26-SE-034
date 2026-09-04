@@ -25,10 +25,11 @@ export function normalizeWorkflow(workflow) {
 }
 
 export const workflowService = {
-  async simulate(id, revision, input, outputs) {
+  async simulate(id, revision, input, outputs, profile = "read-fixtures/v1") {
+    if (!["read-fixtures/v1", "read-fixtures/v2"].includes(profile)) throw new Error("Unsupported fixture profile");
     // Separate from real runs: no mode, approval, retry or idempotency receipt.
     return unwrap(await apiClient.post(`/workflows/${id}/run`, { dryRun: true, input,
-      simulation: { profile: "read-fixtures/v1", baseVersion: revision.version, baseHash: revision.contentHash, outputs },
+      simulation: { profile, baseVersion: revision.version, baseHash: revision.contentHash, outputs },
     }, { timeout: 30000 }));
   },
   async readiness(id) {

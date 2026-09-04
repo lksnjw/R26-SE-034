@@ -16,6 +16,8 @@ import NodePrompt from "./NodePrompt";
 import ConditionFields, { ScopeSelect, branchDestination, flowConditions, flowReturns } from "./ConditionFields";
 import ReadValueFields, { SchemaContractFields, ReadBindingFields } from "./ReadValueFields";
 import ReadSimulationPanel from "./ReadSimulationPanel";
+import { flowLoops } from "./CollectionFields";
+import CollectionInspector, { CollectionWrapForm } from "./CollectionInspector";
 
 const button = "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800";
 const input = "w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackground";
@@ -86,6 +88,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   const [conditionPredicate, setConditionPredicate] = useState({ kind: "literal", value: false }), [conditionBranch, setConditionBranch] = useState("then"), [conditionScope, setConditionScope] = useState("root");
   const [addingReturn, setAddingReturn] = useState(false), [returnId, setReturnId] = useState(""), [returnScope, setReturnScope] = useState("root");
   const [returnOutput, setReturnOutput] = useState({ schema: { type: "string" }, value: { kind: "literal", value: "" } });
+  const [wrappingCollection, setWrappingCollection] = useState(false);
   const load = useCallback(async () => { const next = await workflowService.readiness(workflowId); setRecord(next); return next; }, [workflowId]);
   useEffect(() => {
     let active = true;
@@ -103,6 +106,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   const node = preview.steps.find((step) => step.id === selected);
   const condition = flowConditions(authoring?.controlFlow).find(item => item.id === selected);
   const returnNode = flowReturns(authoring?.controlFlow).find(item => item.id === selected);
+  const collection = flowLoops(authoring?.controlFlow).find(item => item.id === selected);
   const nodeId = node?.id || condition?.id || returnNode?.id, nodeLabel = node?.source.description || (condition ? `Condition ${condition.id}` : returnNode ? `Return ${returnNode.id}` : nodeId);
   const version = record?.version, contentHash = record?.contentHash;
   useEffect(() => {
@@ -118,7 +122,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
     const next = await workflowService.command(workflowId, revision, command);
     if (history === "edit") { setUndo((items) => [...items.slice(-19), record.yaml]); setRedo([]); }
     if (revision.proposalId) setResolvedProposals((items) => [...items, revision.proposalId]);
-    setRecord({ ...next, readinessUnknown: true }); setProposal(null); setConditionMode(null); setAddingReturn(false); setNotice("Draft saved. Publication and execution are separate actions."); onChatChanged?.();
+    setRecord({ ...next, readinessUnknown: true }); setProposal(null); setConditionMode(null); setAddingReturn(false); setWrappingCollection(false); setNotice("Draft saved. Publication and execution are separate actions."); onChatChanged?.();
     try { await load(); } catch { setNotice("Draft saved, but readiness could not be refreshed. Reload before publishing or running."); }
   };
   const attemptRun = async () => {
@@ -203,6 +207,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
         {canEdit && <><button className={`${button} mt-3 text-red-600`} disabled={busy || condition.then.nodes.length > 0 || condition.else.nodes.length > 0} onClick={() => previewChange(condition.id, { type: "removeCondition", nodeId: condition.id }, condition, null)}>Remove empty condition…</button>{(condition.then.nodes.length > 0 || condition.else.nodes.length > 0) && <p className="mt-1 text-[10px] text-gray-500">Move or remove both paths' contents before removing this condition. Nothing is silently flattened.</p>}</>}
       </>}
       {returnNode && <><ReturnInspector key={`${returnNode.id}:${record.version}`} node={returnNode} canEdit={canEdit} busy={busy} sessionId={sessionId} context={{ workflowId, nodeId: returnNode.id, baseVersion: record.version, baseHash: record.contentHash }} onProposal={setProposal} sharedChat={Boolean(onNodeContext)} draftStorageKey={selectionStorageKey ? `${selectionStorageKey}.node-prompt.${returnNode.id}` : null} authoring={authoring?.returns?.find(item => item.nodeId === returnNode.id)} onPreview={output => previewChange(returnNode.id, { type: "updateReturn", nodeId: returnNode.id, patch: { output } }, returnNode.output, output)} />{canEdit && <button disabled={busy} className={`${button} mt-3 text-red-600`} onClick={() => previewChange(returnNode.id, { type: "removeReturn", nodeId: returnNode.id }, returnNode, null)}>Remove return…</button>}</>}
+      {node && canEdit && <><button className={`${button} mt-3`} disabled={busy || record.readinessUnknown} onClick={() => setWrappingCollection(value => !value)}>Wrap node in collection</button>{wrappingCollection && <CollectionWrapForm key={`${node.id}:${record.version}`} nodeId={node.id} busy={busy} onCancel={() => setWrappingCollection(false)} onPreview={(command, before, after) => previewChange(node.id, command, before, after)} />}</>}
+      {collection && <CollectionInspector key={`${collection.id}:${record.version}`} node={collection} canEdit={canEdit} busy={busy} onPreview={(command, before, after) => previewChange(collection.id, command, before, after)} onRemove={() => previewChange(collection.id, { type: "removeCollection", nodeId: collection.id }, collection, null)} />}
       {canEdit && pendingProposal && <section aria-label="Node change preview" className="workspace-reveal mt-5 border-y border-primary/25 py-4">
         <h4 className="text-xs font-semibold">Review change · {pendingProposal.nodeId}</h4><p className="mt-1 text-[10px] text-gray-500">Based on draft v{pendingProposal.baseVersion}. Unrelated nodes are unchanged.</p>
         <details className="mt-3 text-[10px]"><summary className="cursor-pointer">Before</summary><div className="mt-2 max-h-56 overflow-auto"><ReadableValue value={pendingProposal.before} /></div></details>
