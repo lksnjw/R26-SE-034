@@ -115,6 +115,13 @@ export type InvocationProvenanceRecord = {
   actor?: { id: string; role: string };
 };
 
+// Private interpreter/evidence state; never part of public execution payloads.
+export type ReadContinuation = { profile: "read-continuation/v1"; executionId: string; ciphertext: string };
+export function assertReadContinuation(value: unknown, id: string): asserts value is ReadContinuation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid private read continuation");
+  const record = value as ReadContinuation;
+  if (record.profile !== "read-continuation/v1" || record.executionId !== id || typeof record.ciphertext !== "string" || !record.ciphertext.length || record.ciphertext.length > 5_400_000 || Object.keys(record).some(key => !["profile", "executionId", "ciphertext"].includes(key))) throw new Error("Invalid private read continuation identity or bounds");
+}
 export type RepositoryState = {
   version: 1;
   counter: number;
@@ -129,6 +136,7 @@ export type RepositoryState = {
   executionLogs: Record<string, StoredRecord[]>;
   executionEvents: Record<string, ExecutionEvent[]>;
   readJobs: Record<string, ReadJob>;
+  readContinuations: Record<string, ReadContinuation>;
   chatOperations: Record<string, ChatOperation>;
   chatOperationEvents: Record<string, ChatOperationEvent[]>;
   timelines: Record<string, StoredRecord[]>;
@@ -371,6 +379,8 @@ export function restoreState(payload: Uint8Array): RepositoryState {
   if (restored.governancePolicy !== null && (typeof restored.governancePolicy !== "object" || Array.isArray(restored.governancePolicy))) restored.governancePolicy = null;
   for (const key of ["capabilityObservations", "capabilityRevisions", "capabilityAdmissions", "mcpConnections", "mcpConnectionOperations"] as const)
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) throw new Error(`Invalid stored ${key}; admission recovery requires repair`);
+  if (!restored.readContinuations || typeof restored.readContinuations !== "object" || Array.isArray(restored.readContinuations)) throw new Error("Invalid private read continuation map");
+  for (const [id, record] of Object.entries(restored.readContinuations)) { assertReadContinuation(record, id); if (!Object.hasOwn(restored.executions, id)) throw new Error("Orphan private read continuation"); }
   for (const role of Object.values(defaults.roles)) if (restored.roles[role.id] === undefined) restored.roles[role.id] = role;
   const knownPermissions = new Set(restored.permissions.map((item) => item.key));
   for (const permission of defaults.permissions) if (!knownPermissions.has(permission.key)) restored.permissions.push(permission);
@@ -400,6 +410,7 @@ export function initialState(): RepositoryState {
     executionLogs: {},
     executionEvents: {},
     readJobs: {},
+    readContinuations: {},
     chatOperations: {},
     chatOperationEvents: {},
     timelines: {},

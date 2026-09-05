@@ -45,6 +45,7 @@ describe("scoped execution checkpoints", () => {
     (state: any) => { state.executions["run-two"].status = "DONE"; },
     (state: any) => { delete state.executions["run-two"]; },
     (state: any) => { state.timelines["run-two"] = []; },
+    (state: any) => { state.readContinuations["run-two"] = {}; },
     (state: any) => { Object.getOwnPropertyDescriptor(state.settings, "example")!.value.deep.value = 0; },
     (state: any) => { Object.getOwnPropertyDescriptor(state.executions, "run-two")!.value.status = "DONE"; },
     (state: any) => { state.auditLogs[0].deep.value = 0; },
@@ -85,6 +86,14 @@ describe("scoped execution checkpoints", () => {
     const repo = await setup();
     await expect(repo.mutateExecution("run-one", state => { state.executions["run-one"]!.id = "other"; })).rejects.toThrow("identity");
     await expect(repo.mutateExecution("run-one", state => { state.timelines["run-one"] = {} as never; })).rejects.toThrow("array");
+    await expect(repo.mutateExecution("run-one", state => { state.readContinuations["run-one"] = { profile: "read-continuation/v1", executionId: "other", ciphertext: "private" }; })).rejects.toThrow("identity");
+  });
+  test("persists the private continuation atomically with its run and removes it in the same terminal checkpoint", async () => {
+    const persistence = new Records(), repo = await setup(persistence);
+    await repo.mutateExecution("run-one", state => { state.readContinuations["run-one"] = { profile: "read-continuation/v1", executionId: "run-one", ciphertext: "encrypted-private-cursor" }; });
+    expect((await Repository.open(persistence).then(value => value.snapshot())).readContinuations["run-one"]).toMatchObject({ ciphertext: "encrypted-private-cursor" });
+    await repo.mutateExecution("run-one", state => { delete state.readContinuations["run-one"]; state.executions["run-one"]!.status = "DONE"; });
+    const state = await Repository.open(persistence).then(value => value.snapshot()); expect(state.readContinuations).toEqual({}); expect(state.executions["run-one"]!.status).toBe("DONE");
   });
   test("never evaluates or deep-clones unrelated stored objects during an in-memory checkpoint", async () => {
     const repo = await setup(); let unrelatedReads = 0;

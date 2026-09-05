@@ -3,6 +3,13 @@
 export class ReadValueBudget {
   private bytes = 0;
   private nodes = 0;
+  constructor(checkpoint?: { bytes: number; nodes: number }) {
+    if (checkpoint !== undefined) {
+      if (!checkpoint || typeof checkpoint !== "object" || !Number.isSafeInteger(checkpoint.bytes) || checkpoint.bytes < 0 || checkpoint.bytes > 1_000_000 || !Number.isSafeInteger(checkpoint.nodes) || checkpoint.nodes < 0 || checkpoint.nodes > 32768) throw new Error("Invalid read value budget checkpoint");
+      this.bytes = checkpoint.bytes; this.nodes = checkpoint.nodes;
+    }
+  }
+  checkpoint() { return { bytes: this.bytes, nodes: this.nodes }; }
   add(value: string): void {
     this.bytes += Buffer.byteLength(value);
     if (this.bytes > 1_000_000) throw new Error("Resolved read value exceeds byte limits");

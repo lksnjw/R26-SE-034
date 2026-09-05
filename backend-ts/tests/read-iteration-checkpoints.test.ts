@@ -6,6 +6,7 @@ import { compileReadWorkflow, readCompilationReceipt } from "../src/workflows/co
 import { newReadProgress, reconcileInterruptedExecutions } from "../src/runner/read-checkpoints.js";
 import { ReadIterationCheckpoints, newReadIterationLedger, type IterationBoundary } from "../src/runner/read-iteration-checkpoints.js";
 import * as interpreter from "../src/workflows/read-interpreter.js";
+import { ReadMachine } from "../src/workflows/read-machine.js";
 
 const role = "Platform Admin", key = "server-held-iteration-fixture-key-32-bytes";
 const tool = toolSchema.parse({ tool_id: "READ", name: "read", mcp_tool_name: "read", is_read_only: true, allowed_roles: [role], input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
@@ -185,34 +186,37 @@ test("an aborted worker cannot prepare or authorize a new action, but may retain
   await w.advance(); const point = await w.advance(); await w.dispatchIntent(point!.visit, role); controller.abort(); await w.completed(point!.visit, output("confirmed")); await expect(w.advance()).rejects.toThrow(); expect((await w.finish()).status).toBe("CANCELLED");
 });
 
-test("an exact pending snapshot avoids repeated interpretation but never certifies the next item", async () => {
-  const spy = vi.spyOn(interpreter, "interpretReadPlan");
+test("an authenticated incremental cursor accepts each confirmed boundary once and never reinterprets its completed prefix", async () => {
+  const spy = vi.spyOn(ReadMachine.prototype, "accept"), legacy = vi.spyOn(interpreter, "interpretReadPlan");
   try {
-    const s = await setup(), w = s.worker(); await w.advance(); const point = await w.advance(); expect(spy).toHaveBeenCalledTimes(2);
-    await w.dispatchIntent(point!.visit, role); await w.completed(point!.visit, output("A")); expect(spy).toHaveBeenCalledTimes(2);
-    expect(await w.advance()).toMatchObject({ kind: "collection-item", visit: { invocationId: "each/0/each" } }); expect(spy).toHaveBeenCalledTimes(3);
-    expect(await w.advance()).toMatchObject({ kind: "action", visit: { invocationId: "each/1/read" }, arguments: { id: "b" } }); expect(spy).toHaveBeenCalledTimes(4);
-  } finally { spy.mockRestore(); }
+    const s = await setup(), w = s.worker(); await w.advance(); const point = await w.advance(); expect(spy).toHaveBeenCalledTimes(1);
+    await w.dispatchIntent(point!.visit, role); await w.completed(point!.visit, output("A")); expect(spy).toHaveBeenCalledTimes(1);
+    expect(await w.advance()).toMatchObject({ kind: "collection-item", visit: { invocationId: "each/0/each" } }); expect(spy).toHaveBeenCalledTimes(2);
+    expect(await w.advance()).toMatchObject({ kind: "action", visit: { invocationId: "each/1/read" }, arguments: { id: "b" } }); expect(spy).toHaveBeenCalledTimes(3); expect(legacy).not.toHaveBeenCalled();
+  } finally { spy.mockRestore(); legacy.mockRestore(); }
 });
 
-test("a fresh worker reconstructs pending arguments and cannot rely on another worker's memo", async () => {
-  const spy = vi.spyOn(interpreter, "interpretReadPlan");
+test("a fresh worker restores exact encrypted arguments without relying on another worker's memory", async () => {
+  const spy = vi.spyOn(ReadMachine.prototype, "accept"), legacy = vi.spyOn(interpreter, "interpretReadPlan");
   try {
-    const s = await setup(), first = s.worker(); await first.advance(); const point = await first.advance(); expect(spy).toHaveBeenCalledTimes(2);
-    await s.worker().dispatchIntent(point!.visit, role); expect(spy).toHaveBeenCalledTimes(3);
-    await s.worker().completed(point!.visit, output("A")); expect(spy).toHaveBeenCalledTimes(4);
+    const s = await setup(), first = s.worker(); await first.advance(); const point = await first.advance(); expect(spy).toHaveBeenCalledTimes(1);
+    await s.worker().dispatchIntent(point!.visit, role); expect(spy).toHaveBeenCalledTimes(1);
+    await s.worker().completed(point!.visit, output("A")); expect(spy).toHaveBeenCalledTimes(1);
     await drain(s.worker()); expect((await s.worker().finish()).finalOutput).toEqual(["A", "B"]);
-  } finally { spy.mockRestore(); }
+    expect(spy).toHaveBeenCalledTimes(7); expect(legacy).not.toHaveBeenCalled();
+  } finally { spy.mockRestore(); legacy.mockRestore(); }
 });
 
-test.each(["timeline-status", "timeline-output", "duplicate-timeline", "attempt-status", "final", "missing-output", "extra-value"])("a warmed pending proof cannot hide changed %s evidence", async damage => {
+test.each(["timeline-status", "timeline-output", "timeline-metadata", "duplicate-timeline", "attempt-status", "attempt-metadata", "final", "missing-output", "extra-value"])("a warmed pending proof cannot hide changed %s evidence", async damage => {
   const s = await setup(), w = s.worker(); await w.advance(); await perform(w, "A"); await w.advance(); const point = await w.advance();
   await s.repository.mutate(state => {
     const item = state.executions.run!, entries = state.timelines.run!, entry = entries.find(value => value.invocationId === "each/0/read")!;
     if (damage === "timeline-status") entry.status = "RUNNING";
     if (damage === "timeline-output") entry.output = output("forged");
+    if (damage === "timeline-metadata") entry.durationMs = 999;
     if (damage === "duplicate-timeline") entries.push(structuredClone(entry));
     if (damage === "attempt-status") item.readProgress!.attempts[point!.visit.invocationId]!.status = "DONE";
+    if (damage === "attempt-metadata") item.readProgress!.attempts[point!.visit.invocationId]!.startedAt = "forged";
     if (damage === "final") item.finalOutput = "forged";
     if (damage === "missing-output") delete item.stepOutputs!["each/0/read"];
     if (damage === "extra-value") item.valueOutputs!.extra = { value: "forged" };
@@ -274,11 +278,11 @@ test("a mutated public source property cannot combine with a changed snapshot to
   await expect(w.advance()).rejects.toThrow(); expect((await s.get()).readProgress!.attempts).toEqual({});
 });
 
-test("selected evidence is a private read-only reconstruction, not a dispatch grant or pending-point cache hit", async () => {
+test("selected evidence restores authenticated private scopes without a write, semantic replay or dispatch grant", async () => {
   const s = await setup(), w = s.worker(); await w.advance(); await perform(w, "A"); await w.advance(); const point = await w.advance();
   const before = await s.repository.snapshot(), spy = vi.spyOn(interpreter, "interpretReadPlan");
   try {
-    const evidence = await w.selectedEvidence(point!.visit); expect(spy).toHaveBeenCalledTimes(1);
+    const evidence = await w.selectedEvidence(point!.visit); expect(spy).not.toHaveBeenCalled();
     expect(evidence).toMatchObject({ profile: "read-selected-evidence/v1", executionId: "run", epoch: 1, sourceHash: s.plan.sourceHash, semanticHash: s.plan.semanticHash, actorId: "actor", admittedRole: role, nodeId: "read", sourceIndex: 0, args: { id: "b" }, prior: [] });
     expect(JSON.stringify(evidence)).not.toContain(key); expect(JSON.stringify(evidence)).not.toContain("never-persist-this-input-secret");
     evidence.args.id = "forged"; expect((await w.selectedEvidence(point!.visit)).args).toEqual({ id: "b" }); expect(await s.repository.snapshot()).toEqual(before);
@@ -312,6 +316,58 @@ test("uncertain storage acknowledgement fences selected evidence even when the l
   const persist = new Persistence(), s = await setup(source(), { rows: ["a"] }, persist), w = s.worker(); await w.advance(); const point = await w.advance();
   persist.fail = true; await expect(s.repository.mutate(state => { state.workflows.flow!.name = "Unacknowledged update"; })).rejects.toThrow();
   await expect(w.selectedEvidence(point!.visit)).rejects.toThrow(); expect((await s.get()).readProgress!.attempts[point!.visit.invocationId]!.status).toBe("PREPARING");
+});
+
+test.each(["tamper", "stale", "other-run", "malformed", "null", "undefined", "actor", "publication", "registry"])("a private %s continuation cannot authorize dispatch, even on a warmed worker", async damage => {
+  const s = await setup(), worker = s.worker(); await worker.advance(); const old = (await s.repository.snapshot()).readContinuations.run!;
+  const point = await worker.advance();
+  const other = await setup(source(), s.input, null, "other-run"); await other.worker().advance();
+  const crossRun = (await other.repository.snapshot()).readContinuations["other-run"]!;
+  await s.repository.mutate(state => {
+    const record = state.readContinuations.run!;
+    if (damage === "tamper") { const bytes = Buffer.from(record.ciphertext, "base64"); bytes[30] = bytes[30]! ^ 1; record.ciphertext = bytes.toString("base64"); }
+    if (damage === "stale") state.readContinuations.run = old;
+    if (damage === "other-run") state.readContinuations.run = { ...crossRun, executionId: "run" };
+    if (damage === "malformed") record.ciphertext = "not-encrypted";
+    if (damage === "null") state.readContinuations.run = null as never;
+    if (damage === "undefined") state.readContinuations.run = undefined as never;
+    if (damage === "actor") state.executions.run!.startedBy.id = "changed";
+    if (damage === "publication") state.executions.run!.workflowSnapshot!.version++;
+    if (damage === "registry") state.executions.run!.workflowSnapshot!.registryHash = "changed";
+  });
+  await expect(worker.dispatchIntent(point!.visit, role)).rejects.toThrow(); await expect(s.worker().selectedEvidence(point!.visit)).rejects.toThrow();
+  expect((await s.get()).readProgress!.attempts[point!.visit.invocationId]!.dispatchIntentAt).toBeUndefined();
+});
+
+test("reordering object members does not change complete-evidence identity; reordering timeline entries does", async () => {
+  const s = await setup(), worker = s.worker(); await worker.advance(); await perform(worker, "A"); await worker.advance(); const point = await worker.advance();
+  const reverse = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).reverse());
+  await s.repository.mutate(state => {
+    const item = state.executions.run!; item.iterationProgress!.receipts = reverse(item.iterationProgress!.receipts) as any;
+    item.readProgress!.attempts = reverse(item.readProgress!.attempts) as any; item.stepOutputs = reverse(item.stepOutputs!);
+    state.timelines.run = state.timelines.run!.map(entry => reverse(entry));
+  });
+  expect((await s.worker().selectedEvidence(point!.visit)).args).toEqual({ id: "b" });
+  await s.repository.mutate(state => { state.timelines.run!.reverse(); }); await expect(worker.dispatchIntent(point!.visit, role)).rejects.toThrow();
+});
+
+test("an absent legacy cursor reconstructs only saved receipts without repeating any confirmed SDK action", async () => {
+  const s = await setup(), worker = s.worker(); await worker.advance(); await perform(worker, "A"); await worker.advance();
+  await s.repository.mutate(state => { delete state.readContinuations.run; });
+  const point = await s.worker().advance(); expect(point).toMatchObject({ kind: "action", visit: { invocationId: "each/1/read" }, arguments: { id: "b" } });
+  expect((await s.get()).stepOutputs).toEqual({ "each/0/read": output("A") }); expect((await s.repository.snapshot()).readContinuations.run).toBeDefined();
+});
+
+test("a missing cursor cannot skip an earlier missing receipt or fabricate an answer", async () => {
+  const s = await setup(), worker = s.worker(); await worker.advance(); await perform(worker, "A"); await worker.advance();
+  await s.repository.mutate(state => { delete state.readContinuations.run; delete state.executions.run!.iterationProgress!.receipts["collection:each"]; });
+  await expect(s.worker().advance()).rejects.toThrow(); expect((await s.get()).stepOutputs).toEqual({ "each/0/read": output("A") });
+});
+
+test("terminal completion deletes the private cursor while retaining public receipt and answer evidence", async () => {
+  const s = await setup(), worker = s.worker(); await drain(worker); expect((await s.repository.snapshot()).readContinuations.run).toBeDefined();
+  const done = await worker.finish(); expect(done.finalOutput).toEqual(["A", "B"]); expect((await s.repository.snapshot()).readContinuations.run).toBeUndefined();
+  expect(JSON.stringify(done)).not.toContain("ciphertext"); expect(JSON.stringify(done)).not.toContain("never-persist-this-input-secret");
 });
 
 test("durable nested reconstruction exposes completed child reads only to their enclosing item until the outer aggregate confirms", async () => {

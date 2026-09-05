@@ -10,19 +10,23 @@ export class ReadEvidenceLimit extends Error { constructor() { super("Read compl
 const address = (id: string, frames: readonly ReadIteration[]) => [...frames.flatMap(frame => [frame.loopId, String(frame.index)]), id].join("/");
 const prefix = (left: readonly ReadIteration[], right: readonly ReadIteration[]) => left.every((frame, index) => frame.loopId === right[index]?.loopId && frame.index === right[index]?.index);
 type Collection = { loopId: string; frames: readonly ReadIteration[]; count: number; items: number; completed: boolean };
+export type ReadCompletionSnapshot = { profile: "read-completion/v1"; collections: [string, Collection][]; completed: [string, CompletedRead][] };
 
 /** Local interpreter evidence only, never a capability or accepted serialized
- * checkpoint. Drivers call these methods AFTER confirming an action or typed
- * value. Durable drivers must reconstruct it from authenticated receipts.
+ * checkpoint authority. Drivers call these methods AFTER confirming an action
+ * or typed value. A durable snapshot must be authenticated against the run's
+ * exact committed evidence before restoring; untrusted callers cannot use it.
  * Prior item reads remain invisible while their owning collection is open. */
 export class ReadCompletionEvidence {
+  readonly #plan: CompiledReadPlan;
   readonly #actions = new Map<string, number>();
   readonly #owners = new Map<string, readonly string[]>();
   readonly #loops = new Map<string, number>();
   readonly #collections = new Map<string, Collection>();
   readonly #completed = new Map<string, CompletedRead>();
-  readonly #arguments = new ReadValueBudget();
-  constructor(plan: CompiledReadPlan) {
+  #arguments = new ReadValueBudget();
+  constructor(plan: CompiledReadPlan, snapshot?: ReadCompletionSnapshot) {
+    this.#plan = structuredClone(plan);
     plan.ir.root.nodes.forEach((node, index) => this.#actions.set(node.id, index));
     const visit = (block: ReadSequence, owners: readonly string[]): void => {
       for (const node of block.nodes) {
@@ -32,6 +36,39 @@ export class ReadCompletionEvidence {
       }
     };
     if (plan.ir.flow) visit(plan.ir.flow, []); else plan.ir.root.nodes.forEach(node => this.#owners.set(node.id, []));
+    if (snapshot) {
+      if (snapshot.profile !== "read-completion/v1" || !Array.isArray(snapshot.collections) || !Array.isArray(snapshot.completed) || snapshot.collections.length > 5000 || snapshot.completed.length > 5000) throw new ReadEvidenceLimit();
+      const historicalScope = (id: string, frames: readonly ReadIteration[]) => {
+        const owners = this.#owners.get(id);
+        if (!owners || !Array.isArray(frames) || frames.length !== owners.length || frames.some((frame, index) => frame.loopId !== owners[index] || !Number.isSafeInteger(frame.index) || frame.index < 0 || frame.index >= this.#loops.get(frame.loopId)!)) throw new Error("Invalid saved completion scope");
+      };
+      for (const [key, record] of snapshot.collections) {
+        historicalScope(record.loopId, record.frames);
+        if (key !== address(record.loopId, record.frames) || this.#collections.has(key) || !this.#loops.has(record.loopId) || !Number.isSafeInteger(record.count) || record.count < 0 || record.count > this.#loops.get(record.loopId)! || !Number.isSafeInteger(record.items) || record.items < 0 || record.items > record.count || typeof record.completed !== "boolean" || record.completed && record.items !== record.count) throw new Error("Invalid saved collection completion");
+        this.#collections.set(key, structuredClone(record));
+      }
+      const parentScope = (frames: readonly ReadIteration[]) => frames.forEach((frame, index) => {
+        const owner = this.#collections.get(address(frame.loopId, frames.slice(0, index)));
+        if (!owner || frame.index >= owner.count || frame.index > owner.items) throw new Error("Saved completion lacks its owning item");
+      });
+      for (const collection of this.#collections.values()) parentScope(collection.frames);
+      for (const [key, record] of snapshot.completed) {
+        historicalScope(record.nodeId, record.visit.iterations); parentScope(record.visit.iterations);
+        if (key !== record.visit.invocationId || key !== address(record.nodeId, record.visit.iterations) || this.#completed.has(key) || this.#actions.get(record.nodeId) !== record.sourceIndex || !record.args || Array.isArray(record.args) || typeof record.args !== "object") throw new Error("Invalid saved completed action");
+        const args = this.#arguments.clone(record.args, 0) as Record<string, unknown>;
+        this.#completed.set(key, { ...structuredClone(record), args });
+      }
+    }
+  }
+  snapshot(): ReadCompletionSnapshot { return structuredClone({ profile: "read-completion/v1", collections: [...this.#collections], completed: [...this.#completed] }); }
+  /** Private in-process fork of already checked data, never public authority.
+   * Completed arguments are immutable internally; all outward views clone.
+   * Mutable counters/scopes/budgets are independent of the original instance. */
+  fork(): ReadCompletionEvidence {
+    const copy = new ReadCompletionEvidence(this.#plan);
+    for (const [key, value] of this.#collections) copy.#collections.set(key, structuredClone(value));
+    for (const [key, value] of this.#completed) copy.#completed.set(key, value);
+    copy.#arguments = new ReadValueBudget(this.#arguments.checkpoint()); return copy;
   }
   private scope(id: string, visit: ReadVisit, owners = this.#owners.get(id), except?: string): void {
     const frames = visit.iterations;

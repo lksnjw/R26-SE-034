@@ -88,6 +88,38 @@ test("private argument/frame records and returned evidence are independently clo
   expect(e.prior("inside", visit("inside", ["outer", 0]))[0]).toMatchObject({ args: { id: "original" }, visit: { iterations: [{ loopId: "outer", index: 0 }] } });
 });
 
+test("private completion snapshots retain nested item visibility and independent concrete arguments on restore", () => {
+  const { plan, evidence } = setup(true); evidence.collectionStarted("outer", 2, visit("outer")); evidence.collectionStarted("inner", 1, visit("inner", ["outer", 0]));
+  evidence.actionCompleted("read", { id: "a" }, visit("read", ["outer", 0], ["inner", 0])); evidence.itemCompleted("inner", visit("inner", ["outer", 0], ["inner", 0])); evidence.collectionCompleted("inner", visit("inner", ["outer", 0]));
+  const snapshot = evidence.snapshot(), restored = new ReadCompletionEvidence(plan, snapshot);
+  snapshot.completed[0]![1].args.id = "changed"; expect(restored.prior("inside", visit("inside", ["outer", 0]))[0]!.args).toEqual({ id: "a" });
+  restored.itemCompleted("outer", visit("outer", ["outer", 0])); restored.collectionStarted("inner", 1, visit("inner", ["outer", 1]));
+  expect(restored.prior("read", visit("read", ["outer", 1], ["inner", 0]))).toEqual([]);
+  expect(evidence.prior("inside", visit("inside", ["outer", 0]))[0]!.args).toEqual({ id: "a" });
+});
+
+test("warm completion forks preserve independent collection counters, return cloning and cumulative argument limits", () => {
+  const { evidence } = setup(); evidence.collectionStarted("outer", 2, visit("outer")); evidence.actionCompleted("read", { id: "x".repeat(600_000) }, visit("read", ["outer", 0]));
+  const copy = evidence.fork(); copy.itemCompleted("outer", visit("outer", ["outer", 0]));
+  expect(copy.prior("read", visit("read", ["outer", 1]))).toEqual([]); expect(evidence.prior("inside", visit("inside", ["outer", 0]))).toHaveLength(1);
+  expect(() => copy.actionCompleted("read", { id: "x".repeat(600_000) }, visit("read", ["outer", 1]))).toThrow(ReadEvidenceLimit);
+  const view = evidence.prior("inside", visit("inside", ["outer", 0])); view[0]!.args.id = "changed";
+  expect(evidence.prior("inside", visit("inside", ["outer", 0]))[0]!.args.id).toHaveLength(600_000);
+});
+
+test.each(["duplicate", "index", "source", "parent", "count", "items", "profile"])("malformed private completion %s is rejected without granting prerequisites", damage => {
+  const { plan, evidence } = setup(); evidence.collectionStarted("outer", 1, visit("outer")); evidence.actionCompleted("read", { id: "a" }, visit("read", ["outer", 0]));
+  const snapshot = evidence.snapshot();
+  if (damage === "duplicate") snapshot.completed.push(snapshot.completed[0]!);
+  if (damage === "index") (snapshot.completed[0]![1].visit.iterations as any)[0].index = 3;
+  if (damage === "source") snapshot.completed[0]![1].sourceIndex = 99;
+  if (damage === "parent") snapshot.collections = [];
+  if (damage === "count") snapshot.collections[0]![1].count = 4;
+  if (damage === "items") snapshot.collections[0]![1].completed = true;
+  if (damage === "profile") (snapshot as any).profile = "other";
+  expect(() => new ReadCompletionEvidence(plan, snapshot)).toThrow();
+});
+
 test("constructor scope/limit projections cannot be mutated through the original plan", () => {
   const { evidence: e, plan } = setup(); (plan.ir.flow!.nodes[1] as any).maxItems = 0; plan.ir.root.nodes[1]!.id = "forged";
   e.collectionStarted("outer", 3, visit("outer")); expect(e.prior("read", visit("read", ["outer", 0]))).toEqual([]);

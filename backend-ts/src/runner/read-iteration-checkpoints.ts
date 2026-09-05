@@ -1,11 +1,13 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import type { Execution, Repository, RepositoryState, ReadRunAttempt } from "../repository/store.js";
+import { assertReadContinuation, type Execution, type Repository, type RepositoryState, type ReadRunAttempt } from "../repository/store.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
-import { canonicalJSONByteLength, exactJSONCacheKey, JSONProofCache } from "../core/json-proof-cache.js";
+import { canonicalJSONByteLength, JSONProofCache } from "../core/json-proof-cache.js";
 import { workflowContentHash } from "../parser/workflow.js";
-import { interpretReadPlan, type ReadVisit } from "../workflows/read-interpreter.js";
+import { type ReadVisit } from "../workflows/read-interpreter.js";
+import { ReadMachine } from "../workflows/read-machine.js";
+import { ReadContinuationCodec } from "./read-continuation.js";
 import { ReadCompletionEvidence, type CompletedRead } from "../workflows/read-completion-evidence.js";
-import { assertCompiledReadMatches, compileReadWorkflow, resolveReadBinding, type CompiledReadPlan } from "../workflows/compiled-read.js";
+import { assertCompiledReadMatches, compileReadWorkflow, type CompiledReadPlan } from "../workflows/compiled-read.js";
 import { loopNodes, structuralNodes, type ReadSkipReason } from "../workflows/read-control-flow.js";
 import { ReadValueBudget } from "../workflows/read-value-budget.js";
 import type { ToolDefinition } from "../registry/schemas.js";
@@ -34,8 +36,8 @@ export type ReadSelectedEvidence = {
   args: Record<string, unknown>; prior: readonly CompletedRead[];
 };
 type BoundExecution = Execution & { readProgress: NonNullable<Execution["readProgress"]>; iterationProgress: ReadIterationLedger };
-class PendingBoundary extends Error { constructor(readonly boundary: IterationBoundary) { super("Next iteration boundary"); } }
 class StoppedBoundary extends Error { constructor(readonly receipt: IterationReceipt) { super("Iteration has a stopped or uncertain receipt; no replay is authorized"); } }
+type WorkingContinuation = { machine: ReadMachine; completion: ReadCompletionEvidence; used: Set<string>; hasFinal: boolean; observedFinal?: unknown };
 const same = (left: unknown, right: unknown) => canonicalJSONBytes(left).equals(canonicalJSONBytes(right));
 const receiptKey = (kind: IterationBoundary["kind"], address: string) => `${kind === "skip" ? "action" : kind}:${address}`;
 function digest(key: string, value: unknown): string {
@@ -57,10 +59,11 @@ export function newReadIterationLedger(executionId: string, plan: CompiledReadPl
 }
 
 /** Server-only journal foundation. It has no SDK, provider, live admission or
- * network authority. v4 live fences remain until a governed driver is wired.
- * New boundaries are replayed through the pure interpreter from committed
- * receipts. A pending point can reuse its exact private snapshot proof; no
- * caller-supplied cursor/branch/collection value is trusted. */
+ * network authority. v4 normal admission stays fenced pending publication and
+ * fenced worker/private-input lifecycle qualification through the driver.
+ * Private encrypted continuations advance pure semantics only after confirmed
+ * receipts. Restore is bound to the exact run/epoch/input and complete saved
+ * evidence; no caller-supplied cursor/branch/collection value is trusted. */
 export class ReadIterationCheckpoints {
   readonly #plan: CompiledReadPlan;
   readonly #input: Record<string, unknown>;
@@ -73,13 +76,18 @@ export class ReadIterationCheckpoints {
   #validatedPlanRole: string | undefined;
   readonly #receiptProofs = new JSONProofCache<true>(1_000_000, 5000);
   readonly #valueBindings = new JSONProofCache<string>();
-  #pendingProof: { key: string; point: IterationBoundary } | undefined;
+  readonly #continuationLeaves = new JSONProofCache<string>(4_000_000, 5000);
+  readonly #continuationIdentities = new JSONProofCache<string>(200_000, 2);
+  readonly #continuationCodec: ReadContinuationCodec;
+  #transaction: { state: RepositoryState; working: WorkingContinuation } | undefined;
+  #warmContinuation: { ciphertext: string; identity: string; evidenceBinding: string; working: WorkingContinuation } | undefined;
   constructor(readonly repository: Repository, readonly executionId: string, readonly epoch: number, readonly yaml: string,
     plan: CompiledReadPlan, input: Record<string, unknown>, tools: readonly ToolDefinition[], bindingKey: string, readonly signal?: AbortSignal) {
     this.#plan = structuredClone(plan); this.#input = privateInput(input); this.#tools = structuredClone(tools); this.#bindingKey = bindingKey;
     this.#capturedYaml = yaml; this.#sourceHash = workflowContentHash(yaml);
     this.#loops = new Map(this.#plan.ir.flow ? loopNodes(this.#plan.ir.flow).map(node => [node.id, node]) : []);
     this.#valueNodes = new Map(this.#plan.ir.flow ? structuralNodes(this.#plan.ir.flow).map(node => [node.id, node]) : []);
+    this.#continuationCodec = new ReadContinuationCodec(bindingKey);
   }
   private current(state: RepositoryState): BoundExecution {
     const item = state.executions[this.executionId], ledger = item?.iterationProgress;
@@ -137,24 +145,63 @@ export class ReadIterationCheckpoints {
     return raw;
   }
   private pendingWitness(item: BoundExecution, journal: RepositoryState): unknown {
-    return { inputBinding: item.iterationProgress.inputBinding, receipts: item.iterationProgress.receipts,
-      attempts: item.readProgress.attempts, stepOutputs: item.stepOutputs, valueOutputs: item.valueOutputs,
-      hasFinalOutput: Object.hasOwn(item, "finalOutput"), finalOutput: item.finalOutput, timeline: journal.timelines[item.id] ?? [] };
+    const leaf = (section: string, value: unknown) => {
+      const witness = { profile: "read-continuation-leaf/v1", executionId: item.id, section, value };
+      return this.#continuationLeaves.getOrCompute(witness, () => digest(this.#bindingKey, witness));
+    };
+    const entries = (value: Record<string, unknown>, proof: (value: unknown) => string) => Object.keys(value).sort().map(key => [key, proof(value[key])]);
+    // current() has already freshly authenticated every receipt, exact attempt
+    // and saved output. Bind their complete identities through authenticated
+    // leaves instead of repeatedly canonicalizing the entire growing output
+    // tree. Ordered timeline/attempt leaves still bind every stored field.
+    return { profile: "read-continuation-evidence/v1", inputBinding: item.iterationProgress.inputBinding,
+      receipts: Object.keys(item.iterationProgress.receipts).sort().map(key => [key, item.iterationProgress.receipts[key]!.seal]),
+      attempts: entries(item.readProgress.attempts, value => leaf("attempt", value)),
+      stepOutputs: entries(item.stepOutputs ?? {}, value => this.outputBinding(value)), valueOutputs: entries(item.valueOutputs ?? {}, value => this.outputBinding(value)),
+      hasFinalOutput: Object.hasOwn(item, "finalOutput"), ...(Object.hasOwn(item, "finalOutput") ? { finalOutput: this.outputBinding(item.finalOutput) } : {}),
+      timeline: (journal.timelines[item.id] ?? []).map(value => leaf("timeline", value)) };
   }
-  private rememberPending(item: BoundExecution, journal: RepositoryState, point: IterationBoundary): void {
-    // This is a private, exact snapshot proof of the pending action already
-    // computed by the interpreter, not an accepted caller cursor. Saving it
-    // before persistence acknowledgement cannot bypass the repository fence.
-    const key = exactJSONCacheKey(this.pendingWitness(item, journal));
-    this.#pendingProof = key !== undefined && Buffer.byteLength(key) + canonicalJSONByteLength(point) <= 2_000_000
-      ? { key, point: structuredClone(point) } : undefined;
+  private continuationIdentity(item: BoundExecution): string {
+    const witness = { profile: "private-read-continuation/v1", executionId: item.id, epoch: this.epoch,
+      workflowId: item.workflowId, actorId: item.startedBy.id, inputBinding: item.iterationProgress.inputBinding,
+      admittedRole: item.iterationProgress.admittedRole, snapshot: item.workflowSnapshot };
+    return this.#continuationIdentities.getOrCompute(witness, () => digest(this.#bindingKey, witness));
+  }
+  private continuationBinding(item: BoundExecution, journal: RepositoryState): string {
+    const witness = this.pendingWitness(item, journal);
+    return digest(this.#bindingKey, witness);
+  }
+  private restoreContinuation(item: BoundExecution, journal: RepositoryState): WorkingContinuation {
+    const record = journal.readContinuations[item.id];
+    // Legacy runs without a cursor are reconstructed solely from confirmed
+    // receipts below. This performs zero SDK/model work and never replays it.
+    if (!Object.hasOwn(journal.readContinuations, item.id)) return { machine: new ReadMachine(this.#plan, this.#input), completion: new ReadCompletionEvidence(this.#plan), used: new Set(), hasFinal: false };
+    assertReadContinuation(record, item.id);
+    const identity = this.continuationIdentity(item), evidenceBinding = this.continuationBinding(item, journal);
+    const warm = this.#warmContinuation;
+    // One bounded private decoded continuation. The exact ciphertext and
+    // freshly computed complete evidence binding must match; current() and
+    // authority/cancellation checks remain outside and cannot be memoized.
+    if (warm && record.profile === "read-continuation/v1" && record.executionId === item.id && Object.keys(record).length === 3 && warm.ciphertext === record.ciphertext && warm.identity === identity && warm.evidenceBinding === evidenceBinding) {
+      return { machine: warm.working.machine.fork(), completion: warm.working.completion.fork(), used: new Set(warm.working.used), hasFinal: warm.working.hasFinal,
+        ...(warm.working.hasFinal ? { observedFinal: structuredClone(warm.working.observedFinal) } : {}) };
+    }
+    const body = this.#continuationCodec.decode(record, item.id, identity, evidenceBinding);
+    if (body.used.some(key => !Object.hasOwn(item.iterationProgress.receipts, key))) throw new Error("Continuation refers to missing committed evidence");
+    return { machine: new ReadMachine(this.#plan, {}, body.machine), completion: new ReadCompletionEvidence(this.#plan, body.completion),
+      used: new Set(body.used), hasFinal: body.hasFinal, ...(body.hasFinal ? { observedFinal: body.observedFinal } : {}) };
+  }
+  private saveContinuation(item: BoundExecution, journal: RepositoryState, working: WorkingContinuation): void {
+    if (item.status !== "RUNNING") { delete journal.readContinuations[item.id]; this.#warmContinuation = undefined; return; }
+    const identity = this.continuationIdentity(item), evidenceBinding = this.continuationBinding(item, journal);
+    const record = this.#continuationCodec.encode(item.id, { profile: "private-read-continuation/v1", identity,
+      evidenceBinding, machine: working.machine.snapshot(), completion: working.completion.snapshot(),
+      used: [...working.used], hasFinal: working.hasFinal, ...(working.hasFinal ? { observedFinal: working.observedFinal } : {}) });
+    journal.readContinuations[item.id] = record; this.#warmContinuation = { ciphertext: record.ciphertext, identity, evidenceBinding, working };
   }
   private async next(item: BoundExecution, journal: RepositoryState, selected?: { prior: readonly CompletedRead[] }): Promise<IterationBoundary | null> {
-    // A selected-prefix request reconstructs completion scopes from sealed
-    // receipts. The pending-point memo does not attest to prerequisite data.
-    if (!selected && this.#pendingProof && exactJSONCacheKey(this.pendingWitness(item, journal)) === this.#pendingProof.key) return structuredClone(this.#pendingProof.point);
-    const completion = selected ? new ReadCompletionEvidence(this.#plan) : undefined;
-    const used = new Set<string>(), state: Record<string, unknown> = { input: structuredClone(this.#input) };
+    const working = this.#transaction?.state === journal ? this.#transaction.working : this.restoreContinuation(item, journal);
+    const { machine, completion, used } = working;
     // Index this fresh transaction's timeline, not a cached authoritative
     // snapshot. Multiple witnesses for one boundary are ambiguous evidence.
     const timelines = new Map<string, RepositoryState["timelines"][string][number]>();
@@ -162,8 +209,7 @@ export class ReadIterationCheckpoints {
       if (timelines.has(entry.boundaryKey)) throw new Error("Duplicate iteration timeline boundary");
       timelines.set(entry.boundaryKey, entry);
     }
-    let observedFinal: unknown, hasFinal = false;
-    const assertFinal = () => { if (hasFinal !== Object.hasOwn(item, "finalOutput") || hasFinal && !same(observedFinal, item.finalOutput)) throw new Error("Final answer differs from its last confirmed action or workflow return"); };
+    const assertFinal = () => { if (working.hasFinal !== Object.hasOwn(item, "finalOutput") || working.hasFinal && !same(working.observedFinal, item.finalOutput)) throw new Error("Final answer differs from its last confirmed action or workflow return"); };
     const timeline = (receipt: IterationReceipt) => {
       const entry = timelines.get(receiptKey(receipt.kind, receipt.invocationId));
       if (entry && (entry.nodeId !== receipt.nodeId || entry.invocationId !== receipt.invocationId || !same(entry.iterations, receipt.iterations) || receipt.attemptId && entry.attemptId !== receipt.attemptId)) throw new Error("Iteration timeline identity differs from its authenticated receipt");
@@ -178,90 +224,73 @@ export class ReadIterationCheckpoints {
       if (["FAILED", "UNKNOWN", "CANCELLED", "INTERRUPTED"].includes(receipt.status)) throw new StoppedBoundary(receipt);
       return receipt;
     };
-    const pending = (point: IterationBoundary): never => { throw new PendingBoundary(point); };
-    try {
-      await interpretReadPlan(this.#plan, state, {
-        action: async (node, sourceIndex, visit) => {
-          let args: Record<string, unknown> | undefined;
-          try { args = resolveReadBinding(node.inputs, state) as Record<string, unknown>; } catch { /* Missing is not a default argument. */ }
-          const tool = this.#tools.find(value => value.tool_id === node.capability.toolId)!;
-          const point: IterationBoundary = { kind: "action", nodeId: node.id, sourceIndex, visit, valid: !!args && !validateToolInput(tool.input_schema, args).length, ...(args ? { arguments: args, dataBinding: this.outputBinding(args) } : {}) };
-          if (selected) selected.prior = completion!.prior(node.id, visit);
-          const receipt = receiptFor(point);
-          if (!receipt) return pending(point);
-          if (receipt.dataBinding !== point.dataBinding) throw new Error("Saved iteration arguments no longer match their exact binding");
-          if (["PREPARING", "DISPATCH_INTENT"].includes(receipt.status)) return pending(point);
-          if (receipt.status !== "DONE" || !point.valid) throw new Error("Action receipt is not a confirmed valid invocation");
-          const attempt = item.readProgress.attempts[visit.invocationId];
-          if (!attempt || attempt.id !== receipt.attemptId || attempt.status !== "DONE" || attempt.nodeId !== node.id || attempt.invocationId !== visit.invocationId || !same(attempt.iterations, visit.iterations)) throw new Error("Action receipt lacks its exact committed attempt");
-          const output = this.output(item, receipt) as Record<string, unknown>;
-          const entry = timeline(receipt);
-          if (!entry || entry.status !== "DONE" || this.outputBinding(entry.output) !== receipt.outputBinding) throw new Error("Iteration answer lacks a matching confirmed timeline receipt");
-          if (output.isError === true) throw new Error("A tool error cannot become a completed collection item");
-          completion?.actionCompleted(node.id, args!, visit);
-          observedFinal = output; hasFinal = true;
-          return output;
-        },
-        condition: async (sourceIndex, nodeId, value, visit) => {
-          const point: IterationBoundary = { kind: "condition", nodeId, sourceIndex, visit, valid: typeof value === "boolean", ...(typeof value === "boolean" ? { selected: value ? "then" : "else" } : {}) };
-          const receipt = receiptFor(point); if (!receipt) return pending(point);
-          if (receipt.status !== "DONE" || !point.valid || receipt.selected !== point.selected) throw new Error("Condition receipt differs from its computed predicate");
-          const entry = timeline(receipt); if (!entry || entry.status !== "DONE" || entry.selectedBranch !== point.selected) throw new Error("Condition lacks its matching decision timeline");
-        },
-        skipped: async (sourceIndex, nodeId, reason, visit) => {
-          const point: IterationBoundary = { kind: "skip", nodeId, sourceIndex, visit, reason, valid: true };
-          const receipt = receiptFor(point); if (!receipt) return pending(point);
-          if (receipt.status !== "SKIPPED" || !same(receipt.reason, reason) || Object.hasOwn(item.stepOutputs ?? {}, visit.invocationId)) throw new Error("Skip lacks exact reason or invents an answer");
-          const attempt = item.readProgress.attempts[visit.invocationId];
-          if (!attempt || attempt.id !== receipt.attemptId || attempt.status !== "SKIPPED") throw new Error("Skip lacks its committed attempt");
-          const entry = timeline(receipt); if (!entry || entry.status !== "SKIPPED" || !same(entry.reason, reason)) throw new Error("Skip lacks its matching declaration timeline");
-        },
-        collectionStarted: async (sourceIndex, nodeId, count, valid, visit) => {
-          const loop = this.#loops.get(nodeId)!;
-          let items: unknown; try { items = resolveReadBinding(loop.items.value, state); } catch { /* Missing stays invalid. */ }
-          const point: IterationBoundary = { kind: "collection", nodeId, sourceIndex, visit, phase: "start", valid, ...(count === undefined ? {} : { count }), ...(valid ? { dataBinding: this.outputBinding(items) } : {}) };
-          const receipt = receiptFor(point); if (!receipt) return pending(point);
-          if (!valid || !["STARTED", "DONE"].includes(receipt.status) || receipt.count !== count || receipt.dataBinding !== point.dataBinding) throw new Error("Collection input identity or count differs from the committed start");
-          completion?.collectionStarted(nodeId, count!, visit);
-        },
-        value: async (sourceIndex, nodeId, kind, value, valid, visit) => {
-          const safe = valid ? withoutSecretFields({ value }) as { value: unknown } : undefined;
-          const node = this.#valueNodes.get(nodeId)!;
-          const schema = node.kind === "return" ? node.output.schema : node.kind === "if" ? node.merge?.schema : kind === "collection" ? { type: "array", items: node.collect.schema } : node.collect.schema;
-          valid = !!safe && !!schema && !validateToolInput(schema, safe.value).length;
-          const point: IterationBoundary = { kind, nodeId, sourceIndex, visit, valid, ...(safe ? { value: safe.value } : {}), ...(kind === "collection" ? { phase: "complete" } : {}) };
-          const receipt = receiptFor(point);
-          if (!receipt || kind === "collection" && receipt.status === "STARTED") return pending(point);
-          if (receipt.status !== "DONE" || !valid || !same(this.output(item, receipt), safe)) throw new Error("Typed receipt differs from its computed scoped value");
-          const entry = timeline(receipt); if (!entry || entry.status !== "DONE" || !same(entry.output, safe)) throw new Error("Typed value lacks its matching saved timeline");
-          if (kind === "collection-item") completion?.itemCompleted(nodeId, visit);
-          if (kind === "collection") completion?.collectionCompleted(nodeId, visit);
-          if (kind === "return") { observedFinal = safe!.value; hasFinal = true; }
-          return safe;
-        },
-      });
-      if (used.size !== Object.keys(item.iterationProgress.receipts).length) throw new Error("Unexpected iteration receipts outside the confirmed traversal");
-      assertFinal();
-      return null;
-    } catch (error) { if (error instanceof PendingBoundary) {
+    const pending = (point: IterationBoundary | null): IterationBoundary | null => {
       // Extra authenticated-but-out-of-order receipts cannot authorize jumping
       // across an earlier missing boundary, even if their output is present.
       if (Object.keys(item.iterationProgress.receipts).some(id => !used.has(id))) throw new Error("Iteration receipts precede an unconfirmed earlier boundary");
       assertFinal();
-      return error.boundary;
-    } throw error; }
+      return point;
+    };
+    for (let boundaries = 0; boundaries <= 5000; boundaries++) {
+      const raw = machine.peek(); if (!raw) return pending(null);
+      const point: IterationBoundary = structuredClone(raw); let safe: { value: unknown } | undefined;
+      if (point.kind === "action") {
+        const node = this.#plan.ir.root.nodes[point.sourceIndex]!, tool = this.#tools.find(value => value.tool_id === node.capability.toolId)!;
+        point.valid = !!point.arguments && !validateToolInput(tool.input_schema, point.arguments).length;
+        if (point.arguments) point.dataBinding = this.outputBinding(point.arguments);
+        if (selected) selected.prior = completion.prior(point.nodeId, point.visit);
+      } else if (point.kind === "collection" && point.phase === "start") {
+        if (point.valid) point.dataBinding = this.outputBinding(point.value); delete point.value;
+      } else if (["merge", "return", "collection-item", "collection"].includes(point.kind)) {
+        safe = point.valid ? withoutSecretFields({ value: point.value }) as { value: unknown } : undefined;
+        const node = this.#valueNodes.get(point.nodeId)!;
+        const schema = node.kind === "return" ? node.output.schema : node.kind === "if" ? node.merge?.schema : point.kind === "collection" ? { type: "array", items: node.collect.schema } : node.collect.schema;
+        point.valid = !!safe && !!schema && !validateToolInput(schema, safe.value).length;
+        if (safe) point.value = safe.value; else delete point.value;
+      }
+      const receipt = receiptFor(point); if (!receipt) return pending(point);
+      if (point.kind === "action") {
+        if (receipt.dataBinding !== point.dataBinding) throw new Error("Saved iteration arguments no longer match their exact binding");
+        if (["PREPARING", "DISPATCH_INTENT"].includes(receipt.status)) return pending(point);
+        if (receipt.status !== "DONE" || !point.valid) throw new Error("Action receipt is not a confirmed valid invocation");
+        const output = this.output(item, receipt) as Record<string, unknown>, entry = timeline(receipt);
+        if (!entry || entry.status !== "DONE" || this.outputBinding(entry.output) !== receipt.outputBinding || output.isError === true) throw new Error("Iteration answer lacks a matching confirmed success timeline receipt");
+        completion.actionCompleted(point.nodeId, point.arguments!, point.visit); working.observedFinal = output; working.hasFinal = true; machine.accept(output);
+      } else if (point.kind === "condition") {
+        if (receipt.status !== "DONE" || !point.valid || receipt.selected !== point.selected) throw new Error("Condition receipt differs from its computed predicate");
+        const entry = timeline(receipt); if (!entry || entry.status !== "DONE" || entry.selectedBranch !== point.selected) throw new Error("Condition lacks its matching decision timeline"); machine.accept();
+      } else if (point.kind === "skip") {
+        if (receipt.status !== "SKIPPED" || !same(receipt.reason, point.reason) || Object.hasOwn(item.stepOutputs ?? {}, point.visit.invocationId)) throw new Error("Skip lacks exact reason or invents an answer");
+        const entry = timeline(receipt); if (!entry || entry.status !== "SKIPPED" || !same(entry.reason, point.reason)) throw new Error("Skip lacks its matching declaration timeline"); machine.accept();
+      } else if (point.kind === "collection" && point.phase === "start") {
+        if (!point.valid || !["STARTED", "DONE"].includes(receipt.status) || receipt.count !== point.count || receipt.dataBinding !== point.dataBinding) throw new Error("Collection input identity or count differs from the committed start");
+        completion.collectionStarted(point.nodeId, point.count!, point.visit); machine.accept();
+      } else {
+        if (point.kind === "collection" && receipt.status === "STARTED") return pending(point);
+        if (receipt.status !== "DONE" || !point.valid || !same(this.output(item, receipt), safe)) throw new Error("Typed receipt differs from its computed scoped value");
+        const entry = timeline(receipt); if (!entry || entry.status !== "DONE" || !same(entry.output, safe)) throw new Error("Typed value lacks its matching saved timeline");
+        if (point.kind === "collection-item") completion.itemCompleted(point.nodeId, point.visit);
+        if (point.kind === "collection") completion.collectionCompleted(point.nodeId, point.visit);
+        if (point.kind === "return") { working.observedFinal = safe!.value; working.hasFinal = true; }
+        machine.accept(safe);
+      }
+    }
+    throw new Error("Incremental read traversal exceeds bounded receipt limits");
   }
   private async commit<T>(mutation: (state: RepositoryState, item: BoundExecution) => Promise<T> | T): Promise<T> {
-    try { return await this.repository.mutateExecution(this.executionId, async state => { const item = this.current(state), result = await mutation(state, item);
+    try { return await this.repository.mutateExecution(this.executionId, async state => { const item = this.current(state), working = this.restoreContinuation(item, state);
+      this.#transaction = { state, working }; let result: T;
+      try { result = await mutation(state, item); } finally { this.#transaction = undefined; }
       if (canonicalJSONByteLength({ ledger: item.iterationProgress, outputs: item.stepOutputs ?? {}, values: item.valueOutputs ?? {} }) > 2_000_000) throw new Error("Iteration evidence exceeds aggregate storage limits");
+      this.saveContinuation(item, state, working);
       return result;
-    }); } catch (cause) { if (cause instanceof ReadRunCancelled) throw cause; throw new ReadCheckpointFailure(cause); }
+    }); } catch (cause) { this.#warmContinuation = undefined; if (cause instanceof ReadRunCancelled) throw cause; throw new ReadCheckpointFailure(cause); }
   }
   private emit(state: RepositoryState, item: BoundExecution, type: string, point: IterationBoundary, attemptId?: string): void {
     appendExecutionEvent(state, item, type, { invocationId: point.visit.invocationId, iterations: point.visit.iterations, sourceIndex: point.sourceIndex, kind: point.kind, ...(point.phase ? { phase: point.phase } : {}) }, point.nodeId, attemptId);
   }
   /** Commit one automatic boundary or prepare the next action. Actual action
-   * arguments are returned only to the server driver, never journaled. */
+   * arguments stay private/encrypted, never in public receipts or events. */
   async advance(assertContext?: (state: Readonly<RepositoryState>) => void): Promise<IterationBoundary | null> {
     return this.commit(async (state, item) => {
       assertContext?.(state); this.assertAuthority(state, item); const point = await this.next(item, state); assertContext?.(state); this.assertAuthority(state, item); if (!point) return null;
@@ -291,8 +320,6 @@ export class ReadIterationCheckpoints {
         Object.assign(entry, { status: receipt.status === "STARTED" ? "RUNNING" : receipt.status, completedAt: receipt.status === "STARTED" ? null : timestamp, outcome: `ITERATION_${point.kind.toUpperCase().replaceAll("-", "_")}`, ...(point.count !== undefined ? { count: point.count } : {}), ...(point.selected ? { selectedBranch: point.selected } : {}), ...(point.valid && point.kind !== "condition" && point.phase !== "start" ? { output: { value: point.value } } : {}) });
       }
       this.put(item, receipt); this.emit(state, item, `iteration.${point.kind}.${receipt.status.toLowerCase()}`, point, receipt.attemptId);
-      if (point.kind === "action" && point.valid) this.rememberPending(item, state, point);
-      else this.#pendingProof = undefined;
       return structuredClone(point);
     });
   }
@@ -302,7 +329,7 @@ export class ReadIterationCheckpoints {
     return { point, receipt, attempt };
   }
   /** Private server evidence, not an HTTP payload, token or dispatch grant.
-   * Reconstruct the exact PREPARING action and its visible confirmed reads
+   * Restore the exact PREPARING action and its visible confirmed reads
    * under authoritative storage/current controller checks, without a write. */
   private selectedRecord(item: BoundExecution, point: IterationBoundary, attempt: ReadRunAttempt, prior: readonly CompletedRead[]): ReadSelectedEvidence {
     return { profile: "read-selected-evidence/v1", executionId: item.id, epoch: this.epoch, inputBinding: item.iterationProgress.inputBinding,
@@ -335,7 +362,6 @@ export class ReadIterationCheckpoints {
       Object.assign(entry, { phase: "DISPATCH_INTENT", outcome: "DISPATCH_INTENT" });
       const { seal: _seal, ...record } = receipt; this.put(item, { ...record, status: "DISPATCH_INTENT", recordedAt: timestamp });
       this.emit(state, item, "iteration.action.dispatch_intent", point, attempt.id);
-      this.rememberPending(item, state, point);
     });
   }
   async completed(visit: ReadVisit, rawOutput: unknown): Promise<void> {
@@ -351,7 +377,6 @@ export class ReadIterationCheckpoints {
       Object.assign(entry, { status: attempt.status, outcome: error ? "TOOL_REPORTED_ERROR" : "ITERATION_READ_COMPLETED", completedAt: timestamp, durationMs: Math.max(0, Date.parse(timestamp) - Date.parse(attempt.startedAt)), output });
       if (!error) { (item.stepOutputs ??= {})[visit.invocationId] = output; item.finalOutput = output; }
       this.emit(state, item, error ? "iteration.action.failed" : "iteration.action.completed", point, attempt.id);
-      this.#pendingProof = undefined;
     });
   }
   async failed(visit: ReadVisit): Promise<void> {
@@ -364,7 +389,6 @@ export class ReadIterationCheckpoints {
       const entry = state.timelines[item.id]?.find(value => value.attemptId === attempt.id); if (!entry) throw new Error("Iteration attempt lacks its timeline");
       Object.assign(entry, { status: attempt.status, outcome: attempt.status === "UNKNOWN" ? "UNKNOWN" : "NOT_DISPATCHED", completedAt: timestamp });
       this.emit(state, item, attempt.status === "UNKNOWN" ? "iteration.action.outcome_unknown" : "iteration.action.failed", point, attempt.id);
-      this.#pendingProof = undefined;
     });
   }
   async finish(failed = false, assertContext?: (state: Readonly<RepositoryState>) => void): Promise<Execution> {

@@ -11,6 +11,7 @@ function state() {
   value.timelines.run = [{ id: "one", output: { value: false } }, { id: "two" }]; value.timelines.empty = [];
   value.executionEvents.run = [{ version: 1, executionId: "run", workflowId: "wf", sequence: 1, timestamp: "now", type: "done", payload: {} }]; value.executionLogs.run = [{ message: "done" }];
   value.readJobs.run = { version: 1, executionId: "run", actorId: "owner", admittedRole: "owner", state: "FINISHED", requestFingerprint: "request", connectionFingerprint: "connection", idempotencyScope: "scope", createdAt: "now", inputCiphertext: "encrypted" };
+  value.readContinuations.run = { profile: "read-continuation/v1", executionId: "run", ciphertext: "encrypted-cursor" };
   value.auditLogs = [{ id: "a" }, { id: "b" }]; value.settings.private = { secret: "preserved" }; return value;
 }
 
@@ -21,7 +22,7 @@ test("normalizes attempts/receipts/answers/values/events/private jobs and recons
   expect(meta.stepOutputs).toEqual({}); expect(meta.valueOutputs).toEqual({}); expect(meta.readProgress!.attempts).toEqual({}); expect(meta.iterationProgress!.receipts).toEqual({});
   expect(records.find(record => record.path[0] === "root")!.value).not.toHaveProperty("executions");
 });
-test.each(["missing-entry", "orphan-output", "unknown", "duplicate", "wrong-run", "extra-entry", "embedded-output", "array-length", "missing-root", "missing-audit", "missing-parent"])("malformed %s records fail closed rather than dropping evidence", damage => {
+test.each(["missing-entry", "orphan-output", "unknown", "duplicate", "wrong-run", "extra-entry", "embedded-output", "array-length", "missing-root", "missing-audit", "missing-parent", "wrong-cursor", "orphan-cursor"])("malformed %s records fail closed rather than dropping evidence", damage => {
   let records = splitRuntimeState(state());
   if (damage === "missing-entry") records = records.filter(record => record.path[0] !== "timeline-entry" || record.path[2] !== "1");
   if (damage === "orphan-output") records.push({ profile: "runtime-record/v1", path: ["outputs", "missing", "node"], value: false });
@@ -34,6 +35,8 @@ test.each(["missing-entry", "orphan-output", "unknown", "duplicate", "wrong-run"
   if (damage === "missing-root") records = records.filter(record => record.path[0] !== "root");
   if (damage === "missing-audit") records = records.filter(record => record.path[0] !== "auditLogs");
   if (damage === "missing-parent") delete (records.find(record => record.path[0] === "executions")!.value as Execution).readProgress;
+  if (damage === "wrong-cursor") (records.find(record => record.path[0] === "readContinuations")!.value as any).executionId = "other";
+  if (damage === "orphan-cursor") records = records.filter(record => record.path[0] !== "executions");
   expect(() => assembleRuntimeState(records)).toThrow();
 });
 test("record keys preserve object-member names and separators without path collisions", () => {
@@ -43,7 +46,8 @@ test("record keys preserve object-member names and separators without path colli
 });
 test("scoped partitions contain only the selected run and new audit entries, not the root or old audit history", () => {
   const value = state(), records = checkpointRecords({ executionId: "run", execution: value.executions.run!, timeline: value.timelines.run!, logs: value.executionLogs.run!, events: value.executionEvents.run!, job: value.readJobs.run!,
-    auditStart: 2, auditAppend: [{ id: "new" }] });
+    continuation: value.readContinuations.run!, auditStart: 2, auditAppend: [{ id: "new" }] });
   expect(records.some(record => record.path[0] === "root")).toBe(false); expect(records.filter(record => record.path[0] === "audit-entry").map(record => record.path)).toEqual([["audit-entry", "2"]]);
   expect(records.find(record => record.path[0] === "auditLogs")!.value).toBe(3);
+  expect(records.find(record => record.path[0] === "readContinuations")!.value).toEqual(value.readContinuations.run);
 });
