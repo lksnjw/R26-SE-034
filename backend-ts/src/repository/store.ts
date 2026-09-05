@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { AsyncMutex } from "./async-mutex.js";
+import { executionTransaction, applyExecutionCheckpoint, type ExecutionCheckpoint } from "./execution-transaction.js";
 import type { Principal, Workflow } from "../models/schemas.js";
 import type { ReadCompilationReceipt } from "../workflows/compiled-read.js";
 
@@ -159,6 +160,8 @@ export type RepositoryState = {
 export interface PersistenceBackend {
   // Capability of the actual storage implementation, not a config assertion.
   readonly readQueueDurability?: "encrypted-single-writer";
+  readonly executionCheckpointDurability?: "encrypted-record-transactions/v1";
+  saveExecutionCheckpoint?(checkpoint: ExecutionCheckpoint): Promise<void>;
   load(): Promise<Uint8Array | null>;
   save(payload: Uint8Array): Promise<void>;
   probe(): Promise<void>;
@@ -168,7 +171,6 @@ export interface PersistenceBackend {
 export class Repository {
   readonly #mutex = new AsyncMutex();
   #state: RepositoryState;
-  #committed: RepositoryState;
   #healthy = true;
   #writeUncertain = false;
 
@@ -179,7 +181,6 @@ export class Repository {
    ******************************************************************************/
   constructor(readonly persistence: PersistenceBackend | null = null, initial = initialState()) {
     this.#state = structuredClone(initial);
-    this.#committed = structuredClone(initial);
   }
 
   /*******************************************************************************
@@ -248,12 +249,36 @@ export class Repository {
           persistenceAttempted = true;
           await this.persistence.save(bytes);
         }
-        this.#committed = structuredClone(this.#state);
         this.#healthy = true;
         return result;
       } catch (error) {
         this.#state = before;
-        this.#committed = structuredClone(before);
+        if (persistenceAttempted) { this.#healthy = false; this.#writeUncertain = true; }
+        throw error;
+      }
+    });
+  }
+
+  /** Scoped server checkpoint: current authority stays visible under the same
+   * mutation lock, but unrelated objects cannot be written or deep-cloned.
+   * Legacy durable stores explicitly retain aggregate serialization. */
+  async mutateExecution<T>(executionId: string, mutation: (state: RepositoryState) => Promise<T> | T): Promise<T> {
+    return this.#mutex.runExclusive(async () => {
+      if (this.#writeUncertain || !this.#healthy) throw new Error("Authoritative storage is unavailable; execution checkpoint is fenced");
+      const transaction = executionTransaction(this.#state, executionId);
+      let persistenceAttempted = false;
+      try {
+        const result = structuredClone(await mutation(transaction.view)), checkpoint = transaction.checkpoint();
+        const updated = applyExecutionCheckpoint(this.#state, checkpoint);
+        if (this.persistence !== null) {
+          persistenceAttempted = true;
+          if (this.persistence.executionCheckpointDurability === "encrypted-record-transactions/v1" && this.persistence.saveExecutionCheckpoint)
+            await this.persistence.saveExecutionCheckpoint(checkpoint);
+          else await this.persistence.save(Buffer.from(JSON.stringify(updated), "utf8"));
+        }
+        this.#state = updated; this.#healthy = true;
+        return result;
+      } catch (error) {
         if (persistenceAttempted) { this.#healthy = false; this.#writeUncertain = true; }
         throw error;
       }
@@ -270,7 +295,7 @@ export class Repository {
       const payload = await this.persistence.load();
       if (payload === null) throw new Error("Authoritative repository state is unavailable");
       const restored = restoreState(payload);
-      this.#state = restored; this.#committed = structuredClone(restored);
+      this.#state = restored;
       this.#writeUncertain = false; this.#healthy = true;
     });
   }
@@ -333,7 +358,7 @@ export class Repository {
  *
  * Validates and restores a serialized repository state.
  ******************************************************************************/
-function restoreState(payload: Uint8Array): RepositoryState {
+export function restoreState(payload: Uint8Array): RepositoryState {
   const decoded: unknown = JSON.parse(Buffer.from(payload).toString("utf8"));
   if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) throw new Error("stored repository state must be a JSON object");
   const source = decoded as Partial<RepositoryState>;

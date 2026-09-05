@@ -63,7 +63,7 @@ export type AppConfig = {
   allowPublicRegistration: boolean;
   toolRegistryPath: string;
   ruleRegistryPath: string;
-  storageDriver: "memory" | "postgres" | "firestore";
+  storageDriver: "memory" | "postgres" | "postgres-records" | "firestore";
   firestoreProjectId?: string;
   firestoreKeyFile?: string;
   firestoreKeyJson?: Record<string, unknown>;
@@ -175,9 +175,9 @@ export function loadConfig(
     source.STORAGE_DRIVER?.trim().toLowerCase(),
     "memory",
   ) as AppConfig["storageDriver"];
-  if (storageDriver !== "memory" && storageDriver !== "postgres" && storageDriver !== "firestore")
+  if (storageDriver !== "memory" && storageDriver !== "postgres" && storageDriver !== "postgres-records" && storageDriver !== "firestore")
     throw new Error(
-      `unsupported STORAGE_DRIVER ${JSON.stringify(storageDriver)} (allowed values: memory, postgres, or firestore)`,
+      `unsupported STORAGE_DRIVER ${JSON.stringify(storageDriver)} (allowed values: memory, postgres, postgres-records, or firestore)`,
     );
   const mcpMode = nonblank(
     source.MCP_MODE?.trim().toLowerCase(),
@@ -281,9 +281,9 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("PORT must be between 1 and 65535");
   if (config.jwtSecret.length < 16)
     throw new Error("JWT_SECRET must contain at least 16 characters");
-  if (config.storageDriver === "postgres" && config.databaseURL === "")
+  if ((config.storageDriver === "postgres" || config.storageDriver === "postgres-records") && config.databaseURL === "")
     throw new Error("DATABASE_URL is required when STORAGE_DRIVER=postgres");
-  if (config.storageDriver === "postgres" && config.storageEncryptionKey === "")
+  if ((config.storageDriver === "postgres" || config.storageDriver === "postgres-records") && config.storageEncryptionKey === "")
     throw new Error("STORAGE_ENCRYPTION_KEY is required for PostgreSQL storage");
   if (config.storageDriver === "firestore" && !config.firestoreProjectId)
     throw new Error("FIRESTORE_PROJECT_ID is required when STORAGE_DRIVER=firestore");

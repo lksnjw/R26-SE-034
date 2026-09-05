@@ -23,20 +23,25 @@ export class PostgresPersistence implements PersistenceBackend {
    * Connects to PostgreSQL and initializes the locked runtime state store.
    ******************************************************************************/
   static async open(databaseURL: string, encryptionKey: string): Promise<PostgresPersistence> {
+    const codec = new AESGCMCodec(encryptionKey);
     let pool: Pool;
-    try { pool = new Pool({ connectionString: databaseURL, max: 4 }); }
+    try { pool = new Pool({ connectionString: databaseURL, max: 4, connectionTimeoutMillis: 10_000, query_timeout: 10_000 }); }
     catch { throw new Error("DATABASE_URL could not be parsed"); }
     let client: PoolClient | null = null;
     try {
       client = await pool.connect();
       await client.query("SELECT 1");
-      await client.query("BEGIN");
-      await client.query("SELECT pg_advisory_xact_lock($1)", [writerLockID]);
-      await client.query("CREATE TABLE IF NOT EXISTS runtime_state (state_key TEXT PRIMARY KEY, payload BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
-      await client.query("COMMIT");
       const lock = await client.query<{ locked: boolean }>("SELECT pg_try_advisory_lock($1) AS locked", [writerLockID]);
       if (lock.rows[0]?.locked !== true) throw new Error("another backend writer already owns the runtime state");
-      return new PostgresPersistence(pool, client, new AESGCMCodec(encryptionKey));
+      await client.query("BEGIN");
+      await client.query("CREATE TABLE IF NOT EXISTS runtime_state (state_key TEXT PRIMARY KEY, payload BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
+      await client.query("COMMIT");
+      const recordTable = await client.query<{ records: string | null }>("SELECT to_regclass('runtime_record_head') AS records");
+      if (recordTable.rows[0]?.records) {
+        const normalized = await client.query("SELECT state_key FROM runtime_record_head WHERE state_key = $1", ["default"]);
+        if (normalized.rows.length) throw new Error("normalized record storage is active; legacy fallback requires explicit export/rollback, not a driver switch");
+      }
+      return new PostgresPersistence(pool, client, codec);
     } catch (error) {
       if (client !== null) { try { await client.query("ROLLBACK"); } catch { /* connection may already be closed */ } client.release(); }
       await pool.end();

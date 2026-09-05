@@ -296,8 +296,8 @@ test("queued typed workflow uses the same merge and return receipts without mode
 test.each(["output", "final", "skip"])("completion denies missing/forged %s evidence rather than marking a typed workflow done", async damage => {
   const s = await setup(), value = parseWorkflowYAMLStrict(valueYAML()) as any;
   value.metadata.controlFlow.root.nodes.unshift({ kind: "return", id: "early", output: { schema: { type: "boolean" }, value: { kind: "literal", value: false } } });
-  await s.seed(stringify(value)); const original = s.repository.mutate.bind(s.repository);
-  vi.spyOn(s.repository, "mutate").mockImplementation(mutation => original(state => {
+  await s.seed(stringify(value)); const original = s.repository.mutateExecution.bind(s.repository);
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation((id, mutation) => original(id, state => {
     const result = mutation(state);
     const item = Object.values(state.executions).find(item => item.status === "RUNNING" && item.readProgress?.values?.early);
     if (item) { if (damage === "output") delete item.valueOutputs!.early; else if (damage === "final") item.finalOutput = true; else { const entry = state.timelines[item.id]?.find(entry => entry.status === "SKIPPED"); if (entry) entry.outcome = "NOT_SELECTED"; } }
@@ -336,10 +336,10 @@ test("missing selected merge data records a typed failure and retains the confir
 });
 
 test.each(["gate", "answer"])("lost %s value acknowledgement preserves the committed receipt and stops without replay", async nodeId => {
-  const s = await setup(); await s.seed(valueYAML()); const original = s.repository.mutate.bind(s.repository);
-  vi.spyOn(s.repository, "mutate").mockImplementation(async mutation => {
+  const s = await setup(); await s.seed(valueYAML()); const original = s.repository.mutateExecution.bind(s.repository);
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation(async (id, mutation) => {
     let written = false;
-    const result = await original(state => { const before = Object.values(state.executions).some(item => item.readProgress?.values?.[nodeId]); const value = mutation(state); written = !before && Object.values(state.executions).some(item => item.readProgress?.values?.[nodeId]); return value; });
+    const result = await original(id, state => { const before = Object.values(state.executions).some(item => item.readProgress?.values?.[nodeId]); const value = mutation(state); written = !before && Object.values(state.executions).some(item => item.readProgress?.values?.[nodeId]); return value; });
     if (written) throw new Error("Lost typed value acknowledgement"); return result;
   });
   const response = await s.run({ input: { enabled: true } }); expect(response.statusCode).toBe(503);
@@ -426,10 +426,10 @@ test.each([undefined, null, "true", 1, {}, []])("condition input %j fails withou
 
 test("condition checkpoint lost acknowledgement stops all branch work and never replays the decision or reads", async () => {
   const s = await setup(); await s.seed(conditionalYAML());
-  const original = s.repository.mutate.bind(s.repository);
-  vi.spyOn(s.repository, "mutate").mockImplementation(async mutation => {
+  const original = s.repository.mutateExecution.bind(s.repository);
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation(async (id, mutation) => {
     let decisionWritten = false;
-    const result = await original(state => { const before = Object.values(state.executions).some(item => item.readProgress?.decisions?.gate); const value = mutation(state); decisionWritten = !before && Object.values(state.executions).some(item => item.readProgress?.decisions?.gate); return value; });
+    const result = await original(id, state => { const before = Object.values(state.executions).some(item => item.readProgress?.decisions?.gate); const value = mutation(state); decisionWritten = !before && Object.values(state.executions).some(item => item.readProgress?.decisions?.gate); return value; });
     if (decisionWritten) throw new Error("Lost decision acknowledgement"); return result;
   });
   const response = await s.run({ input: { enabled: true } }); expect(response.statusCode).toBe(503);
@@ -439,8 +439,8 @@ test("condition checkpoint lost acknowledgement stops all branch work and never 
 
 test("conditional read cancellation after decision stops before any branch dispatch", async () => {
   const s = await setup(); await s.seed(conditionalYAML());
-  const original = s.repository.mutate.bind(s.repository);
-  vi.spyOn(s.repository, "mutate").mockImplementation(mutation => original(state => { const value = mutation(state); const item = Object.values(state.executions).find(item => item.readProgress?.decisions?.gate); if (item?.readProgress && item.status === "RUNNING") item.readProgress.cancellation = { requestedAt: new Date().toISOString(), requestedBy: item.startedBy }; return value; }));
+  const original = s.repository.mutateExecution.bind(s.repository);
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation((id, mutation) => original(id, state => { const value = mutation(state); const item = Object.values(state.executions).find(item => item.readProgress?.decisions?.gate); if (item?.readProgress && item.status === "RUNNING") item.readProgress.cancellation = { requestedAt: new Date().toISOString(), requestedBy: item.startedBy }; return value; }));
   const response = await s.run({ input: { enabled: true } }); expect(response.statusCode, response.body).toBe(200);
   expect(response.json().data.status).toBe("CANCELLED"); expect(s.callTool).not.toHaveBeenCalled();
 });
@@ -466,10 +466,10 @@ test("queued conditional execution preserves the same selected-path checkpoints 
 });
 
 test("lost branch-skip acknowledgement retains its receipt and stops before a dependent branch SDK read", async () => {
-  const s = await setup(); await s.seed(conditionalYAML()); const original = s.repository.mutate.bind(s.repository);
-  vi.spyOn(s.repository, "mutate").mockImplementation(async mutation => {
+  const s = await setup(); await s.seed(conditionalYAML()); const original = s.repository.mutateExecution.bind(s.repository);
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation(async (id, mutation) => {
     let skipWritten = false;
-    const result = await original(state => { const before = Object.values(state.executions).some(item => item.readProgress?.attempts.yes?.status === "SKIPPED"); const value = mutation(state); skipWritten = !before && Object.values(state.executions).some(item => item.readProgress?.attempts.yes?.status === "SKIPPED"); return value; });
+    const result = await original(id, state => { const before = Object.values(state.executions).some(item => item.readProgress?.attempts.yes?.status === "SKIPPED"); const value = mutation(state); skipWritten = !before && Object.values(state.executions).some(item => item.readProgress?.attempts.yes?.status === "SKIPPED"); return value; });
     if (skipWritten) throw new Error("Lost skip acknowledgement"); return result;
   });
   expect((await s.run({ input: { enabled: false } })).statusCode).toBe(503); expect(s.callTool).not.toHaveBeenCalled();

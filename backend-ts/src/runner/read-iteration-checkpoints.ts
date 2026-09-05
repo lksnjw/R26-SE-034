@@ -252,7 +252,7 @@ export class ReadIterationCheckpoints {
     } throw error; }
   }
   private async commit<T>(mutation: (state: RepositoryState, item: BoundExecution) => Promise<T> | T): Promise<T> {
-    try { return await this.repository.mutate(async state => { const item = this.current(state), result = await mutation(state, item);
+    try { return await this.repository.mutateExecution(this.executionId, async state => { const item = this.current(state), result = await mutation(state, item);
       if (canonicalJSONByteLength({ ledger: item.iterationProgress, outputs: item.stepOutputs ?? {}, values: item.valueOutputs ?? {} }) > 2_000_000) throw new Error("Iteration evidence exceeds aggregate storage limits");
       return result;
     }); } catch (cause) { if (cause instanceof ReadRunCancelled) throw cause; throw new ReadCheckpointFailure(cause); }

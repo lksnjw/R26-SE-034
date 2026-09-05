@@ -8,7 +8,7 @@ import {
   ensureRuntimeRegistries,
 } from "../registry/service.js";
 import type { ToolDefinition } from "../registry/schemas.js";
-import { Repository } from "../repository/store.js";
+import { Repository, type PersistenceBackend } from "../repository/store.js";
 import { Executor } from "../runner/executor.js";
 import { GenericMCPTool } from "../tools/generic-mcp-tool.js";
 import { McpConnectionRuntime } from "../tools/mcp-connection-runtime.js";
@@ -20,6 +20,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import { RegistryValidator } from "../validator/registry-validator.js";
 import { hashPassword } from "../authn/password.js";
 import { PostgresPersistence } from "../storage/postgres.js";
+import { PostgresRecordPersistence } from "../storage/postgres-records.js";
 import { FirestorePersistence } from "../storage/firestore.js";
 import {
   ProviderRuntime,
@@ -75,9 +76,9 @@ const registries = await RegistryService.load(
 console.log(`[startup] Registries loaded — connecting to ${config.storageDriver} storage...`);
 const STORAGE_CONNECT_TIMEOUT_MS = 30_000;
 const persistence =
-  config.storageDriver === "postgres"
-    ? await withTimeout(
-        PostgresPersistence.open(config.databaseURL, config.storageEncryptionKey),
+  config.storageDriver === "postgres" || config.storageDriver === "postgres-records"
+    ? await withTimeout<PersistenceBackend>(
+        config.storageDriver === "postgres-records" ? PostgresRecordPersistence.open(config.databaseURL, config.storageEncryptionKey) : PostgresPersistence.open(config.databaseURL, config.storageEncryptionKey),
         STORAGE_CONNECT_TIMEOUT_MS,
         "Postgres connection",
       )

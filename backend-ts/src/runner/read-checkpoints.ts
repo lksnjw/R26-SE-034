@@ -74,7 +74,7 @@ export class ReadCheckpoints implements ReadExecutionHooks {
     return item as Execution & { readProgress: ReadRunProgress };
   }
   private async commit<T>(mutation: (state: RepositoryState) => T): Promise<T> {
-    try { return await this.repository.mutate(mutation); }
+    try { return await this.repository.mutateExecution(this.executionId, mutation); }
     catch (cause) { if (cause instanceof ReadRunCancelled) throw cause; throw new ReadCheckpointFailure(cause); }
   }
   async preparing(index: number, nodeId: string, label: string, startedAt: string): Promise<void> {

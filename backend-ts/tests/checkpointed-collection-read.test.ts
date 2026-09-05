@@ -131,9 +131,9 @@ test("a successful prerequisite from item one cannot authorize the skipped prere
 });
 
 test.each(["publication", "review", "registry", "session", "generation", "role-map", "role", "actor", "archive", "epoch", "output"])("changed %s after the first confirmed answer denies all following SDK calls", async change => {
-  const s = await setup(), original = s.repository.mutate.bind(s.repository); let changed = false;
-  vi.spyOn(s.repository, "mutate").mockImplementation(async mutation => {
-    const result = await original(mutation);
+  const s = await setup(), original = s.repository.mutate.bind(s.repository), checkpoint = s.repository.mutateExecution.bind(s.repository); let changed = false;
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation(async (id, mutation) => {
+    const result = await checkpoint(id, mutation);
     const run = await s.get();
     if (!changed && run.readProgress!.attempts["each/0/lookup"]?.status === "DONE") {
       changed = true;
