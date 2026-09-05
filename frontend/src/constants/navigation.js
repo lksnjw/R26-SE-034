@@ -155,6 +155,7 @@ const allNavigationGroups = [
 ];
 
 const groupFeatureFlags = {
+  pipeline_upload: "pipelineUpload",
   datafeed: "datafeed",
   mcp_bridge: "mcpBridge",
   registry_search: "registrySearch",

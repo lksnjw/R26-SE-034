@@ -1,5 +1,6 @@
 export default {
   testEnvironment: "node",
+  testPathIgnorePatterns: ["/node_modules/", "<rootDir>/scripts/", "<rootDir>/.hosting/"],
   extensionsToTreatAsEsm: [".jsx"],
   transform: {
     "^.+\\.[jt]sx?$": "babel-jest",

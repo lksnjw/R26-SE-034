@@ -1,0 +1,22 @@
+import { build, loadEnv } from "vite";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { resolve, dirname } from "node:path";
+import { hostingBindings, generateHostingConfig } from "./hosting-config.mjs";
+import { assetProof, sourceProof, jsonHash } from "./hosting-artifact.mjs";
+
+const frontendDir = resolve(dirname(fileURLToPath(import.meta.url)), ".."), repositoryDir = resolve(frontendDir, "..");
+const artifactDir = resolve(frontendDir, ".hosting");
+const env = { ...loadEnv("hosting", frontendDir, ["VITE_", "LCWE_"]), ...Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(VITE_|LCWE_)/.test(key))) };
+const bindings = hostingBindings(env);
+const base = JSON.parse(await readFile(resolve(repositoryDir, "firebase.json"), "utf8"));
+const config = generateHostingConfig(base, bindings), sourceBefore = await sourceProof(frontendDir, repositoryDir);
+await build({ root: frontendDir, mode: "hosting", build: { outDir: ".hosting/public", emptyOutDir: true } });
+const sourceFingerprint = await sourceProof(frontendDir, repositoryDir);
+if (sourceBefore !== sourceFingerprint) throw new Error("Sources changed during hosting build; rebuild required");
+const assets = await assetProof(resolve(artifactDir, "public"));
+const manifest = { profile: "firebase-hosting-release/v1", builtAt: new Date().toISOString(), bindings, sourceFingerprint, configFingerprint: jsonHash(config), assets };
+await mkdir(artifactDir, { recursive: true });
+await writeFile(resolve(artifactDir, "firebase.json"), JSON.stringify(config, null, 2) + "\n");
+await writeFile(resolve(artifactDir, "release-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+console.log(`Hosting artifact verified: ${assets.records.length} files, ${assets.totalBytes} bytes; ${bindings.emulatorOnly ? "EMULATOR ONLY, NOT DEPLOYABLE" : "cloud qualification and release approval still required"}.`);

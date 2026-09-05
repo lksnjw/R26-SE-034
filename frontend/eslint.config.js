@@ -7,6 +7,7 @@ export default [
   {
     ignores: [
       "dist",
+      ".hosting",
       "node_modules",
       ".npm-cache",
       ".npm-appdata",

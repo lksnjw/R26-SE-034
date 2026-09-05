@@ -1,5 +1,7 @@
 # Research Low-Code Workflow Engine
 
+Current implementation uses the TypeScript/Fastify backend. The owner-selected target is **Cloud Firestore + Firebase Hosting**, with existing authentication preserved. [Local Hosting setup and verified boundaries](docs/FIREBASE_HOSTING_LOCAL_QUALIFICATION_2026-10-06.md) and the [Firebase integration plan](docs/FIREBASE_STORAGE_AND_INTEGRATION_PLAN_2026-10-06.md) describe what works locally and what remains; no cloud deployment/data migration or full-project completion is claimed.
+
 [![Go Backend](https://img.shields.io/badge/Backend-Go%20%2B%20Fiber-00ADD8?logo=go&logoColor=white)](backend)
 [![React Frontend](https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB?logo=react&logoColor=0B1020)](frontend)
 [![Semantic Retrieval](https://img.shields.io/badge/Semantic%20Retrieval-FAISS%20%2B%20Ollama-111827)](backend/semantic_search_service)

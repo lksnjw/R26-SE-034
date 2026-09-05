@@ -6,3 +6,4 @@ dist/
 vite-dev*.log
 qa-*.png
 .env.local
+.env.hosting.local

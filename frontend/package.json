@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:hosting": "node scripts/build-hosting.mjs",
+    "verify:hosting": "node scripts/verify-hosting-artifact.mjs",
+    "test:hosting-config": "node --test scripts/hosting-config.test.mjs",
     "lint": "eslint .",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
     "preview": "vite preview"

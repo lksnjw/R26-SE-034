@@ -7,6 +7,7 @@ import { features } from "./features";
 import { appRouteObjects, protectedRouteDefinitions } from "./router.jsx";
 
 const disabledPaths = [
+  "/datafeed/upload",
   "/datafeed",
   "/datafeed/metrics",
   "/datafeed/configuration",
@@ -20,6 +21,7 @@ test("feature flags are explicit booleans with incomplete groups disabled", () =
   expect(Object.values(features).every((value) => typeof value === "boolean")).toBe(true);
   expect(features).toMatchObject({
     datafeed: false,
+    pipelineUpload: false,
     registrySearch: false,
     registryImport: false,
     registryContext: false,
