@@ -13,6 +13,8 @@ npm run dev
 
 The default memory storage is intentionally non-durable. For durable storage, set `STORAGE_DRIVER=postgres`, `DATABASE_URL`, and a 32-byte `STORAGE_ENCRYPTION_KEY` encoded as base64, hex, or a literal value. Runtime registry files are created under `configs/runtime/` from the frozen copies stored in this folder's parity fixtures.
 
+Supported published read workflows can use `mode: "async-read"` with a 16–128 character idempotency key. `READ_WORKER_CONCURRENCY` defaults to 2 (1–8), `READ_WORKER_PER_ACTOR` to 1 (1–worker count), and `READ_WORKER_LEASE_MS` to 30000 (5000–300000). Independent principals share bounded fair slots; actions inside a workflow remain ordered. Authenticated private leases are renewed and checked at SDK entry. Interrupted/expired/uncertain jobs require recovery, not automatic replay. This is exclusive-writer local concurrency, not distributed failover or full collection/effect/schedule support. See [worker behavior and verification](../docs/FAIR_READ_WORKERS_AND_SDK_LEASE_FENCES_2026-10-06.md).
+
 For the OpenRouter demo path, configure the OpenAI-compatible provider with a pinned model ID:
 
 ```powershell

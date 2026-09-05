@@ -13,6 +13,15 @@ const erpbridgeEnvironment = {
 };
 
 describe("workflow transport configuration", () => {
+  test("defaults to two read workers, one per principal, with a bounded renewable lease", () => {
+    expect(loadConfig({})).toMatchObject({ readWorkerConcurrency: 2, readWorkerPerActor: 1, readWorkerLeaseMs: 30_000 });
+    expect(loadConfig({ READ_WORKER_CONCURRENCY: "8", READ_WORKER_PER_ACTOR: "2", READ_WORKER_LEASE_MS: "5000" })).toMatchObject({ readWorkerConcurrency: 8, readWorkerPerActor: 2, readWorkerLeaseMs: 5000 });
+  });
+  test.each([
+    { READ_WORKER_CONCURRENCY: "0" }, { READ_WORKER_CONCURRENCY: "9" }, { READ_WORKER_CONCURRENCY: "1.5" },
+    { READ_WORKER_PER_ACTOR: "0" }, { READ_WORKER_PER_ACTOR: "3" }, { READ_WORKER_PER_ACTOR: "NaN" },
+    { READ_WORKER_LEASE_MS: "4999" }, { READ_WORKER_LEASE_MS: "300001" }, { READ_WORKER_LEASE_MS: "5000.5" },
+  ])("rejects invalid read worker bounds %j", environment => { expect(() => loadConfig(environment)).toThrow(); });
   test("keeps the bridge-v1 transport as the default", () => {
     expect(loadConfig({}).mcpTransport).toBe("bridge-v1");
   });

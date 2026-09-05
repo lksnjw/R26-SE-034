@@ -11,6 +11,7 @@ import { ReadCheckpointFailure, ReadRunCancelled, type ReadExecutionHooks } from
 import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
 import { valueNodes } from "../workflows/read-control-flow.js";
 import { interpretReadPlan } from "../workflows/read-interpreter.js";
+import { ReadWorkerLeaseFailure } from "./read-worker-lease.js";
 
 /** Explicit read profiles: sequential actions and structured boolean branches. Unsupported logic
  * is rejected before any dispatch, never reinterpreted by an agent. */
@@ -52,7 +53,7 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
       result.timeline.push(entry); result.logs.push(log);
       return output;
     } catch (cause) {
-      if (cause instanceof ReadCheckpointFailure || cause instanceof ReadRunCancelled) {
+      if (cause instanceof ReadCheckpointFailure || cause instanceof ReadRunCancelled || cause instanceof ReadWorkerLeaseFailure) {
         Object.defineProperty(cause, "runnerResult", { value: result }); throw cause;
       }
       const completed = new Date();

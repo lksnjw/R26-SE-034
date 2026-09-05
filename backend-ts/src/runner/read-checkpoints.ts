@@ -248,10 +248,21 @@ export class ReadCheckpoints implements ReadExecutionHooks {
 /** Startup/reconciliation NEVER dispatches or replays. Completed checkpoints
  * stay immutable; an unacknowledged dispatch intent is explicitly uncertain. */
 export async function reconcileInterruptedExecutions(repository: Repository, reason = "PROCESS_RESTARTED", onlyId?: string, expectedEpoch?: number): Promise<void> {
-  await repository.mutate((state) => {
+  const reconcile = (state: RepositoryState) => {
     const timestamp = new Date().toISOString();
     for (const item of Object.values(state.executions)) {
       if (item.status !== "RUNNING" || (onlyId !== undefined && item.id !== onlyId) || (expectedEpoch !== undefined && item.readProgress?.epoch !== expectedEpoch)) continue;
+      reconcileReadExecution(state, item, reason, timestamp);
+    }
+  };
+  if (onlyId !== undefined) await repository.mutateExecution(onlyId, reconcile);
+  else await repository.mutate(reconcile);
+}
+
+/** Denial-only reconciliation inside an already owned transaction. Never
+ * reclaims a lease, deletes a confirmed answer, or starts a tool call. */
+export function reconcileReadExecution(state: RepositoryState, item: Execution, reason: string, timestamp: string): void {
+      if (item.status !== "RUNNING") return;
       const progress = item.readProgress;
       item.status = "RECOVERY_REQUIRED";
       item.completedAt = timestamp; item.durationMs = Math.max(0, Date.parse(timestamp) - Date.parse(item.startedAt));
@@ -274,6 +285,4 @@ export async function reconcileInterruptedExecutions(repository: Repository, rea
       appendRunAudit(state, item, "execution.recovery_required", true);
       item.agentSummary = "Execution was interrupted. Saved completed node answers are retained; unacknowledged attempts are not replayed.";
       (state.executionLogs[item.id] ??= []).push({ id: `log_${(state.executionLogs[item.id]?.length ?? 0) + 1}`, executionId: item.id, timestamp, level: "error", nodeId: "system", message: item.agentSummary, metadata: { reason } });
-    }
-  });
 }

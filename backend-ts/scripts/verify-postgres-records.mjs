@@ -12,6 +12,7 @@ import { toolSchema } from "../src/registry/schemas.js";
 import { compileReadWorkflow, readCompilationReceipt } from "../src/workflows/compiled-read.js";
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { ReadIterationCheckpoints, newReadIterationLedger } from "../src/runner/read-iteration-checkpoints.js";
+import { issueReadWorkerLease, renewReadWorkerLease, assertReadWorkerLease } from "../src/runner/read-worker-lease.js";
 
 // Never run this against application data. The caller owns an isolated,
 // initially empty local test database created specifically for this script.
@@ -88,6 +89,39 @@ try {
   const completed = await journal().finish(); assert.equal(completed.status, 'DONE'); assert.deepEqual(completed.finalOutput, ['A', 'B', 'C']);
   assert.deepEqual(fixtureInvocations, ['each/0/read', 'each/1/read', 'each/2/read']); assert.equal((await repo.snapshot()).readContinuations.collection, undefined);
   assert.equal((await pool.query("SELECT record_key FROM runtime_records WHERE record_key=$1", [recordKey(['readContinuations', 'collection'])])).rows.length, 0);
+  // Actual normalized-record lease transactions and uncertain renewal ACK.
+  // This proves private ownership persistence, not a live/SDK worker or replay.
+  const leaseKey = 'isolated-server-held-worker-lease-fixture-key-32-bytes', leaseDuration = 30_000, owner = 'isolated-worker';
+  await repo.mutate(state => {
+    state.executions['lease-run'] = { ...run, id: 'lease-run', readProgress: newReadProgress(repo), workflowSnapshot: structuredClone(state.executions.collection.workflowSnapshot) };
+    state.readJobs['lease-run'] = { version: 1, executionId: 'lease-run', actorId: 'test-actor', admittedRole: role, state: 'CLAIMED', workerId: owner,
+      inputCiphertext: codec.encode(Buffer.from('private lease input fixture')).toString('base64'), requestFingerprint: 'fixture-request', idempotencyScope: 'fixture-scope',
+      connectionFingerprint: 'fixture-connection', createdAt: now, claimedAt: now, queueSequence: ++state.counter };
+  });
+  const expectedLease = await repo.mutateExecution('lease-run', state => {
+    const job = state.readJobs['lease-run']; return job.lease = issueReadWorkerLease(leaseKey, job, state.executions['lease-run'], owner, Date.now(), leaseDuration);
+  });
+  await repo.mutateExecution('lease-run', state => {
+    const job = state.readJobs['lease-run']; job.lease = renewReadWorkerLease(leaseKey, job, state.executions['lease-run'], expectedLease, Date.now(), leaseDuration);
+  });
+  const beforeRenewal = (await repo.snapshot()).readJobs['lease-run'].lease;
+  const leaseQuery = persistence.client.query.bind(persistence.client); let loseRenewalAcknowledgement = true, observedUnavailable = false;
+  const unobserve = repo.observeCommits({ committed: () => {}, unavailable: () => { observedUnavailable = true; } });
+  persistence.client.query = async (...args) => { const value = await leaseQuery(...args); if (args[0] === 'COMMIT' && loseRenewalAcknowledgement) { loseRenewalAcknowledgement = false; throw new Error('Isolated lease renewal acknowledgement lost'); } return value; };
+  await assert.rejects(repo.mutateExecution('lease-run', state => {
+    const job = state.readJobs['lease-run']; job.lease = renewReadWorkerLease(leaseKey, job, state.executions['lease-run'], expectedLease, Date.now(), leaseDuration);
+  }), /renewal acknowledgement lost/);
+  assert(observedUnavailable); await assert.rejects(repo.readAuthoritative(() => true), /unavailable/);
+  assert.deepEqual((await repo.snapshot()).readJobs['lease-run'].lease, beforeRenewal, 'unacknowledged lease must not become local ownership');
+  await repo.recoverPersistenceState(); unobserve();
+  const reloadedLease = await repo.readAuthoritative(state => assertReadWorkerLease(leaseKey, state.readJobs['lease-run'], state.executions['lease-run'], expectedLease, Date.now(), leaseDuration));
+  assert.equal(reloadedLease.leaseId, expectedLease.leaseId); assert.equal(reloadedLease.epoch, expectedLease.epoch);
+  await repo.mutateExecution('lease-run', state => {
+    const item = state.executions['lease-run'], job = state.readJobs['lease-run']; item.status = 'DONE'; item.readProgress.epoch++;
+    job.state = 'FINISHED'; delete job.inputCiphertext; delete job.lease;
+  });
+  await assert.rejects(repo.readAuthoritative(state => assertReadWorkerLease(leaseKey, state.readJobs['lease-run'], state.executions['lease-run'], expectedLease, Date.now(), leaseDuration)), /ownership/);
+  assert.equal((await repo.snapshot()).readJobs['lease-run'].lease, undefined);
   const query = persistence.client.query.bind(persistence.client); let loseAcknowledgement = true;
   persistence.client.query = async (...args) => { const value = await query(...args); if (args[0] === 'COMMIT' && loseAcknowledgement) { loseAcknowledgement = false; throw new Error('Isolated lost acknowledgement fixture'); } return value; };
   await assert.rejects(repo.mutateExecution('run', state => { state.executions.run.status = 'DONE'; delete state.readContinuations.run; }), /lost acknowledgement/);
@@ -106,5 +140,6 @@ try {
   console.log(JSON.stringify({ profile: 'isolated-postgres-records-check/v1', passed: true, records: rows.rows.length, checkpointOnlyCount: 100,
     checkpointOnlyMs: Math.round(checkpointOnlyMs), noERPOrProviderCalls: true,
     privateJournal: { confirmedFixtureInvocations: fixtureInvocations.length, journalAcknowledgementLost, reopenedMidFlow, finalCursorRemoved: true },
+    workerLease: { renewed: true, acknowledgementLost: true, unavailableObserverDelivered: observedUnavailable, reloadedExactLease: true, terminalLeaseRemoved: true, noDispatchOrReplay: true },
     limitations: 'Timing covers synthetic checkpoints only. Journal uses supplied local results, not SDK/HTTP/live ERP. Not a process crash/power-loss test, concurrency/load qualification or production SLO.' }));
 } finally { if (persistence) await persistence.close(); await pool.end(); }

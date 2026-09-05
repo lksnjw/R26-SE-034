@@ -19,6 +19,9 @@ const environmentSchema = z
     MCP_MODE: z.string().optional(),
     MCP_TRANSPORT: z.string().optional(),
     MCP_TIMEOUT_MS: z.string().optional(),
+    READ_WORKER_CONCURRENCY: z.string().optional(),
+    READ_WORKER_PER_ACTOR: z.string().optional(),
+    READ_WORKER_LEASE_MS: z.string().optional(),
     ERPBRIDGE_BASE_URL: z.string().optional(),
     ERPBRIDGE_MCP_TOKEN: z.string().optional(),
     ERPBRIDGE_MCP_TOKEN_ENV: z.string().optional(),
@@ -74,6 +77,9 @@ export type AppConfig = {
   mcpMode: "remote" | "mock";
   mcpTransport: MCPTransport;
   mcpTimeoutMs: number;
+  readWorkerConcurrency: number;
+  readWorkerPerActor: number;
+  readWorkerLeaseMs: number;
   erpbridgeBaseURL: string;
   erpbridgeMcpToken: string;
   erpbridgeRoleMap: Record<string, string>;
@@ -121,6 +127,11 @@ export function loadConfig(
     30_000,
     "MCP_TIMEOUT_MS",
   );
+  const readWorkerConcurrency = parseInteger(source.READ_WORKER_CONCURRENCY, 2, "READ_WORKER_CONCURRENCY");
+  const readWorkerPerActor = parseInteger(source.READ_WORKER_PER_ACTOR, 1, "READ_WORKER_PER_ACTOR");
+  const readWorkerLeaseMs = parseInteger(source.READ_WORKER_LEASE_MS, 30_000, "READ_WORKER_LEASE_MS");
+  if (readWorkerConcurrency < 1 || readWorkerConcurrency > 8 || readWorkerPerActor < 1 || readWorkerPerActor > readWorkerConcurrency || readWorkerLeaseMs < 5000 || readWorkerLeaseMs > 300_000)
+    throw new Error("Read worker concurrency must be 1–8, per-actor concurrency 1–worker count, and lease duration 5000–300000 ms");
   const mcpTransport = nonblank(
     source.MCP_TRANSPORT?.trim().toLowerCase(),
     "bridge-v1",
@@ -227,6 +238,9 @@ export function loadConfig(
     mcpMode,
     mcpTransport,
     mcpTimeoutMs,
+    readWorkerConcurrency,
+    readWorkerPerActor,
+    readWorkerLeaseMs,
     erpbridgeBaseURL,
     erpbridgeMcpToken,
     erpbridgeRoleMap,

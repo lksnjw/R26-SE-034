@@ -20,6 +20,8 @@ import { canonicalJSONBytes } from "../core/canonical-json.js";
 
 export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined;
   beforeDispatch?: ((verifiedRole: string) => Promise<void>) | undefined;
+  /** Server-only denial check at the synchronous SDK/capability boundary. */
+  assertDispatch?: (() => void) | undefined;
   /** Server-owned journal instance, never a model/browser evidence payload. */
   iteration?: { checkpoints: ReadIterationCheckpoints; plan: CompiledReadPlan; visit: ReadVisit; assertBinding?: () => void };
   plan?: { yaml: string; stepIndex: number; token: ValidationToken; admissionPin?: ReadAdmissionPin; contractHash?: string; toolId?: string } };
@@ -34,6 +36,7 @@ export async function dispatchReadTool(
   context: ReadDispatchContext = {},
 ): Promise<Record<string, unknown>> {
   args = structuredClone(args);
+  const assertWorkerDispatch = context.assertDispatch;
   const actor = await services.repository.effectiveUser(actorId);
   if (actor === null || actor.status.toLowerCase() !== "active" ||
       !actor.permissions.some((permission) => ["chat:use", "workflow:write", "workflow:run", "workflow:run_own"].includes(permission)))
@@ -50,6 +53,7 @@ export async function dispatchReadTool(
       throw new Error("Tool dispatch context changed during verification");
     if (context.signal?.aborted) throw new Error("Tool dispatch was cancelled");
     iteration?.assertBinding?.();
+    assertWorkerDispatch?.();
   };
   const tools = await discoverTools(session, services.registries);
   const matches = tools.filter((tool) => tool.name === toolName || tool.mcp_tool_name === toolName);
@@ -112,7 +116,7 @@ export async function dispatchReadTool(
       if (!services.validator.validatePlan("ReadConfirmedPath", prefix, actor.role).passed) throw new Error("Selected read path does not meet confirmed process prerequisites");
     }
   }
-  const { signal, plan, beforeDispatch, iteration: _privateIteration, ...metadata } = context;
+  const { signal, plan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, ...metadata } = context;
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
   const identity = createDispatchIdentity(actor, services.config.erpbridgeRoleMap);

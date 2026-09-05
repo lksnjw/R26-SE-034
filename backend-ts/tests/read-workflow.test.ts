@@ -28,9 +28,10 @@ const yaml = stringify({ name: "Daily read", description: "Read invoice details"
   { id: "details", action: "invoice-read", parameters: { id: "{{lookup.structuredContent.id}}" } },
 ] });
 
-async function setup(options: { noBridge?: boolean; roleId?: string; provider?: boolean; write?: boolean; persistence?: PersistenceBackend; mcpTimeoutMs?: number } = {}) {
+async function setup(options: { noBridge?: boolean; roleId?: string; provider?: boolean; write?: boolean; persistence?: PersistenceBackend; mcpTimeoutMs?: number; readWorkerConcurrency?: number; readWorkerPerActor?: number; readWorkerLeaseMs?: number } = {}) {
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "read-workflow-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }),
-    storageEncryptionKey: "x".repeat(32), erpbridgeRoleMap: { "Platform Admin": "admin", Client: "client" } };
+    storageEncryptionKey: "x".repeat(32), erpbridgeRoleMap: { "Platform Admin": "admin", Client: "client" },
+    readWorkerConcurrency: options.readWorkerConcurrency ?? 2, readWorkerPerActor: options.readWorkerPerActor ?? 1, readWorkerLeaseMs: options.readWorkerLeaseMs ?? 30_000 };
   const repository = await Repository.open(options.persistence ?? null);
   const tool = toolSchema.parse({ tool_id: "READ-1", name: "finance.read", mcp_tool_name: "invoice-read", allowed_roles: ["Platform Admin", "Client"],
     is_read_only: !options.write, input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
@@ -642,6 +643,148 @@ async function waitForTerminal(repository: Repository, id: string) {
   await vi.waitFor(async () => { expect((await repository.snapshot()).readJobs[id]?.state).not.toBe("CLAIMED"); }, { timeout: 3000, interval: 10 });
   return (await repository.snapshot()).executions[id]!;
 }
+
+const oneQueuedRead = stringify({ name: "One read", description: "Bounded pool fixture", trigger: { type: "manual" }, steps: [{ id: "lookup", action: "finance.read", parameters: { id: "{{input.invoiceId}}" } }] });
+async function admitAs(s: Awaited<ReturnType<typeof setup>>, actorId: string, inputId: string) {
+  if (actorId !== "actor") await s.repository.mutate(state => { state.users[actorId] ??= { ...state.users.actor!, id: actorId, name: actorId, email: `${actorId}@example.test` }; });
+  const headers = { authorization: `Bearer ${jwt.sign({}, s.services.config.jwtSecret, { subject: actorId, expiresIn: 3600 })}` };
+  const response = await s.app.inject({ method: "POST", url: "/api/workflows/read/run", headers, payload: queuedInput(`read-pool-${inputId}-key`, { invoiceId: inputId, api_key: "private-queue-secret" }) });
+  expect(response.statusCode, response.body).toBe(202); return response.json().data as Execution;
+}
+
+test("bounded workers execute another principal while one SDK read is held, with FIFO and actor fairness", async () => {
+  const s = await setup({ mcpTimeoutMs: 10_000 }); await s.seed(oneQueuedRead);
+  const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const admitted = [await admitAs(s, "actor", "a-first"), await admitAs(s, "actor", "a-second"), await admitAs(s, "actor-b", "b-first"), await admitAs(s, "actor-c", "c-first")];
+  const waits = new Map(admitted.map(item => [String(item.workflowSnapshot!.input.invoiceId), barrier()]));
+  let inFlight = 0, max = 0;
+  s.callTool.mockImplementation(async (_name, args) => { inFlight++; max = Math.max(max, inFlight); await waits.get(String(args.id))!.promise; inFlight--; return { content: [], structuredContent: { id: args.id } }; });
+  kick.mockRestore(); queue.kick();
+  await vi.waitFor(() => { expect(s.callTool).toHaveBeenCalledTimes(2); }, { timeout: 3000 });
+  expect(s.callTool.mock.calls.map(call => call[1].id)).toEqual(["a-first", "b-first"]);
+  waits.get("b-first")!.release(); expect((await waitForTerminal(s.repository, admitted[2]!.id)).status).toBe("DONE");
+  await vi.waitFor(() => { expect(s.callTool).toHaveBeenCalledTimes(3); }); expect(s.callTool.mock.calls[2]![1].id).toBe("c-first");
+  waits.get("c-first")!.release(); await waitForTerminal(s.repository, admitted[3]!.id);
+  expect((await s.repository.snapshot()).executions[admitted[1]!.id]!.status).toBe("PENDING");
+  waits.get("a-first")!.release(); await waitForTerminal(s.repository, admitted[0]!.id);
+  await vi.waitFor(() => { expect(s.callTool).toHaveBeenCalledTimes(4); }); expect(s.callTool.mock.calls[3]![1].id).toBe("a-second");
+  waits.get("a-second")!.release(); await waitForTerminal(s.repository, admitted[1]!.id); expect(max).toBe(2);
+  expect((await s.repository.snapshot()).readJobs[admitted[0]!.id]!.lease).toBeUndefined();
+});
+
+test.each([{ workers: 1, perActor: 1, sameActor: false, initial: 1 }, { workers: 2, perActor: 2, sameActor: true, initial: 2 }])("worker bounds are enforced for %j", async limits => {
+  const s = await setup({ mcpTimeoutMs: 10_000, readWorkerConcurrency: limits.workers, readWorkerPerActor: limits.perActor }); await s.seed(oneQueuedRead);
+  const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const first = await admitAs(s, "actor", "first"), second = await admitAs(s, limits.sameActor ? "actor" : "actor-b", "second"), held = barrier();
+  s.callTool.mockImplementation(async (_name, args) => { await held.promise; return { content: [], structuredContent: { id: args.id } }; });
+  kick.mockRestore(); queue.kick(); await vi.waitFor(() => { expect(s.callTool).toHaveBeenCalledTimes(limits.initial); });
+  const state = await s.repository.snapshot(); expect(Object.values(state.readJobs).filter(job => job.state === "CLAIMED")).toHaveLength(limits.initial);
+  if (limits.initial === 1) expect(state.executions[second.id]!.status).toBe("PENDING");
+  held.release(); expect((await waitForTerminal(s.repository, first.id)).status).toBe("DONE"); expect((await waitForTerminal(s.repository, second.id)).status).toBe("DONE"); expect(s.callTool).toHaveBeenCalledTimes(2);
+});
+
+test.each(["lease", "actor", "assignment", "storage"])("final queued SDK entry denies %s changes after the intent acknowledgement", async change => {
+  const persistence = change === "storage" ? new QueuePersistence() : undefined;
+  const s = await setup({ roleId: "role_client", ...(persistence ? { persistence } : {}) }); await s.seed(oneQueuedRead);
+  const original = s.repository.mutateExecution.bind(s.repository); let changed = false;
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation(async (id, mutation) => {
+    const result = await original(id, mutation);
+    if (!changed && await s.repository.read(state => state.executions[id]?.readProgress?.attempts.lookup?.status === "DISPATCH_INTENT")) {
+      changed = true;
+      if (change === "storage") {
+        persistence!.commitBeforeFailure = true; persistence!.failWhen = () => true;
+        await expect(s.repository.mutate(state => { state.users.actor!.status = "Disabled"; })).rejects.toThrow("acknowledgement");
+      } else await s.repository.mutate(state => {
+        if (change === "lease") state.readJobs[id]!.lease!.expiresAt = new Date(Date.now() + 300_000).toISOString();
+        if (change === "actor") state.users.actor!.status = "Disabled";
+        if (change === "assignment") state.workflows.read!.assignedUserIds = [];
+      });
+    }
+    return result;
+  });
+  const admitted = (await s.run(queuedInput())).json().data; await waitForTerminal(s.repository, admitted.id);
+  expect(changed).toBe(true); expect(s.callTool).not.toHaveBeenCalled();
+  const state = await s.repository.snapshot(); expect(state.executions[admitted.id]!.status).not.toBe("DONE"); expect(state.executions[admitted.id]!.stepOutputs).toEqual({});
+  expect(state.executionEvents[admitted.id]!.some(event => event.type === "node.completed")).toBe(false);
+});
+
+test("a sustained storage-health outage denies final SDK entry until explicit authoritative startup reconciliation", async () => {
+  const persistence = new QueuePersistence(), s = await setup({ persistence }); await s.seed(oneQueuedRead);
+  const original = s.repository.mutateExecution.bind(s.repository); let unavailable = false;
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation(async (id, mutation) => {
+    const result = await original(id, mutation);
+    if (!unavailable && await s.repository.read(state => state.executions[id]?.readProgress?.attempts.lookup?.status === "DISPATCH_INTENT")) {
+      unavailable = true; persistence.probe = async () => { throw new Error("storage remains unavailable"); }; await s.repository.persistenceStatus();
+    }
+    return result;
+  });
+  const admitted = (await s.run(queuedInput())).json().data;
+  await vi.waitFor(() => { expect(unavailable).toBe(true); }); await new Promise(resolve => setImmediate(resolve)); expect(s.callTool).not.toHaveBeenCalled();
+  expect(await s.repository.persistenceStatus()).toEqual({ durable: true, healthy: false }); await expect(s.repository.readAuthoritative(() => true)).rejects.toThrow("unavailable");
+  // No terminal write can truthfully be promised while storage is unavailable.
+  // A fresh supervised queue reconciles the saved intent, never resumes it.
+  persistence.probe = async () => {}; await s.repository.persistenceStatus(); await readJobQueue(s.services).stop(); await readJobQueue(s.services).start();
+  const item = await waitForTerminal(s.repository, admitted.id); expect(item.status).toBe("RECOVERY_REQUIRED"); expect(item.readProgress?.attempts.lookup?.status).toBe("UNKNOWN"); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("queued lease expiry during awaited broker policy prevents SDK entry and preserves a recovery outcome", async () => {
+  const s = await setup({ readWorkerLeaseMs: 5000 }); await s.seed(oneQueuedRead); const entered = barrier(), unblock = barrier();
+  s.services.validationGate = { validateAndIssueToken: async (action, source, actor) => { if (action === "ReadToolBroker") { entered.release(); await unblock.promise; } return s.validator.validateAndIssueToken(action, source, actor.role); } };
+  const admitted = (await s.run(queuedInput())).json().data; await entered.promise;
+  const timestamp = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(timestamp + 5001);
+  try { unblock.release(); const item = await waitForTerminal(s.repository, admitted.id); expect(item.status).toBe("RECOVERY_REQUIRED"); expect(item.readProgress?.attempts.lookup?.status).toBe("FAILED"); expect(s.callTool).not.toHaveBeenCalled(); }
+  finally { clock.mockRestore(); }
+});
+
+test("an acknowledged heartbeat renews the exact private lease while a slow read is pending", async () => {
+  const s = await setup({ readWorkerLeaseMs: 5000, mcpTimeoutMs: 10_000 }); await s.seed(oneQueuedRead); const entered = barrier(), unblock = barrier();
+  s.callTool.mockImplementation(async () => { entered.release(); await unblock.promise; return { content: [], structuredContent: { id: "confirmed-after-renewal" } }; });
+  const admitted = (await s.run(queuedInput())).json().data; await entered.promise;
+  const before = (await s.repository.snapshot()).readJobs[admitted.id]!.lease!;
+  await vi.waitFor(async () => { const after = (await s.repository.snapshot()).readJobs[admitted.id]!.lease!; expect(after.renewedAt).not.toBe(before.renewedAt); expect(after.leaseId).toBe(before.leaseId); expect(after.epoch).toBe(before.epoch); expect(after.seal).not.toBe(before.seal); }, { timeout: 3000 });
+  unblock.release(); expect((await waitForTerminal(s.repository, admitted.id)).status).toBe("DONE"); expect(s.callTool).toHaveBeenCalledTimes(1);
+});
+
+test("lost heartbeat acknowledgement stops the worker, retains recovery evidence and rejects new admissions", async () => {
+  const persistence = new QueuePersistence(), s = await setup({ persistence, readWorkerLeaseMs: 5000, mcpTimeoutMs: 10_000 }); await s.seed(oneQueuedRead); const entered = barrier(), unblock = barrier();
+  s.callTool.mockImplementation(async () => { entered.release(); await unblock.promise; return { content: [], structuredContent: { id: "late-unconfirmed-answer" } }; });
+  const admitted = (await s.run(queuedInput())).json().data; await entered.promise;
+  persistence.commitBeforeFailure = true; persistence.failWhen = state => Object.values(state.readJobs).some(job => job.lease && job.lease.renewedAt !== job.lease.acquiredAt);
+  const item = await waitForTerminal(s.repository, admitted.id); expect(item.status).toBe("RECOVERY_REQUIRED"); expect(item.readProgress?.attempts.lookup?.status).toBe("UNKNOWN");
+  expect(s.callTool).toHaveBeenCalledTimes(1); expect(item.stepOutputs).toEqual({});
+  const queue = readJobQueue(s.services); expect(() => queue.assertCapacity(persistence.state())).toThrow("unavailable");
+  unblock.release(); await new Promise(resolve => setImmediate(resolve)); expect((await s.repository.snapshot()).executions[admitted.id]!.stepOutputs).toEqual({});
+});
+
+test("one uncertain renewal fences all concurrent principals without exposing either late SDK answer", async () => {
+  const persistence = new QueuePersistence(), s = await setup({ persistence, readWorkerLeaseMs: 5000, mcpTimeoutMs: 10_000 }); await s.seed(oneQueuedRead);
+  const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {}), unblock = barrier();
+  const first = await admitAs(s, "actor", "first"), second = await admitAs(s, "actor-b", "second");
+  s.callTool.mockImplementation(async () => { await unblock.promise; return { content: [], structuredContent: { id: "late-from-uncertain-generation" } }; });
+  kick.mockRestore(); queue.kick(); await vi.waitFor(() => { expect(s.callTool).toHaveBeenCalledTimes(2); });
+  persistence.commitBeforeFailure = true; persistence.failWhen = state => Object.values(state.readJobs).some(job => job.lease && job.lease.renewedAt !== job.lease.acquiredAt);
+  for (const id of [first.id, second.id]) { const item = await waitForTerminal(s.repository, id); expect(item.status).toBe("RECOVERY_REQUIRED"); expect(item.readProgress?.attempts.lookup?.status).toBe("UNKNOWN"); expect(item.stepOutputs).toEqual({}); }
+  unblock.release(); await new Promise(resolve => setImmediate(resolve)); expect(s.callTool).toHaveBeenCalledTimes(2);
+  for (const id of [first.id, second.id]) expect((await s.repository.snapshot()).executions[id]!.stepOutputs).toEqual({});
+});
+
+test("shutdown fences every active slot and ignores late results instead of replaying either principal", async () => {
+  const s = await setup({ mcpTimeoutMs: 10_000 }); await s.seed(oneQueuedRead); const queue = readJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {}), unblock = barrier();
+  const first = await admitAs(s, "actor", "first"), second = await admitAs(s, "actor-b", "second");
+  s.callTool.mockImplementation(async () => { await unblock.promise; return { content: [], structuredContent: { id: "late-from-stopped-worker" } }; });
+  kick.mockRestore(); queue.kick(); await vi.waitFor(() => { expect(s.callTool).toHaveBeenCalledTimes(2); }); await queue.stop();
+  for (const id of [first.id, second.id]) {
+    const item = await waitForTerminal(s.repository, id); expect(item.status).toBe("RECOVERY_REQUIRED"); expect(item.readProgress?.attempts.lookup?.status).toBe("UNKNOWN"); expect(item.readProgress?.epoch).toBe(3); expect(item.stepOutputs).toEqual({});
+  }
+  unblock.release(); await new Promise(resolve => setImmediate(resolve)); expect(s.callTool).toHaveBeenCalledTimes(2);
+  for (const id of [first.id, second.id]) expect((await s.repository.snapshot()).executions[id]!.stepOutputs).toEqual({});
+});
+
+test("stopping an in-memory queue preserves the encrypted input key for a fresh queue's unclaimed jobs", async () => {
+  const s = await setup(); await s.seed(oneQueuedRead); const first = readJobQueue(s.services), kick = vi.spyOn(first, "kick").mockImplementation(() => {});
+  const admitted = (await s.run(queuedInput())).json().data; await first.stop(); kick.mockRestore();
+  const second = readJobQueue(s.services); await second.start(); expect((await waitForTerminal(s.repository, admitted.id)).status).toBe("DONE"); expect(s.callTool).toHaveBeenCalledTimes(1);
+});
 
 test("async admission returns a run ID before held SDK completion; same key never dispatches twice", async () => {
   const s = await setup({ provider: true }); await s.seed(); const entered = barrier(), unblock = barrier();

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { Repository, type Execution, type PersistenceBackend } from "../src/repository/store.js";
 import { applyExecutionCheckpoint, type ExecutionCheckpoint } from "../src/repository/execution-transaction.js";
 
@@ -25,6 +25,49 @@ async function setup(persistence: PersistenceBackend | null = null) {
     state.settings.example = { deep: { value: 42 } }; state.auditLogs.push({ id: "old-audit", deep: { value: 1 } }); });
   return repo;
 }
+
+describe("acknowledged server-only commit denial observers", () => {
+  test.each([false, true])("signals only after durable acknowledgement, scoped=%s", async scoped => {
+    const persistence = new Records(), repo = await setup(persistence), committed = vi.fn(), unavailable = vi.fn();
+    const unsubscribe = repo.observeCommits({ committed, unavailable });
+    const original = scoped ? persistence.saveExecutionCheckpoint.bind(persistence) : persistence.save.bind(persistence);
+    let entered!: () => void, release!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; }), wait = new Promise<void>(resolve => { release = resolve; });
+    if (scoped) persistence.saveExecutionCheckpoint = async value => { entered(); await wait; await (original as (value: ExecutionCheckpoint) => Promise<void>)(value); };
+    else persistence.save = async value => { entered(); await wait; await (original as (value: Uint8Array) => Promise<void>)(value); };
+    const operation = scoped ? repo.mutateExecution("run-one", state => { state.executions["run-one"]!.status = "DONE"; }) : repo.mutate(state => { state.executions["run-one"]!.status = "DONE"; });
+    await ready; expect(committed).not.toHaveBeenCalled(); expect(unavailable).not.toHaveBeenCalled();
+    release(); await operation; expect(committed).toHaveBeenCalledTimes(1); expect(committed.mock.calls[0]![0].executions["run-one"].status).toBe("DONE");
+    unsubscribe(); await repo.mutateExecution("run-one", () => {}); expect(committed).toHaveBeenCalledTimes(1);
+  });
+  test.each(["before", "after"] as const)("denies an uncertain %s-save before exposing its failure and confirms only authoritative reload", async phase => {
+    const persistence = new Records(), repo = await setup(persistence), committed = vi.fn(), unavailable = vi.fn();
+    repo.observeCommits({ committed, unavailable }); persistence.fail = phase;
+    await expect(repo.mutateExecution("run-one", state => { state.executions["run-one"]!.status = "DONE"; })).rejects.toThrow();
+    expect(committed).not.toHaveBeenCalled(); expect(unavailable).toHaveBeenCalledTimes(1);
+    await repo.recoverPersistenceState(); expect(committed).toHaveBeenCalledTimes(1);
+    expect(committed.mock.calls[0]![0].executions["run-one"].status).toBe(phase === "after" ? "DONE" : "RUNNING");
+  });
+  test("an observer fault denies that observer without turning a committed save into a false failure", async () => {
+    const repo = await setup(), unavailable = vi.fn(), other = vi.fn();
+    repo.observeCommits({ committed: () => { throw new Error("observer error"); }, unavailable });
+    repo.observeCommits({ committed: other, unavailable: () => {} });
+    await repo.mutateExecution("run-one", state => { state.executions["run-one"]!.status = "DONE"; });
+    expect(unavailable).toHaveBeenCalledTimes(1); expect(other).toHaveBeenCalledTimes(1);
+    expect(await repo.readAuthoritative(state => state.executions["run-one"]!.status)).toBe("DONE");
+  });
+  test("a rejected mutation does not fabricate either a commit or an uncertain save", async () => {
+    const repo = await setup(), committed = vi.fn(), unavailable = vi.fn(); repo.observeCommits({ committed, unavailable });
+    await expect(repo.mutateExecution("run-one", () => { throw new Error("known rejection"); })).rejects.toThrow();
+    expect(committed).not.toHaveBeenCalled(); expect(unavailable).not.toHaveBeenCalled();
+  });
+  test("failed health probes synchronously deny observers without pretending a successful probe is a reload", async () => {
+    const persistence = new Records(), repo = await setup(persistence), committed = vi.fn(), unavailable = vi.fn();
+    repo.observeCommits({ committed, unavailable }); persistence.probe = async () => { throw new Error("unavailable"); };
+    expect(await repo.persistenceStatus()).toEqual({ durable: true, healthy: false }); expect(unavailable).toHaveBeenCalledTimes(1);
+    persistence.probe = async () => {}; expect(await repo.persistenceStatus()).toEqual({ durable: true, healthy: true }); expect(committed).not.toHaveBeenCalled();
+  });
+});
 
 describe("scoped execution checkpoints", () => {
   test("commits only copied run evidence and appended audit entries through the record capability", async () => {

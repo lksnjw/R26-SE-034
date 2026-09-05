@@ -53,6 +53,17 @@ test("approved read consumes real capability and injects only backend-mapped rol
   expect(args).toEqual({ id: "invoice-1" });
 });
 
+test("captures the server-only entry guard before policy awaits instead of accepting a replaced guard", async () => {
+  const s = await setup(), assertDispatch = vi.fn(() => { throw new Error("worker lease unavailable"); }), context = { assertDispatch };
+  const original = s.services.validator.evaluateResolvedStep.bind(s.services.validator);
+  vi.spyOn(s.services.validator, "evaluateResolvedStep").mockImplementation(async (...args) => {
+    const result = await original(...args); context.assertDispatch = vi.fn(); return result;
+  });
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "x" }, context)).rejects.toThrow("worker lease unavailable");
+  expect(assertDispatch).toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+  expect(JSON.stringify(await s.services.repository.snapshot())).not.toContain("assertDispatch");
+});
+
 test.each(["unknown", "role", "missing", "wrong-type", "extra", "write", "ungranted", "disabled", "no-bridge", "unsupported-schema", "nested"])("%s blocks before SDK dispatch", async (scenario) => {
   const s = await setup({ write: scenario === "write", ...(scenario === "ungranted" ? { roles: ["Platform Admin"] } : {}),
     ...(scenario === "unsupported-schema" ? { schema: { type: "object", allOf: [{ type: "object" }] } } : {}),

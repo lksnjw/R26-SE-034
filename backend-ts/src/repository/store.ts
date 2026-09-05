@@ -65,7 +65,8 @@ export type ExecutionEvent = { version: 1; executionId: string; workflowId: stri
   traceId?: string; nodeId?: string; attemptId?: string; payload: Record<string, unknown> };
 // Private worker inputs are encrypted and never placed on public executions.
 export type ReadJob = { version: 1; executionId: string; actorId: string; admittedRole: string; state: "QUEUED" | "CLAIMED" | "FINISHED" | "RECOVERY_REQUIRED";
-  inputCiphertext?: string; requestFingerprint: string; idempotencyScope: string; connectionFingerprint: string; createdAt: string; claimedAt?: string; finishedAt?: string; workerId?: string };
+  inputCiphertext?: string; requestFingerprint: string; idempotencyScope: string; connectionFingerprint: string; createdAt: string; queueSequence?: number; claimedAt?: string; finishedAt?: string; workerId?: string;
+  lease?: import("../runner/read-worker-lease.js").ReadWorkerLease };
 
 export type Permission = { key: string; name: string; description: string; group: string };
 export type ChatAttempt = { id: string; toolName: string; argumentHash: string; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN"; startedAt: string; completedAt?: string; output?: Record<string, unknown> };
@@ -181,6 +182,20 @@ export class Repository {
   #state: RepositoryState;
   #healthy = true;
   #writeUncertain = false;
+  readonly #commitObservers = new Set<{ committed(state: Readonly<RepositoryState>): void; unavailable(): void }>();
+
+  /** Server-only denial signals, synchronously delivered after acknowledged
+   * commits/reloads and before uncertain-write failures are exposed. They grant
+   * no dispatch authority and may never perform I/O or repository mutations. */
+  observeCommits(observer: { committed(state: Readonly<RepositoryState>): void; unavailable(): void }): () => void {
+    this.#commitObservers.add(observer); return () => { this.#commitObservers.delete(observer); };
+  }
+  private notifyCommitObservers(available: boolean): void {
+    for (const observer of this.#commitObservers) {
+      try { if (available) observer.committed(this.#state); else observer.unavailable(); }
+      catch { try { observer.unavailable(); } catch { /* Observer cannot change an acknowledged persistence outcome. */ } }
+    }
+  }
 
   /*******************************************************************************
    * Function: constructor
@@ -258,10 +273,11 @@ export class Repository {
           await this.persistence.save(bytes);
         }
         this.#healthy = true;
+        this.notifyCommitObservers(true);
         return result;
       } catch (error) {
         this.#state = before;
-        if (persistenceAttempted) { this.#healthy = false; this.#writeUncertain = true; }
+        if (persistenceAttempted) { this.#healthy = false; this.#writeUncertain = true; this.notifyCommitObservers(false); }
         throw error;
       }
     });
@@ -285,9 +301,10 @@ export class Repository {
           else await this.persistence.save(Buffer.from(JSON.stringify(updated), "utf8"));
         }
         this.#state = updated; this.#healthy = true;
+        this.notifyCommitObservers(true);
         return result;
       } catch (error) {
-        if (persistenceAttempted) { this.#healthy = false; this.#writeUncertain = true; }
+        if (persistenceAttempted) { this.#healthy = false; this.#writeUncertain = true; this.notifyCommitObservers(false); }
         throw error;
       }
     });
@@ -305,6 +322,7 @@ export class Repository {
       const restored = restoreState(payload);
       this.#state = restored;
       this.#writeUncertain = false; this.#healthy = true;
+      this.notifyCommitObservers(true);
     });
   }
 
@@ -320,6 +338,7 @@ export class Repository {
       this.#healthy = true;
     } catch {
       this.#healthy = false;
+      this.notifyCommitObservers(false);
     }
     return { durable: true, healthy: this.#healthy && !this.#writeUncertain };
   }
