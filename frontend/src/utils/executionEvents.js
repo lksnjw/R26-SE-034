@@ -22,7 +22,9 @@ export function reconcileExecutionEvents(events, cursor, page, executionId) {
     }
     if (event.sequence !== position + 1) throw new Error("Run history has a sequence gap. Refresh to replay saved evidence.");
     next.push(event); position = event.sequence;
-    if (next.length > 2000) throw new Error("Run history exceeds this preview's supported size.");
+    // Keep a bounded display window without freezing long collection runs.
+    // The sequence cursor still covers every acknowledged server event.
+    if (next.length > 2000) next.splice(0, next.length - 2000);
   }
   if (page.cursor !== position || page.hasMore !== (position < page.lastSequence) || (page.hasMore && position === cursor))
     throw new Error("Run history cursor is inconsistent. Refresh to replay saved evidence.");
@@ -35,6 +37,14 @@ const eventNames = {
   "node.completed": "Node answer saved", "node.failed": "Node stopped", "node.outcome_unknown": "Node outcome unknown",
   "node.interrupted": "Node interrupted before dispatch", "node.cancelled": "Node cancelled before dispatch",
   "run.cancel_requested": "Cancellation requested", "run.completed": "Run finished", "run.recovery_required": "Run requires recovery review",
+  "iteration.action.preparing": "Checking item read", "iteration.action.dispatch_intent": "Item dispatch recorded — answer not yet saved",
+  "iteration.action.completed": "Item answer saved", "iteration.action.failed": "Item read stopped", "iteration.action.stopped": "Item read stopped before dispatch",
+  "iteration.action.outcome_unknown": "Item read outcome unknown", "iteration.skip.skipped": "Item action not evaluated",
+  "iteration.condition.done": "Item condition decision saved", "iteration.condition.failed": "Item condition failed",
+  "iteration.merge.done": "Selected item branch value saved", "iteration.merge.failed": "Item branch value invalid",
+  "iteration.collection.started": "Collection started", "iteration.collection.done": "Collection aggregate saved", "iteration.collection.failed": "Collection stopped",
+  "iteration.collection-item.done": "Typed item value saved", "iteration.collection-item.failed": "Typed item value invalid",
+  "iteration.return.done": "Workflow return saved", "iteration.return.failed": "Workflow return invalid",
 };
 export function executionEventLabel(event) { return eventNames[event.type] ?? "Unrecognized run event"; }
 export function isActiveExecution(status) { return status === "RUNNING" || status === "PENDING"; }

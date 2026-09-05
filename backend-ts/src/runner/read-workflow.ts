@@ -16,7 +16,7 @@ import { interpretReadPlan } from "../workflows/read-interpreter.js";
  * is rejected before any dispatch, never reinterpreted by an agent. */
 export function inspectReadWorkflow(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string): string[] {
   const built = buildReadIR(blueprint, tools, role);
-  return [...built.issues, ...(built.ir.schemaVersion === "workflow-read-ir/v4" ? ["Collection drafts support fixture simulation; durable iteration checkpoints are required for live execution"] : [])];
+  return [...built.issues, ...(built.ir.schemaVersion === "workflow-read-ir/v4" ? ["Collection drafts support fixture simulation; live execution awaits qualified storage, worker admission and item monitoring"] : [])];
 }
 
 export async function executeReadWorkflow(services: HandlerServices, actorId: string, yaml: string, input: Record<string, unknown>, token: ValidationToken,

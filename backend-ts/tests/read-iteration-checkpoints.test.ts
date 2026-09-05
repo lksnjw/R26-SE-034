@@ -332,3 +332,33 @@ test("durable branch reconstruction omits skipped prerequisites and never borrow
   for (let index = 0; index < 50; index++) { const point = await w.advance(); if (!point) break; if (point.kind === "action") { selected[point.visit.invocationId] = (await w.selectedEvidence(point.visit)).prior.map(item => item.visit.invocationId); await w.dispatchIntent(point.visit, role); await w.completed(point.visit, output(String(point.arguments!.id).toUpperCase())); } }
   expect(selected).toEqual({ "each/0/read": [], "each/0/dependent": ["each/0/read"], "each/1/dependent": [], after: ["each/0/read", "each/0/dependent", "each/1/dependent"] }); expect((await w.finish()).finalOutput).toEqual(["A", "B"]);
 });
+
+test.each(["arguments", "attempt", "input", "actor", "role", "epoch", "visit", "source-index", "semantic", "source", "prior"])("dispatch intent atomically rejects changed selected %s evidence", async change => {
+  const s = await setup(), w = s.worker(); await w.advance(); const point = (await w.advance())!, selected = await w.selectedEvidence(point.visit);
+  if (change === "arguments") selected.args.id = "changed";
+  if (change === "attempt") selected.attemptId = "changed";
+  if (change === "input") selected.inputBinding = "changed";
+  if (change === "actor") selected.actorId = "changed";
+  if (change === "role") selected.admittedRole = "changed";
+  if (change === "epoch") selected.epoch++;
+  if (change === "visit") selected.visit.iterations[0]!.index++;
+  if (change === "source-index") selected.sourceIndex++;
+  if (change === "semantic") selected.semanticHash = "changed";
+  if (change === "source") selected.sourceHash = "changed";
+  if (change === "prior") selected.prior = [{ nodeId: "read", sourceIndex: 0, args: { id: "invented" }, visit: { invocationId: "other/0/read", iterations: [{ loopId: "other", index: 0 }] } }];
+  const before = await s.repository.snapshot(); await expect(w.dispatchIntent(point.visit, role, { selectedEvidence: selected, assertContext: () => {} })).rejects.toThrow();
+  expect(await s.repository.snapshot()).toEqual(before);
+});
+
+test("a current selected evidence intent checks synchronous context twice inside its repository transaction", async () => {
+  const s = await setup(), w = s.worker(); await w.advance(); const point = (await w.advance())!, selected = await w.selectedEvidence(point.visit), checked: string[] = [];
+  await w.dispatchIntent(point.visit, role, { selectedEvidence: selected, assertContext: state => { checked.push(state.executions.run!.readProgress!.attempts[point.visit.invocationId]!.status); } });
+  expect(checked).toEqual(["PREPARING", "PREPARING"]); expect((await s.get()).readProgress!.attempts[point.visit.invocationId]!.status).toBe("DISPATCH_INTENT");
+});
+
+test("a revoked synchronous context at intent or automatic boundary never writes a receipt", async () => {
+  const s = await setup(), w = s.worker(), before = await s.repository.snapshot(); const deny = () => { throw new Error("Current publication revoked"); };
+  await expect(w.advance(deny)).rejects.toThrow(); expect(await s.repository.snapshot()).toEqual(before);
+  await w.advance(); const point = (await w.advance())!, selected = await w.selectedEvidence(point.visit), prepared = await s.repository.snapshot();
+  await expect(w.dispatchIntent(point.visit, role, { selectedEvidence: selected, assertContext: deny })).rejects.toThrow(); expect(await s.repository.snapshot()).toEqual(prepared);
+});

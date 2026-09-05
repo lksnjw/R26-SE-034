@@ -27,6 +27,42 @@ const builderIdentity: DispatchIdentity = Object.freeze({
   erpbridgeRole: "workflow_builder",
 });
 
+test("SDK-entry checkpoint precedes capability consumption, snapshots arguments and may deny without a call", async () => {
+  const sdk = fakeSdk(), parameters = { value: "ok" }, identity = { ...builderIdentity }, f = await fixture(sdk, identity, parameters);
+  await expect(f.session.clientFor(f.definition).execute("demo.echo", f.capability, parameters, identity, undefined, async () => { throw new Error("Checkpoint denied"); })).rejects.toThrow("Checkpoint denied");
+  expect(sdk.callTool).not.toHaveBeenCalled();
+  await f.session.clientFor(f.definition).execute("demo.echo", f.capability, parameters, identity, undefined, async () => { parameters.value = "mutated"; });
+  expect(sdk.calls).toEqual([{ name: "erp.echo", args: { value: "ok", role: "workflow_builder" } }]);
+});
+
+test("mutating the originally minted identity during a checkpoint cannot inject a different remote role", async () => {
+  const sdk = fakeSdk(), identity = { ...builderIdentity }, f = await fixture(sdk, identity);
+  await expect(f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, identity, undefined, async () => { identity.erpbridgeRole = "mutated"; })).rejects.toThrow();
+  expect(sdk.callTool).not.toHaveBeenCalled();
+});
+
+test("a synchronous SDK entry fence can deny after the awaited checkpoint without consuming authority", async () => {
+  const sdk = fakeSdk(), f = await fixture(sdk), checkpoint = vi.fn(async () => {});
+  await expect(f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity, undefined, checkpoint, () => { throw new Error("Connection changed"); })).rejects.toThrow("Connection changed");
+  expect(checkpoint).toHaveBeenCalledOnce(); expect(sdk.callTool).not.toHaveBeenCalled();
+  await f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity); expect(sdk.callTool).toHaveBeenCalledOnce();
+});
+
+test("capability expiry is checked after checkpoint waits, not only before them", async () => {
+  const sdk = fakeSdk(), f = await fixture(sdk); vi.useFakeTimers();
+  await expect(f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity, undefined, async () => { vi.setSystemTime(Date.now() + 30_001); })).rejects.toThrow("expired");
+  expect(sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["checkpoint", "admission"])("a hung %s wait is bounded, poisons reuse, and never enters the SDK", async stage => {
+  const sdk = fakeSdk(), f = await fixture(sdk, builderIdentity, { value: "ok" }, 20); vi.useFakeTimers();
+  let settle!: () => void; const hung = () => new Promise<void>(resolve => { settle = resolve; });
+  const session = stage === "admission" ? await createErpbridgeMcpSession({ baseURL: "https://fixture.example.test", token: "fixture-only", timeoutMs: 20, validator: f.validator, sdkClient: sdk, admissionAuthorizer: hung }) : f.session;
+  const promise = session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity, undefined, stage === "checkpoint" ? hung : undefined);
+  const assertion = expect(promise).rejects.toMatchObject({ name: "OperationDeadlineExceeded" }); await vi.advanceTimersByTimeAsync(20); await assertion;
+  expect(sdk.callTool).not.toHaveBeenCalled(); expect(session.available).toBe(false); settle(); await Promise.resolve(); await Promise.resolve(); expect(sdk.callTool).not.toHaveBeenCalled();
+});
+
 /*******************************************************************************
  * Function: fakeSdk
  *

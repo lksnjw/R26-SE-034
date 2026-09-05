@@ -27,3 +27,13 @@ test("legacy empty journals and unchanged cursors remain truthful", () => {
   expect(reconcileExecutionEvents([event(1)], 1, page([], { cursor: 1, lastSequence: 1 }), "run").cursor).toBe(1);
   expect(executionEventLabel({ type: "future.event" })).toBe("Unrecognized run event");
 });
+
+test("long collection histories retain a bounded window without losing the sequenced cursor or freezing", () => {
+  let saved = [], cursor = 0;
+  for (let start = 1; start <= 2500; start += 100) {
+    const events = Array.from({ length: 100 }, (_, index) => event(start + index, { type: "iteration.action.completed" }));
+    const next = reconcileExecutionEvents(saved, cursor, page(events, { lastSequence: 2500, hasMore: start + 99 < 2500 }), "run"); saved = next.events; cursor = next.cursor;
+  }
+  expect(cursor).toBe(2500); expect(saved).toHaveLength(2000); expect(saved[0].sequence).toBe(501); expect(saved.at(-1).sequence).toBe(2500);
+  expect(executionEventLabel(saved.at(-1))).toBe("Item answer saved"); expect(executionEventLabel({ type: "iteration.collection.done" })).toBe("Collection aggregate saved");
+});

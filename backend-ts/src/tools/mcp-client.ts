@@ -26,6 +26,8 @@ export type GovernedMCPClient = Readonly<{
     parameters: Record<string, unknown>,
     identity: DispatchIdentity,
     signal?: AbortSignal,
+    beforeDispatch?: () => Promise<void>,
+    assertDispatch?: () => void,
   ): Promise<Record<string, unknown>>;
 }>;
 
@@ -99,19 +101,25 @@ export function createGovernedMCPClient(options: {
       parameters: Record<string, unknown>,
       identity: DispatchIdentity,
       signal?: AbortSignal,
+      beforeDispatch?: () => Promise<void>,
+      assertDispatch?: () => void,
     ): Promise<Record<string, unknown>> {
-      const parameterBytes = canonicalJSONBytes(parameters);
+      const captured = structuredClone(parameters), capturedIdentity = structuredClone(identity);
+      const parameterBytes = canonicalJSONBytes(captured);
+      if (beforeDispatch) await beforeDispatch();
+      if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+      assertDispatch?.();
       options.validator.verifyAndConsumeCapability(
         capability,
         action,
         parameterBytes,
-        identity,
+        capturedIdentity,
       );
       if (options.mode === "mock") {
         if (action === "demo.echo")
-          return { action: "demo.echo", mock: true, echo: { ...parameters } };
+          return { action: "demo.echo", mock: true, echo: { ...captured } };
         if (action === "fetch_attendance")
-          return mockFetchAttendance(parameters);
+          return mockFetchAttendance(captured);
         throw new Error(
           `mock MCP action ${JSON.stringify(action)} is not supported`,
         );

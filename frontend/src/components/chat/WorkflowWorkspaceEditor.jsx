@@ -18,10 +18,13 @@ import ReadValueFields, { SchemaContractFields, ReadBindingFields } from "./Read
 import ReadSimulationPanel from "./ReadSimulationPanel";
 import { flowLoops } from "./CollectionFields";
 import CollectionInspector, { CollectionWrapForm } from "./CollectionInspector";
+import IterationNodeEvidence from "../executions/IterationNodeEvidence";
+import { projectIterationEvidence } from "../../utils/iterationEvidence";
 
 const button = "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-gray-800";
 const input = "w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackground";
 const message = (error) => error?.response?.data?.message || error?.message || "The operation could not be completed.";
+const emptyTimeline = [];
 function ConditionInspector({ node, canEdit, busy, onPreview, onMergePreview, sessionId, context, onProposal, sharedChat, draftStorageKey, authoring }) {
   const [predicate, setPredicate] = useState(node.predicate);
   const [merge, setMerge] = useState(node.merge || null);
@@ -79,7 +82,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   const [unconfirmedRun, setUnconfirmedRun] = useState(false);
   const monitor = useExecutionMonitor(run?.id, { enabled: run?.readProgress?.profile === "read-progress-v1" || run?.status === "RUNNING" });
   const shownRun = monitor.denied ? null : monitor.execution ?? run;
-  const shownTimeline = monitor.denied ? [] : monitor.execution ? monitor.timeline : timeline;
+  const shownTimeline = monitor.denied ? emptyTimeline : monitor.execution ? monitor.timeline : timeline;
   const runActive = isActiveExecution(shownRun?.status);
   const snapshotMatches = shownRun?.workflowSnapshot?.yaml === record?.yaml;
   const [adding, setAdding] = useState(false), [newId, setNewId] = useState(""), [newAction, setNewAction] = useState("");
@@ -103,6 +106,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   }, [workflowId]);
   const preview = useMemo(() => parseWorkflowPreview(record?.yaml), [record?.yaml]);
   const authoring = record?.authoring?.profile === "read-authoring/v1" && !record.readinessUnknown ? record.authoring : null;
+  const iterationModel = useMemo(() => projectIterationEvidence(shownRun, shownTimeline, { yaml: record?.yaml, sourceHash: record?.contentHash, flow: authoring?.controlFlow, steps: preview.steps }), [shownRun, shownTimeline, record?.yaml, record?.contentHash, authoring?.controlFlow, preview.steps]);
   const node = preview.steps.find((step) => step.id === selected);
   const condition = flowConditions(authoring?.controlFlow).find(item => item.id === selected);
   const returnNode = flowReturns(authoring?.controlFlow).find(item => item.id === selected);
@@ -183,9 +187,10 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
       </form>}
       <p className="mb-4 text-[10px] leading-4 text-gray-500">{authoring?.controlFlow ? "Structured read flow · exactly one path per boolean condition. Branch outputs remain in scope." : "Source-order flow · conditions and approvals are preserved, not inferred as branch paths."}</p>
       {addingReturn && <form aria-label="Create return" className="mb-5 space-y-3 border-b pb-4" onSubmit={event => { event.preventDefault(); previewChange(returnId, { type: "addReturn", nodeId: returnId, output: returnOutput, beforeNodeId: null, ...branchDestination(returnScope) }, "No return at this destination", { id: returnId, output: returnOutput, destination: returnScope }); }}><h4 className="text-xs font-semibold">Declare workflow return</h4><input aria-label="New return ID" className={input} value={returnId} onChange={event => setReturnId(event.target.value)} pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" placeholder="Unique stable return ID" required /><ScopeSelect flow={authoring?.controlFlow} value={returnScope} onChange={setReturnScope} label="New return destination" /><ReadValueFields value={returnOutput} onChange={setReturnOutput} /><button disabled={busy} className={button}>Preview new return</button><button type="button" className={button} onClick={() => setAddingReturn(false)}>Cancel return creation</button></form>}
-      <ReadFlowTree flow={authoring?.controlFlow} steps={preview.steps} selectedId={selected} onSelectCondition={select} decisions={snapshotMatches ? shownRun?.readProgress?.decisions : undefined} values={snapshotMatches ? shownRun?.readProgress?.values : undefined} valueOutputs={snapshotMatches ? shownRun?.valueOutputs : undefined} renderAction={(step, index) => {
-          const attempt = shownTimeline.find((item) => item.nodeId === step.id);
-          const output = shownRun?.stepOutputs?.[step.id] ?? (attempt?.status === "FAILED" ? attempt.output : undefined);
+      {iterationModel && !iterationModel.valid && <p role="alert" className="mb-3 text-xs text-amber-700">{iterationModel.error}</p>}
+      <ReadFlowTree flow={authoring?.controlFlow} steps={preview.steps} selectedId={selected} onSelectCondition={select} iterations={iterationModel} decisions={!iterationModel && snapshotMatches ? shownRun?.readProgress?.decisions : undefined} values={!iterationModel && snapshotMatches ? shownRun?.readProgress?.values : undefined} valueOutputs={!iterationModel && snapshotMatches ? shownRun?.valueOutputs : undefined} renderAction={(step, index) => {
+          const attempt = !iterationModel ? shownTimeline.find((item) => item.nodeId === step.id) : undefined;
+          const output = !iterationModel ? shownRun?.stepOutputs?.[step.id] ?? (attempt?.status === "FAILED" ? attempt.output : undefined) : undefined;
           return <li key={step.id} className="relative">
             <button type="button" aria-pressed={node?.id === step.id} onClick={() => select(step.id)} className={`workspace-node relative z-10 flex w-full items-center gap-3 rounded-lg border bg-white px-4 py-3 text-left dark:bg-darkBackground ${node?.id === step.id ? "border-primary ring-1 ring-primary/20" : "border-gray-200 dark:border-gray-700"}`}>
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 text-xs text-gray-400 dark:bg-gray-900">{snapshotMatches && attempt?.status === "DONE" ? <Icon icon="lucide:check" /> : snapshotMatches && attempt?.status === "FAILED" ? <Icon icon="lucide:triangle-alert" /> : String(index + 1).padStart(2, "0")}</span>
@@ -193,6 +198,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
               {step.source.condition && <span className="text-[9px] text-gray-500">condition</span>}
               <Icon icon="lucide:chevron-right" className="h-3 w-3 text-gray-400" />
             </button>
+            <IterationNodeEvidence key={`${iterationModel?.executionId}:${step.id}`} model={iterationModel} nodeId={step.id} />
             {output !== undefined && <details className="relative z-10 ml-10 mt-2 rounded-md bg-white/80 px-3 py-2 text-[10px] dark:bg-gray-900"><summary className="cursor-pointer">{attempt?.status === "FAILED" ? "Node failure response" : "Node answer"} · run {shownRun.id}</summary><div className="mt-2 max-h-64 overflow-auto"><ReadableResult value={output} /></div></details>}
             {attempt?.status === "FAILED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-red-600">In this run, this node failed or was blocked. Following nodes were not executed.</p>}
             {attempt?.status === "UNKNOWN" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-amber-700 dark:text-amber-300">Outcome unknown · the read may have reached ERP, but no confirmed answer was saved. No automatic replay.</p>}

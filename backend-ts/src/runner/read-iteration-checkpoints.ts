@@ -27,6 +27,12 @@ export type IterationBoundary = {
   valid: boolean; arguments?: Record<string, unknown>; value?: unknown; selected?: "then" | "else";
   count?: number; reason?: ReadSkipReason; phase?: "start" | "complete"; dataBinding?: string;
 };
+export type ReadSelectedEvidence = {
+  profile: "read-selected-evidence/v1"; executionId: string; epoch: number; inputBinding: string;
+  sourceHash: string; semanticHash: string; actorId: string; admittedRole: string;
+  nodeId: string; sourceIndex: number; attemptId: string; visit: ReadVisit;
+  args: Record<string, unknown>; prior: readonly CompletedRead[];
+};
 type BoundExecution = Execution & { readProgress: NonNullable<Execution["readProgress"]>; iterationProgress: ReadIterationLedger };
 class PendingBoundary extends Error { constructor(readonly boundary: IterationBoundary) { super("Next iteration boundary"); } }
 class StoppedBoundary extends Error { constructor(readonly receipt: IterationReceipt) { super("Iteration has a stopped or uncertain receipt; no replay is authorized"); } }
@@ -256,9 +262,9 @@ export class ReadIterationCheckpoints {
   }
   /** Commit one automatic boundary or prepare the next action. Actual action
    * arguments are returned only to the server driver, never journaled. */
-  async advance(): Promise<IterationBoundary | null> {
+  async advance(assertContext?: (state: Readonly<RepositoryState>) => void): Promise<IterationBoundary | null> {
     return this.commit(async (state, item) => {
-      this.assertAuthority(state, item); const point = await this.next(item, state); this.assertAuthority(state, item); if (!point) return null;
+      assertContext?.(state); this.assertAuthority(state, item); const point = await this.next(item, state); assertContext?.(state); this.assertAuthority(state, item); if (!point) return null;
       const previous = item.iterationProgress.receipts[receiptKey(point.kind, point.visit.invocationId)];
       if (previous?.kind === "action" && ["PREPARING", "DISPATCH_INTENT"].includes(previous.status)) throw new Error("An existing action attempt cannot be replayed or prepared twice");
       const timestamp = new Date().toISOString();
@@ -298,20 +304,31 @@ export class ReadIterationCheckpoints {
   /** Private server evidence, not an HTTP payload, token or dispatch grant.
    * Reconstruct the exact PREPARING action and its visible confirmed reads
    * under authoritative storage/current controller checks, without a write. */
-  async selectedEvidence(visit: ReadVisit) {
+  private selectedRecord(item: BoundExecution, point: IterationBoundary, attempt: ReadRunAttempt, prior: readonly CompletedRead[]): ReadSelectedEvidence {
+    return { profile: "read-selected-evidence/v1", executionId: item.id, epoch: this.epoch, inputBinding: item.iterationProgress.inputBinding,
+      sourceHash: this.#plan.sourceHash, semanticHash: this.#plan.semanticHash, actorId: item.startedBy.id, admittedRole: item.iterationProgress.admittedRole,
+      nodeId: point.nodeId, sourceIndex: point.sourceIndex, attemptId: attempt.id, visit: structuredClone(point.visit), args: structuredClone(point.arguments!), prior };
+  }
+  async selectedEvidence(visit: ReadVisit): Promise<ReadSelectedEvidence> {
     try { return await this.repository.readAuthoritative(async state => {
       const item = this.current(state); this.assertAuthority(state, item);
       const selected: { prior: readonly CompletedRead[] } = { prior: [] };
       const { point, attempt } = await this.actionPoint(item, state, visit, "PREPARING", selected); this.assertAuthority(state, item);
-      return { profile: "read-selected-evidence/v1" as const, executionId: item.id, epoch: this.epoch, inputBinding: item.iterationProgress.inputBinding,
-        sourceHash: this.#plan.sourceHash, semanticHash: this.#plan.semanticHash, actorId: item.startedBy.id, admittedRole: item.iterationProgress.admittedRole,
-        nodeId: point.nodeId, sourceIndex: point.sourceIndex, attemptId: attempt.id, visit: structuredClone(point.visit), args: structuredClone(point.arguments!), prior: selected.prior };
+      return this.selectedRecord(item, point, attempt, selected.prior);
     }); } catch (cause) { if (cause instanceof ReadRunCancelled) throw cause; throw new ReadCheckpointFailure(cause); }
   }
-  async dispatchIntent(visit: ReadVisit, verifiedRole: string): Promise<void> {
+  async dispatchIntent(visit: ReadVisit, verifiedRole: string, binding?: {
+    selectedEvidence: ReadSelectedEvidence;
+    /** Server-only synchronous check in the same intent transaction; no I/O. */
+    assertContext: (state: Readonly<RepositoryState>) => void;
+  }): Promise<void> {
     await this.commit(async (state, item) => {
+      binding?.assertContext(state);
       this.assertAuthority(state, item); if (verifiedRole !== item.iterationProgress.admittedRole) throw new Error("Verified role differs from the admitted iteration role");
-      const { point, receipt, attempt } = await this.actionPoint(item, state, visit, "PREPARING");
+      const selected = binding ? { prior: [] as readonly CompletedRead[] } : undefined;
+      const { point, receipt, attempt } = await this.actionPoint(item, state, visit, "PREPARING", selected);
+      if (binding && !same(binding.selectedEvidence, this.selectedRecord(item, point, attempt, selected!.prior))) throw new Error("Selected prerequisite or exact argument evidence changed before dispatch intent");
+      binding?.assertContext(state);
       this.assertAuthority(state, item);
       const timestamp = new Date().toISOString(); attempt.status = "DISPATCH_INTENT"; attempt.dispatchIntentAt = timestamp;
       const entry = state.timelines[item.id]?.find(value => value.attemptId === attempt.id); if (!entry) throw new Error("Dispatch intent lacks its prepared timeline");
@@ -350,7 +367,7 @@ export class ReadIterationCheckpoints {
       this.#pendingProof = undefined;
     });
   }
-  async finish(failed = false): Promise<Execution> {
+  async finish(failed = false, assertContext?: (state: Readonly<RepositoryState>) => void): Promise<Execution> {
     return this.commit(async (state, item) => {
       const cancelled = !!item.readProgress.cancellation || !!this.signal?.aborted;
       if (failed || cancelled) for (const [address, attempt] of Object.entries(item.readProgress.attempts)) if (["PREPARING", "DISPATCH_INTENT"].includes(attempt.status)) {
@@ -364,7 +381,7 @@ export class ReadIterationCheckpoints {
       }
       const uncertain = Object.values(item.readProgress.attempts).some(value => value.status === "UNKNOWN");
       if (!uncertain && !item.readProgress.cancellation && !this.signal?.aborted && !failed) {
-        this.assertAuthority(state, item); if (await this.next(item, state)) throw new Error("Cannot declare a collection run DONE with unconfirmed iteration boundaries"); this.assertAuthority(state, item);
+        assertContext?.(state); this.assertAuthority(state, item); if (await this.next(item, state)) throw new Error("Cannot declare a collection run DONE with unconfirmed iteration boundaries"); assertContext?.(state); this.assertAuthority(state, item);
       }
       if (!uncertain && !item.readProgress.cancellation && !this.signal?.aborted && failed && Object.values(item.readProgress.attempts).some(value => value.status === "DISPATCH_INTENT")) throw new Error("Unacknowledged intent must be marked UNKNOWN before finishing");
       item.status = uncertain ? "RECOVERY_REQUIRED" : item.readProgress.cancellation || this.signal?.aborted ? "CANCELLED" : failed ? "FAILED" : "DONE";

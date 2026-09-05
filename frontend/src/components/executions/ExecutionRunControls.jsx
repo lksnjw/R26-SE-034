@@ -2,6 +2,7 @@ import { useState } from "react";
 import { executionService } from "../../services/execution.service";
 import { executionEventLabel } from "../../utils/executionEvents";
 import ExecutionStatus from "./ExecutionStatus";
+import { iterationPositionLabel } from "../../utils/iterationEvidence";
 
 export default function ExecutionRunControls({ execution, canControl = false, monitor, onChanged }) {
   const [requesting, setRequesting] = useState(false), [acknowledged, setAcknowledged] = useState(false), [error, setError] = useState("");
@@ -30,6 +31,6 @@ export default function ExecutionRunControls({ execution, canControl = false, mo
     {execution.readProgress?.persistence === "memory-only" && <p className="text-gray-500">Memory-only run · checkpoints will not survive server restart.</p>}
     {(error || monitor?.error) && <p role="alert" className="text-amber-700 dark:text-amber-300">{error || monitor.error}{!monitor?.denied && " Displayed answers are the last confirmed snapshot, not fresh status."}</p>}
     {monitor?.reconnecting && <p role="status" className="text-gray-500">Reconnecting run updates automatically. No business operation is being replayed.</p>}
-    {!!monitor?.events?.length && <details><summary className="cursor-pointer text-gray-500">Saved run history · {monitor.cursor} events</summary><ol className="mt-2 max-h-56 space-y-2 overflow-auto border-l border-gray-200 pl-3 dark:border-gray-700">{monitor.events.slice(-200).map((event) => <li key={event.sequence}><span className="mr-2 font-mono text-[10px] text-gray-400">{event.sequence}</span>{executionEventLabel(event)}{event.nodeId && <span className="ml-2 font-mono text-[10px]">{event.nodeId}</span>}<time className="ml-2 text-[10px] text-gray-400" dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleTimeString()}</time></li>)}</ol>{monitor.events.length > 200 && <p className="mt-2 text-gray-500">Showing the latest 200 saved events.</p>}</details>}
+    {!!monitor?.events?.length && <details><summary className="cursor-pointer text-gray-500">Saved run history · {monitor.cursor} events</summary><ol className="mt-2 max-h-56 space-y-2 overflow-auto border-l border-gray-200 pl-3 dark:border-gray-700">{monitor.events.slice(-200).map((event) => <li key={event.sequence}><span className="mr-2 font-mono text-[10px] text-gray-400">{event.sequence}</span>{executionEventLabel(event)}{event.nodeId && <span className="ml-2 font-mono text-[10px]">{event.nodeId}</span>}{event.payload?.iterations && <span className="ml-2 text-[10px]">{iterationPositionLabel(event.payload.iterations)}</span>}<time className="ml-2 text-[10px] text-gray-400" dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleTimeString()}</time></li>)}</ol>{monitor.events.length > 200 && <p className="mt-2 text-gray-500">Showing the latest 200 saved events.</p>}{monitor.cursor > monitor.events.length && <p className="mt-2 text-gray-500">Earlier events remain saved on the server; this display retains the latest 2,000 without replaying business operations.</p>}</details>}
   </section>;
 }

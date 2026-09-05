@@ -1,6 +1,7 @@
 import { Icon } from "@iconify/react";
 import Card from "../shared/ui/Card";
 import { ReadableResult } from "../chat/ReadableValue";
+import IterationNodeEvidence from "./IterationNodeEvidence";
 
 /*******************************************************************************
  * Function: OutputBlock
@@ -25,17 +26,21 @@ function OutputBlock({ value }) {
  *
  * Performs the Execution Output Panel operation on output panel for the ExecutionOutputPanel module.
  ******************************************************************************/
-function ExecutionOutputPanel({ execution }) {
+function ExecutionOutputPanel({ execution, iterationModel }) {
   if (!execution) return null;
-  const { finalOutput, stepOutputs, status } = execution;
-  const stepEntries = Object.entries(stepOutputs || {});
-  const returned = Object.values(execution.readProgress?.values || {}).some(receipt => receipt.kind === "return" && receipt.status === "DONE");
-  const hasFinal = finalOutput !== undefined && (finalOutput !== null || returned && Object.hasOwn(execution, "finalOutput"));
+  const { stepOutputs, status } = execution;
+  const collection = Boolean(execution.iterationProgress || execution.workflowSnapshot?.executionProfile === "collection-read-v1");
+  const finalOutput = collection ? iterationModel?.finalOutput : execution.finalOutput;
+  const stepEntries = collection ? [] : Object.entries(stepOutputs || {});
+  const itemNodes = collection && iterationModel?.valid ? Object.values(iterationModel.nodes).filter(node => node.kind === "action" && node.rows.length) : [];
+  const returned = collection ? iterationModel?.finalKind === "return" : Object.values(execution.readProgress?.values || {}).some(receipt => receipt.kind === "return" && receipt.status === "DONE");
+  const hasFinal = collection ? iterationModel?.valid && iterationModel.hasFinal : finalOutput !== undefined && (finalOutput !== null || returned && Object.hasOwn(execution, "finalOutput"));
 
-  if (!hasFinal && stepEntries.length === 0) {
+  if (!hasFinal && stepEntries.length === 0 && !itemNodes.length) {
     return (
       <Card>
         <h2 className="section-title mb-3">Workflow output</h2>
+        {collection && !iterationModel?.valid && <p role="alert" className="mb-3 text-xs text-amber-700">Saved item answers need a matching run snapshot and timeline. Refresh this run; no result is inferred.</p>}
         <p data-testid="no-output" className="text-sm text-gray-500">
           {status === "RUNNING" ? "No confirmed output has been saved yet." : "This run did not produce a confirmed output."}
         </p>
@@ -63,12 +68,14 @@ function ExecutionOutputPanel({ execution }) {
       {hasFinal ? (
         <div data-testid="final-output" className="mb-5">
           <p className="mb-2 text-xs font-bold uppercase tracking-wide text-gray-500">
-            {returned ? "Saved workflow return" : partial ? "Last completed step" : "Final output"}
+            {returned ? "Saved workflow return" : partial ? collection ? "Last completed item" : "Last completed step" : "Final output"}
           </p>
           {returned && finalOutput === null && <p className="mb-2 text-xs text-gray-500">Explicit null returned; this is a confirmed value, not a missing answer.</p>}
           <OutputBlock value={finalOutput} />
         </div>
       ) : null}
+
+      {itemNodes.length > 0 && <section aria-label="Saved per-item answers"><h3 className="mb-2 text-xs font-semibold">Saved per-item answers</h3>{itemNodes.map(node => <div key={node.id} className="mt-3"><h4 className="text-xs font-medium">{node.id}</h4><IterationNodeEvidence key={`${execution.id}:${node.id}`} model={iterationModel} nodeId={node.id} /></div>)}</section>}
 
       {stepEntries.length > 0 ? (
         <div data-testid="step-outputs">

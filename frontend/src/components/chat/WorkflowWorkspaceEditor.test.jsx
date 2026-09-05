@@ -5,6 +5,7 @@ import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/re
 import { workflowService } from "../../services/workflow.service";
 import { executionService } from "../../services/execution.service";
 import { within } from "@testing-library/react";
+import { iterationFixture } from "../../utils/iterationEvidence.fixture";
 
 const yaml = "name: Report\ntrigger:\n  type: manual\nsteps:\n - id: first\n   action: demo.echo\n   parameters:\n     value: original\n - id: last\n   action: demo.echo\n   parameters:\n     value: tail\n";
 const record = { workflowId: "report", version: 1, contentHash: `sha256:${"a".repeat(64)}`, yaml, validation: { passed: true, errors: [] }, published: false, bridge: "not_connected", can_attempt_run: false };
@@ -31,6 +32,27 @@ async function open(props = {}) {
   return view;
 }
 async function selectNode() { fireEvent.click(screen.getByRole("button", { name: /01 first/ })); }
+
+test("matching collection run answers appear separately beside their node and do not change chat edit scope", async () => {
+  const s = iterationFixture(), context = jest.fn();
+  workflowService.readiness.mockResolvedValue({ ...record, yaml: s.yaml, contentHash: s.sourceHash, authoring: { profile: "read-authoring/v1", controlFlow: s.flow } });
+  executionService.list.mockResolvedValue([s.execution]); executionService.get.mockResolvedValue(s.execution); executionService.getTimeline.mockResolvedValue(s.timeline);
+  jest.spyOn(executionService, "getEvents").mockResolvedValue({ events: [], cursor: 0, lastSequence: 0, hasMore: false, status: "DONE", profile: "read-progress-v1" });
+  const view = render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit onNodeContext={context} />);
+  const panel = await screen.findByRole("region", { name: "Saved item evidence for lookup" });
+  expect(within(panel).getByText("each · item 1 · Read")).toBeTruthy(); expect(within(panel).getByText("each · item 2 · Read")).toBeTruthy();
+  fireEvent.click(within(panel).getAllByRole("button", { name: "Saved item answer" })[1]); expect(within(panel).getByText("Answer 2")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /01 lookup/ })); await waitFor(() => expect(context).toHaveBeenCalledWith(expect.objectContaining({ nodeId: "lookup", version: 1, contentHash: s.sourceHash })));
+  expect(view.container.querySelector("section[aria-label='Saved item evidence for lookup'] pre")).toBeNull(); expect(workflowService.run).not.toHaveBeenCalled(); expect(workflowService.command).not.toHaveBeenCalled();
+});
+
+test("a collection answer from another source snapshot cannot appear in the current canvas", async () => {
+  const s = iterationFixture(); workflowService.readiness.mockResolvedValue({ ...record, yaml: s.yaml + " ", contentHash: s.sourceHash, authoring: { profile: "read-authoring/v1", controlFlow: s.flow } });
+  executionService.list.mockResolvedValue([s.execution]); executionService.getTimeline.mockResolvedValue(s.timeline); executionService.get.mockResolvedValue(s.execution);
+  jest.spyOn(executionService, "getEvents").mockResolvedValue({ events: [], cursor: 0, lastSequence: 0, hasMore: false, status: "DONE", profile: "read-progress-v1" });
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" />); await screen.findByText(/Saved item evidence does not match/);
+  expect(screen.queryByRole("button", { name: "Saved item answer" })).toBeNull(); expect(screen.queryByText("Answer 1")).toBeNull(); expect(screen.queryByText("Answer 2")).toBeNull(); expect(workflowService.run).not.toHaveBeenCalled();
+});
 
 test("canvas collection wrapping remains preview-only until an explicit revision-bound apply", async () => {
   await open(); await selectNode(); fireEvent.click(screen.getByRole("button", { name: "Wrap node in collection" }));

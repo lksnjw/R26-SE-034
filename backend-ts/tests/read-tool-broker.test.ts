@@ -27,8 +27,9 @@ async function setup(options: { write?: boolean; schema?: Record<string, unknown
   const callTool = vi.fn(async () => options.remoteFailure ? { content: [{ type: "text", text: "Revision withdrawn" }], isError: true } : options.result ?? { content: [], structuredContent: { id: "invoice-1" } });
   const listTools = vi.fn(async () => [{ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool),
     ...(options.contract ? { ...(options.contract.output_schema ? { outputSchema: options.contract.output_schema } : {}), _meta: { "toolplane.resourceVersion": options.contract.resource_version, "toolplane.resourceDigest": (options.drift ? "b".repeat(64) : options.contract.resource_digest), "io.erpbridge/allowedRoles": options.contract.remote_roles } } : {}) }]);
+  const authorize = vi.fn(admissionAuthorizer(repository, registries));
   const erpbridgeSession = await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "test-token", timeoutMs: 1000, validator,
-    ...(options.metadataComplete ? { admissionAuthorizer: admissionAuthorizer(repository, registries) } : {}),
+    ...(options.metadataComplete ? { admissionAuthorizer: authorize } : {}),
     sdkClient: { connect: async () => {}, close: async () => {}, ...(options.metadataComplete !== undefined ? { metadataComplete: options.metadataComplete } : {}), listTools, callTool } });
   if (options.metadataComplete && options.contract && !options.drift) {
     const user = (await repository.effectiveUser("admin"))!;
@@ -41,7 +42,7 @@ async function setup(options: { write?: boolean; schema?: Record<string, unknown
   }
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "test-broker-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }),
     erpbridgeRoleMap: { "Workflow Builder": "workflow_builder" } };
-  return { services: { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator), erpbridgeSession }, callTool, listTools };
+  return { services: { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator), erpbridgeSession }, callTool, listTools, authorize };
 }
 
 test("approved read consumes real capability and injects only backend-mapped role", async () => {
@@ -90,6 +91,16 @@ test("credential fields are removed from structured and JSON-text results before
 });
 
 const contract = { profile: "toolplane-v1" as const, resource_version: "1.2.3", resource_digest: "a".repeat(64), remote_roles: ["workflow_builder"], output_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } };
+test.each(["actor", "role-map"])("noncollection dispatch also rechecks %s after the final awaited review", async change => {
+  const s = await setup({ contract, metadataComplete: true }), original = s.authorize.getMockImplementation()!; let armed = false;
+  const evaluate = s.services.validator.evaluateResolvedStep.bind(s.services.validator);
+  vi.spyOn(s.services.validator, "evaluateResolvedStep").mockImplementation(async (...args) => { const value = await evaluate(...args); armed = true; return value; });
+  s.authorize.mockImplementation(async (...args) => { await original(...args); if (!armed) return; armed = false;
+    if (change === "actor") await s.services.repository.mutate(state => { state.users.builder!.status = "Disabled"; });
+    else s.services.config.erpbridgeRoleMap["Workflow Builder"] = "changed";
+  });
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "x" })).rejects.toThrow(); expect(s.callTool).not.toHaveBeenCalled();
+});
 test("production-like guarded dispatch pins exact revision and digest with no second discovery round trip", async () => {
   const s = await setup({ contract, metadataComplete: true });
   const output = await dispatchReadTool(s.services, "builder", "finance.read", { id: "invoice-1" });

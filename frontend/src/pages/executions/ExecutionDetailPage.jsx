@@ -12,6 +12,7 @@ import { useExecution } from "../../hooks/useExecution";
 import TraceIdentifier from "../../components/shared/TraceIdentifier";
 import ExecutionRunControls from "../../components/executions/ExecutionRunControls";
 import usePermissions from "../../hooks/usePermissions";
+import { projectExecutionIterationEvidence } from "../../utils/iterationEvidence";
 
 /*******************************************************************************
  * Function: ExecutionDetailPage
@@ -28,6 +29,7 @@ function ExecutionDetailPage() {
   if (!execution) {
     return <EmptyState title="Execution not found" description="The requested execution is unavailable to this account." />;
   }
+  const iterationModel = projectExecutionIterationEvidence(execution, timeline);
 
   return (
     <div className="space-y-6">
@@ -53,7 +55,7 @@ function ExecutionDetailPage() {
           <Metric label="Cost" value={execution.cost} />
         </dl>
       </Card>
-      <ExecutionOutputPanel execution={execution} />
+      <ExecutionOutputPanel execution={execution} iterationModel={iterationModel} />
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <LiveLogStream logs={logs} executionId={execution.id} />
         <div className="space-y-4">
@@ -63,7 +65,7 @@ function ExecutionDetailPage() {
             {timeline.length === 0 ? (
               <EmptyState title="No step evidence" description="No step timeline was recorded for this execution." />
             ) : (
-              <ExecutionTimeline timeline={timeline} />
+              <ExecutionTimeline key={execution.id} timeline={timeline} />
             )}
           </Card>
         </div>

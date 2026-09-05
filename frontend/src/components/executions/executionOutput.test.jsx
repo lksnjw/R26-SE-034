@@ -4,8 +4,24 @@ import { afterEach, expect, test } from "@jest/globals";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import ExecutionOutputPanel from "./ExecutionOutputPanel";
+import { projectIterationEvidence } from "../../utils/iterationEvidence";
+import { iterationFixture } from "../../utils/iterationEvidence.fixture";
 
 afterEach(cleanup);
+
+test("collection outputs require matching item evidence and retain an explicit null return", () => {
+  const s = iterationFixture(0); s.execution.finalOutput = null; s.execution.valueOutputs.answer = { value: null }; s.timeline.at(-1).output = { value: null };
+  render(<ExecutionOutputPanel execution={s.execution} iterationModel={projectIterationEvidence(s.execution, s.timeline, s.context)} />);
+  expect(screen.getByTestId("final-output").textContent).toContain("Explicit null returned"); expect(screen.getByText("Saved workflow return")).toBeTruthy();
+});
+test("a collection with unmatched evidence never falls back to raw step/final output maps", () => {
+  const s = iterationFixture(); render(<ExecutionOutputPanel execution={s.execution} />); expect(screen.getByRole("alert")).toBeTruthy(); expect(screen.queryByText("Answer 1")).toBeNull(); expect(screen.queryByTestId("final-output")).toBeNull();
+});
+test("collection run detail lists readable per-item answers with the original positions", () => {
+  const s = iterationFixture(); render(<ExecutionOutputPanel execution={s.execution} iterationModel={projectIterationEvidence(s.execution, s.timeline, s.context)} />);
+  expect(screen.getByRole("region", { name: "Saved per-item answers" })).toBeTruthy(); expect(screen.getByText("each · item 2 · Read")).toBeTruthy();
+  fireEvent.click(screen.getAllByRole("button", { name: "Saved item answer" })[1]); expect(screen.getAllByText("Answer 2").length).toBeGreaterThan(0);
+});
 
 test("a confirmed explicit null return is not hidden as missing output", () => {
   render(<ExecutionOutputPanel execution={{ status: "DONE", finalOutput: null, readProgress: { values: { answer: { kind: "return", status: "DONE" } } } }} />);
