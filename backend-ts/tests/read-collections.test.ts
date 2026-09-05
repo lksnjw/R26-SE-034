@@ -22,10 +22,10 @@ test("collection owners cannot fall through to ordinary action chat patch semant
 });
 async function simulate(src: any, input: any, outputs: Record<string, unknown>) { const yaml = stringify(src); return simulateReadWorkflow(yaml, input, parseReadFixtures({ profile: "read-fixtures/v2", baseVersion: 1, baseHash: workflowContentHash(yaml), outputs }), [tool], role); }
 
-test("collection compilation has immutable v4 identity, bounded item scope and remains unavailable for live execution", () => {
+test("collection compilation has immutable v4 identity, bounded item scope and denies unqualified live execution", () => {
   const src = source(), plan = compileReadWorkflow(stringify(src), [tool], role);
   expect(plan.ir.schemaVersion).toBe("workflow-read-ir/v4"); expect(plan.ir.compilerVersion).toBe("read-compiler/v4");
-  expect(plan.ir.root.nodes.map(node => node.id)).toEqual(["read", "after"]); expect(inspectReadWorkflow(src, [tool], role)).toContain("Collection drafts support fixture simulation; live execution awaits qualified storage, worker admission and item monitoring");
+  expect(plan.ir.root.nodes.map(node => node.id)).toEqual(["read", "after"]); expect(inspectReadWorkflow(src, [tool], role)).toContain("Collection execution requires reviewed SDK entry and qualified private record storage; fixture simulation remains available");
   src.metadata.controlFlow.root.nodes[0].maxItems = 2; expect(compileReadWorkflow(stringify(src), [tool], role).semanticHash).not.toBe(plan.semanticHash);
   expect(() => assertReadFlowCompletion(plan.ir.flow!, {}, {})).toThrow(/iteration/); expect(() => assertReadValueBoundary(plan.ir.flow!, "answer", "return", {}, {}, {})).toThrow(/iteration/);
 });

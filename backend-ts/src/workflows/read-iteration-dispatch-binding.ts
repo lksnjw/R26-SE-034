@@ -6,7 +6,7 @@ import { assertCompiledReadMatches, compileReadWorkflow, readCompilationReceipt,
 import type { StoredReadCompilation } from "./read-compilation-lifecycle.js";
 import { loopNodes } from "./read-control-flow.js";
 
-/** Denial-only runtime binding for the future collection admission profile.
+/** Denial-only runtime binding for the admitted collection execution profile.
  * This does NOT create a publication, run, capability or worker lease. */
 export function assertIterationDispatchBinding(services: HandlerServices, state: Readonly<RepositoryState>, executionId: string, epoch: number,
   yaml: string, expected: CompiledReadPlan, role: string): void {

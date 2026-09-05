@@ -15,9 +15,9 @@ import { ReadWorkerLeaseFailure } from "./read-worker-lease.js";
 
 /** Explicit read profiles: sequential actions and structured boolean branches. Unsupported logic
  * is rejected before any dispatch, never reinterpreted by an agent. */
-export function inspectReadWorkflow(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string): string[] {
+export function inspectReadWorkflow(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, allowCollections = false): string[] {
   const built = buildReadIR(blueprint, tools, role);
-  return [...built.issues, ...(built.ir.schemaVersion === "workflow-read-ir/v4" ? ["Collection drafts support fixture simulation; live execution awaits qualified storage, worker admission and item monitoring"] : [])];
+  return [...built.issues, ...(built.ir.schemaVersion === "workflow-read-ir/v4" && !allowCollections ? ["Collection execution requires reviewed SDK entry and qualified private record storage; fixture simulation remains available"] : [])];
 }
 
 export async function executeReadWorkflow(services: HandlerServices, actorId: string, yaml: string, input: Record<string, unknown>, token: ValidationToken,

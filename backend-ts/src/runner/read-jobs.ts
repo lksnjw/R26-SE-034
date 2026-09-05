@@ -10,6 +10,8 @@ import { workflowContentHash, parseWorkflowYAMLStrict } from "../parser/workflow
 import { inspectReadWorkflow } from "./read-workflow.js";
 import { discoverTools } from "../agent/tool-discovery.js";
 import { prepareCompiledExecution } from "../workflows/read-compilation-lifecycle.js";
+import { supportsCollectionReads, readIterationBindingKey } from "./read-collection-admission.js";
+import { completeCheckpointedCollectionRead } from "./checkpointed-collection-read.js";
 
 type Admission = { input: Record<string, unknown>; actorId: string; admittedRole: string; scope: string; fingerprint: string; connectionFingerprint: string };
 const queues = new WeakMap<Repository, ReadJobQueue>();
@@ -216,12 +218,15 @@ export class ReadJobQueue {
       const gate = await validateWorkflow(this.services, "ReadJobWorker", snapshot.yaml, actor, { traceId: initial.traceId, workflowId: initial.workflowId, executionId: id, signal: control.controller.signal });
       if (!gate.result.passed || !gate.token || gate.token.registry_hash !== snapshot.registryHash || !this.services.erpbridgeSession) throw new Error("Queued verification failed");
       const live = await discoverTools(this.services.erpbridgeSession, this.services.registries);
-      if (inspectReadWorkflow(parseWorkflowYAMLStrict(snapshot.yaml), live, actor.role).length) throw new Error("Queued contracts changed");
+      if (inspectReadWorkflow(parseWorkflowYAMLStrict(snapshot.yaml), live, actor.role, supportsCollectionReads(this.services)).length) throw new Error("Queued contracts changed");
       this.workerContext(control).assertActive();
-      await completeCheckpointedRead(this.services, initial, privateInput.input, gate.token, control.controller.signal, () => {
+      const assertConnection = () => {
         if (!this.services.erpbridgeSession?.admissionBinding || job.connectionFingerprint !== this.connectionFingerprint())
           throw new Error("Queued connection binding changed; refusing further dispatch");
-      }, compilation.plan, this.workerContext(control));
+      };
+      if (compilation.plan.ir.schemaVersion === "workflow-read-ir/v4") await completeCheckpointedCollectionRead(this.services, initial, privateInput.input, gate.token,
+        compilation.plan, readIterationBindingKey(this.services), control.controller.signal, assertConnection, this.workerContext(control));
+      else await completeCheckpointedRead(this.services, initial, privateInput.input, gate.token, control.controller.signal, assertConnection, compilation.plan, this.workerContext(control));
     } catch (error) {
       // No confirmed claim means this job may still look QUEUED in rolled-back
       // memory. Propagate to stop the pump rather than repeatedly claiming it

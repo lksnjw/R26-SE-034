@@ -14,6 +14,7 @@ import { promptData } from "../../prompts/contracts.js";
 import { assertActorAuthority, assertChatAuthority, selectProvider } from "./model-selection.js";
 import { activeChatStatus } from "../../agent/chat-jobs.js";
 import { prepareCompiledExecution } from "../../workflows/read-compilation-lifecycle.js";
+import { supportsCollectionReads } from "../../runner/read-collection-admission.js";
 import { readAuthoringContract } from "../../workflows/read-authoring.js";
 import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
@@ -51,10 +52,10 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       let issues: string[] = [], bridge = "not_connected";
       try {
         const blueprint = parseWorkflowYAMLStrict(current.yaml);
-        issues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role);
+        issues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role, supportsCollectionReads(services));
         if (services.erpbridgeSession !== undefined) {
           bridge = "discovery_available";
-          try { issues.push(...inspectReadWorkflow(blueprint, await discoverTools(services.erpbridgeSession, services.registries), user.role)); }
+          try { issues.push(...inspectReadWorkflow(blueprint, await discoverTools(services.erpbridgeSession, services.registries), user.role, supportsCollectionReads(services))); }
           catch { bridge = "discovery_failed"; }
         }
       } catch { issues.push("Workflow could not be parsed"); }
@@ -82,7 +83,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation, authoring,
         can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
-        authorization: "rechecked_at_dispatch", executionProfile: "executionProfile" in authoring ? authoring.executionProfile : "sequential-read-v1" }, "Readiness checked", { traceId }));
+        authorization: "rechecked_at_dispatch", executionProfile: "receipt" in compilation && compilation.receipt?.schemaVersion === "workflow-read-ir/v4" ? "collection-read-v1" : "executionProfile" in authoring ? authoring.executionProfile : "sequential-read-v1" }, "Readiness checked", { traceId }));
     }
     if (kind === "node-proposals") {
       const parsed = proposalSchema.safeParse(request.body);

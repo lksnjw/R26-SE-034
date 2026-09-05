@@ -7,13 +7,14 @@ import { buildReadIR, compileReadWorkflow, assertCompiledReadMatches, readCompil
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import type { ErpbridgeMcpSession } from "../tools/erpbridge-mcp-client.js";
+import { supportsCollectionReads } from "../runner/read-collection-admission.js";
 
 export type StoredReadCompilation = { plan: CompiledReadPlan; receipt: ReadCompilationReceipt; verifiedRole: string; compiledAt: string };
 export type PreparedReadCompilation = { stored: StoredReadCompilation; session: ErpbridgeMcpSession | undefined; generation: number };
 
 export async function prepareReadPublication(services: HandlerServices, yaml: string, user: CurrentUser): Promise<PreparedReadCompilation | null> {
   const tools = services.registries.snapshot().tools, built = buildReadIR(parseWorkflowYAMLStrict(yaml), tools, user.role);
-  if (built.issues.length || built.ir.schemaVersion === "workflow-read-ir/v4") return null; // The collection driver exists; executable admission still needs storage/worker/UI qualification.
+  if (built.issues.length || built.ir.schemaVersion === "workflow-read-ir/v4" && !supportsCollectionReads(services)) return null;
   const registryHash = services.registries.hash(), session = services.erpbridgeSession, generation = session?.discoveryGeneration ?? 0;
   const pins = new Map<string, ReadAdmissionPin>();
   if (session?.requiresReviewedRevision || services.config.mcpTransport === "erpbridge-mcp" && services.config.mcpMode === "remote") {
@@ -58,7 +59,7 @@ export function prepareCompiledExecution(state: Readonly<RepositoryState>, servi
     if (canonicalJSONBytes(raw).length > 1_200_000 || !Number.isFinite(Date.parse(raw.compiledAt)) || raw.receipt.origin !== "PUBLICATION" ||
         raw.receipt.registryHash !== services.registries.hash()) throw new Error("Stored compilation is malformed or stale");
     const plan = compileCurrent(state, services, yaml, role, raw.plan);
-    if (plan.ir.schemaVersion === "workflow-read-ir/v4") throw new Error("Collection executable admission is not qualified");
+    if (plan.ir.schemaVersion === "workflow-read-ir/v4" && (!supportsCollectionReads(services) || raw.receipt.admissionMode !== "reviewed")) throw new Error("Collection executable admission is not qualified");
     assertCompiledReadMatches(raw.plan, plan);
     const receipt = readCompilationReceipt(plan, services.registries.hash(), "PUBLICATION", plan.ir.root.nodes.some(node => node.capability.admission) ? "reviewed" : "fixture-legacy");
     if (!canonicalJSONBytes(raw.receipt).equals(canonicalJSONBytes(receipt)) || expectedReceipt && !canonicalJSONBytes(expectedReceipt).equals(canonicalJSONBytes(receipt))) throw new Error("Stored compilation receipt changed");

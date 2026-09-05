@@ -13,6 +13,15 @@ import { compileReadWorkflow, readCompilationReceipt } from "../src/workflows/co
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { ReadIterationCheckpoints, newReadIterationLedger } from "../src/runner/read-iteration-checkpoints.js";
 import { issueReadWorkerLease, renewReadWorkerLease, assertReadWorkerLease } from "../src/runner/read-worker-lease.js";
+import jwt from "jsonwebtoken";
+import { loadConfig } from "../src/config/config.js";
+import { buildApp } from "../src/http/app.js";
+import { RegistryValidator } from "../src/validator/registry-validator.js";
+import { capabilityContractHash, admissionAuthorizer, observeCapabilities, reviewCapability } from "../src/registry/capability-admission.js";
+import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
+import { exactBridgeName, bridgeTransportSchema } from "../src/tools/erpbridge-contract.js";
+import { Executor } from "../src/runner/executor.js";
+import { ToolRegistry } from "../src/tools/registry.js";
 
 // Never run this against application data. The caller owns an isolated,
 // initially empty local test database created specifically for this script.
@@ -130,7 +139,42 @@ try {
   assert.equal((await repo.snapshot()).readContinuations.run, undefined, 'terminal cursor deletion must be atomic despite lost acknowledgement');
   const snapshot = await repo.snapshot(); await persistence.close(); persistence = undefined;
   await assert.rejects(PostgresPersistence.open(databaseURL, key), /normalized record storage is active/);
-  persistence = await PostgresRecordPersistence.open(databaseURL, key); const reopened = await Repository.open(persistence); assert.deepEqual(await reopened.snapshot(), snapshot);
+  persistence = await PostgresRecordPersistence.open(databaseURL, key); repo = await Repository.open(persistence); assert.deepEqual(await repo.snapshot(), snapshot);
+  // Normal publication + sync/queued HTTP admission on actual normalized SQL.
+  // The MCP SDK is an explicit in-process fixture; no network/ERP/provider.
+  const modernTool = toolSchema.parse({ ...tool, risk_level: 'low', side_effects: [], bridge_contract: { profile: 'toolplane-v1', resource_version: '1.0.0', resource_digest: 'a'.repeat(64), remote_roles: ['platform_admin'] } });
+  const registries = { snapshot: () => ({ tools: [modernTool], rules: [], versions: { tools: 'fixture-v1', rules: 'fixture-v1' } }), hash: () => capabilityContractHash(modernTool),
+    findTool: name => [modernTool.name, modernTool.mcp_tool_name].includes(name) ? modernTool : undefined, enabledRules: () => [], findRule: () => undefined };
+  const validator = new RegistryValidator(registries, repo), httpFixtureCalls = [];
+  const session = await createErpbridgeMcpSession({ baseURL: 'https://isolated.fixture.example.test', token: 'fixture-only-not-a-real-token', timeoutMs: 10_000, validator,
+    admissionAuthorizer: admissionAuthorizer(repo, registries), sdkClient: { metadataComplete: true, connect: async () => {}, close: async () => {},
+      listTools: async () => [{ name: exactBridgeName(modernTool), inputSchema: bridgeTransportSchema(modernTool), _meta: { 'toolplane.resourceVersion': '1.0.0', 'toolplane.resourceDigest': 'a'.repeat(64), 'io.erpbridge/allowedRoles': ['platform_admin'] } }],
+      callTool: async (name, args, meta) => { assert.equal(name, exactBridgeName(modernTool)); assert.equal(meta['toolplane.resourceDigest'], 'a'.repeat(64)); assert.equal(args.role, 'platform_admin'); httpFixtureCalls.push(args.id); return { content: [], structuredContent: { id: args.id.toUpperCase() } }; } } });
+  const config = loadConfig({ APP_ENV: 'test', STORAGE_DRIVER: 'postgres-records', DATABASE_URL: databaseURL, STORAGE_ENCRYPTION_KEY: key, MCP_MODE: 'mock',
+    MCP_TRANSPORT: 'erpbridge-mcp', ERPBRIDGE_BASE_URL: 'https://isolated.fixture.example.test', ERPBRIDGE_MCP_TOKEN: 'fixture-only-not-a-real-token',
+    JWT_SECRET: 'isolated-http-fixture-secret-32-bytes', ERPBRIDGE_ROLE_MAP: JSON.stringify({ [role]: 'platform_admin' }) });
+  assert.deepEqual(config.erpbridgeRoleMap, { [role]: 'platform_admin' }, 'guarded fixture must use the ERPBridge transport role map');
+  const services = { config, repository: repo, registries, validator, executor: new Executor(new ToolRegistry(), validator), erpbridgeSession: session }, actor = await repo.effectiveUser('test-actor');
+  const observations = (await observeCapabilities({ repository: repo, registries, session, user: actor })).observations;
+  for (const observation of observations) await reviewCapability({ repository: repo, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
+    observationId: observation.id, contractHash: observation.contractHash, decisionKey: 'isolated-normal-collection-review', effectClass: 'read', riskClass: 'low', dataClass: 'internal', retryPolicy: 'never', note: 'Isolated fake SDK qualification only' } });
+  await repo.mutate(state => { state.workflows['normal-collection'] = { id: 'normal-collection', name: 'Normal fixture', description: '', owner: { id: 'test-actor', name: 'Test actor' }, assignedUserIds: [], status: 'PENDING', trigger: { type: 'manual' }, steps: 1, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [], canRun: false, createdAt: now, updatedAt: now, yaml, archived: false }; state.versions['normal-collection'] = []; });
+  const app = await buildApp(services), headers = { authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: 'test-actor', expiresIn: 3600 })}` };
+  let normalCollectionId;
+  try {
+    const published = await app.inject({ method: 'POST', url: '/api/workflows/normal-collection/publish', headers, payload: {} }); assert.equal(published.statusCode, 200, published.body); assert.equal(published.json().data.compiledRead.schemaVersion, 'workflow-read-ir/v4');
+    const sync = await app.inject({ method: 'POST', url: '/api/workflows/normal-collection/run', headers, payload: { input: { rows: ['sync-a', 'sync-b'] } } });
+    assert.equal(sync.statusCode, 200, sync.body); assert.equal(sync.json().data.status, 'DONE'); assert.deepEqual(sync.json().data.finalOutput, ['SYNC-A', 'SYNC-B']);
+    assert.deepEqual(httpFixtureCalls, ['sync-a', 'sync-b']); assert.equal((await repo.snapshot()).readContinuations[sync.json().data.id], undefined);
+    const payload = { mode: 'async-read', idempotencyKey: 'isolated-http-collection-job-0001', input: { rows: ['a', 'b', 'c'], private_token: 'private-http-fixture-input' } };
+    const admitted = await app.inject({ method: 'POST', url: '/api/workflows/normal-collection/run', headers, payload }); assert.equal(admitted.statusCode, 202, admitted.body); normalCollectionId = admitted.json().data.id;
+    const deadline = performance.now() + 10_000;
+    while (performance.now() < deadline) { const current = await repo.snapshot(); if (current.readJobs[normalCollectionId].state === 'FINISHED') break; await new Promise(resolve => setTimeout(resolve, 10)); }
+    const current = await repo.snapshot(), completedRun = current.executions[normalCollectionId]; assert.equal(completedRun.status, 'DONE', JSON.stringify(completedRun.failure)); assert.deepEqual(completedRun.finalOutput, ['A', 'B', 'C']);
+    assert.deepEqual(httpFixtureCalls, ['sync-a', 'sync-b', 'a', 'b', 'c']); assert.equal(current.readContinuations[normalCollectionId], undefined); assert.equal(current.readJobs[normalCollectionId].lease, undefined); assert.equal(current.readJobs[normalCollectionId].inputCiphertext, undefined);
+    assert(!JSON.stringify(completedRun).includes('private-http-fixture-input'));
+    const duplicate = await app.inject({ method: 'POST', url: '/api/workflows/normal-collection/run', headers, payload }); assert.equal(duplicate.statusCode, 202); assert.equal(duplicate.json().data.id, normalCollectionId); assert.equal(httpFixtureCalls.length, 5);
+  } finally { await app.close(); await session.close(); }
   const rows = await pool.query("SELECT record_key,payload FROM runtime_records");
   assert(rows.rows.every(row => !row.payload.toString('utf8').includes('unrelatedHistory')));
   const target = rows.rows.find(row => row.record_key === recordKey(['outputs', 'run', 'node-0']));
@@ -141,5 +185,6 @@ try {
     checkpointOnlyMs: Math.round(checkpointOnlyMs), noERPOrProviderCalls: true,
     privateJournal: { confirmedFixtureInvocations: fixtureInvocations.length, journalAcknowledgementLost, reopenedMidFlow, finalCursorRemoved: true },
     workerLease: { renewed: true, acknowledgementLost: true, unavailableObserverDelivered: observedUnavailable, reloadedExactLease: true, terminalLeaseRemoved: true, noDispatchOrReplay: true },
-    limitations: 'Timing covers synthetic checkpoints only. Journal uses supplied local results, not SDK/HTTP/live ERP. Not a process crash/power-loss test, concurrency/load qualification or production SLO.' }));
+    normalCollection: { publicationProfile: 'workflow-read-ir/v4', admittedProfile: 'collection-read-v1', syncHTTP: true, queuedHTTP: true, confirmedFakeSDKCalls: httpFixtureCalls.length, idempotentAdmission: true, terminalPrivateStateRemoved: true },
+    limitations: 'Timing covers synthetic checkpoints only. The journal uses supplied results; the normal HTTP queue uses an in-process fake SDK. No live ERP/provider/network calls. Not a process crash/power-loss test, concurrency/load qualification or production SLO.' }));
 } finally { if (persistence) await persistence.close(); await pool.end(); }

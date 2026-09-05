@@ -2,7 +2,8 @@ import { resolve } from "node:path";
 import jwt from "jsonwebtoken";
 import { afterEach, expect, test, vi } from "vitest";
 import { RegistryService } from "../src/registry/service.js";
-import { Repository, type PersistenceBackend } from "../src/repository/store.js";
+import { Repository, type PersistenceBackend, type RepositoryState } from "../src/repository/store.js";
+import { applyExecutionCheckpoint, type ExecutionCheckpoint } from "../src/repository/execution-transaction.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { toolSchema } from "../src/registry/schemas.js";
 import { admissionAuthorizer, observeCapabilities, reviewCapability, disableCapability, capabilityAdmissionCatalog, capabilityContractHash, requireProductionAdmissionProfile } from "../src/registry/capability-admission.js";
@@ -27,6 +28,30 @@ class Persistence implements PersistenceBackend {
   async save(bytes: Uint8Array) { this.payload = Buffer.from(bytes); if (this.loseAck) { this.loseAck = false; throw new Error("Commit acknowledgement lost"); } }
   async close() {} async probe() {}
 }
+// Explicit record-capability fault fixture, not an encryption or SQL proof.
+// Actual encrypted normalized storage is exercised by verify-postgres-records.
+class RecordPersistence extends Persistence {
+  readonly executionCheckpointDurability = "encrypted-record-transactions/v1" as const;
+  failWhen: ((state: RepositoryState) => boolean) | undefined;
+  committedLoss = false;
+  async save(bytes: Uint8Array) {
+    if (this.failWhen?.(JSON.parse(Buffer.from(bytes).toString("utf8")))) {
+      this.failWhen = undefined;
+      if (this.committedLoss) this.payload = Buffer.from(bytes);
+      throw new Error("Record fixture acknowledgement lost");
+    }
+    await super.save(bytes);
+  }
+  async saveExecutionCheckpoint(checkpoint: ExecutionCheckpoint) {
+    const state = JSON.parse(Buffer.from(this.payload!).toString("utf8")) as RepositoryState;
+    await this.save(Buffer.from(JSON.stringify(applyExecutionCheckpoint(state, checkpoint))));
+  }
+}
+function barrier() {
+  let release!: () => void;
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  return { promise, release };
+}
 async function setup(persistence: PersistenceBackend | null = null, noAuthorizer = false) {
   const repository = await Repository.open(persistence), timestamp = new Date().toISOString();
   await repository.mutate(state => { for (const [id, roleId] of [["admin", "role_admin"], ["builder", "role_builder"]]) state.users[id!] = { id: id!, name: id!, email: `${id}@example.test`, roleId: roleId!, status: "Active", permissionOverrides: [], initials: "A", departmentId: null, lastLoginAt: null, createdAt: timestamp }; });
@@ -40,11 +65,11 @@ async function setup(persistence: PersistenceBackend | null = null, noAuthorizer
   let generationListener: (() => void) | undefined;
   const remote = () => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), _meta: { "toolplane.resourceDigest": tool.bridge_contract!.resource_digest, "toolplane.resourceVersion": tool.bridge_contract!.resource_version, "io.erpbridge/allowedRoles": [] } });
   const sdk = { metadataComplete: true, connect: vi.fn(async () => {}), close: vi.fn(async () => {}), onToolsChanged: (listener: () => void) => { generationListener = listener; return () => {}; },
-    listTools: vi.fn(async () => [remote()]), callTool: vi.fn(async () => ({ content: [{ type: "text", text: "Confirmed fixture" }] })) };
+    listTools: vi.fn(async () => [remote()]), callTool: vi.fn(async (_name?: string, _args?: Record<string, unknown>, _meta?: Record<string, unknown>) => ({ content: [{ type: "text", text: "Confirmed fixture" }] })) };
   const session = await createErpbridgeMcpSession({ baseURL: "https://fixture.example.test", token: "private-credential", timeoutMs: 1000, validator, sdkClient: sdk,
     ...(!noAuthorizer ? { admissionAuthorizer: admissionAuthorizer(repository, registries) } : {}) }); sessions.push(session);
   const admin = (await repository.effectiveUser("admin"))!, builder = (await repository.effectiveUser("builder"))!;
-  const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "admission-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" });
+  const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "admission-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock", STORAGE_ENCRYPTION_KEY: "x".repeat(32) });
   const services = { repository, registries, validator, erpbridgeSession: session, config, executor: new Executor(new ToolRegistry(), validator) };
   const observe = () => observeCapabilities({ repository, registries, session, user: admin });
   const body = (observation: { id: string; contractHash: string }, extra = {}) => ({ observationId: observation.id, contractHash: observation.contractHash,
@@ -54,8 +79,8 @@ async function setup(persistence: PersistenceBackend | null = null, noAuthorizer
     tool: () => tool, changeTool: (patch: Partial<typeof tool>) => { tool = { ...tool, ...patch }; }, changed: () => generationListener?.() };
 }
 
-async function workflowHarness(s: Awaited<ReturnType<typeof setup>>, legacyPublication = false, controlFlow?: unknown) {
-  const yaml = stringify({ name: "Compiled reads", description: "Two exact fixture reads", trigger: { type: "manual" }, steps: [{ id: "one", action: s.tool().name, parameters: { value: "first" } }, { id: "two", action: s.tool().name, parameters: { value: "second" } }], ...(controlFlow ? { metadata: { controlFlow } } : {}) });
+async function workflowHarness(s: Awaited<ReturnType<typeof setup>>, legacyPublication = false, controlFlow?: unknown, firstValue = "first") {
+  const yaml = stringify({ name: "Compiled reads", description: "Two exact fixture reads", trigger: { type: "manual" }, steps: [{ id: "one", action: s.tool().name, parameters: { value: firstValue } }, { id: "two", action: s.tool().name, parameters: { value: "second" } }], ...(controlFlow ? { metadata: { controlFlow } } : {}) });
   const date = new Date().toISOString();
   const workflow: Workflow = { id: "compiled", name: "Compiled reads", description: "", owner: { id: "admin", name: "admin" }, assignedUserIds: [], status: "PENDING", trigger: { type: "manual" }, steps: 2,
     successRate: 0, lastRunAt: null, publishedVersion: legacyPublication ? 1 : 0, draftVersion: 1, tags: [], domainTags: [], canRun: false, createdAt: date, updatedAt: date, yaml, archived: false };
@@ -67,6 +92,203 @@ async function workflowHarness(s: Awaited<ReturnType<typeof setup>>, legacyPubli
   const readiness = () => app.inject({ method: "GET", url: "/api/workflows/compiled/readiness", headers });
   return { yaml, app, publish, run, readiness, headers };
 }
+
+const collectionFlow = () => ({ schemaVersion: "read-control-flow/v3", root: { kind: "sequence", nodes: [
+  { kind: "foreach", id: "each", maxItems: 3, items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } },
+    body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "one" }] }, collect: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "one", path: ["content", "0", "text"] } } },
+  { kind: "action", nodeId: "two" },
+  { kind: "return", id: "answer", output: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["value"] } } },
+] } });
+
+test.each([false, true])("normal reviewed collection publication/readiness/execution preserves exact per-item answers, async=%s", async queued => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}");
+  const published = await w.publish(); expect(published.statusCode, published.body).toBe(200);
+  expect(published.json().data).toMatchObject({ executionReadiness: "COMPILED_READ", compiledRead: { schemaVersion: "workflow-read-ir/v4", admissionMode: "reviewed", origin: "PUBLICATION" } });
+  expect((await w.readiness()).json().data).toMatchObject({ can_attempt_run: true, executionProfile: "collection-read-v1", compilation: { state: "CURRENT" } });
+  s.sdk.callTool.mockImplementation(async (_name, args) => ({ content: [{ type: "text", text: String(args?.value).toUpperCase() }] }));
+  const payload = { input: { rows: ["a", "b"], private_token: "not-public-collection-input" }, ...(queued ? { mode: "async-read", idempotencyKey: "reviewed-collection-job-0001" } : {}) };
+  const response = await w.run(payload); expect(response.statusCode, response.body).toBe(queued ? 202 : 200); const id = response.json().data.id;
+  await vi.waitFor(async () => { expect((await s.repository.snapshot()).executions[id]!.status).toBe("DONE"); });
+  const state = await s.repository.snapshot(), item = state.executions[id]!;
+  expect(item).toMatchObject({ finalOutput: ["A", "B"], workflowSnapshot: { executionProfile: "collection-read-v1", compilation: published.json().data.compiledRead }, tokens: { total: 0 } });
+  expect(Object.keys(item.stepOutputs!)).toEqual(["each/0/one", "each/1/one", "two"]); expect(item.iterationProgress?.receipts["action:each/0/one"]?.status).toBe("DONE");
+  expect(s.sdk.callTool.mock.calls.map(call => call[1]?.value)).toEqual(["a", "b", "second"]);
+  expect(s.sdk.callTool.mock.calls.every(call => call[0] === exactBridgeName(s.tool()) && call[2]?.["toolplane.resourceDigest"] === "a".repeat(64))).toBe(true);
+  expect(state.readContinuations[id]).toBeUndefined(); expect(JSON.stringify(item)).not.toContain("not-public-collection-input"); expect(response.body).not.toMatch(/bindingKey|inputCiphertext|ciphertext/);
+  if (queued) { await vi.waitFor(async () => expect((await s.repository.snapshot()).readJobs[id]!.state).toBe("FINISHED")); expect((await w.run(payload)).json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledTimes(3); }
+});
+
+test.each([{ rows: [] }, { rows: ["a", "b", "c", "d"] }])("normal collection empty/oversized input %j has truthful bounded outcomes", async ({ rows }) => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}"); expect((await w.publish()).statusCode).toBe(200);
+  const response = await w.run({ input: { rows } }); expect(response.statusCode, response.body).toBe(rows.length ? 422 : 200);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(rows.length ? 0 : 1);
+  const item = Object.values((await s.repository.snapshot()).executions)[0]!; expect(item.status).toBe(rows.length ? "FAILED" : "DONE");
+  if (!rows.length) expect(item.finalOutput).toEqual([]);
+});
+
+test.each([false, true])("normal nested collection execution keeps distinct invocation identities and nested answers, async=%s", async queued => {
+  const s = await setup(); await s.review(); const flow = collectionFlow(), outer = flow.root.nodes[0] as any;
+  const strings = { type: "array", items: { type: "string" } }, nested = { type: "array", items: strings };
+  const ref = (nodeId: string, path: string[]) => ({ kind: "ref", source: "nodeOutput", nodeId, path });
+  outer.body = { kind: "sequence", nodes: [{ kind: "foreach", id: "inner", maxItems: 2,
+    items: { schema: strings, value: { kind: "ref", source: "workflowInput", path: ["innerRows"] } },
+    body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "one" }] }, collect: { schema: { type: "string" }, value: ref("one", ["content", "0", "text"]) } }] };
+  outer.collect = { schema: strings, value: ref("inner", ["value"]) };
+  (flow.root.nodes[2] as any).output.schema = nested;
+  const w = await workflowHarness(s, false, flow, "{{inner.item}}"); const publication = await w.publish(); expect(publication.statusCode, publication.body).toBe(200);
+  s.sdk.callTool.mockImplementation(async (_name, args) => ({ content: [{ type: "text", text: String(args?.value).toUpperCase() }] }));
+  const response = await w.run({ input: { rows: ["outer-a", "outer-b"], innerRows: ["x", "y"] }, ...(queued ? { mode: "async-read", idempotencyKey: "nested-collection-0001" } : {}) });
+  expect(response.statusCode, response.body).toBe(queued ? 202 : 200); const id = response.json().data.id;
+  await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("DONE"));
+  const item = (await s.repository.snapshot()).executions[id]!;
+  expect(item.finalOutput).toEqual([["X", "Y"], ["X", "Y"]]);
+  expect(Object.keys(item.stepOutputs!)).toEqual(["each/0/inner/0/one", "each/0/inner/1/one", "each/1/inner/0/one", "each/1/inner/1/one", "two"]);
+  expect(s.sdk.callTool.mock.calls.map(call => call[1]?.value)).toEqual(["x", "y", "x", "y", "second"]);
+  expect(item.iterationProgress?.receipts["collection:each"]?.status).toBe("DONE");
+});
+
+test("historical collection publications require explicit reviewed re-publication; aggregate durable storage remains design-only", async () => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s, true, collectionFlow(), "{{each.item}}");
+  expect((await w.run({ input: { rows: ["a"] } })).statusCode).toBe(409); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  expect((await w.publish()).json().data).toMatchObject({ version: 2, compiledRead: { schemaVersion: "workflow-read-ir/v4" } });
+  const durable = await setup(new Persistence()); await durable.review(); const design = await workflowHarness(durable, false, collectionFlow(), "{{each.item}}");
+  const publication = await design.publish(); expect(publication.statusCode, publication.body).toBe(200); expect(publication.json().data).toMatchObject({ executionReadiness: "UNSUPPORTED_PROFILE" }); expect(publication.json().data.compiledRead).toBeUndefined();
+  expect((await design.run({ mode: "async-read", idempotencyKey: "aggregate-collection-fixture", input: { rows: ["a"] } })).statusCode).toBe(422); expect(durable.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each([false, true])("collection review changes after intent acknowledgement deny actual SDK entry, async=%s", async queued => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}"); await w.publish();
+  const original = s.repository.mutateExecution.bind(s.repository); let changed = false;
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation(async (id, mutation) => {
+    const result = await original(id, mutation);
+    if (!changed && await s.repository.read(state => state.executions[id]?.readProgress?.attempts["each/0/one"]?.status === "DISPATCH_INTENT")) {
+      changed = true; await s.repository.mutate(state => { Object.values(state.capabilityAdmissions).forEach(value => { value.state = "DISABLED"; }); });
+    }
+    return result;
+  });
+  const response = await w.run({ input: { rows: ["a"] }, ...(queued ? { mode: "async-read", idempotencyKey: "collection-final-entry-0001" } : {}) }); expect(response.statusCode, response.body).toBe(queued ? 202 : 503);
+  const id = queued ? response.json().data.id : response.json().meta.executionId;
+  await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("RECOVERY_REQUIRED"));
+  expect(changed).toBe(true); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions[id]!.stepOutputs).toEqual({});
+});
+
+test.each(["publication", "actor", "archive", "lease", "storage"])("normal queued collection denies %s changes after acknowledged intent", async change => {
+  const persistence = change === "storage" ? new RecordPersistence() : null, s = await setup(persistence);
+  await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}"); await w.publish();
+  const original = s.repository.mutateExecution.bind(s.repository); let changed = false;
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation(async (id, mutation) => {
+    const result = await original(id, mutation);
+    if (!changed && await s.repository.read(state => state.executions[id]?.readProgress?.attempts["each/0/one"]?.status === "DISPATCH_INTENT")) {
+      changed = true;
+      if (persistence) {
+        persistence.loseAck = true;
+        await expect(s.repository.mutate(state => { state.users.admin!.status = "Disabled"; })).rejects.toThrow("acknowledgement");
+      } else await s.repository.mutate(state => {
+        if (change === "publication") state.versions.compiled = [];
+        if (change === "actor") state.users.admin!.status = "Disabled";
+        if (change === "archive") state.workflows.compiled!.archived = true;
+        if (change === "lease") state.readJobs[id]!.lease!.expiresAt = new Date(Date.now() + 300_000).toISOString();
+      });
+    }
+    return result;
+  });
+  const response = await w.run({ mode: "async-read", idempotencyKey: "collection-boundary-fault-0001", input: { rows: ["a", "b"] } });
+  expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+  await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("RECOVERY_REQUIRED"));
+  const state = await s.repository.snapshot(); expect(changed).toBe(true); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  expect(state.executions[id]!.stepOutputs).toEqual({}); expect(state.executions[id]!.valueOutputs?.each).toBeUndefined();
+  expect(state.executions[id]!.readProgress?.attempts["each/0/one"]?.status).toBe("UNKNOWN");
+  expect(state.executionEvents[id]!.some(event => event.type === "iteration.action.completed")).toBe(false);
+});
+
+test.each([false, true])("normal collection cancellation during policy prevents dispatch, async=%s", async queued => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}"); await w.publish();
+  const entered = barrier(), unblock = barrier();
+  const gate = { validateAndIssueToken: async (action: string, yaml: string, actor: { role: string }) => {
+    if (action === "ReadToolBroker") { entered.release(); await unblock.promise; }
+    return s.validator.validateAndIssueToken(action, yaml, actor.role);
+  } };
+  const services = s.services as typeof s.services & { validationGate?: typeof gate }; services.validationGate = gate;
+  const pending = w.run({ input: { rows: ["a", "b"] }, ...(queued ? { mode: "async-read", idempotencyKey: "collection-policy-cancel-0001" } : {}) });
+  await entered.promise; const id = Object.keys((await s.repository.snapshot()).executions)[0]!;
+  try {
+    const cancelled = await w.app.inject({ method: "POST", url: `/api/executions/${id}/cancel`, headers: w.headers, payload: {} }); expect(cancelled.statusCode, cancelled.body).toBe(202);
+  } finally { unblock.release(); }
+  const response = await pending; expect(response.statusCode, response.body).toBe(queued ? 202 : 200);
+  await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("CANCELLED"));
+  const item = (await s.repository.snapshot()).executions[id]!; expect(s.sdk.callTool).not.toHaveBeenCalled();
+  expect(item.readProgress?.attempts["each/0/one"]?.dispatchIntentAt).toBeUndefined(); expect(item.valueOutputs?.each).toBeUndefined();
+});
+
+test.each([false, true])("normal collection saves an already confirmed answer after cancellation without starting the next item, async=%s", async queued => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}"); await w.publish();
+  s.sdk.callTool.mockImplementationOnce(async () => {
+    const id = Object.keys((await s.repository.snapshot()).executions)[0]!;
+    const cancel = await w.app.inject({ method: "POST", url: `/api/executions/${id}/cancel`, headers: w.headers, payload: {} }); expect(cancel.statusCode, cancel.body).toBe(202);
+    return { content: [{ type: "text", text: "Confirmed before the next boundary" }] };
+  });
+  const response = await w.run({ input: { rows: ["a", "b"] }, ...(queued ? { mode: "async-read", idempotencyKey: "collection-answer-cancel-0001" } : {}) });
+  expect(response.statusCode, response.body).toBe(queued ? 202 : 200); const id = response.json().data.id;
+  await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("CANCELLED"));
+  const item = (await s.repository.snapshot()).executions[id]!; expect(s.sdk.callTool).toHaveBeenCalledOnce();
+  expect(item.stepOutputs?.["each/0/one"]).toMatchObject({ content: [{ text: "Confirmed before the next boundary" }] });
+  expect(item.valueOutputs?.each).toBeUndefined(); expect(item.finalOutput).toEqual(item.stepOutputs?.["each/0/one"]); expect(item.stepOutputs?.["each/1/one"]).toBeUndefined();
+});
+
+test("normal queued collection lease expiry during policy stops before SDK entry", async () => {
+  const s = await setup(); s.services.config.readWorkerLeaseMs = 5000; await s.review();
+  const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}"); await w.publish(); const entered = barrier(), unblock = barrier();
+  const validate = s.validator.validateAndIssueToken.bind(s.validator);
+  vi.spyOn(s.validator, "validateAndIssueToken").mockImplementation(async (...args) => {
+    if (args[0] === "ReadToolBroker") { entered.release(); await unblock.promise; }
+    return validate(...args);
+  });
+  const response = await w.run({ mode: "async-read", idempotencyKey: "collection-expired-worker-0001", input: { rows: ["a"] } });
+  expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id; await entered.promise;
+  const timestamp = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(timestamp + 5001);
+  try {
+    unblock.release(); await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("RECOVERY_REQUIRED"));
+    expect(s.sdk.callTool).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions[id]!.readProgress?.attempts["each/0/one"]?.dispatchIntentAt).toBeUndefined();
+  } finally { clock.mockRestore(); unblock.release(); }
+});
+
+test.each([false, true])("normal queued collection lost checkpoint acknowledgement never replays, committed=%s", async committedLoss => {
+  for (const phase of ["DISPATCH_INTENT", "DONE"] as const) {
+    const persistence = new RecordPersistence(), s = await setup(persistence); persistence.committedLoss = committedLoss;
+    await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}"); await w.publish();
+    persistence.failWhen = state => Object.values(state.executions).some(item => item.readProgress?.attempts["each/0/one"]?.status === phase);
+    const payload = { mode: "async-read", idempotencyKey: `collection-ack-${phase}-0001`, input: { rows: ["a", "b"] } };
+    const response = await w.run(payload); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+    await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("RECOVERY_REQUIRED"));
+    const item = (await s.repository.snapshot()).executions[id]!; expect(s.sdk.callTool).toHaveBeenCalledTimes(phase === "DISPATCH_INTENT" ? 0 : 1);
+    expect(item.valueOutputs?.each).toBeUndefined();
+    if (committedLoss && phase === "DONE") expect(item.finalOutput).toEqual(item.stepOutputs?.["each/0/one"]);
+    else expect(item.finalOutput).toBeUndefined();
+    const duplicate = await w.run(payload); expect(duplicate.statusCode, duplicate.body).toBe(202); expect(duplicate.json().data.id).toBe(id);
+    await readJobQueue(s.services).stop(); await readJobQueue(s.services).start(); expect(s.sdk.callTool).toHaveBeenCalledTimes(phase === "DISPATCH_INTENT" ? 0 : 1);
+  }
+});
+
+test("normal collection queue replacement preserves genuine unclaimed input and iteration keys", async () => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}"); await w.publish();
+  const first = readJobQueue(s.services), kick = vi.spyOn(first, "kick").mockImplementation(() => {});
+  const response = await w.run({ mode: "async-read", idempotencyKey: "collection-unclaimed-restart-0001", input: { rows: ["a"] } });
+  expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+  await first.stop(); kick.mockRestore(); await readJobQueue(s.services).start();
+  await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("DONE")); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("normal collection shutdown fences a held SDK result and restart does not replay it", async () => {
+  const s = await setup(); await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}"); await w.publish();
+  const entered = barrier(), unblock = barrier(); s.sdk.callTool.mockImplementationOnce(async () => { entered.release(); await unblock.promise; return { content: [{ type: "text", text: "Late old worker answer" }] }; });
+  const response = await w.run({ mode: "async-read", idempotencyKey: "collection-shutdown-0001", input: { rows: ["a", "b"] } });
+  expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id; await entered.promise;
+  try { await readJobQueue(s.services).stop(); } finally { unblock.release(); }
+  await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]!.status).toBe("RECOVERY_REQUIRED"));
+  await readJobQueue(s.services).start(); await new Promise(resolve => setImmediate(resolve));
+  const item = (await s.repository.snapshot()).executions[id]!; expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(item.stepOutputs).toEqual({});
+  expect(item.readProgress?.attempts["each/0/one"]?.status).toBe("UNKNOWN"); expect(item.finalOutput).toBeUndefined();
+});
 
 test.each([true, false])("modern compiled conditional publication with enabled=%s preserves exact review pins and dispatches only its selected branch", async enabled => {
   const s = await setup(); await s.review();
