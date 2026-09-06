@@ -57,6 +57,7 @@ import { boundedReadFixtureRequest, handleReadFixtureSimulation } from "./handle
 import { readJobQueue, supportsReadJobs } from "../runner/read-jobs.js";
 import { chatJobQueue, supportsChatJobs } from "../agent/chat-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
+import { runtimeApprovalView } from "../runner/runtime-approvals.js";
 import {
   REGISTRY_UNHANDLED,
   handleRegistryRoute,
@@ -1332,6 +1333,11 @@ async function getExecution(
   user: User & { permissions: string[] },
   services: ApplicationServices,
 ): Promise<unknown> {
+  if (isRecord(request.query) && request.query.view === "approval") {
+    if (Object.keys(request.query).some(key => key !== "view")) throw new HandlerFailure(400, "Unsupported approval review query");
+    const review = await services.repository.readAuthoritative(state => runtimeApprovalView(state, param(request, "id"), user.id));
+    return reply.send(ok(review, "Exact transaction review only; approval does not execute", null));
+  }
   const item = await services.repository.read(
     (state) => state.executions[param(request, "id")] ?? null,
   );
@@ -1340,7 +1346,7 @@ async function getExecution(
     !canReadExecution(user, item)
   )
     return reply.status(404).send(fail("Execution not found", null));
-  return reply.send(ok(withoutSecretFields(item), "OK", null));
+  return reply.send(ok(withoutSecretFields({ ...item, ...(item.runtimeApprovalSecret ? { hasRuntimeApproval: true } : {}) }), "OK", null));
 }
 
 /*******************************************************************************
@@ -1412,6 +1418,9 @@ function routePolicy(
     return { required: ["settings:manage"], any: false };
   if (path.startsWith("/api/providers"))
     return { required: ["provider:manage"], any: false };
+  if (path.startsWith("/api/executions"))
+    if (path === "/api/executions/:id" && route.method === "GET" || /\/executions\/:id\/(approve|reject)$/.test(path))
+      return { required: route.method === "GET" ? ["workflow:read", "execution:read_own", "execution:approve"] : ["workflow:run", "workflow:run_own", "execution:approve"], any: true };
   if (path.startsWith("/api/executions"))
     return route.method === "GET"
       ? { required: ["workflow:read", "execution:read_own"], any: true }

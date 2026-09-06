@@ -10,6 +10,7 @@ import ErrorBoundary from "../components/shared/ui/ErrorBoundary";
 import { LoadingState } from "../components/shared/ResourceState";
 import { NAVIGATION_GROUPS } from "../constants/navigation";
 import { PERMISSIONS } from "../constants/permissions";
+import { authenticatedReturnTarget } from "../utils/authenticatedReturnTarget";
 import { useAuthContext } from "../context/AuthContext";
 import { RouteProvider } from "../context/RouteContext";
 import usePermissions from "../hooks/usePermissions";
@@ -76,7 +77,7 @@ const allProtectedRouteDefinitions = [
   { id: "executions.history", path: "/executions", Component: C.ExecutionListPage, requiredAny: [PERMISSIONS.WORKFLOW_READ, PERMISSIONS.EXECUTION_READ_OWN], feature: "executions" },
   { id: "executions.live", path: "/executions/logs", Component: C.ExecutionLogsPage, requiredAny: [PERMISSIONS.WORKFLOW_READ, PERMISSIONS.EXECUTION_READ_OWN], componentProps: { view: "logs" }, feature: "executions" },
   { id: "executions.healing", path: "/executions/healing", Component: C.ExecutionLogsPage, requiredAny: [PERMISSIONS.WORKFLOW_READ, PERMISSIONS.EXECUTION_READ_OWN], componentProps: { view: "healing" }, feature: "executions" },
-  { id: "executions.detail", path: "/executions/:executionId", Component: C.ExecutionDetailPage, requiredAny: [PERMISSIONS.WORKFLOW_READ, PERMISSIONS.EXECUTION_READ_OWN], feature: "executions" },
+  { id: "executions.detail", path: "/executions/:executionId", Component: C.ExecutionDetailPage, requiredAny: [PERMISSIONS.WORKFLOW_READ, PERMISSIONS.EXECUTION_READ_OWN, PERMISSIONS.EXECUTION_APPROVE], feature: "executions" },
   { id: "analytics.performance", path: "/analytics/performance", Component: C.AnalyticsPage, requiredAny: [PERMISSIONS.WORKFLOW_READ], componentProps: { view: "performance" }, feature: "analytics" },
   { id: "analytics.usage", path: "/analytics/usage", Component: C.AnalyticsPage, requiredAny: [PERMISSIONS.WORKFLOW_READ], componentProps: { view: "usage" }, feature: "analytics" },
   { id: "analytics.healing", path: "/analytics/healing", Component: C.AnalyticsPage, requiredAny: [PERMISSIONS.WORKFLOW_READ], componentProps: { view: "healing" }, feature: "analytics" },
@@ -195,7 +196,7 @@ function PublicScreen(props) {
   const location = useLocation();
   const navigate = useNavigate();
   if (isAuthenticated) {
-    return <Navigate to={location.state?.from?.pathname || "/"} replace />;
+    return <Navigate to={authenticatedReturnTarget(location.state?.from)} replace />;
   }
   return (
     <ErrorBoundary name={name}>

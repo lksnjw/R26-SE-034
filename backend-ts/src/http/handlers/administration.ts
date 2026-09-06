@@ -4,6 +4,8 @@ import { hashPassword } from "../../authn/password.js";
 import { notificationPreferencesSchema } from "../../models/boundary.js";
 import { fail, ok } from "../../models/schemas.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
+import { updateRuntimeApprovalPolicy } from "../../runner/runtime-approvals.js";
+import type { RepositoryState } from "../../repository/store.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, initials, isRecord, nextID, now, paginate, publicUser, queryRecord, requestParam, stringValue } from "./common.js";
 
@@ -44,13 +46,13 @@ export async function handleAdministrationRoute(route: RouteDefinition, request:
     if (route.path === `${base}/profile/api-keys` && route.method === "POST") return createAPIKey(request, reply, services);
     if (route.path === `${base}/profile/api-keys/:id` && route.method === "DELETE") return deleteAPIKey(request, reply, services);
     if (route.path === `${base}/settings` && route.method === "GET") return getSettings(reply, services);
-    if (route.path === `${base}/settings` && route.method === "PATCH") return patchSettings(request, reply, services);
+    if (route.path === `${base}/settings` && route.method === "PATCH") return patchSettings(request, reply, services, user);
     if (route.path === `${base}/settings/general` && route.method === "GET") return getSettingsGroup(reply, services, "general");
-    if (route.path === `${base}/settings/general` && route.method === "PATCH") return patchSettingsGroup(request, reply, services, "general", "General settings updated");
+    if (route.path === `${base}/settings/general` && route.method === "PATCH") return patchSettingsGroup(request, reply, services, "general", "General settings updated", user);
     if (route.path === `${base}/settings/llm` && route.method === "GET") return getSettingsGroup(reply, services, "llm", true);
-    if (route.path === `${base}/settings/llm` && route.method === "PATCH") return patchSettingsGroup(request, reply, services, "llm", "LLM settings updated", true);
+    if (route.path === `${base}/settings/llm` && route.method === "PATCH") return patchSettingsGroup(request, reply, services, "llm", "LLM settings updated", user, true);
     if (route.path === `${base}/settings/rbac` && route.method === "GET") return getSettingsGroup(reply, services, "rbac");
-    if (route.path === `${base}/settings/rbac` && route.method === "PATCH") return patchSettingsGroup(request, reply, services, "rbac", "RBAC settings updated");
+    if (route.path === `${base}/settings/rbac` && route.method === "PATCH") return patchSettingsGroup(request, reply, services, "rbac", "RBAC settings updated", user);
     if (route.path === `${base}/notifications` && route.method === "GET") return listNotifications(request, reply, services);
     if (route.path === `${base}/notifications/read-all`) return markAllNotifications(reply, services);
     if (route.path === `${base}/notifications/:id/read`) return markNotification(request, reply, services);
@@ -263,7 +265,7 @@ async function getSettings(reply: FastifyReply, services: HandlerServices): Prom
  *
  * Applies the supplied updates to application settings.
  ******************************************************************************/
-async function patchSettings(request: FastifyRequest, reply: FastifyReply, services: HandlerServices): Promise<unknown> { const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const settings = await services.repository.mutate((state) => { for (const group of ["general", "llm", "rbac"]) if (isRecord(body[group])) state.settings[group] = { ...(isRecord(state.settings[group]) ? state.settings[group] : {}), ...body[group] }; return structuredClone(state.settings); }); return reply.send(ok(withoutSecretFields(settings), "Settings updated", null)); }
+async function patchSettings(request: FastifyRequest, reply: FastifyReply, services: HandlerServices, user: CurrentUser): Promise<unknown> { const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const settings = await services.repository.mutate((state) => { for (const group of ["general", "llm", "rbac"]) if (isRecord(body[group])) applySettingsGroup(state, group, body[group], user); return structuredClone(state.settings); }); return reply.send(ok(withoutSecretFields(settings), "Settings updated", null)); }
 /*******************************************************************************
  * Function: getSettingsGroup
  *
@@ -275,7 +277,16 @@ async function getSettingsGroup(reply: FastifyReply, services: HandlerServices, 
  *
  * Applies updates to a requested settings group.
  ******************************************************************************/
-async function patchSettingsGroup(request: FastifyRequest, reply: FastifyReply, services: HandlerServices, group: string, message: string, redact = false): Promise<unknown> { const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const value = await services.repository.mutate((state) => { state.settings[group] = { ...(isRecord(state.settings[group]) ? state.settings[group] : {}), ...body }; return structuredClone(state.settings[group]); }); return reply.send(ok(redact ? withoutSecretFields(value) : value, message, null)); }
+async function patchSettingsGroup(request: FastifyRequest, reply: FastifyReply, services: HandlerServices, group: string, message: string, user: CurrentUser, redact = false): Promise<unknown> { const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const value = await services.repository.mutate((state) => { applySettingsGroup(state, group, body, user); return structuredClone(state.settings[group]); }); return reply.send(ok(redact ? withoutSecretFields(value) : value, message, null)); }
+
+function applySettingsGroup(state: RepositoryState, group: string, body: Record<string, unknown>, user: CurrentUser): void {
+  if (Object.hasOwn(body, "runtimeApprovalPolicy")) {
+    if (group !== "rbac") throw new HandlerFailure(422, "Runtime approval policy belongs to RBAC settings");
+    updateRuntimeApprovalPolicy(state, user, body.runtimeApprovalPolicy);
+  }
+  const { runtimeApprovalPolicy: _protectedPolicy, ...ordinary } = body;
+  state.settings[group] = { ...(isRecord(state.settings[group]) ? state.settings[group] : {}), ...ordinary };
+}
 
 /*******************************************************************************
  * Function: listNotifications

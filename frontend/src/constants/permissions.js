@@ -7,6 +7,7 @@ export const PERMISSIONS = {
   WORKFLOW_READ_OWN: "workflow:read_own",
   WORKFLOW_RUN_OWN: "workflow:run_own",
   EXECUTION_READ_OWN: "execution:read_own",
+  EXECUTION_APPROVE: "execution:approve",
   USER_MANAGE: "user:manage",
   SETTINGS_MANAGE: "settings:manage",
   PROVIDER_MANAGE: "provider:manage",

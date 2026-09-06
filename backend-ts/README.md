@@ -1,5 +1,7 @@
 # TypeScript backend port
 
+Exact runtime approval records now use protected scoped checkpoints, immutable transaction context, current independent-principal authority and once-only decision acknowledgement. Minimum review is available through the existing execution detail query; approval alone never resumes through a model. Normal workers do not produce these waits yet, the current producer binds a reviewed non-collection read checkpoint, and safe effect admission/outbox/resume/email/scheduling remain required. See [approval contracts, verification and next integration](../docs/EXACT_RUNTIME_APPROVAL_FOUNDATION_2026-10-06.md).
+
 Structured canvas `moveNode` commands now preserve complete condition/collection/return subtrees, reject descendant/scope/no-op targets and use the existing current-role/revision/hash validator/history gates. Broken references stay intact in blocked drafts; moves never publish or run. See [structured placement and actual Firestore restart evidence](../docs/STRUCTURED_CANVAS_PLACEMENT_2026-10-06.md).
 
 Saved undo/redo and full-draft restoration use immutable server version identities, current editor/revision/hash checks and revalidation. Normal commands, legacy YAML replacement and saved-version restoration share the history helper and invalidate run readiness. A lost save acknowledgment is reported as unconfirmed, never assumed unchanged or retried. See [saved history, actual Firestore restart/fault evidence and remaining goals](../docs/DRAFT_EDIT_HISTORY_AND_RECOVERY_2026-10-06.md).

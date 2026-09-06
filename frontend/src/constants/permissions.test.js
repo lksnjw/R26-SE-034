@@ -12,6 +12,7 @@ describe("permission constants", () => {
       "workflow:read_own",
       "workflow:run_own",
       "execution:read_own",
+      "execution:approve",
       "settings:manage",
       "provider:manage",
       "registry:read",

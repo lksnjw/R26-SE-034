@@ -43,6 +43,14 @@ export const executionService = {
   async get(id, options = {}) {
     return normalizeExecution(unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}`, options)));
   },
+  async getApproval(id) {
+    const value = unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}`, { params: { view: "approval" } }));
+    if (value?.id !== id || value?.runtimeApproval?.profile !== "runtime-approval/v1" || !["PENDING", "APPROVED", "REJECTED", "CONSUMED"].includes(value.runtimeApproval.state) ||
+        !Number.isSafeInteger(value.runtimeApproval.version) || value.runtimeApproval.version < 1 || !/^sha256:[a-f0-9]{64}$/.test(value.runtimeApproval.reviewHash) ||
+        typeof value.runtimeApproval.canDecide !== "boolean" || value.runtimeApproval.canResume !== false || !value.runtimeApproval.arguments || typeof value.runtimeApproval.arguments !== "object" || Array.isArray(value.runtimeApproval.arguments))
+      throw new Error("Exact transaction review is unavailable. Reload before deciding.");
+    return value;
+  },
 /*******************************************************************************
  * Function: getLogs
  *
@@ -99,17 +107,17 @@ export const executionService = {
  *
  * Performs the approve operation on the application for the execution service module.
  ******************************************************************************/
-  async approve(id, note = "") {
-    // Legacy approval resume currently returns unavailable until the governed
-    // durable checkpoint executor is implemented. Never imply LLM approval.
-    return normalizeExecution(unwrap(await apiClient.post(`/executions/${id}/approve`, { note }, { timeout: 300000 })));
+  async approve(id, command) {
+    if (!command || typeof command !== "object") throw new Error("An exact transaction review is required; a note is not approval.");
+    return unwrap(await apiClient.post(`/executions/${encodeURIComponent(id)}/approve`, command));
   },
 /*******************************************************************************
  * Function: reject
  *
  * Performs the reject operation on the application for the execution service module.
  ******************************************************************************/
-  async reject(id, reason = "") {
-    return normalizeExecution(unwrap(await apiClient.post(`/executions/${id}/reject`, { reason })));
+  async reject(id, command) {
+    if (!command || typeof command !== "object") throw new Error("An exact transaction review is required before rejection.");
+    return unwrap(await apiClient.post(`/executions/${encodeURIComponent(id)}/reject`, command));
   },
 };

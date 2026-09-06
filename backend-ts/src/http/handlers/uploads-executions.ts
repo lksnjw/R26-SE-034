@@ -12,6 +12,8 @@ import type { RouteDefinition } from "../generated-routes.js";
 import { canReadExecution } from "../execution-scope.js";
 import { requestTraceId } from "../../trace/request-trace.js";
 import { runWorkflowFor, resumeWorkflowApproval } from "../app.js";
+import { decideRuntimeApproval } from "../../runner/runtime-approvals.js";
+import { assertCurrentRunController } from "../../runner/read-checkpoints.js";
 import {
   appendAudit,
   bodyRecord,
@@ -386,12 +388,14 @@ async function approveExecution(
   user: CurrentUser,
   services: HandlerServices,
 ): Promise<unknown> {
+  if (await services.repository.read(state => Boolean(state.executions[requestParam(request, "id")]?.runtimeApprovalSecret))) {
+    const decision = await decideRuntimeApproval(services.repository, requestParam(request, "id"), user, request.body, "APPROVED");
+    return reply.send(ok(decision, "Exact approval recorded, not execution. Safe effect resume/outbox dispatch remains unavailable.", null));
+  }
   const execution = await requireExecution(requestParam(request, "id"), user, services);
   const body = bodyRecord(request);
   const note = body !== null ? stringValue(body.note) : "";
-  // Resumes the self-healing agent past the checkpoint it stopped at — the
-  // LLM continues the remaining steps knowing this was approved, rather than
-  // this endpoint just flipping a status flag on an already-finished run.
+  // Legacy decisions cannot authorize exact arguments or resume through a model.
   return resumeWorkflowApproval(execution, note, request, reply, user, services);
 }
 
@@ -406,15 +410,22 @@ async function rejectExecution(
   user: CurrentUser,
   services: HandlerServices,
 ): Promise<unknown> {
+  if (await services.repository.read(state => Boolean(state.executions[requestParam(request, "id")]?.runtimeApprovalSecret))) {
+    const decision = await decideRuntimeApproval(services.repository, requestParam(request, "id"), user, request.body, "REJECTED");
+    return reply.send(ok(decision, "Exact transaction rejected; its approval checkpoint did not dispatch", null));
+  }
   const execution = await requireExecution(requestParam(request, "id"), user, services);
   if (execution.status !== "AWAITING_APPROVAL")
     throw new HandlerFailure(409, "This execution is not awaiting approval");
   const body = bodyRecord(request);
   const reason = body !== null ? stringValue(body.reason) : "Rejected by user";
-  const updated = await services.repository.mutate((state) => {
+  const updated = await services.repository.mutateExecution(execution.id, (state) => {
     const item = state.executions[execution.id];
     if (item === undefined) throw new HandlerFailure(404, "Execution not found");
+    try { assertCurrentRunController(state, item, user.id, user.role); } catch { throw new HandlerFailure(403, "Current execution controller authority is required"); }
+    if (item.status !== "AWAITING_APPROVAL" || !item.pendingApproval) throw new HandlerFailure(409, "Approval checkpoint changed");
     item.status = "FAILED";
+    item.completedAt = now(); item.durationMs = Math.max(0, Date.parse(item.completedAt) - Date.parse(item.startedAt));
     item.failure = { failureCategory: "REJECTED", failedStepId: item.pendingApproval?.stepId ?? "approval", failedToolName: "human_approval", toolWasCalled: false };
     delete item.pendingApproval;
     appendAudit(state, user, "execution.rejected", "execution", item.id, null, { status: item.status, reason }, request);

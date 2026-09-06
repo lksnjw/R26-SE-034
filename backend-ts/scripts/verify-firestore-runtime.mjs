@@ -22,6 +22,9 @@ import { exactBridgeName, bridgeTransportSchema } from "../src/tools/erpbridge-c
 import { capabilityContractHash, admissionAuthorizer, observeCapabilities, reviewCapability } from "../src/registry/capability-admission.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
+import { requestRuntimeApproval, runtimeApprovalPolicyHash, consumeRuntimeApproval } from "../src/runner/runtime-approvals.js";
+import { newReadProgress } from "../src/runner/read-checkpoints.js";
+import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.js";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -230,6 +233,52 @@ try {
   assert.equal(canvasUndo.version, 7); assert.equal(canvasUndo.yaml, canvasOriginal.yaml);
   assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsBeforeOwner + 1); assert.equal(canvasUndo.publishedVersion, 0);
   log("normal Firestore whole-collection canvas move retained body/configuration and broken references as a blocked saved draft; restart and explicit undo preserved exact original content without publication, SDK or model calls");
+
+  // Server-only synthetic checkpoint producer, NOT a real effect executor.
+  // Decision/review/configuration requests use the ordinary authenticated API.
+  const callsBeforeApproval = calls.length, modelsBeforeApproval = models.length;
+  const approvalRunId = `approval_${randomUUID()}`, approvalAttemptId = `attempt_${randomUUID()}`;
+  await repository.mutate(state => {
+    state.roles.approval_fixture = { id: "approval_fixture", name: "Fixture approver", description: "Review only", permissions: ["execution:approve"], createdAt: new Date().toISOString() };
+    state.users.reviewer = { ...state.users.owner, id: "reviewer", name: "reviewer", email: "reviewer@example.test", roleId: "approval_fixture" };
+    const original = structuredClone(state.executions[read.data.id]);
+    state.executions[approvalRunId] = { ...original, id: approvalRunId, status: "RUNNING", completedAt: null, failure: undefined, stepOutputs: {}, finalOutput: undefined,
+      agentSummary: undefined, workflowSnapshot: { ...original.workflowSnapshot, input: { id: "approval-fixture" } }, readProgress: newReadProgress(repository) };
+    state.executions[approvalRunId].readProgress.attempts.lookup = { id: approvalAttemptId, nodeId: "lookup", stepIndex: 0, status: "PREPARING", startedAt: new Date().toISOString() };
+  });
+  await request("PATCH", "/api/settings/rbac", { enabled: false, runtimeApprovalPolicy: { profile: "runtime-approval-policy/v1", baseRevision: 0, enabled: true,
+    approverRoleIds: ["approval_fixture"], ttlSeconds: 300, separationOfDuties: true } }, 200);
+  const approvalBinding = await repository.readAuthoritative(state => {
+    const compilation = state.executions[approvalRunId].workflowSnapshot.compilation, node = state.versions.single.findLast(item => item.artifactState === "PUBLISHED").compiledRead.plan.ir.root.nodes[0];
+    const pin = node.capability.admission, revision = state.capabilityRevisions[pin.revisionId];
+    return { executionId: approvalRunId, workflowId: "single", nodeId: "lookup", invocationId: approvalAttemptId, operationKey: `operation_${randomUUID()}`,
+      sourceHash: compilation.sourceHash, semanticHash: compilation.semanticHash, connectionId: pin.connectionId, connectionBinding: revision.connectionBinding, capabilityId: pin.capabilityId,
+      capabilityRevision: pin.revisionId, admissionVersion: pin.admissionVersion, contractHash: pin.contractHash, argumentHash: resolvedParameterHashBytes(canonicalJSONBytes({ id: "approval-fixture" })),
+      requesterId: "owner", requesterRoleId: "role_admin", workerEpoch: 1, policyHash: runtimeApprovalPolicyHash(state) };
+  });
+  await requestRuntimeApproval(repository, approvalRunId, approvalBinding, { id: "approval-fixture" }, "Review exact synthetic read checkpoint; no effect executor");
+  const approvalView = (await request("GET", `/api/executions/${approvalRunId}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.deepEqual(approvalView.arguments, { id: "approval-fixture" }); assert.equal(approvalView.canDecide, true); assert.equal(approvalView.canResume, false);
+  assert.equal(approvalView.toolName, tool.name); assert.equal(approvalView.remoteToolName, exactBridgeName(tool));
+  await request("GET", `/api/executions/${approvalRunId}`, undefined, 404, "reviewer"); await request("GET", `/api/executions/${approvalRunId}/logs`, undefined, 403, "reviewer");
+  const approvalCommand = { approvalId: approvalView.id, baseVersion: approvalView.version, reviewHash: approvalView.reviewHash, decisionKey: "firestore-exact-approval-fixture-0001", note: "Synthetic independent review" };
+  await request("POST", `/api/executions/${approvalRunId}/approve`, approvalCommand, 403, "owner");
+  const approvalTransaction = persistence.records.db.runTransaction.bind(persistence.records.db); let loseApprovalACK = true;
+  persistence.records.db.runTransaction = async (callback, options) => { const result = await approvalTransaction(callback, options); if (loseApprovalACK) { loseApprovalACK = false; throw new Error("Synthetic approval post-COMMIT ACK lost"); } return result; };
+  try { await request("POST", `/api/executions/${approvalRunId}/approve`, approvalCommand, 503, "reviewer"); } finally { persistence.records.db.runTransaction = approvalTransaction; }
+  const fencedReview = await app.inject({ method: "GET", url: `/api/executions/${approvalRunId}?view=approval`, headers: headers("reviewer") }); assert(fencedReview.statusCode >= 400);
+  await repository.recoverPersistenceState();
+  const approvedReview = (await request("GET", `/api/executions/${approvalRunId}?view=approval`, undefined, 200, "reviewer")).data;
+  assert.equal(approvedReview.status, "BLOCKED"); assert.equal(approvedReview.runtimeApproval.state, "APPROVED"); assert.equal(approvedReview.runtimeApproval.canDecide, false);
+  const approvalEvents = (await repository.snapshot()).executionEvents[approvalRunId].length;
+  assert.equal((await request("POST", `/api/executions/${approvalRunId}/approve`, approvalCommand, 200, "reviewer")).data.replayed, true);
+  assert.equal((await repository.snapshot()).executionEvents[approvalRunId].length, approvalEvents);
+  await stop(); await start(await openApplicationRepository(config));
+  assert.equal((await request("GET", `/api/executions/${approvalRunId}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval.state, "APPROVED");
+  await repository.mutateExecution(approvalRunId, state => consumeRuntimeApproval(state, approvalRunId, approvalBinding, { id: "approval-fixture" }, "fixture-dispatch-intent-not-an-outbox"));
+  await assert.rejects(repository.mutateExecution(approvalRunId, state => consumeRuntimeApproval(state, approvalRunId, approvalBinding, { id: "approval-fixture" }, "second-intent")));
+  assert.equal(calls.length, callsBeforeApproval); assert.equal(models.length, modelsBeforeApproval);
+  log("actual Firestore exact approval review/decision POST-COMMIT ACK loss, authoritative reconciliation, original-key replay, fresh restart and once-only private consumption preserved immutable review; zero additional SDK/model calls and no effect resume");
 
   const entered = barrier(), release = barrier(); sdkHook = async args => { if (args.id === "cancel-a") { entered.release(); await release.promise; } };
   const cancelRun = (await request("POST", "/api/workflows/collection/run", { mode: "async-read", idempotencyKey: "firestore-runtime-cancel-fixture-0001", input: { rows: ["cancel-a", "must-not-call"] } }, 202)).data.id;

@@ -1,4 +1,5 @@
-import { Link, useParams } from "react-router-dom";
+import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
+import ExecutionApprovalReviewPage from "./ExecutionApprovalReviewPage";
 import ExecutionStatus from "../../components/executions/ExecutionStatus";
 import PendingApprovalCard from "../../components/executions/PendingApprovalCard";
 import ExecutionOutputPanel from "../../components/executions/ExecutionOutputPanel";
@@ -21,6 +22,14 @@ import { projectExecutionIterationEvidence } from "../../utils/iterationEvidence
  ******************************************************************************/
 function ExecutionDetailPage() {
   const { executionId } = useParams();
+  const [query] = useSearchParams();
+  const { hasAny } = usePermissions();
+  if (query.get("view") === "approval") return <ExecutionApprovalReviewPage executionId={executionId} />;
+  if (!hasAny(["workflow:read", "execution:read_own"]) && hasAny(["execution:approve"])) return <Navigate replace to={`/executions/${encodeURIComponent(executionId)}?view=approval`} />;
+  return <ExecutionRunDetail executionId={executionId} />;
+}
+
+function ExecutionRunDetail({ executionId }) {
   const { execution, logs, timeline, healingReport, loading, error, reload, monitor } = useExecution(executionId);
   const { hasAny } = usePermissions();
 
@@ -43,7 +52,7 @@ function ExecutionDetailPage() {
         <ExecutionStatus status={execution.status} failure={execution.failure} />
       </section>
       <ExecutionRunControls key={execution.id} execution={execution} monitor={monitor} canControl={hasAny(["workflow:run", "workflow:run_own"])} onChanged={reload} />
-      {execution.status === "AWAITING_APPROVAL" ? (
+      {execution.status === "AWAITING_APPROVAL" || execution.hasRuntimeApproval ? (
         <PendingApprovalCard execution={execution} onChanged={reload} />
       ) : null}
       {execution.failure ? <GovernanceBlockPanel failure={execution.failure} /> : null}

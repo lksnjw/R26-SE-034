@@ -5,7 +5,7 @@ import type { ExecutionCheckpoint } from "../repository/execution-transaction.js
 export type RuntimeRecord = { profile: "runtime-record/v1"; path: string[]; value: unknown };
 export const recordKey = (path: string[]) => JSON.stringify(path);
 const runtimeFields = ["executions", "readJobs", "readContinuations", "timelines", "executionLogs", "executionEvents", "auditLogs"] as const;
-const outputFields = [["attempts", "readProgress", "attempts"], ["receipts", "iterationProgress", "receipts"], ["outputs", null, "stepOutputs"], ["values", null, "valueOutputs"]] as const;
+const outputFields = [["attempts", "readProgress", "attempts"], ["receipts", "iterationProgress", "receipts"], ["outputs", null, "stepOutputs"], ["values", null, "valueOutputs"], ["runtime-approvals", "runtimeApprovalSecret", "records"]] as const;
 const arrayFields = [["timelines", "timeline-entry"], ["executionLogs", "log-entry"], ["executionEvents", "event-entry"]] as const;
 const object = (value: unknown): Record<string, unknown> => { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid normalized runtime object"); return value as Record<string, unknown>; };
 const put = (target: Record<string, unknown>, key: string, value: unknown) => Object.defineProperty(target, key, { value, configurable: true, enumerable: true, writable: true });

@@ -14,10 +14,16 @@ import { ProviderRuntime } from "../src/providers/runtime.ts";
 import { hashPassword } from "../src/authn/password.ts";
 import { newReadProgress, appendExecutionEvent } from "../src/runner/read-checkpoints.ts";
 import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.ts";
+import { requestRuntimeApproval, runtimeApprovalPolicyHash, updateRuntimeApprovalPolicy } from "../src/runner/runtime-approvals.ts";
+import { compileReadWorkflow, readCompilationReceipt } from "../src/workflows/compiled-read.ts";
+import { capabilityContractHash } from "../src/registry/capability-admission.ts";
+import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.ts";
 
 const fixtureWorker = process.env.WORKSPACE_QA_READ_STATE === "worker";
 const collectionCanvas = process.env.WORKSPACE_QA_CANVAS === "collection";
-const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "local-workspace-qa-only-not-production-secret", STORAGE_DRIVER: "memory", MCP_MODE: "mock", CORS_ORIGINS: "http://localhost:5173",
+const approvalFixture = process.env.WORKSPACE_QA_APPROVAL === "1";
+if (approvalFixture && (collectionCanvas || fixtureWorker)) throw new Error("Approval QA uses only its isolated memory-only checkpoint, without a worker or collection mode");
+const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "local-workspace-qa-only-not-production-secret", STORAGE_DRIVER: "memory", MCP_MODE: "mock", CORS_ORIGINS: "http://localhost:5173,http://localhost:5191",
   ...(fixtureWorker ? { MCP_TRANSPORT: "erpbridge-mcp", ERPBRIDGE_BASE_URL: "https://fixture.invalid", ERPBRIDGE_MCP_TOKEN: "fixture-only", ERPBRIDGE_ROLE_MAP: '{"Platform Admin":"admin"}' } : {}) });
 const repository = new Repository(null);
 const createdAt = new Date().toISOString();
@@ -63,6 +69,33 @@ await repository.mutate((state) => {
   ] };
 });
 const registries = await RegistryService.load(resolve("tests/fixtures/chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
+if (approvalFixture) {
+  const tool = registries.snapshot().tools.find(item => item.name === "demo.echo"), contractHash = capabilityContractHash(tool);
+  const approvalYAML = stringify({ name: "LOCAL exact transaction review", trigger: { type: "manual" }, steps: [{ id: "review", action: tool.name, parameters: { value: "Synthetic invoice report for manager@example.test. Not sent." } }] });
+  const pin = { connectionId: "erpbridge-default", capabilityId: "qa-capability", revisionId: "qa-revision", admissionVersion: 1, contractHash };
+  const plan = compileReadWorkflow(approvalYAML, [tool], "Platform Admin", new Map([[tool.tool_id, pin]])), compilation = readCompilationReceipt(plan, registries.hash(), "PUBLICATION", "reviewed");
+  const actor = await repository.effectiveUser("qa");
+  await repository.mutate(state => {
+    state.users.qa_requester = { ...state.users.qa, id: "qa_requester", name: "Synthetic requester", email: "requester@example.test" };
+    state.roles.qa_review_only = { id: "qa_review_only", name: "Review only", description: "LOCAL fixture only", permissions: ["execution:approve"], createdAt };
+    state.users.qa_reviewer = { ...state.users.qa, id: "qa_reviewer", name: "Local reviewer", email: "reviewer@example.test", roleId: "qa_review_only" };
+    state.passwordHashes.qa_reviewer = passwordHash;
+    updateRuntimeApprovalPolicy(state, actor, { profile: "runtime-approval-policy/v1", baseRevision: 0, enabled: true, approverRoleIds: ["role_admin", "qa_review_only"], ttlSeconds: 3600, separationOfDuties: true });
+    state.workflows.qa_approval = { ...state.workflows.qa_report, id: "qa_approval", name: "LOCAL exact transaction review", owner: { id: "qa_requester", name: "Synthetic requester" }, yaml: approvalYAML, steps: 1, publishedVersion: 1 };
+    state.versions.qa_approval = [{ id: "qa-publication", artifactState: "PUBLISHED", version: 1, yaml: approvalYAML, compiledRead: { plan, receipt: compilation, verifiedRole: "Platform Admin", compiledAt: createdAt } }];
+    state.capabilityAdmissions[pin.capabilityId] = { ...pin, state: "AVAILABLE", revisionId: pin.revisionId, version: 1 };
+    state.capabilityRevisions[pin.revisionId] = { capabilityId: pin.capabilityId, connectionId: pin.connectionId, connectionBinding: "b".repeat(64), contractHash, definition: structuredClone(tool) };
+    state.executions.qa_exact_approval = { id: "qa_exact_approval", workflowId: "qa_approval", workflowName: "LOCAL exact transaction review", startedBy: state.workflows.qa_approval.owner,
+      status: "RUNNING", startedAt: createdAt, completedAt: null, durationMs: 0, tokens: { input: 0, output: 0, total: 0 }, costUsd: 0,
+      workflowSnapshot: { version: 1, yaml: approvalYAML, contentHash: plan.sourceHash, registryHash: registries.hash(), input: {}, executionProfile: "sequential-read-v1", compilation }, readProgress: newReadProgress(repository) };
+    state.executions.qa_exact_approval.readProgress.attempts.review = { id: "qa-review-attempt", nodeId: "review", stepIndex: 0, status: "PREPARING", startedAt: createdAt };
+  });
+  await requestRuntimeApproval(repository, "qa_exact_approval", { executionId: "qa_exact_approval", workflowId: "qa_approval", nodeId: "review", invocationId: "qa-review-attempt", operationKey: "qa-operation",
+    sourceHash: plan.sourceHash, semanticHash: plan.semanticHash, connectionId: pin.connectionId, connectionBinding: "b".repeat(64), capabilityId: pin.capabilityId, capabilityRevision: pin.revisionId,
+    admissionVersion: 1, contractHash, argumentHash: resolvedParameterHashBytes(canonicalJSONBytes({ value: "Synthetic invoice report for manager@example.test. Not sent." })),
+    requesterId: "qa_requester", requesterRoleId: "role_admin", workerEpoch: 1, policyHash: await repository.read(state => runtimeApprovalPolicyHash(state)) },
+    { value: "Synthetic invoice report for manager@example.test. Not sent." }, "LOCAL fixture: independent exact review. No ERP or email executor is connected.");
+}
 const validator = new RegistryValidator(registries, repository);
 const executor = new Executor(new ToolRegistry(), validator);
 const providerRuntime = new ProviderRuntime(repository, executor, async (_url, init) => {
