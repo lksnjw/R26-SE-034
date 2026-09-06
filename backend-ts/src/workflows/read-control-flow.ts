@@ -81,8 +81,8 @@ function references(binding: ReadBinding): ReadReference[] {
 
 /** Every action has one structural owner. Branch-local outputs cannot escape
  * to siblings/parent scope; an explicit merge primitive is still required. */
-export function validateReadControlFlow(root: ReadSequence, ir: ReadIR, outputSchemas: ReadonlyMap<string, Record<string, unknown>>, inputSchemas: ReadonlyMap<string, Record<string, unknown>> = new Map()): { issues: string[]; scopes: Map<string, Set<string>>; branchScopes: Map<string, { then: Set<string>; else: Set<string> }> } {
-  const issues: string[] = [], scopes = new Map<string, Set<string>>(), branchScopes = new Map<string, { then: Set<string>; else: Set<string> }>(), seen = new Set(ir.root.nodes.map(node => node.id));
+export function validateReadControlFlow(root: ReadSequence, ir: ReadIR, outputSchemas: ReadonlyMap<string, Record<string, unknown>>, inputSchemas: ReadonlyMap<string, Record<string, unknown>> = new Map()): { issues: string[]; scopes: Map<string, Set<string>>; branchScopes: Map<string, { then: Set<string>; else: Set<string> }>; collectionScopes: Map<string, { items: Set<string>; collect: Set<string> }> } {
+  const issues: string[] = [], scopes = new Map<string, Set<string>>(), branchScopes = new Map<string, { then: Set<string>; else: Set<string> }>(), collectionScopes = new Map<string, { items: Set<string>; collect: Set<string> }>(), seen = new Set(ir.root.nodes.map(node => node.id));
   const definitions = new Map(ir.root.nodes.map(node => [node.id, node]));
   const order = actionOrder(root);
   if (order.length !== ir.root.nodes.length || order.some((id, index) => id !== ir.root.nodes[index]?.id) || new Set(order).size !== order.length)
@@ -124,6 +124,7 @@ export function validateReadControlFlow(root: ReadSequence, ir: ReadIR, outputSc
           const bodySchemas = new Map(localSchemas);
           bodySchemas.set(node.id, { type: "object", properties: { item: node.items.schema.items, index: { type: "integer" } }, required: ["item", "index"], additionalProperties: false });
           const bodyAvailable = visit(node.body, new Set([...available, node.id]), depth + 1, bodySchemas, true);
+          collectionScopes.set(node.id, { items: new Set(available), collect: new Set(bodyAvailable) });
           currentSchemas = bodySchemas;
           for (const ref of references(node.collect.value)) checkReference(ref, bodyAvailable, `Collection result ${node.id}`);
           checkBinding(node.collect.value, node.collect.schema, `Collection result ${node.id}`, issues, ref => schemaAt(ref.source === "workflowInput" ? ir.inputSchema : bodySchemas.get(ref.nodeId!), ref.path));
@@ -152,7 +153,7 @@ export function validateReadControlFlow(root: ReadSequence, ir: ReadIR, outputSc
   visit(root, new Set(), 0);
   const cost = (block: ReadSequence): number => block.nodes.reduce((total, node) => total + (node.kind === "foreach" ? 1 + node.maxItems * (1 + cost(node.body)) : node.kind === "if" ? 1 + cost(node.then) + cost(node.else) : 1), 0);
   if (cost(root) > 2000) issues.push("Collection expansion exceeds the 2000-visit declared execution budget");
-  return { issues: [...new Set(issues)], scopes, branchScopes };
+  return { issues: [...new Set(issues)], scopes, branchScopes, collectionScopes };
 }
 
 export type ReadValueReceipt = { kind: "merge" | "return"; status: "DONE" | "FAILED"; stepIndex: number; completedAt: string };

@@ -15,3 +15,8 @@ test("uncertain and answered states never imply business completion or automatic
   expect(screen.getByText(/remote work was rolled back/)).toBeTruthy(); expect(screen.getByText(/Outcome unconfirmed/)).toBeTruthy(); expect(screen.getByText(/lost on server restart/)).toBeTruthy(); expect(screen.queryByRole("button", { name: "Cancel request" })).toBeNull();
   rerender(<ChatOperationProgress operation={{ status: "ANSWERED", stage: "ANSWERED", persistence: "durable", attempts: [] }} />); expect(screen.getByText(/not proof of email delivery/)).toBeTruthy();
 });
+
+test("saved proposal progress describes its original source without prescribing a stale apply action", () => {
+  render(<ChatOperationProgress operation={{ status: "ANSWERED", stage: "ANSWERED", persistence: "durable", nodeContext: { nodeId: "each", baseVersion: 1 }, artifactRefs: [{ type: "node-proposal", id: "proposal-one" }] }} />);
+  expect(screen.getByText(/source draft v1/)).toBeTruthy(); expect(screen.getByText(/current review status is shown beside the workflow/)).toBeTruthy(); expect(screen.queryByText(/choose Apply to draft/)).toBeNull();
+});

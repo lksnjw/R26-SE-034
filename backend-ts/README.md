@@ -1,5 +1,7 @@
 # TypeScript backend port
 
+Selected collection, condition and return chat edits use dedicated tools-free patch contracts; actions retain their own patch contract. Saved proposals and draft apply/readiness now include pure structural compiler validation. Exact explicit apply preserves unrelated nodes and creates a nonrunnable draft, never automatic publication/execution. See [collection-node contract, actual Firestore persistence evidence and remaining full-goal gates](../docs/COLLECTION_NODE_CHAT_AND_DRAFT_VALIDATION_2026-10-06.md).
+
 This folder contains the isolated TypeScript backend. It listens on `:8081` by default, while the reference Go backend can continue listening on `:8080`. The TypeScript runtime does not import or start the Go backend.
 
 ## Run

@@ -33,6 +33,59 @@ async function open(props = {}) {
 }
 async function selectNode() { fireEvent.click(screen.getByRole("button", { name: /01 first/ })); }
 
+function collectionRecord() {
+  const s = iterationFixture();
+  return { ...record, yaml: s.yaml, contentHash: s.sourceHash, authoring: { profile: "read-authoring/v1", controlFlow: s.flow, collections: [{ nodeId: "each", itemSources: [], collectSources: [] }] } };
+}
+
+test("selecting a collection owner forwards its exact saved scope to main chat and exposes a mobile focus action", async () => {
+  const saved = collectionRecord(), onNodeContext = jest.fn(), onFocusChat = jest.fn(); workflowService.readiness.mockResolvedValue(saved);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit onNodeContext={onNodeContext} onFocusChat={onFocusChat} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Select collection each" }));
+  await waitFor(() => expect(onNodeContext).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "each", label: "Collection each", workflowId: "report", sessionId: "chat", version: 1, contentHash: saved.contentHash })));
+  expect(screen.getByText(/This collection is selected in the main chat/)).toBeTruthy(); expect(screen.queryByRole("textbox", { name: "Selected node prompt" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Edit this collection in chat" })); expect(onFocusChat).toHaveBeenCalledTimes(1);
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("standalone collection owner prompt uses the saved async chat node contract without edits or legacy calls", async () => {
+  const saved = collectionRecord(); workflowService.readiness.mockResolvedValue(saved);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);
+  fireEvent.click(await screen.findByRole("button", { name: "Select collection each" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Selected node prompt" }), { target: { value: "Limit this collection to two items" } });
+  fireEvent.click(screen.getByRole("button", { name: "Propose change" }));
+  await waitFor(() => expect(send).toHaveBeenCalledWith("Limit this collection to two items", undefined, { nodeContext: { workflowId: "report", nodeId: "each", baseVersion: 1, baseHash: saved.contentHash } }));
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.proposeNode).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("saved collection-owner proposal has a readable preview and applies only its exact partial draft command", async () => {
+  const saved = collectionRecord(), change = { ...proposal, nodeId: "each", baseHash: saved.contentHash, before: { maxItems: 3 }, after: { maxItems: 2 }, command: { type: "updateCollection", nodeId: "each", patch: { maxItems: 2 } } };
+  workflowService.readiness.mockResolvedValue(saved);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit savedProposals={[change]} />);
+  const preview = await screen.findByRole("region", { name: "Node change preview" });
+  expect(preview.querySelector("pre")).toBeNull(); expect(within(preview).getByText("2")).toBeTruthy(); expect(workflowService.command).not.toHaveBeenCalled();
+  fireEvent.click(within(preview).getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", { version: 1, contentHash: saved.contentHash, proposalId: change.id }, change.command));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("read-only collection selection cannot activate chat edit scope or collection mutation controls", async () => {
+  workflowService.readiness.mockResolvedValue(collectionRecord()); const onNodeContext = jest.fn();
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" onNodeContext={onNodeContext} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Select collection each" }));
+  expect(screen.getByRole("complementary", { name: "Selected collection details" })).toBeTruthy(); expect(onNodeContext).toHaveBeenLastCalledWith(null);
+  expect(screen.queryByRole("textbox", { name: "Selected node prompt" })).toBeNull(); expect(screen.queryByRole("button", { name: "Preview collection edit" })).toBeNull(); expect(workflowService.command).not.toHaveBeenCalled();
+});
+
+test("a collection proposal exposes compiler errors before applying a blocked draft", async () => {
+  const saved = collectionRecord(), change = { ...proposal, nodeId: "each", baseHash: saved.contentHash, before: { maxItems: 3 }, after: { maxItems: 2 }, command: { type: "updateCollection", nodeId: "each", patch: { maxItems: 2 } }, validation: { passed: false, errors: ["Collection result each has an unavailable reference"] } };
+  workflowService.readiness.mockResolvedValue(saved);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit savedProposals={[change]} />);
+  const preview = await screen.findByRole("region", { name: "Node change preview" });
+  expect(within(preview).getByText(/may only be saved as a blocked draft/)).toBeTruthy(); expect(within(preview).getByText("Proposal issues (1)")).toBeTruthy();
+  expect(within(preview).getByText("Collection result each has an unavailable reference")).toBeTruthy(); expect(workflowService.command).not.toHaveBeenCalled();
+});
+
 test("matching collection run answers appear separately beside their node and do not change chat edit scope", async () => {
   const s = iterationFixture(), context = jest.fn();
   workflowService.readiness.mockResolvedValue({ ...record, yaml: s.yaml, contentHash: s.sourceHash, authoring: { profile: "read-authoring/v1", controlFlow: s.flow } });

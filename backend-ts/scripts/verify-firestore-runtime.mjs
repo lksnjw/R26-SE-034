@@ -21,7 +21,7 @@ import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js"
 import { exactBridgeName, bridgeTransportSchema } from "../src/tools/erpbridge-contract.js";
 import { capabilityContractHash, admissionAuthorizer, observeCapabilities, reviewCapability } from "../src/registry/capability-admission.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
-import { workflowContentHash } from "../src/parser/workflow.js";
+import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -71,8 +71,9 @@ async function start(repositoryValue) {
       } } });
   const providerRuntime = new ProviderRuntime(repository, executor, async (url, init) => {
     assert.equal(url, "https://provider.fixture.example.test/v1/chat/completions"); const request = JSON.parse(String(init.body)); models.push(request.model); await modelHook?.(request, init.signal);
-    const node = request.messages[0].content.includes("ONE SELECTED NODE PATCH"), answered = request.messages.some(message => message.role === "tool");
-    return Response.json({ choices: [{ finish_reason: node || answered ? "stop" : "tool_calls", message: node ? { content: '{"description":"Reviewable fixture edit"}' } : answered ? { content: "Confirmed fixture invoice CHAT." } : {
+    const node = request.messages[0].content.includes("ONE SELECTED NODE PATCH"), owner = request.messages[0].content.includes("ONE SELECTED COLLECTION PATCH"), answered = request.messages.some(message => message.role === "tool");
+    if (owner) assert.deepEqual(JSON.parse(request.messages[1].content).tools, []);
+    return Response.json({ choices: [{ finish_reason: node || owner || answered ? "stop" : "tool_calls", message: owner ? { content: '{"maxItems":2}' } : node ? { content: '{"description":"Reviewable fixture edit"}' } : answered ? { content: "Confirmed fixture invoice CHAT." } : {
       content: "", tool_calls: [{ id: "fixture-chat-read", type: "function", function: { name: "read", arguments: '{"id":"chat"}' } }],
     } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
   });
@@ -94,7 +95,7 @@ try {
   await repository.mutate(state => {
     for (const id of ["owner", "other"]) state.users[id] = { id, name: id, email: `${id}@example.test`, roleId: "role_admin", permissionOverrides: [], status: "Active", initials: "F", departmentId: null, lastLoginAt: null, createdAt: timestamp };
     state.settings.unrelated = { text: "Preserved domain", private: "synthetic-domain-secret" };
-    for (const [id, yaml] of [["single", sequential], ["collection", collection]]) {
+    for (const [id, yaml] of [["single", sequential], ["collection", collection], ["collection_edit", collection]]) {
       state.workflows[id] = { id, name: id, description: "Synthetic fixture", owner: { id: "owner", name: "owner" }, assignedUserIds: [], status: "PENDING", trigger: { type: "manual" }, steps: 1, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [], canRun: false, createdAt: timestamp, updatedAt: timestamp, yaml, archived: false };
       state.versions[id] = [];
     }
@@ -136,9 +137,29 @@ try {
   assert.equal((await repository.snapshot()).chatOperations[nodeOperation].status, "ANSWERED"); assert.equal(calls.length, callsBeforeNode); assert.equal((await repository.snapshot()).workflows.single.yaml, sequential);
   log("normal saved chat job used its selected model, committed one redacted SDK answer and enforced operation ACL/idempotency; selected-node chat saved a reviewable proposal without applying or dispatching");
 
+  const ownerPayload = { content: "Limit this selected collection to two items", model: "fixture-model-b", delivery: "async-chat", idempotencyKey: "firestore-runtime-owner-fixture-0001",
+    nodeContext: { workflowId: "collection_edit", nodeId: "each", baseVersion: 1, baseHash: workflowContentHash(collection) } };
+  const modelsBeforeOwner = models.length, ownerOperation = (await request("POST", `/api/chat/sessions/${chatId}/messages`, ownerPayload, 202)).data.operation.id;
+  await waitFor(async () => { const op = (await repository.snapshot()).chatOperations[ownerOperation]; return op && !["QUEUED", "RUNNING"].includes(op.status) && op; }, "collection owner proposal");
+  const ownerState = await repository.snapshot(), ownerProposal = ownerState.chats[chatId].messages.at(-1).artifacts.proposal;
+  assert.equal(ownerState.chatOperations[ownerOperation].status, "ANSWERED"); assert.deepEqual(ownerState.chatOperations[ownerOperation].attempts, []);
+  assert.deepEqual(ownerProposal.command, { type: "updateCollection", nodeId: "each", patch: { maxItems: 2 } }); assert.equal(ownerProposal.validation.passed, true);
+  assert.equal(ownerState.workflows.collection_edit.yaml, collection); assert.equal(models.length, modelsBeforeOwner + 1); assert.equal(calls.length, callsBeforeNode);
+  assert.equal((await request("POST", `/api/chat/sessions/${chatId}/messages`, ownerPayload, 202)).data.operation.id, ownerOperation); assert.equal(models.length, modelsBeforeOwner + 1);
+  await request("GET", `/api/chat/operations/${ownerOperation}`, undefined, 404, "other");
+  const applyPayload = { baseVersion: 1, baseHash: workflowContentHash(collection), proposalId: ownerProposal.id, command: ownerProposal.command };
+  const applied = (await request("POST", "/api/workflows/collection_edit/commands", applyPayload, 200)).data;
+  assert.equal(applied.version, 2); assert.equal(applied.canRun, false); assert.equal(applied.publishedVersion, 0);
+  const originalSource = parseWorkflowYAMLStrict(collection), editedSource = parseWorkflowYAMLStrict(applied.yaml);
+  assert.deepEqual(editedSource.steps, originalSource.steps); assert.deepEqual(editedSource.metadata.controlFlow.root.nodes[0], { ...originalSource.metadata.controlFlow.root.nodes[0], maxItems: 2 });
+  await request("POST", "/api/workflows/collection_edit/commands", applyPayload, 409);
+  assert.equal((await repository.snapshot()).chats[chatId].messages.at(-1).artifacts.proposal.status, "APPLIED"); assert.equal(calls.length, callsBeforeNode);
+  log("collection-owner saved chat used its dedicated tools-free patch contract and selected model; exact explicit once-only draft apply preserved body/actions and never published or dispatched");
+
   const saved = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).chats, saved.chats); assert.deepEqual((await repository.snapshot()).executions, saved.executions);
   assert.deepEqual((await repository.snapshot()).versions, saved.versions); assert.equal((await request("GET", `/api/chat/operations/${operationId}`, undefined, 200)).data.operation.status, "ANSWERED");
+  assert.deepEqual((await repository.snapshot()).workflows.collection_edit, saved.workflows.collection_edit); assert.equal((await repository.snapshot()).chats[chatId].messages.at(-1).artifacts.proposal.status, "APPLIED");
   assert.equal(calls.length, callsBeforeNode); log("fresh application repository/HTTP worker startup preserved chats, proposals, versions and confirmed runs without replay");
 
   const entered = barrier(), release = barrier(); sdkHook = async args => { if (args.id === "cancel-a") { entered.release(); await release.promise; } };

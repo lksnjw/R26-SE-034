@@ -1,12 +1,14 @@
 import { useState } from "react";
 import CollectionFields from "./CollectionFields";
 import ReadableValue from "./ReadableValue";
+import NodePrompt from "./NodePrompt";
 const button = "rounded-md px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-40";
-export default function CollectionInspector({ node, canEdit, busy, onPreview, onRemove }) {
+export default function CollectionInspector({ node, canEdit, busy, onPreview, onRemove, sessionId, context, onProposal, sharedChat, onFocusChat, draftStorageKey, authoring }) {
   const [config, setConfig] = useState({ items: node.items, maxItems: node.maxItems, collect: node.collect });
   return <aside aria-label="Selected collection details" className="workspace-reveal mt-5 border-t pt-4"><h4 className="mb-4 text-sm font-semibold">Collection · {node.id}</h4>
-    {canEdit ? <form className="space-y-4" onSubmit={event => { event.preventDefault(); onPreview({ type: "updateCollection", nodeId: node.id, patch: config }, { items: node.items, maxItems: node.maxItems, collect: node.collect }, config); }}><CollectionFields value={config} onChange={setConfig} /><button disabled={busy} className={button}>Preview collection edit</button></form> : <ReadableValue value={config} />}
-    <p className="mt-3 text-[10px] text-gray-500">Manual edits only for the collection owner. Its body actions still support selected-node chat proposals. Durable live iteration and dedicated collection chat patches remain unavailable.</p>
+    {canEdit ? <><form className="space-y-4" onSubmit={event => { event.preventDefault(); onPreview({ type: "updateCollection", nodeId: node.id, patch: config }, { items: node.items, maxItems: node.maxItems, collect: node.collect }, config); }}><CollectionFields value={config} onChange={setConfig} authoring={authoring} /><button disabled={busy} className={button}>Preview collection edit</button></form>
+      {sharedChat ? <div className="mt-4 border-t border-gray-100 pt-4 dark:border-gray-800"><p className="text-xs leading-5 text-gray-500">This collection is selected in the main chat. Change its source list, item limit or collected result; its body and ID stay unchanged.</p>{onFocusChat && <button className={`${button} mt-2 lg:hidden`} disabled={busy} onClick={onFocusChat}>Edit this collection in chat</button>}</div> : sessionId && context && <NodePrompt sessionId={sessionId} context={context} busy={busy} onProposal={onProposal} draftStorageKey={draftStorageKey} />}</> : <ReadableValue value={config} />}
+    <p className="mt-3 text-[10px] text-gray-500">Collection edits are reviewable proposals, not execution. Only confirmed item answers belong to a run. Publication and current ERP permission checks remain separate.</p>
     {canEdit && <><button disabled={busy || node.body.nodes.length > 0} className={`${button} mt-3 text-red-600`} onClick={onRemove}>Remove empty collection…</button>{node.body.nodes.length > 0 && <p className="text-[10px] text-gray-500">Move or remove its contents first; the body is never silently flattened.</p>}</>}
   </aside>;
 }

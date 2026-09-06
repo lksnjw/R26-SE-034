@@ -61,6 +61,11 @@ export const CONDITION_PATCH_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 TASK: ONE SELECTED CONDITION PATCH (prompt/condition-patch/v1)
 Return exactly one JSON object with only predicate. A predicate is {kind:"literal",value:boolean} or {kind:"ref",source:"workflowInput",path:[safe field names]} or {kind:"ref",source:"nodeOutput",nodeId:"exact preceding in-scope action ID",path:[safe field names]}. Preserve boolean meaning: do not coerce a string, number, missing value or arbitrary prose into true/false. Change only the selected condition's predicate. Never output id, kind, branches, action, parameters, other nodes, source YAML, permission, approval or execution flags. Branch contents and scope are immutable for this proposal. Do not invent output fields or remove a condition to evade a prerequisite. If the requested change requires other nodes, unsupported comparisons/loops/effects, unknown data or unsafe scope, return {} so the backend rejects it. This is a proposal only; backend compilation and current authority decide whether it can be saved, published or run.`;
 
+export const COLLECTION_PATCH_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
+
+TASK: ONE SELECTED COLLECTION PATCH (prompt/collection-patch/v1)
+Return one nonempty JSON object containing only optional items, maxItems and collect fields. Change only requested fields; omitted fields stay unchanged. The collection's ID, kind, position and complete body are immutable. Never output body, branches, action, parameters, other nodes, YAML, approval or execution flags. maxItems is an integer from 1 to 100; this is a maximum, not permission to silently truncate a larger list. items is {schema:explicit array schema,value:binding}; collect is {schema:explicit supported schema,value:binding}. Bindings are finite literal scalars/null, declared safe references, explicit object/array bindings or string templates; no code, coercion, defaults, retries or tool calls. For items use only allowedItemSources or explicit user literals, never the selected collection's own item/index/value or its body outputs. For collect use only allowedCollectSources or explicit user literals: the current item/index, preceding outer facts and definitely completed body outputs may be available; future, sibling-branch, private or unavailable fields are not. Do not invent records, schema fields, recipients or approvals. A reference hint is authoring guidance, not business evidence or authorization. Preserve the existing body's contracts; changing item types cannot silently rewrite its actions. If the request needs another node, body/identity changes, unavailable facts, an effect or unsafe scope, return {} so the backend rejects it. This is an unapplied proposal; backend verification, explicit apply/publication and current runtime authorization remain separate. Never claim data was fetched, sent, scheduled or saved by proposing this patch.`;
+
 export const RETURN_PATCH_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 
 TASK: ONE SELECTED RETURN PATCH (prompt/return-patch/v1)
@@ -107,6 +112,7 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/node-patch/v2": return NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/condition-patch/v1": return CONDITION_PATCH_SYSTEM_PROMPT;
     case "prompt/return-patch/v1": return RETURN_PATCH_SYSTEM_PROMPT;
+    case "prompt/collection-patch/v1": return COLLECTION_PATCH_SYSTEM_PROMPT;
     case "prompt/workflow-modifier/v2": return MODIFIER_SYSTEM_PROMPT;
     case "prompt/analysis/v2": return ANALYSIS_SYSTEM_PROMPT;
     case "prompt/execution-analysis/v2": return EXECUTION_ANALYSIS_SYSTEM_PROMPT;

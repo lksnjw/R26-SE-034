@@ -1,8 +1,9 @@
 /** @jest-environment jsdom */
 import React from "react";
-import { expect, test, afterEach } from "@jest/globals";
+import { expect, test, afterEach, jest } from "@jest/globals";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-import WorkflowWorkspaceCanvas from "./WorkflowWorkspaceCanvas";
+jest.unstable_mockModule("./WorkflowWorkspaceEditor", () => ({ default: () => null }));
+const { default: WorkflowWorkspaceCanvas } = await import("./WorkflowWorkspaceCanvas");
 afterEach(() => { cleanup(); sessionStorage.clear(); });
 
 test("canvas is present before generation", () => {
@@ -10,6 +11,11 @@ test("canvas is present before generation", () => {
   expect(screen.getByRole("region", { name: "Workflow canvas" })).toBeTruthy();
   expect(screen.getByText("Your workflow starts here")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /run/i })).toBeNull();
+});
+
+test("saved workflow selector numbers identify conversations' artifacts, not current draft versions", () => {
+  render(<WorkflowWorkspaceCanvas messages={[{ id: "saved", artifacts: { workflowId: "report", yaml: "name: Report\nsteps: []" } }]} />);
+  expect(screen.getByRole("option", { name: "Workflow 1 · report" })).toBeTruthy(); expect(screen.queryByRole("option", { name: "Draft 1 · report" })).toBeNull();
 });
 
 test("selects node parameters and retains draft after non-workflow answer", () => {

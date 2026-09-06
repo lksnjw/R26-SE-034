@@ -20,11 +20,11 @@ export function collectionOwners(flow) {
   } };
   visit(flow, [], 0); return result;
 }
-export default function CollectionFields({ value, onChange }) {
-  return <div className="space-y-4"><h5 className="text-xs font-medium">Collection input</h5><ReadValueFields value={value.items} onChange={items => onChange({ ...value, items })} />
+export default function CollectionFields({ value, onChange, authoring }) {
+  return <div className="space-y-4"><h5 className="text-xs font-medium">Collection input</h5><ReadValueFields label="Source list" value={value.items} onChange={items => onChange({ ...value, items })} dataSources={authoring?.itemSources} />
     <label className="block text-xs text-gray-500">Maximum items<input aria-label="Maximum collection items" type="number" min={1} max={100} step={1} value={value.maxItems} onChange={event => { const next = event.target.valueAsNumber; if (Number.isInteger(next) && next >= 1 && next <= 100) onChange({ ...value, maxItems: next }); }} className="mt-1 w-full rounded-md border bg-transparent px-3 py-2" /></label>
-    <h5 className="text-xs font-medium">Collect one value per completed item</h5><ReadValueFields value={value.collect} onChange={collect => onChange({ ...value, collect })} />
-    <p className="text-[10px] text-gray-500">Input contract must be a list. Inside the body use collection ID → item or index; afterward only collection ID → value is available. Missing data fails. Live loop execution is not enabled yet.</p>
+    <h5 className="text-xs font-medium">Collect one value per completed item</h5><ReadValueFields label="Collected item" value={value.collect} onChange={collect => onChange({ ...value, collect })} dataSources={authoring?.collectSources} />
+    <p className="text-[10px] text-gray-500">Input contract must be a list. Inside the body use collection ID → item or index; afterward only collection ID → value is available. Missing data fails. The item limit never silently truncates a larger list; saved-workflow readiness decides whether this collection can run.</p>
   </div>;
 }
 export function IterationFixturePicker({ nodeId, loops, onAdd, fixtures }) {

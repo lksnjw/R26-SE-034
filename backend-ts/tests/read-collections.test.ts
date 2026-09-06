@@ -17,8 +17,11 @@ const ref = (nodeId: string, path: string[]) => ({ kind: "ref", source: "nodeOut
 const array = { type: "array", items: { type: "string" } };
 function source(): any { return { name: "Invoice collection", description: "Read a bounded supplied list", trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { rows: { type: "array", items: { type: "object", properties: { id: { type: "string" }, enabled: { type: "boolean" } }, required: ["id"], additionalProperties: false } } }, required: ["rows"], additionalProperties: false } } }, steps: [{ id: "read", action: "read", parameters: { id: "{{each.item.id}}" } }, { id: "after", action: "read", parameters: { id: "after" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v3", root: seq({ kind: "foreach", id: "each", items: { schema: { type: "array", items: { type: "object", properties: { id: { type: "string" }, enabled: { type: "boolean" } }, required: ["id"], additionalProperties: false } }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } }, maxItems: 3, body: seq(action("read")), collect: { schema: { type: "string" }, value: ref("read", ["structuredContent", "id"]) } }, action("after"), { kind: "return", id: "answer", output: { schema: array, value: ref("each", ["value"]) } }) } } }; }
 const output = (id: string) => ({ content: [], structuredContent: { id } });
-test("collection owners cannot fall through to ordinary action chat patch semantics", () => {
-  expect(() => selectedNodePatchSchema({ kind: "foreach" })).toThrow(/dedicated scope contract/);
+test("collection owners use a dedicated partial patch instead of ordinary action chat semantics", () => {
+  const patch = selectedNodePatchSchema({ kind: "foreach" });
+  expect(patch.parse({ maxItems: 2 })).toEqual({ maxItems: 2 });
+  for (const value of [{}, { action: "read" }, { parameters: { id: "other" } }, { body: seq() }, { id: "other", maxItems: 2 }, { maxItems: 0 }, { maxItems: 101 }, { maxItems: 1.5 }])
+    expect(patch.safeParse(value).success).toBe(false);
 });
 async function simulate(src: any, input: any, outputs: Record<string, unknown>) { const yaml = stringify(src); return simulateReadWorkflow(yaml, input, parseReadFixtures({ profile: "read-fixtures/v2", baseVersion: 1, baseHash: workflowContentHash(yaml), outputs }), [tool], role); }
 

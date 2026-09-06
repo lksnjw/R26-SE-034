@@ -66,6 +66,59 @@ async function conditionSetup(output: unknown = { predicate: { kind: "literal", 
   return { ...s, source, hash: workflowContentHash(source) };
 }
 
+async function collectionSetup(output: unknown = { maxItems: 2 }) {
+  const s = await setup(output);
+  const source = stringify({ name: "Collection report", description: "Read a bounded supplied list", trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { rows: { type: "array", items: { type: "string" } } }, required: ["rows"], additionalProperties: false } } },
+    steps: ["first", "last"].map(id => ({ id, action: "demo.echo", parameters: { value: "{{each.item}}" } })), metadata: { controlFlow: { schemaVersion: "read-control-flow/v3", root: { kind: "sequence", nodes: [{ kind: "foreach", id: "each", maxItems: 3,
+      items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } }, body: { kind: "sequence", nodes: ["first", "last"].map(nodeId => ({ kind: "action", nodeId })) },
+      collect: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["item"] } } }] } } } });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
+  return { ...s, source, hash: workflowContentHash(source) };
+}
+
+test("collection-owner proposal has a dedicated data-only scope and explicit partial apply preserves ID/body/publication", async () => {
+  const s = await collectionSetup(), reply = await s.propose({ nodeId: "each", baseHash: s.hash });
+  expect(reply.statusCode, reply.body).toBe(200); const proposal = reply.json().data;
+  expect(proposal.command).toEqual({ type: "updateCollection", nodeId: "each", patch: { maxItems: 2 } });
+  expect(proposal.validation.passed).toBe(true);
+  expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(s.source);
+  const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)), data = JSON.parse(body.messages[1].content);
+  expect(body.messages[0].content).toContain("ONE SELECTED COLLECTION PATCH"); expect(data.tools).toEqual([]);
+  expect(data.allowedItemSources.map((value: any) => value.expression)).toEqual(["{{input}}", "{{input.rows}}"]);
+  expect(data.allowedCollectSources.map((value: any) => value.expression)).toEqual(expect.arrayContaining(["{{each.item}}", "{{each.index}}"]));
+  const applied = await s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(), payload: { baseVersion: 1, baseHash: s.hash, proposalId: proposal.id, command: proposal.command } });
+  expect(applied.statusCode, applied.body).toBe(200);
+  const original = parseWorkflowYAMLStrict(s.source) as any, next = parseWorkflowYAMLStrict(applied.json().data.yaml) as any;
+  expect(next.steps).toEqual(original.steps); expect(next.metadata.controlFlow.root.nodes[0]).toEqual({ ...original.metadata.controlFlow.root.nodes[0], maxItems: 2 });
+  const state = await s.repository.snapshot(); expect(state.versions.report![0]!.yaml).toBe(s.source); expect(state.workflows.report).toMatchObject({ draftVersion: 2, publishedVersion: 1, canRun: false });
+  expect(state.executions).toEqual({}); expect(s.fetchImplementation).toHaveBeenCalledOnce();
+});
+
+test.each([{}, { body: { kind: "sequence", nodes: [] }, maxItems: 2 }, { id: "other", maxItems: 2 }, { kind: "action", maxItems: 2 },
+  { action: "demo.echo" }, { parameters: { role: "admin" } }, { approved: true, maxItems: 2 }, { maxItems: 0 }, { maxItems: 101 }, { maxItems: 1.5 },
+  { items: { schema: { type: "string" }, value: { kind: "literal", value: "not-a-list" } } }])("collection-owner model patch cannot enlarge scope or remove bounds: %j", async output => {
+  const s = await collectionSetup(output), before = await s.repository.snapshot(), reply = await s.propose({ nodeId: "each", baseHash: s.hash });
+  expect(reply.statusCode, reply.body).toBe(422); expect(reply.json().meta.code).toBe("NODE_PROPOSAL_INVALID");
+  const state = await s.repository.snapshot(); expect(state.workflows).toEqual(before.workflows); expect(state.versions).toEqual(before.versions); expect(state.chats.chat!.messages).toEqual([]); expect(state.executions).toEqual({});
+});
+
+test.each([
+  { items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["value"] } } },
+  { collect: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "future", path: ["value"] } } },
+  { items: { schema: { type: "array", items: { type: "boolean" } }, value: { kind: "array", items: [{ kind: "literal", value: true }] } } },
+])("invalid collection bindings %j remain explicitly blocked in proposal, apply and refreshed readiness", async output => {
+  const s = await collectionSetup(output), reply = await s.propose({ nodeId: "each", baseHash: s.hash });
+  expect(reply.statusCode, reply.body).toBe(200); const proposal = reply.json().data;
+  expect(proposal.validation).toMatchObject({ passed: false, schema_ok: false, failed_rules: expect.arrayContaining(["WORKSPACE_READ_COMPILATION"]) });
+  expect(proposal.validation.errors.some((issue: string) => issue.startsWith("WORKSPACE_READ_COMPILATION:"))).toBe(true);
+  expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(s.source);
+  const applied = await s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(), payload: { baseVersion: 1, baseHash: s.hash, proposalId: proposal.id, command: proposal.command } });
+  expect(applied.statusCode, applied.body).toBe(200); expect(applied.json().data).toMatchObject({ canRun: false, validation: { passed: false } });
+  const ready = await s.app.inject({ method: "GET", url: "/api/workflows/report/readiness", headers: s.headers() });
+  expect(ready.json().data).toMatchObject({ can_attempt_run: false, validation: { passed: false } });
+  const state = await s.repository.snapshot(); expect(state.workflows.report!.status).toBe("draft-unvalidated"); expect(state.executions).toEqual({});
+});
+
 test("return proposals receive no tool definitions, preserve other nodes and apply only exact owned output edits", async () => {
   const output = { schema: { type: "boolean" }, value: { kind: "literal", value: false } }, s = await conditionSetup({ output });
   const value = parseWorkflowYAMLStrict(s.source) as any; value.metadata.controlFlow.schemaVersion = "read-control-flow/v2";

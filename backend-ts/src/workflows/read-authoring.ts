@@ -104,11 +104,15 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     return result;
   });
   const controlScopes = editableFlow && compiled ? validateReadControlFlow(editableFlow, compiled.ir, new Map()) : undefined;
-  const dataFor = (scope: Set<string> | undefined, nodeId: string) => upstream.filter(source => scopedSource(source, nodeId) && (source.binding.source === "workflowInput" || scope?.has(source.binding.nodeId!))).slice(-32).map(source => structuredClone(source));
+  const dataFor = (scope: Set<string> | undefined, nodeId: string, ownItem = false) => upstream.filter(source =>
+    (ownItem && source.binding.source === "nodeOutput" && source.binding.nodeId === nodeId ? source.binding.path[0] !== "value" : scopedSource(source, nodeId)) &&
+    (source.binding.source === "workflowInput" || scope?.has(source.binding.nodeId!))).slice(-32).map(source => structuredClone(source));
   const conditions = editableFlow ? controlNodes(editableFlow).map(node => ({ nodeId: node.id, dataSources: dataFor(controlScopes?.scopes.get(node.id), node.id).filter(source => source.schema.type === "boolean"), mergeSources: { then: dataFor(controlScopes?.branchScopes.get(node.id)?.then, node.id), else: dataFor(controlScopes?.branchScopes.get(node.id)?.else, node.id) } })) : [];
   const returns = editableFlow ? structuralNodes(editableFlow).filter(node => node.kind === "return").map(node => ({ nodeId: node.id, dataSources: dataFor(controlScopes?.scopes.get(node.id), node.id) })) : [];
+  const collectionGuides = collections.map(node => ({ nodeId: node.id, itemSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.items, node.id),
+    collectSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.collect, node.id, true) }));
   const executionProfile = compiled?.ir.schemaVersion === "workflow-read-ir/v4" ? "collection-simulation-only" : compiled?.ir.schemaVersion === "workflow-read-ir/v3" ? "structured-read-v1" : editableFlow ? "conditional-read-v1" : "sequential-read-v1";
-  const value = { profile: "read-authoring/v1", registryHash, executionProfile, ...(inputSchema ? { inputSchema } : {}), nodes, ...(editableFlow ? { controlFlow: editableFlow, conditions, returns } : {}) };
-  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, nodes: [], conditions: [], returns: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
+  const value = { profile: "read-authoring/v1", registryHash, executionProfile, ...(inputSchema ? { inputSchema } : {}), nodes, ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides } : {}) };
+  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, nodes: [], conditions: [], returns: [], collections: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
   return value;
 }

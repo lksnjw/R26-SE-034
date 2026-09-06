@@ -11,6 +11,37 @@ const tool = toolSchema.parse({ tool_id: "READ", name: "local.read", mcp_tool_na
 const blueprint: WorkflowBlueprint = { name: "Read", trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { limit: { type: "integer" }, credential: { type: "string", writeOnly: true } }, required: ["limit"], additionalProperties: false } } }, steps: [{ id: "first", action: "local.read", parameters: { count: "{{input.limit}}" } }, { id: "last", action: "exact_read", parameters: { count: "{{first.structuredContent.count}}" } }] };
 const contract = (source = blueprint, tools = [tool], actorRole = role) => readAuthoringContract(source, tools, actorRole, "registry-test");
 
+test("collection source/collect hints use distinct exact scopes and omit future/private/body-local data", () => {
+  const source: WorkflowBlueprint = { name: "Collection hints", trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { rows: { type: "array", items: { type: "integer" } }, limit: { type: "integer" }, credential: { type: "string", writeOnly: true } }, required: ["rows", "limit"], additionalProperties: false } } },
+    steps: [{ id: "first", action: tool.name, parameters: { count: "{{input.limit}}" } }, { id: "inside", action: tool.name, parameters: { count: "{{each.item}}" } }, { id: "later", action: tool.name, parameters: { count: 0 } }],
+    metadata: { controlFlow: { schemaVersion: "read-control-flow/v3", root: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }, { kind: "foreach", id: "each", maxItems: 3,
+      items: { schema: { type: "array", items: { type: "integer" } }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } },
+      body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "inside" }] }, collect: { schema: { type: "integer" }, value: { kind: "ref", source: "nodeOutput", nodeId: "inside", path: ["structuredContent", "count"] } } }, { kind: "action", nodeId: "later" }] } } } };
+  const guide = contract(source).collections!.find(value => value.nodeId === "each")!;
+  expect(guide.itemSources.map(value => value.expression)).toEqual(["{{input.rows}}", "{{input.limit}}", "{{first.structuredContent.count}}", "{{first.structuredContent.label}}"]);
+  const collect = guide.collectSources.map(value => value.expression);
+  expect(collect).toEqual(expect.arrayContaining(["{{each.item}}", "{{each.index}}", "{{inside.structuredContent.count}}", "{{first.structuredContent.count}}"]));
+  expect(collect.some(value => /each.value|later|credential|token|private/.test(value))).toBe(false);
+  compileReadWorkflow(stringify(source), [tool], role);
+  const branch = structuredClone(source) as any;
+  branch.metadata.controlFlow.root.nodes[1].body.nodes = [{ kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "inside" }] }, else: { kind: "sequence", nodes: [] } }];
+  expect(contract(branch).collections![0]!.collectSources.some(value => value.binding.nodeId === "inside")).toBe(false);
+});
+
+test("nested collection hints preserve outer item scope and expose only a completed inner aggregate to its parent", () => {
+  const sequence = (nodes: unknown[]) => ({ kind: "sequence", nodes }), schema = { type: "array", items: { type: "integer" } };
+  const inner = { kind: "foreach", id: "inner", maxItems: 2, items: { schema, value: { kind: "ref", source: "nodeOutput", nodeId: "outer", path: ["item"] } },
+    body: sequence([{ kind: "action", nodeId: "inside" }]), collect: { schema: { type: "integer" }, value: { kind: "ref", source: "nodeOutput", nodeId: "inner", path: ["item"] } } };
+  const outer = { kind: "foreach", id: "outer", maxItems: 2, items: { schema: { type: "array", items: schema }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } },
+    body: sequence([inner]), collect: { schema, value: { kind: "ref", source: "nodeOutput", nodeId: "inner", path: ["value"] } } };
+  const source: WorkflowBlueprint = { name: "Nested", trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { rows: { type: "array", items: schema } } } } },
+    steps: [{ id: "inside", action: tool.name, parameters: { count: "{{inner.item}}" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v3", root: sequence([outer]) } } };
+  const guides = contract(source).collections!;
+  expect(guides.find(value => value.nodeId === "inner")!.itemSources.some(value => value.expression === "{{outer.item}}")).toBe(true);
+  const parent = guides.find(value => value.nodeId === "outer")!.collectSources.map(value => value.expression);
+  expect(parent).toContain("{{inner.value}}"); expect(parent).toContain("{{outer.item}}"); expect(parent).not.toContain("{{inner.item}}"); expect(parent).not.toContain("{{inside.structuredContent.count}}");
+});
+
 test("offline schema guidance is versioned, sanitized, role scoped and never a live readiness grant", () => {
   const value = contract();
   expect(value).toMatchObject({ profile: "read-authoring/v1", registryHash: "registry-test" });

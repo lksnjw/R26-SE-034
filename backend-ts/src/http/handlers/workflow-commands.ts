@@ -16,6 +16,7 @@ import { activeChatStatus } from "../../agent/chat-jobs.js";
 import { prepareCompiledExecution } from "../../workflows/read-compilation-lifecycle.js";
 import { supportsCollectionReads } from "../../runner/read-collection-admission.js";
 import { readAuthoringContract } from "../../workflows/read-authoring.js";
+import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
@@ -48,7 +49,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
     const traceId = requestTraceId(request, current.traceId);
     if (kind === "readiness") {
       const registryHash = services.registries.hash();
-      const validation = services.validator.validatePlan("WorkspaceReadiness", current.yaml, user.role);
+      const validation = validateWorkspaceDraft("WorkspaceReadiness", current.yaml, user.role, services.validator, services.registries.snapshot().tools);
       let issues: string[] = [], bridge = "not_connected";
       try {
         const blueprint = parseWorkflowYAMLStrict(current.yaml);
@@ -98,10 +99,14 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         return assertChatAuthority(state, user, value.sessionId).selectedModel;
       });
       const provider = selectProvider(services, value.model ?? sessionModel)!;
+      const structural = ["if", "return", "foreach"].includes(node.kind ?? "");
+      const authoring = structural ? readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()) : undefined;
+      const collection = authoring?.collections?.find(value => value.nodeId === node.id);
       const prompt = promptData({ instruction: value.prompt, node: withoutSecretFields(node),
-        ...(node.kind === "if" ? { allowedBooleanSources: readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()).conditions?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
-        ...(node.kind === "return" ? { allowedDataSources: readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()).returns?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
-        tools: ["if", "return"].includes(node.kind ?? "") ? [] : services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role)).map((tool) => ({ name: tool.name, inputSchema: tool.input_schema })) });
+        ...(node.kind === "if" ? { allowedBooleanSources: authoring?.conditions?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
+        ...(node.kind === "return" ? { allowedDataSources: authoring?.returns?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
+        ...(node.kind === "foreach" ? { allowedItemSources: collection?.itemSources ?? [], allowedCollectSources: collection?.collectSources ?? [] } : {}),
+        tools: structural ? [] : services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role)).map((tool) => ({ name: tool.name, inputSchema: tool.input_schema })) });
       const patch = selectedNodePatchSchema(node);
       let proposed: ReturnType<typeof patch.parse>;
       try {
@@ -111,7 +116,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       } catch { throw new HandlerFailure(422, "The model did not return a supported node patch; nothing was changed", { code: "NODE_PROPOSAL_INVALID" }); }
       const change = selectedNodePatchCommand(node, proposed);
       const yaml = apply(current.yaml, change);
-      const validation = services.validator.validatePlan("NodeProposal", yaml, user.role);
+      const validation = validateWorkspaceDraft("NodeProposal", yaml, user.role, services.validator, services.registries.snapshot().tools);
       const proposal = await services.repository.mutate((state) => {
         if (Object.values(state.chatOperations).some(op => op.sessionId === value.sessionId && activeChatStatus(op.status))) throw new HandlerFailure(409, "This conversation has an active operation", { code: "CHAT_OPERATION_ACTIVE" });
         const scopedChat = assertChatAuthority(state, user, value.sessionId);
@@ -137,7 +142,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
     requireBase(current, parsed.data.baseVersion, parsed.data.baseHash);
     const yaml = apply(current.yaml, parsed.data.command);
     if (yaml.length > 200000) throw new HandlerFailure(422, "Resulting draft exceeds supported limits");
-    const validation = services.validator.validatePlan("WorkflowCommand", yaml, user.role);
+    const validation = validateWorkspaceDraft("WorkflowCommand", yaml, user.role, services.validator, services.registries.snapshot().tools);
     const updated = await services.repository.mutate((state) => {
       const fresh = state.workflows[workflowId];
       if (!fresh || !permitted(fresh, user, true)) throw new HandlerFailure(404, "Workflow not editable");

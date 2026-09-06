@@ -100,6 +100,48 @@ async function conditionalNodeSetup(output: unknown = { predicate: { kind: "lite
   return { ...s, source, nodeContext: { ...s.nodeContext, nodeId: "gate", baseHash: workflowContentHash(source) } };
 }
 
+async function collectionNodeSetup(output: unknown = { maxItems: 2 }) {
+  const s = await nodeSetup();
+  const source = stringify({ name: "Collection chat report", description: "Read a bounded supplied list", trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { rows: { type: "array", items: { type: "string" } } }, required: ["rows"], additionalProperties: false } } },
+    steps: [{ id: "echo", action: "demo.echo", parameters: { value: "{{each.item}}" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v3", root: { kind: "sequence", nodes: [{ kind: "foreach", id: "each", maxItems: 3,
+      items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } }, body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "echo" }] },
+      collect: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["item"] } } }] } } } });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
+  s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: JSON.stringify(output) } }] }));
+  return { ...s, source, nodeContext: { ...s.nodeContext, nodeId: "each", baseHash: workflowContentHash(source) } };
+}
+
+test("saved collection-owner chat selects its captured model and saves only a reviewable bounded proposal", async () => {
+  const s = await collectionNodeSetup(), content = "Limit this collection to two items and send an email";
+  const receipt = (await s.send(content, { nodeContext: s.nodeContext, model: "model-b" })).json().data, op = await s.terminal(receipt.operation.id);
+  expect(op).toMatchObject({ status: "ANSWERED", attempts: [], artifactRefs: [{ type: "node-proposal" }] });
+  const state = await s.repository.snapshot(), proposal = (state.chats[s.sessionId]!.messages[1]!.artifacts as any).proposal;
+  expect(proposal).toMatchObject({ ...s.nodeContext, command: { type: "updateCollection", nodeId: "each", patch: { maxItems: 2 } }, status: "PROPOSED", modelBinding: { model: "model-b" } });
+  expect(proposal.after.body).toEqual(proposal.before.body); expect(proposal.after.id).toBe("each");
+  expect(proposal.validation.passed).toBe(true);
+  expect(state.workflows.report).toMatchObject({ yaml: s.source, draftVersion: 1, publishedVersion: 1 }); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled();
+  const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)); expect(body.model).toBe("model-b"); expect(body.messages[0].content).toContain("ONE SELECTED COLLECTION PATCH"); expect(JSON.parse(body.messages[1].content).tools).toEqual([]);
+  expect((await s.send(content, { nodeContext: s.nodeContext, model: "model-b" })).json().data.operation.id).toBe(op.id); expect(s.fetchImplementation).toHaveBeenCalledOnce();
+});
+
+test("saved collection chat does not label an unavailable binding as a valid or executed change", async () => {
+  const s = await collectionNodeSetup({ collect: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "future", path: ["value"] } } });
+  const receipt = (await s.send("Use this unavailable result", { nodeContext: s.nodeContext })).json().data;
+  expect((await s.terminal(receipt.operation.id)).status).toBe("ANSWERED");
+  const state = await s.repository.snapshot(), proposal = (state.chats[s.sessionId]!.messages[1]!.artifacts as any).proposal;
+  expect(proposal.validation).toMatchObject({ passed: false, failed_rules: expect.arrayContaining(["WORKSPACE_READ_COMPILATION"]) });
+  expect(state.workflows.report!.yaml).toBe(s.source); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("a saved collection patch cannot commit after its source revision changes during the model wait", async () => {
+  const s = await collectionNodeSetup(), entered = barrier(), release = barrier();
+  s.fetchImplementation.mockImplementation(async () => { entered.release(); await release.promise; return Response.json({ choices: [{ message: { content: '{"maxItems":2}' } }] }); });
+  const id = (await s.send("Edit collection", { nodeContext: s.nodeContext })).json().data.operation.id;
+  await entered.promise; await s.repository.mutate(state => { state.workflows.report!.draftVersion++; }); release.release();
+  const stopped = await s.terminal(id); expect(stopped).toMatchObject({ status: "FAILED", reason: "DRAFT_REVISION_CONFLICT" }); expect(stopped.artifactRefs ?? []).toEqual([]);
+  expect((await s.repository.snapshot()).chats[s.sessionId]!.messages).toHaveLength(1); expect(s.callTool).not.toHaveBeenCalled();
+});
+
 test("saved return chat job captures the model, emits only an owned output proposal and never dispatches ERP", async () => {
   const output = { schema: { type: "boolean" }, value: { kind: "literal", value: false } }, s = await nodeSetup();
   const source = stringify({ name: "Return chat report", trigger: { type: "manual" }, steps: [{ id: "echo", action: "demo.echo", parameters: { value: "fixture" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v2", root: { kind: "sequence", nodes: [{ kind: "action", nodeId: "echo" }, { kind: "return", id: "answer", output }] } } } });

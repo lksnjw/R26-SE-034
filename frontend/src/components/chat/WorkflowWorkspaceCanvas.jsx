@@ -33,7 +33,7 @@ export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey,
         </div>
         {drafts.length > 0 && (
           <select aria-label="Workflow draft" value={current.key} onChange={(event) => select({ selectedDraft: event.target.value, selectedNode: null })} className="mt-2 w-full rounded border border-gray-200 bg-white p-1 text-xs dark:border-gray-700 dark:bg-darkBackground">
-            {drafts.map((draft, index) => <option key={draft.key} value={draft.key}>Draft {index + 1}{draft.artifact.workflowId ? ` · ${draft.artifact.workflowId}` : ""}</option>)}
+            {drafts.map((draft, index) => <option key={draft.key} value={draft.key}>{draft.artifact.workflowId ? "Workflow" : "Draft"} {index + 1}{draft.artifact.workflowId ? ` · ${draft.artifact.workflowId}` : ""}</option>)}
           </select>
         )}
       </header>

@@ -13,6 +13,7 @@ export const conditionPatchSchema = z.object({ predicate: readPredicateSchema })
 export const returnPatchSchema = z.object({ output: readReturnSchema }).strict();
 const destinationSchema = z.union([z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict(), z.object({ loopId: nodeIdSchema, scope: z.literal("body") }).strict()]);
 const collectionConfig = { items: readReturnSchema.refine(value => value.schema.type === "array", "Collection requires an array schema"), maxItems: z.number().int().min(1).max(100), collect: readReturnSchema };
+export const collectionPatchSchema = z.object(collectionConfig).partial().strict().refine(value => Object.keys(value).length > 0);
 export const workflowRevisionSchema = { baseVersion: z.number().int().min(1), baseHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) };
 export const nodeContextSchema = z.object({ workflowId: z.string().min(1).max(128), nodeId: nodeIdSchema, ...workflowRevisionSchema }).strict();
 export type NodeContext = z.infer<typeof nodeContextSchema>;
@@ -30,19 +31,18 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("updateReturn"), nodeId: nodeIdSchema, patch: returnPatchSchema }).strict(),
   z.object({ type: z.literal("removeReturn"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("wrapCollection"), nodeId: nodeIdSchema, loopId: nodeIdSchema, ...collectionConfig }).strict(),
-  z.object({ type: z.literal("updateCollection"), nodeId: nodeIdSchema, patch: z.object(collectionConfig).strict() }).strict(),
+  z.object({ type: z.literal("updateCollection"), nodeId: nodeIdSchema, patch: collectionPatchSchema }).strict(),
   z.object({ type: z.literal("removeCollection"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("restoreDraft"), yaml: z.string().min(1).max(200000) }).strict(),
   z.object({ type: z.literal("setControlFlow"), flow: readControlFlowSchema }).strict(),
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
 export function selectedNodePatchSchema(node: { kind?: string | undefined }) {
-  if (node.kind === "foreach") throw new HandlerFailure(422, "Collection-node chat patches require a dedicated scope contract; edit its saved fields explicitly for now");
-  return node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : nodePatchSchema;
+  return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : nodePatchSchema;
 }
-export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : "prompt/node-patch/v2"; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : "prompt/node-patch/v2"; }
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
-  return workflowCommandSchema.parse({ type: node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : "updateNode", nodeId: node.id, patch });
+  return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : "updateNode", nodeId: node.id, patch });
 }
 export function permittedWorkflow(workflow: Workflow, user: CurrentUser, editing: boolean): boolean {
   return !workflow.archived && (!editing || user.permissions.includes("workflow:write")) &&

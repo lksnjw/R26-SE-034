@@ -7,6 +7,7 @@ import { promptData } from "../prompts/contracts.js";
 import type { ChatProcessingHooks } from "./chat-context.js";
 import { readAuthoringContract } from "../workflows/read-authoring.js";
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
+import { validateWorkspaceDraft } from "../workflows/draft-validation.js";
 
 /** A node edit is a proposal, never a tool request, irrespective of its prose. */
 export async function processNodeProposal(input: { context: unknown; content: string; sessionId: string; traceId: string;
@@ -19,10 +20,14 @@ export async function processNodeProposal(input: { context: unknown; content: st
     hooks.assertCurrent(state as import("../repository/store.js").RepositoryState);
     return assertNodeContext(state, context, user);
   });
+  const structural = ["if", "return", "foreach"].includes(scoped.node.kind ?? "");
+  const authoring = structural ? readAuthoringContract(parseWorkflowYAMLStrict(scoped.workflow.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()) : undefined;
+  const collection = authoring?.collections?.find(node => node.nodeId === scoped.node.id);
   const prompt = promptData({ instruction: input.content, node: withoutSecretFields(scoped.node),
-    ...(scoped.node.kind === "if" ? { allowedBooleanSources: readAuthoringContract(parseWorkflowYAMLStrict(scoped.workflow.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()).conditions?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
-    ...(scoped.node.kind === "return" ? { allowedDataSources: readAuthoringContract(parseWorkflowYAMLStrict(scoped.workflow.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()).returns?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
-    tools: ["if", "return"].includes(scoped.node.kind ?? "") ? [] : services.registries.snapshot().tools.filter(tool => tool.allowed_roles.includes(user.role)).map(tool => ({ name: tool.name, inputSchema: tool.input_schema })) });
+    ...(scoped.node.kind === "if" ? { allowedBooleanSources: authoring?.conditions?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
+    ...(scoped.node.kind === "return" ? { allowedDataSources: authoring?.returns?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
+    ...(scoped.node.kind === "foreach" ? { allowedItemSources: collection?.itemSources ?? [], allowedCollectSources: collection?.collectSources ?? [] } : {}),
+    tools: structural ? [] : services.registries.snapshot().tools.filter(tool => tool.allowed_roles.includes(user.role)).map(tool => ({ name: tool.name, inputSchema: tool.input_schema })) });
   await hooks.stage("GENERATING_NODE_PROPOSAL");
   const patchSchema = selectedNodePatchSchema(scoped.node);
   let patch: ReturnType<typeof patchSchema.parse>;
@@ -34,7 +39,7 @@ export async function processNodeProposal(input: { context: unknown; content: st
   const command = selectedNodePatchCommand(scoped.node, patch);
   const yaml = applyWorkflowCommand(scoped.workflow.yaml, command);
   if (yaml.length > 200000) throw new HandlerFailure(422, "Proposed draft exceeds supported limits");
-  const validation = services.validator.validatePlan("NodeProposal", yaml, user.role);
+  const validation = validateWorkspaceDraft("NodeProposal", yaml, user.role, services.validator, services.registries.snapshot().tools);
   // Generation can outlive cancellation, permission changes and concurrent edits.
   // Commit proposal, message and terminal journal in the same fenced mutation.
   const result = await services.repository.mutate(state => {
