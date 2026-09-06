@@ -35,6 +35,11 @@ export class ProviderRuntime {
    ******************************************************************************/
   constructor(readonly repository: Repository, readonly executor: Executor, readonly fetchImplementation?: typeof fetch) {}
 
+  private authorityGuardedFetch(): typeof fetch {
+    const assertAuthority = this.repository.assertAuthority.bind(this.repository), send = this.fetchImplementation ?? fetch;
+    return (input, init) => { assertAuthority(); return send(input, init); };
+  }
+
   /*******************************************************************************
    * Function: configured
    *
@@ -78,7 +83,7 @@ export class ProviderRuntime {
     if (!/^[a-f0-9]{32}$/.test(revision)) throw new Error("Invalid captured provider revision");
     const scoped = new ProviderRuntime(this.repository, this.executor, this.fetchImplementation);
     scoped.#configuration = structuredClone(configuration);
-    scoped.#rawClient = new OpenAICompatibleClient({ ...configuration, ...(this.fetchImplementation ? { fetchImplementation: this.fetchImplementation } : {}) });
+    scoped.#rawClient = new OpenAICompatibleClient({ ...configuration, fetchImplementation: scoped.authorityGuardedFetch() });
     scoped.#provider = new ProvenanceAnalysisProvider(scoped.#rawClient, this.repository, structuredClone(configuration), revision);
     scoped.#revision = revision;
     return scoped;
@@ -91,7 +96,7 @@ export class ProviderRuntime {
    ******************************************************************************/
   activate(configuration: RuntimeProviderConfiguration): void {
     validateRuntimeProviderConfiguration(configuration);
-    const rawClient = new OpenAICompatibleClient({ baseURL: configuration.baseURL, apiKey: configuration.apiKey, model: configuration.model, temperature: configuration.temperature, timeoutMs: configuration.timeoutMs, ...(this.fetchImplementation === undefined ? {} : { fetchImplementation: this.fetchImplementation }) });
+    const rawClient = new OpenAICompatibleClient({ baseURL: configuration.baseURL, apiKey: configuration.apiKey, model: configuration.model, temperature: configuration.temperature, timeoutMs: configuration.timeoutMs, fetchImplementation: this.authorityGuardedFetch() });
     const revision = randomBytes(16).toString("hex");
     const provider = new ProvenanceAnalysisProvider(rawClient, this.repository, structuredClone(configuration), revision);
     this.#rawClient = rawClient;

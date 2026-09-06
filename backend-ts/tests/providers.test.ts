@@ -23,6 +23,15 @@ const configuration: RuntimeProviderConfiguration = {
   timeoutMs: 1_000,
 };
 
+test.each(["query", "generate", "candidate", "captured"])("provider %s checks captured repository authority immediately before external fetch", async path => {
+  const send = vi.fn<typeof fetch>().mockResolvedValue(providerResponse("fixture")), { runtime, repository } = providerRuntime(send);
+  const captured = runtime.restoreCaptured(runtime.configuration!, runtime.binding!.configurationRevision);
+  await repository.close();
+  const operation = path === "query" ? runtime.queryWithTools([{ role: "user", content: "read" }], [], {}) : path === "captured" ? captured.generate("prompt", "fixture")
+    : path === "candidate" ? runtime.generateCandidate("prompt", "fixture", () => {}) : runtime.generate("prompt", "fixture");
+  await expect(operation).rejects.toThrow(); expect(send).not.toHaveBeenCalled();
+});
+
 describe("generation provider configuration", () => {
   test("startup rejects incomplete environment configuration and unpinned models", () => {
     expect(() =>

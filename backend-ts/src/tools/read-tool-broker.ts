@@ -37,6 +37,8 @@ export async function dispatchReadTool(
 ): Promise<Record<string, unknown>> {
   args = structuredClone(args);
   const assertWorkerDispatch = context.assertDispatch;
+  const assertStorageAuthority = services.repository.assertAuthority.bind(services.repository);
+  assertStorageAuthority();
   const actor = await services.repository.effectiveUser(actorId);
   if (actor === null || actor.status.toLowerCase() !== "active" ||
       !actor.permissions.some((permission) => ["chat:use", "workflow:write", "workflow:run", "workflow:run_own"].includes(permission)))
@@ -48,6 +50,7 @@ export async function dispatchReadTool(
   const roleMap = canonicalJSONBytes(services.config.erpbridgeRoleMap);
   const iteration = context.iteration && { ...context.iteration, plan: structuredClone(context.iteration.plan), visit: structuredClone(context.iteration.visit) };
   const assertContext = () => {
+    assertStorageAuthority();
     if (services.erpbridgeSession !== session || session.available === false || services.registries.hash() !== registryHash ||
         (session.discoveryGeneration ?? 0) !== generation || !roleMap.equals(canonicalJSONBytes(services.config.erpbridgeRoleMap)))
       throw new Error("Tool dispatch context changed during verification");

@@ -8,7 +8,7 @@ import {
   ensureRuntimeRegistries,
 } from "../registry/service.js";
 import type { ToolDefinition } from "../registry/schemas.js";
-import { Repository, type PersistenceBackend } from "../repository/store.js";
+import { Repository } from "../repository/store.js";
 import { Executor } from "../runner/executor.js";
 import { GenericMCPTool } from "../tools/generic-mcp-tool.js";
 import { McpConnectionRuntime } from "../tools/mcp-connection-runtime.js";
@@ -19,9 +19,7 @@ import {
 import { ToolRegistry } from "../tools/registry.js";
 import { RegistryValidator } from "../validator/registry-validator.js";
 import { hashPassword } from "../authn/password.js";
-import { PostgresPersistence } from "../storage/postgres.js";
-import { PostgresRecordPersistence } from "../storage/postgres-records.js";
-import { FirestorePersistence } from "../storage/firestore.js";
+import { openApplicationRepository } from "../storage/open-repository.js";
 import {
   ProviderRuntime,
   type RuntimeProviderConfiguration,
@@ -34,8 +32,7 @@ import { LlmPolicyFallback } from "../governance/llm-fallback.js";
 import { PolicyGateClient } from "../governance/policy-gate-client.js";
 import { reconcileInterruptedExecutions } from "../runner/read-checkpoints.js";
 
-// Storage startup waits are bounded here; storage late-resource disposal and
-// acknowledgement reconciliation still require their own lifecycle contract.
+// Repository startup owns its deadline and disposes late storage resources.
 // ERPBridge now owns its initialization deadline and cleanup inside its adapter.
 /*******************************************************************************
  * Function: withTimeout
@@ -75,31 +72,7 @@ const registries = await RegistryService.load(
 );
 console.log(`[startup] Registries loaded — connecting to ${config.storageDriver} storage...`);
 const STORAGE_CONNECT_TIMEOUT_MS = 30_000;
-const persistence =
-  config.storageDriver === "postgres" || config.storageDriver === "postgres-records"
-    ? await withTimeout<PersistenceBackend>(
-        config.storageDriver === "postgres-records" ? PostgresRecordPersistence.open(config.databaseURL, config.storageEncryptionKey) : PostgresPersistence.open(config.databaseURL, config.storageEncryptionKey),
-        STORAGE_CONNECT_TIMEOUT_MS,
-        "Postgres connection",
-      )
-    : config.storageDriver === "firestore"
-      ? await withTimeout(
-          FirestorePersistence.open({
-            projectId: config.firestoreProjectId!,
-            ...(config.firestoreKeyFile ? { keyFilename: config.firestoreKeyFile } : {}),
-            ...(config.firestoreKeyJson ? { credentials: config.firestoreKeyJson } : {}),
-            ...(config.firestoreEncryptionKey ? { encryptionKey: config.firestoreEncryptionKey } : {}),
-          }),
-          STORAGE_CONNECT_TIMEOUT_MS,
-          "Firestore connection",
-        )
-      : null;
-console.log("[startup] Storage connected.");
-const repository = await withTimeout(
-  Repository.open(persistence),
-  STORAGE_CONNECT_TIMEOUT_MS,
-  "Repository state load",
-);
+const repository = await openApplicationRepository(config, STORAGE_CONNECT_TIMEOUT_MS);
 console.log("[startup] Repository state loaded.");
 await withTimeout(
   bootstrapAdministrator(repository, config.platformAdminEmail, config.platformAdminPassword),

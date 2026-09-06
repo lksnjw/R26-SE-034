@@ -12,6 +12,18 @@ const erpbridgeEnvironment = {
   }),
 };
 
+const firestoreRecordsEnvironment = { APP_ENV: "test", STORAGE_DRIVER: "firestore-records", FIRESTORE_PROJECT_ID: "demo-lcwe-records", FIRESTORE_DATABASE_ID: "(default)", FIRESTORE_WORKSPACE_ID: "fixture_workspace", STORAGE_ENCRYPTION_KEY: "k".repeat(32) };
+test("normalized Firestore requires an explicit namespace and one valid private-input/record key; defaults stay memory", () => {
+  expect(loadConfig(firestoreRecordsEnvironment)).toMatchObject({ storageDriver: "firestore-records", firestoreProjectId: "demo-lcwe-records", firestoreDatabaseId: "(default)", firestoreWorkspaceId: "fixture_workspace" });
+  expect(loadConfig({}).storageDriver).toBe("memory"); expect(loadConfig({ STORAGE_DRIVER: "firestore", FIRESTORE_PROJECT_ID: "demo-lcwe-records" }).storageDriver).toBe("firestore");
+});
+test.each(["FIRESTORE_PROJECT_ID", "FIRESTORE_DATABASE_ID", "FIRESTORE_WORKSPACE_ID", "STORAGE_ENCRYPTION_KEY"])("normalized Firestore rejects missing %s rather than selecting defaults", field => {
+  expect(() => loadConfig({ ...firestoreRecordsEnvironment, [field]: "" })).toThrow();
+});
+test.each([{ FIRESTORE_WORKSPACE_ID: "workspace/escape" }, { FIRESTORE_DATABASE_ID: "db/escape" }, { STORAGE_ENCRYPTION_KEY: "short" }, { FIRESTORE_ENCRYPTION_KEY: "z".repeat(32) }])("normalized Firestore rejects unsafe scope/key %j", environment => {
+  expect(() => loadConfig({ ...firestoreRecordsEnvironment, ...environment })).toThrow();
+});
+
 describe("workflow transport configuration", () => {
   test("defaults to two read workers, one per principal, with a bounded renewable lease", () => {
     expect(loadConfig({})).toMatchObject({ readWorkerConcurrency: 2, readWorkerPerActor: 1, readWorkerLeaseMs: 30_000 });

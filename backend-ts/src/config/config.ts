@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
 import { z } from "zod";
+import { validateFirestoreNamespace } from "../storage/firestore-record-codec.js";
+import { decodeEncryptionKey } from "../storage/aes-gcm.js";
 
 const environmentSchema = z
   .object({
@@ -42,6 +44,8 @@ const environmentSchema = z
     GOVERNANCE_FALLBACK_LLM_MODEL: z.string().optional(),
     GOVERNANCE_FALLBACK_LLM_TIMEOUT_MS: z.string().optional(),
     FIRESTORE_PROJECT_ID: z.string().optional(),
+    FIRESTORE_DATABASE_ID: z.string().optional(),
+    FIRESTORE_WORKSPACE_ID: z.string().optional(),
     FIRESTORE_KEY_FILE: z.string().optional(),
     FIRESTORE_KEY_JSON: z.string().optional(),
     FIRESTORE_ENCRYPTION_KEY: z.string().optional(),
@@ -66,8 +70,10 @@ export type AppConfig = {
   allowPublicRegistration: boolean;
   toolRegistryPath: string;
   ruleRegistryPath: string;
-  storageDriver: "memory" | "postgres" | "postgres-records" | "firestore";
+  storageDriver: "memory" | "postgres" | "postgres-records" | "firestore" | "firestore-records";
   firestoreProjectId?: string;
+  firestoreDatabaseId?: string;
+  firestoreWorkspaceId?: string;
   firestoreKeyFile?: string;
   firestoreKeyJson?: Record<string, unknown>;
   firestoreEncryptionKey?: string;
@@ -186,9 +192,9 @@ export function loadConfig(
     source.STORAGE_DRIVER?.trim().toLowerCase(),
     "memory",
   ) as AppConfig["storageDriver"];
-  if (storageDriver !== "memory" && storageDriver !== "postgres" && storageDriver !== "postgres-records" && storageDriver !== "firestore")
+  if (!["memory", "postgres", "postgres-records", "firestore", "firestore-records"].includes(storageDriver))
     throw new Error(
-      `unsupported STORAGE_DRIVER ${JSON.stringify(storageDriver)} (allowed values: memory, postgres, postgres-records, or firestore)`,
+      `unsupported STORAGE_DRIVER ${JSON.stringify(storageDriver)} (allowed values: memory, postgres, postgres-records, firestore, or firestore-records)`,
     );
   const mcpMode = nonblank(
     source.MCP_MODE?.trim().toLowerCase(),
@@ -231,6 +237,8 @@ export function loadConfig(
     databaseURL: source.DATABASE_URL?.trim() ?? "",
     storageEncryptionKey: source.STORAGE_ENCRYPTION_KEY?.trim() ?? "",
     ...(source.FIRESTORE_PROJECT_ID?.trim() ? { firestoreProjectId: source.FIRESTORE_PROJECT_ID.trim() } : {}),
+    ...(source.FIRESTORE_DATABASE_ID?.trim() ? { firestoreDatabaseId: source.FIRESTORE_DATABASE_ID.trim() } : {}),
+    ...(source.FIRESTORE_WORKSPACE_ID?.trim() ? { firestoreWorkspaceId: source.FIRESTORE_WORKSPACE_ID.trim() } : {}),
     ...(source.FIRESTORE_KEY_FILE?.trim() ? { firestoreKeyFile: source.FIRESTORE_KEY_FILE.trim() } : {}),
     ...(source.FIRESTORE_KEY_JSON?.trim() ? { firestoreKeyJson: JSON.parse(source.FIRESTORE_KEY_JSON.trim()) as Record<string, unknown> } : {}),
     ...(source.FIRESTORE_ENCRYPTION_KEY?.trim() ? { firestoreEncryptionKey: source.FIRESTORE_ENCRYPTION_KEY.trim() } : {}),
@@ -299,8 +307,16 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("DATABASE_URL is required when STORAGE_DRIVER=postgres");
   if ((config.storageDriver === "postgres" || config.storageDriver === "postgres-records") && config.storageEncryptionKey === "")
     throw new Error("STORAGE_ENCRYPTION_KEY is required for PostgreSQL storage");
-  if (config.storageDriver === "firestore" && !config.firestoreProjectId)
+  if ((config.storageDriver === "firestore" || config.storageDriver === "firestore-records") && !config.firestoreProjectId)
     throw new Error("FIRESTORE_PROJECT_ID is required when STORAGE_DRIVER=firestore");
+  if (config.storageDriver === "firestore-records") {
+    if (!config.firestoreDatabaseId || !config.firestoreWorkspaceId || !config.storageEncryptionKey)
+      throw new Error("FIRESTORE_DATABASE_ID, FIRESTORE_WORKSPACE_ID and STORAGE_ENCRYPTION_KEY are required for firestore-records");
+    validateFirestoreNamespace({ projectId: config.firestoreProjectId!, databaseId: config.firestoreDatabaseId, workspaceId: config.firestoreWorkspaceId });
+    decodeEncryptionKey(config.storageEncryptionKey);
+    if (config.firestoreEncryptionKey && config.firestoreEncryptionKey !== config.storageEncryptionKey)
+      throw new Error("Ambiguous Firestore encryption keys; firestore-records uses STORAGE_ENCRYPTION_KEY for records and private worker inputs");
+  }
   if (
     config.mcpMode === "remote" &&
     config.environment === "production" &&

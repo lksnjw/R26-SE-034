@@ -167,6 +167,10 @@ export type RepositoryState = {
 };
 
 export interface PersistenceBackend {
+  /** Trusted server-only synchronous final-entry check and denial signal.
+   * Neither may perform I/O or grant authority from a pending renewal. */
+  assertAuthority?(): void;
+  observeUnavailable?(observer: () => void): () => void;
   // Capability of the actual storage implementation, not a config assertion.
   readonly readQueueDurability?: "encrypted-single-writer";
   readonly executionCheckpointDurability?: "encrypted-record-transactions/v1";
@@ -182,6 +186,8 @@ export class Repository {
   #state: RepositoryState;
   #healthy = true;
   #writeUncertain = false;
+  #closed = false;
+  #unsubscribeAuthority: (() => void) | undefined;
   readonly #commitObservers = new Set<{ committed(state: Readonly<RepositoryState>): void; unavailable(): void }>();
 
   /** Server-only denial signals, synchronously delivered after acknowledged
@@ -204,6 +210,22 @@ export class Repository {
    ******************************************************************************/
   constructor(readonly persistence: PersistenceBackend | null = null, initial = initialState()) {
     this.#state = structuredClone(initial);
+    this.#unsubscribeAuthority = persistence?.observeUnavailable?.(() => this.storageUnavailable());
+  }
+  private storageUnavailable(): void {
+    if (!this.#healthy) return;
+    this.#healthy = false; this.notifyCommitObservers(false);
+  }
+  private assertPersistenceAuthority(): void {
+    if (this.#closed) throw new Error("Authoritative storage is closed; dispatch is fenced");
+    try { this.persistence?.assertAuthority?.(); }
+    catch { this.storageUnavailable(); throw new Error("Authoritative storage ownership is unavailable; dispatch is fenced"); }
+  }
+  /** Synchronous guard for SDK entry after final awaited work.
+   * Cached identities/worker leases cannot outlive persistence authority. */
+  assertAuthority(): void {
+    this.assertPersistenceAuthority();
+    if (this.#writeUncertain || !this.#healthy) throw new Error("Authoritative storage is unavailable; dispatch is fenced");
   }
 
   /*******************************************************************************
@@ -213,19 +235,22 @@ export class Repository {
    ******************************************************************************/
   static async open(persistence: PersistenceBackend | null): Promise<Repository> {
     if (persistence === null) return new Repository(null);
-    const payload = await persistence.load();
-    const restored = payload === null ? initialState() : restoreState(payload);
-    const repository = new Repository(persistence, restored);
-    // Write back only when the restored state actually differs from what was
-    // stored — i.e. first boot, or a schema migration normalised something.
-    // Re-saving a byte-identical multi-megabyte blob on every startup is pure
-    // cost, and once the state grows it is slow enough to trip the startup
-    // timeout and stop the server from ever listening.
-    const serialized = Buffer.from(JSON.stringify(restored), "utf8");
-    if (payload === null || !Buffer.from(payload).equals(serialized)) {
-      await persistence.save(serialized);
+    let repository: Repository | undefined;
+    try {
+      const payload = await persistence.load();
+      persistence.assertAuthority?.();
+      const restored = payload === null ? initialState() : restoreState(payload);
+      repository = new Repository(persistence, restored);
+      // Write back only on first boot or an actual schema normalization.
+      const serialized = Buffer.from(JSON.stringify(restored), "utf8");
+      if (payload === null || !Buffer.from(payload).equals(serialized)) await persistence.save(serialized);
+      repository.assertAuthority(); return repository;
+    } catch (error) {
+      // Authority-owning adapters must not survive failed initialization.
+      // Legacy adapters retain their explicit caller-owned migration lifecycle.
+      if (persistence.assertAuthority) try { if (repository) await repository.close(); else await persistence.close(); } catch { /* preserve original failure; never publish late authority */ }
+      throw error;
     }
-    return repository;
   }
 
   /*******************************************************************************
@@ -234,7 +259,10 @@ export class Repository {
    * Returns a copy of the current repository state.
    ******************************************************************************/
   async snapshot(): Promise<RepositoryState> {
-    return this.#mutex.runExclusive(() => structuredClone(this.#state));
+    return this.#mutex.runExclusive(() => {
+      if (this.persistence?.assertAuthority) this.assertPersistenceAuthority();
+      return structuredClone(this.#state);
+    });
   }
 
   /*******************************************************************************
@@ -243,15 +271,19 @@ export class Repository {
    * Runs a read operation against the repository state.
    ******************************************************************************/
   async read<T>(reader: (state: Readonly<RepositoryState>) => T): Promise<T> {
-    return this.#mutex.runExclusive(() => reader(this.#state));
+    return this.#mutex.runExclusive(async () => {
+      if (this.persistence?.assertAuthority) this.assertPersistenceAuthority();
+      const result = await reader(this.#state);
+      if (this.persistence?.assertAuthority) this.assertPersistenceAuthority();
+      return result;
+    });
   }
 
   /** Security decisions must not use the rolled-back local image after an
    * uncertain durable save (for example, a remotely committed revocation). */
   async readAuthoritative<T>(reader: (state: Readonly<RepositoryState>) => T): Promise<T> {
-    return this.#mutex.runExclusive(() => {
-      if (this.#writeUncertain || !this.#healthy) throw new Error("Authoritative storage is unavailable; dispatch is fenced");
-      return reader(this.#state);
+    return this.#mutex.runExclusive(async () => {
+      this.assertAuthority(); const result = await reader(this.#state); this.assertAuthority(); return result;
     });
   }
 
@@ -263,21 +295,24 @@ export class Repository {
   async mutate<T>(mutation: (state: RepositoryState) => Promise<T> | T): Promise<T> {
     return this.#mutex.runExclusive(async () => {
       if (this.#writeUncertain) throw new Error("Persistence outcome is uncertain; reload authoritative storage before further mutations");
+      this.assertPersistenceAuthority();
       const before = structuredClone(this.#state);
       let persistenceAttempted = false;
       try {
         const result = await mutation(this.#state);
+        this.assertPersistenceAuthority();
         if (this.persistence !== null) {
           const bytes = Buffer.from(JSON.stringify(this.#state), "utf8");
           persistenceAttempted = true;
           await this.persistence.save(bytes);
         }
+        this.assertPersistenceAuthority();
         this.#healthy = true;
         this.notifyCommitObservers(true);
         return result;
       } catch (error) {
         this.#state = before;
-        if (persistenceAttempted) { this.#healthy = false; this.#writeUncertain = true; this.notifyCommitObservers(false); }
+        if (persistenceAttempted) { this.#writeUncertain = true; this.storageUnavailable(); }
         throw error;
       }
     });
@@ -289,10 +324,12 @@ export class Repository {
   async mutateExecution<T>(executionId: string, mutation: (state: RepositoryState) => Promise<T> | T): Promise<T> {
     return this.#mutex.runExclusive(async () => {
       if (this.#writeUncertain || !this.#healthy) throw new Error("Authoritative storage is unavailable; execution checkpoint is fenced");
+      this.assertPersistenceAuthority();
       const transaction = executionTransaction(this.#state, executionId);
       let persistenceAttempted = false;
       try {
         const result = structuredClone(await mutation(transaction.view)), checkpoint = transaction.checkpoint();
+        this.assertPersistenceAuthority();
         const updated = applyExecutionCheckpoint(this.#state, checkpoint);
         if (this.persistence !== null) {
           persistenceAttempted = true;
@@ -300,11 +337,12 @@ export class Repository {
             await this.persistence.saveExecutionCheckpoint(checkpoint);
           else await this.persistence.save(Buffer.from(JSON.stringify(updated), "utf8"));
         }
+        this.assertPersistenceAuthority();
         this.#state = updated; this.#healthy = true;
         this.notifyCommitObservers(true);
         return result;
       } catch (error) {
-        if (persistenceAttempted) { this.#healthy = false; this.#writeUncertain = true; this.notifyCommitObservers(false); }
+        if (persistenceAttempted) { this.#writeUncertain = true; this.storageUnavailable(); }
         throw error;
       }
     });
@@ -320,6 +358,7 @@ export class Repository {
       const payload = await this.persistence.load();
       if (payload === null) throw new Error("Authoritative repository state is unavailable");
       const restored = restoreState(payload);
+      this.assertPersistenceAuthority();
       this.#state = restored;
       this.#writeUncertain = false; this.#healthy = true;
       this.notifyCommitObservers(true);
@@ -334,11 +373,12 @@ export class Repository {
   async persistenceStatus(): Promise<{ durable: boolean; healthy: boolean }> {
     if (this.persistence === null) return { durable: false, healthy: true };
     try {
+      this.assertPersistenceAuthority();
       await this.persistence.probe();
+      this.assertPersistenceAuthority();
       this.#healthy = true;
     } catch {
-      this.#healthy = false;
-      this.notifyCommitObservers(false);
+      this.storageUnavailable();
     }
     return { durable: true, healthy: this.#healthy && !this.#writeUncertain };
   }
@@ -361,6 +401,8 @@ export class Repository {
    * Closes the repository's persistence backend when configured.
    ******************************************************************************/
   async close(): Promise<void> {
+    if (this.#closed) return; this.#closed = true;
+    this.storageUnavailable(); this.#unsubscribeAuthority?.();
     await this.persistence?.close();
   }
 

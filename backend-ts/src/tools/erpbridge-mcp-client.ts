@@ -83,6 +83,7 @@ export async function createErpbridgeMcpSession(options: {
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 2_147_483_647)
     throw new Error("ERPBridge MCP timeout must be a positive supported integer");
   const admissionBinding = createHash("sha256").update(JSON.stringify(options.connectionRevision === undefined ? [options.baseURL.trim(), options.token] : [options.baseURL.trim(), options.token, options.connectionRevision])).digest("hex");
+  const assertStorageAuthority = options.validator.repository.assertAuthority.bind(options.validator.repository);
   const sdkClient =
     options.sdkClient ??
     createBridgeProtocolAdapter({
@@ -111,7 +112,7 @@ export async function createErpbridgeMcpSession(options: {
   const abandon = () => { if (!closed) void close().catch(() => {}); };
   const run = <T>(label: string, start: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
     if (unavailable()) return Promise.reject(new Error("ERPBridge MCP session is closed or unavailable"));
-    return boundedOperation(start, {
+    return boundedOperation(() => { assertStorageAuthority(); return start(); }, {
       timeoutMs: options.timeoutMs, label,
       signal: signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal,
       onAbandon: abandon,
@@ -120,12 +121,13 @@ export async function createErpbridgeMcpSession(options: {
       onLateSettlement: () => { if (closed) void cleanup().catch(() => {}); },
     });
   };
-  try { await run("ERPBridge MCP initialization", () => sdkClient.connect(), options.signal); }
+  try { await run("ERPBridge MCP initialization", () => sdkClient.connect(), options.signal); assertStorageAuthority(); }
   catch (error) { void close().catch(() => {}); throw error; }
   const assertAdmission = async (definition: ToolDefinition, expectedPin?: ReadAdmissionPin, signal?: AbortSignal): Promise<void> => {
     if (unavailable()) throw new Error("ERPBridge MCP session is closed or unavailable");
     if (sdkClient.metadataComplete && !options.admissionAuthorizer) throw new Error("Explicit persisted capability admission is required before ERP dispatch");
     if (options.admissionAuthorizer) await run("ERPBridge capability admission", () => options.admissionAuthorizer!(definition, admissionBinding, expectedPin), signal);
+    assertStorageAuthority();
     if (unavailable()) throw new Error("ERPBridge MCP session is closed or unavailable");
   };
   return Object.freeze({

@@ -1,10 +1,10 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RegistryService } from "../src/registry/service.js";
 import { Repository } from "../src/repository/store.js";
-import { createGovernedMCPClient } from "../src/tools/mcp-client.js";
+import { createGovernedMCPClient, type MCPMode } from "../src/tools/mcp-client.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
 
 const workflowYAML = `name: capability_test
@@ -23,7 +23,7 @@ steps:
  *
  * Creates a validator and governed MCP client for capability tests.
  ******************************************************************************/
-async function fixture(ttl = 30_000) {
+async function fixture(ttl = 30_000, mode: MCPMode = "remote") {
   const registries = await RegistryService.load(
     resolve("tests/fixtures/tools.json"),
     resolve("tests/fixtures/rules.json"),
@@ -33,7 +33,7 @@ async function fixture(ttl = 30_000) {
   const client = createGovernedMCPClient({
     baseURL: "https://mcp.invalid",
     timeoutMs: 1_000,
-    mode: "remote",
+    mode,
     validator,
     /*******************************************************************************
      * Function: fetchImplementation
@@ -89,6 +89,42 @@ async function fixture(ttl = 30_000) {
 }
 
 describe("runtime dispatch capability", () => {
+  it.each(["remote", "mock"] as const)("denies a closed repository before checkpoint/capability consumption, mode=%s", async mode => {
+    const test = await fixture(30_000, mode), issued = await test.issue();
+    const checkpoint = vi.fn(), consume = vi.spyOn(test.validator, "verifyAndConsumeCapability");
+    await test.validator.repository.close();
+    await expect(test.client.execute("demo.echo", issued.capability, issued.params, issued.identity, undefined, checkpoint)).rejects.toThrow("closed");
+    expect(checkpoint).not.toHaveBeenCalled(); expect(consume).not.toHaveBeenCalled(); expect(test.requests()).toBe(0);
+  });
+
+  it.each(["remote", "mock"] as const)("retains its captured storage guard across an awaited checkpoint, mode=%s", async mode => {
+    const test = await fixture(30_000, mode), issued = await test.issue(), consume = vi.spyOn(test.validator, "verifyAndConsumeCapability");
+    const checkpoint = async () => {
+      await test.validator.repository.close();
+      // Replacing a caller-visible method after the await must not replace the
+      // already captured final-entry authority closure.
+      test.validator.repository.assertAuthority = vi.fn();
+    };
+    await expect(test.client.execute("demo.echo", issued.capability, issued.params, issued.identity, undefined, checkpoint)).rejects.toThrow("closed");
+    expect(consume).not.toHaveBeenCalled(); expect(test.requests()).toBe(0);
+  });
+
+  it.each(["remote", "mock"] as const)("checks storage after the caller worker fence and before consuming capability, mode=%s", async mode => {
+    const test = await fixture(30_000, mode), issued = await test.issue(), consume = vi.spyOn(test.validator, "verifyAndConsumeCapability");
+    const assertDispatch = () => { void test.validator.repository.close(); };
+    await expect(test.client.execute("demo.echo", issued.capability, issued.params, issued.identity, undefined, undefined, assertDispatch)).rejects.toThrow("closed");
+    expect(consume).not.toHaveBeenCalled(); expect(test.requests()).toBe(0);
+  });
+
+  it.each(["remote", "mock"] as const)("denies authority lost during capability consumption at the final transport boundary, mode=%s", async mode => {
+    const test = await fixture(30_000, mode), issued = await test.issue();
+    const consume = test.validator.verifyAndConsumeCapability.bind(test.validator);
+    vi.spyOn(test.validator, "verifyAndConsumeCapability").mockImplementation((...args) => { consume(...args); void test.validator.repository.close(); });
+    await expect(test.client.execute("demo.echo", issued.capability, issued.params, issued.identity)).rejects.toThrow("closed");
+    expect(() => consume(issued.capability, "demo.echo", Buffer.from('{"value":"ok"}'), issued.identity)).toThrow("already been consumed");
+    expect(test.requests()).toBe(0);
+  });
+
   it("rejects a forged shape without transport", async () => {
     const test = await fixture();
     await expect(

@@ -1,6 +1,6 @@
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import type { RepositoryState } from "../repository/store.js";
-import { splitRuntimeState, assembleRuntimeState, recordKey, type RuntimeRecord } from "./execution-record-layout.js";
+import { splitRuntimeState, assembleRuntimeState, recordKey, executionRecordScope, type RuntimeRecord } from "./execution-record-layout.js";
 
 type Kind = "map" | "array" | "scalar";
 const cell = (path: string[], value: unknown): RuntimeRecord => ({ profile: "runtime-record/v1", path, value });
@@ -17,6 +17,12 @@ const arrayLength = (value: unknown): number => {
   if (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 1_000_000) throw new Error("Invalid Firestore array length");
   return Number(value);
 };
+const executionSections = new Set(["executions", "readJobs", "readContinuations", "timelines", "executionLogs", "executionEvents", "attempts", "receipts", "outputs", "values", "timeline-entry", "log-entry", "event-entry"]);
+/** Domain/chat/version records can share a run's ID without belonging to it.
+ * Only known runtime sections participate in scoped checkpoint replacement. */
+export function firestoreExecutionRecordScope(record: RuntimeRecord): string | null {
+  return executionSections.has(record.path[0]!) ? executionRecordScope(record) : null;
+}
 
 /** Normalize every repository domain, not only run evidence. Chat messages,
  * versions and top-level histories do not grow inside a shared root document.

@@ -83,6 +83,22 @@ export class FirestoreRecordStore {
     await this.#mutex.runExclusive(async () => { try { await release; } finally { await this.db.terminate(); } });
   }
   get writeUncertain() { return this.#uncertain; }
+  /** Bounded authority/head probe, not a full-image reload or a lease renewal.
+   * A probe cannot clear uncertainty or adopt a changed authoritative image. */
+  async probeWriter(snapshot: FirestoreRecordSnapshot): Promise<void> {
+    await this.#mutex.runExclusive(() => this.withWriter(async () => {
+      this.assertWriterActive(); const expected = this.view(snapshot).head;
+      try {
+        await this.db.runTransaction(async transaction => {
+          await this.assertWriterTransaction(transaction);
+          const row = await transaction.get(this.db.doc(this.headPath)), actual = row.exists ? this.head(row.data()) : null;
+          if (!same(actual, expected)) throw new Error("Firestore authoritative image changed; reload is required");
+          this.#writer!.assertTransactionDeadline();
+        }, { readOnly: true });
+        this.assertWriterActive();
+      } catch (error) { this.#uncertain = true; throw error; }
+    }));
+  }
   private view(snapshot: FirestoreRecordSnapshot): View {
     const view = this.#views.get(snapshot); if (!view) throw new Error("Firestore snapshot does not belong to this store"); return view;
   }

@@ -58,7 +58,9 @@ export class ReadJobQueue {
     this.#concurrency = services.config.readWorkerConcurrency; this.#perActor = services.config.readWorkerPerActor; this.#leaseMs = services.config.readWorkerLeaseMs;
     if (!Number.isSafeInteger(this.#concurrency) || this.#concurrency < 1 || this.#concurrency > 8 || !Number.isSafeInteger(this.#perActor) || this.#perActor < 1 || this.#perActor > this.#concurrency || !Number.isSafeInteger(this.#leaseMs) || this.#leaseMs < 5000 || this.#leaseMs > 300_000) throw new Error("Invalid read worker limits");
     this.#unobserve = services.repository.observeCommits({ committed: state => this.observe(state), unavailable: () => {
-      this.#stalled = true; for (const control of this.#active.values()) control.failure ??= new ReadWorkerLeaseFailure("READ_WORKER_STORAGE_UNAVAILABLE");
+      this.#stalled = true; for (const control of this.#active.values()) {
+        control.failure ??= new ReadWorkerLeaseFailure("READ_WORKER_STORAGE_UNAVAILABLE"); control.controller.abort(control.failure);
+      }
     } });
   }
   prepare(workflow: Workflow, input: Record<string, unknown>, user: CurrentUser, key: string): Admission {

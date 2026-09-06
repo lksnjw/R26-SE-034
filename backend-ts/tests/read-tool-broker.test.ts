@@ -64,6 +64,36 @@ test("captures the server-only entry guard before policy awaits instead of accep
   expect(JSON.stringify(await s.services.repository.snapshot())).not.toContain("assertDispatch");
 });
 
+test("unavailable storage denies before discovery even without a queued-worker guard", async () => {
+  const s = await setup(); vi.spyOn(s.services.repository, "assertAuthority").mockImplementation(() => { throw new Error("storage writer unavailable"); });
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "x" })).rejects.toThrow("storage writer unavailable");
+  expect(s.listTools).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("captures storage authority before awaited policy work rather than accepting a replaced entry method", async () => {
+  const s = await setup(), guard = s.services.repository.assertAuthority.bind(s.services.repository); let unavailable = false;
+  const authority = vi.spyOn(s.services.repository, "assertAuthority").mockImplementation(() => { guard(); if (unavailable) throw new Error("storage lease expired"); });
+  const evaluate = s.services.validator.evaluateResolvedStep.bind(s.services.validator);
+  vi.spyOn(s.services.validator, "evaluateResolvedStep").mockImplementation(async (...args) => {
+    const result = await evaluate(...args); unavailable = true; s.services.repository.assertAuthority = vi.fn(); return result;
+  });
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "x" })).rejects.toThrow("storage lease expired");
+  expect(authority).toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test.each([false, true])("storage loss after acknowledged intent denies final SDK entry for modern=%s without a worker hook", async modern => {
+  const s = await setup(modern ? { contract, metadataComplete: true } : {}), guard = s.services.repository.assertAuthority.bind(s.services.repository); let unavailable = false;
+  vi.spyOn(s.services.repository, "assertAuthority").mockImplementation(() => { guard(); if (unavailable) throw new Error("storage ownership lost at entry"); });
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "x" }, { beforeDispatch: async () => { await Promise.resolve(); unavailable = true; } })).rejects.toThrow("storage ownership lost at entry");
+  expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("closing the repository during final intent acknowledgement cannot enter the SDK", async () => {
+  const s = await setup();
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "x" }, { beforeDispatch: async () => { await s.services.repository.close(); } })).rejects.toThrow("closed");
+  expect(s.callTool).not.toHaveBeenCalled();
+});
+
 test.each(["unknown", "role", "missing", "wrong-type", "extra", "write", "ungranted", "disabled", "no-bridge", "unsupported-schema", "nested"])("%s blocks before SDK dispatch", async (scenario) => {
   const s = await setup({ write: scenario === "write", ...(scenario === "ungranted" ? { roles: ["Platform Admin"] } : {}),
     ...(scenario === "unsupported-schema" ? { schema: { type: "object", allOf: [{ type: "object" }] } } : {}),

@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "verify:firestore-records": "node --import tsx/esm scripts/verify-firestore-records.mjs",
+    "verify:firestore-runtime": "node --import tsx/esm scripts/verify-firestore-runtime.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

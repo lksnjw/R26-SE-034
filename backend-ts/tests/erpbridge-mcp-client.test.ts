@@ -48,6 +48,20 @@ test("a synchronous SDK entry fence can deny after the awaited checkpoint withou
   await f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity); expect(sdk.callTool).toHaveBeenCalledOnce();
 });
 
+test("session-wide storage guard denies direct discovery/policy and governed calls even without a broker hook", async () => {
+  const sdk = fakeSdk(), f = await fixture(sdk);
+  await f.validator.repository.close();
+  await expect(f.session.listTools()).rejects.toThrow("closed"); await expect(f.session.callToolDirect("check_policy", {})).rejects.toThrow("closed");
+  await expect(f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity)).rejects.toThrow("closed");
+  expect(sdk.listTools).not.toHaveBeenCalled(); expect(sdk.callTool).not.toHaveBeenCalled();
+});
+
+test("repository close after an awaited SDK checkpoint denies session entry without relying on a caller guard", async () => {
+  const sdk = fakeSdk(), f = await fixture(sdk);
+  await expect(f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity, undefined, () => f.validator.repository.close())).rejects.toThrow("closed");
+  expect(sdk.callTool).not.toHaveBeenCalled();
+});
+
 test("capability expiry is checked after checkpoint waits, not only before them", async () => {
   const sdk = fakeSdk(), f = await fixture(sdk); vi.useFakeTimers();
   await expect(f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity, undefined, async () => { vi.setSystemTime(Date.now() + 30_001); })).rejects.toThrow("expired");

@@ -60,17 +60,22 @@ export class ChatJobQueue {
   readonly #worker = `chat-worker-${randomBytes(12).toString("hex")}`;
   #closed = false; #started = false; #pumping = false; #scheduled = false;
   #controller: AbortController | undefined; #activeId: string | undefined;
+  #stalled = false;
+  readonly #unobserve: () => void;
   get closed() { return this.#closed; }
   constructor(readonly services: HandlerServices) {
     if (!supportsChatJobs(services)) throw new HandlerFailure(503, "Storage does not support a verified single-writer chat queue", { code: "CHAT_QUEUE_STORAGE_UNSUPPORTED" });
     const key = services.repository.persistence === null ? randomBytes(32).toString("base64") : services.config.storageEncryptionKey;
     this.#codec = new AESGCMCodec(key); this.#key = decodeEncryptionKey(key);
+    this.#unobserve = services.repository.observeCommits({ committed: () => {}, unavailable: () => {
+      this.#stalled = true; this.#controller?.abort(new Error("Chat storage authority is unavailable; no replay is allowed"));
+    } });
   }
   private fingerprint(data: unknown) { return createHmac("sha256", this.#key).update(canonicalJSONBytes(data)).digest("hex"); }
   private connection() { return this.fingerprint({ binding: this.services.erpbridgeSession?.admissionBinding ?? null, roles: this.services.config.erpbridgeRoleMap }); }
   private contracts() { return this.fingerprint(this.services.registries.snapshot().tools); }
   async admit(sessionId: string, user: CurrentUser, raw: Record<string, unknown>, traceId: string) {
-    if (this.#closed) throw new HandlerFailure(503, "Chat worker is shutting down");
+    if (this.#closed || this.#stalled) throw new HandlerFailure(503, "Chat worker storage is unavailable or shutting down");
     const key = stringValue(raw.idempotencyKey);
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new HandlerFailure(400, "Provide a 16–128 character chat idempotency key", { code: "CHAT_JOB_KEY_REQUIRED" });
     const content = (stringValue(raw.content) || stringValue(raw.message)).trim();
@@ -145,10 +150,10 @@ export class ChatJobQueue {
     }
     delete op.inputCiphertext; event(state, op, "operation.recovery_required"); audit(state, op, "chat.operation.recovery_required");
   }
-  kick() { if (this.#closed || this.#scheduled || this.#pumping) return; this.#scheduled = true; setImmediate(() => { this.#scheduled = false; void this.pump(); }); }
+  kick() { if (this.#closed || this.#stalled || this.#scheduled || this.#pumping) return; this.#scheduled = true; setImmediate(() => { this.#scheduled = false; void this.pump(); }); }
   private async pump() {
-    if (this.#closed || this.#pumping) return; this.#pumping = true;
-    try { while (!this.#closed) {
+    if (this.#closed || this.#stalled || this.#pumping) return; this.#pumping = true;
+    try { while (!this.#closed && !this.#stalled) {
       const id = await this.services.repository.read(state => Object.values(state.chatOperations).filter(op => op.status === "QUEUED").sort((a,b) => a.createdAt.localeCompare(b.createdAt))[0]?.id);
       if (!id) break; await this.process(id);
     } } catch { /* A lost claim acknowledgement stops the pump; no hot loop or replay. */ }
@@ -267,7 +272,7 @@ export class ChatJobQueue {
     return publicChatOperation(op);
   }
   async stop() {
-    this.#closed = true; this.#controller?.abort();
+    if (this.#closed) return; this.#closed = true; this.#unobserve(); this.#controller?.abort();
     if (this.#activeId) await this.services.repository.mutate(state => { const op = state.chatOperations[this.#activeId!]; if (op?.status === "RUNNING") this.reconcile(state, op, "WORKER_SHUTDOWN"); });
   }
 }

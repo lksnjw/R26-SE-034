@@ -45,6 +45,9 @@ export function createGovernedMCPClient(options: {
   fetchImplementation?: typeof fetch;
 }): GovernedMCPClient {
   const fetchImplementation = options.fetchImplementation ?? fetch;
+  // A minted capability does not prove the current storage writer still owns
+  // dispatch. Capture the trusted guard before any caller checkpoint awaits.
+  const assertStorageAuthority = options.validator.repository.assertAuthority.bind(options.validator.repository);
 
   // This is intentionally closure-private. No module export can send MCP HTTP.
   /*******************************************************************************
@@ -69,6 +72,7 @@ export function createGovernedMCPClient(options: {
       parameterBytes,
       Buffer.from("}"),
     ]);
+    assertStorageAuthority();
     const response = await fetchImplementation(
       `${options.baseURL}/tools/execute`,
       {
@@ -104,11 +108,14 @@ export function createGovernedMCPClient(options: {
       beforeDispatch?: () => Promise<void>,
       assertDispatch?: () => void,
     ): Promise<Record<string, unknown>> {
+      assertStorageAuthority();
       const captured = structuredClone(parameters), capturedIdentity = structuredClone(identity);
       const parameterBytes = canonicalJSONBytes(captured);
       if (beforeDispatch) await beforeDispatch();
       if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+      assertStorageAuthority();
       assertDispatch?.();
+      assertStorageAuthority();
       options.validator.verifyAndConsumeCapability(
         capability,
         action,
@@ -116,6 +123,7 @@ export function createGovernedMCPClient(options: {
         capturedIdentity,
       );
       if (options.mode === "mock") {
+        assertStorageAuthority();
         if (action === "demo.echo")
           return { action: "demo.echo", mock: true, echo: { ...captured } };
         if (action === "fetch_attendance")
