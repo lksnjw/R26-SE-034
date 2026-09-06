@@ -38,6 +38,12 @@ export const workflowService = {
   async command(id, revision, command) {
     return unwrap(await apiClient.post(`/workflows/${id}/commands`, { baseVersion: revision.version, baseHash: revision.contentHash, command, ...(revision.proposalId ? { proposalId: revision.proposalId } : {}) }));
   },
+  async editHistory(id, revision, beforeId) {
+    return unwrap(await apiClient.get(`/workflows/${id}/versions`, { params: { view: "edit-history", baseVersion: revision.version, baseHash: revision.contentHash, ...(beforeId ? { beforeId } : {}) } }));
+  },
+  async editHistoryVersion(id, revision, entry) {
+    return unwrap(await apiClient.get(`/workflows/${id}/versions`, { params: { view: "edit-history", baseVersion: revision.version, baseHash: revision.contentHash, versionId: entry.id, contentHash: entry.contentHash } }));
+  },
   async proposeNode(id, revision, nodeId, prompt, sessionId, model) {
     return unwrap(await apiClient.post(`/workflows/${id}/node-proposals`, { baseVersion: revision.version, baseHash: revision.contentHash, nodeId, prompt, ...(sessionId ? { sessionId } : {}), ...(model ? { model } : {}) }, { timeout: 60000 }));
   },

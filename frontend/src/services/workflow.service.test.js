@@ -2,6 +2,13 @@ import { afterEach, expect, jest, test } from "@jest/globals";
 import { apiClient } from "../config/axios";
 import { workflowService } from "./workflow.service";
 afterEach(() => jest.restoreAllMocks());
+test("history summaries and explicit snapshots carry current revision and exact saved target", async () => {
+  const get = jest.spyOn(apiClient, "get").mockResolvedValue({ data: { data: {} } }), revision = { version: 4, contentHash: "current" };
+  await workflowService.editHistory("flow", revision, "older");
+  expect(get).toHaveBeenLastCalledWith("/workflows/flow/versions", { params: { view: "edit-history", baseVersion: 4, baseHash: "current", beforeId: "older" } });
+  await workflowService.editHistoryVersion("flow", revision, { id: "saved", contentHash: "saved-hash" });
+  expect(get).toHaveBeenLastCalledWith("/workflows/flow/versions", { params: { view: "edit-history", baseVersion: 4, baseHash: "current", versionId: "saved", contentHash: "saved-hash" } });
+});
 test("iteration fixtures use the explicit v2 profile with unchanged revision and dry-run fences", async () => {
   const post = jest.spyOn(apiClient, "post").mockResolvedValue({ data: { data: {} } }); const outputs = { "each/0/read": { content: [] } };
   await workflowService.simulate("flow", { version: 2, contentHash: "hash" }, { rows: [] }, outputs, "read-fixtures/v2");

@@ -9,6 +9,16 @@ jest.unstable_mockModule("../../utils/workflowCanvas.utils", () => ({ peekWorkfl
 const { default: ChatWindow } = await import("./ChatWindow");
 afterEach(() => { cleanup(); sessionStorage.clear(); });
 
+test("pending selected-node context retains text and cannot fall through to a general chat request", async () => {
+  const onSend = jest.fn(), view = render(<ChatWindow messages={[]} onSend={onSend} nodeContext={{ nodeId: "each", label: "Collection each", version: 4, pending: true }} draftStorageKey="scope.pending" />);
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Edit this collection" } });
+  expect(screen.getByRole("button", { name: "Send message" }).disabled).toBe(true);
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", shiftKey: false }); expect(onSend).not.toHaveBeenCalled();
+  expect(screen.getByRole("textbox").value).toBe("Edit this collection"); expect(screen.queryByRole("button", { name: "Daily invoice report" })).toBeNull();
+  view.rerender(<ChatWindow messages={[]} onSend={onSend} nodeContext={{ nodeId: "each", label: "Collection each", version: 4, pending: false }} draftStorageKey="scope.pending" />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send message" }).disabled).toBe(false));
+});
+
 test("keeps unsent draft across leaving and returning to workspace", () => {
   const view = render(<ChatWindow messages={[]} draftStorageKey="draft.account.session" />);
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Draft report" } });

@@ -69,6 +69,7 @@ function ChatPage() {
     const creating = !sid;
     if (creating) setPendingDraftKey(draftKey);
     try {
+      if (activeNodeContext?.pending) throw new Error("Selected-node context is refreshing. Reload the workflow before sending.");
       if (activeNodeContext && sid) {
         const result = await chat.send(text, sid, { ...(options.model ? { model: options.model } : {}), nodeContext: {
           workflowId: activeNodeContext.workflowId, nodeId: activeNodeContext.nodeId,

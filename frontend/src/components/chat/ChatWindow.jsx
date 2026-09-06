@@ -85,6 +85,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
   const [sendError, setSendError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const busy = loading || submitting;
+  const scopePending = Boolean(nodeContext?.pending);
   useEffect(() => { writeWorkspaceValue(draftStorageKey, draft); }, [draftStorageKey, draft]);
   const modelStorageKey = draftStorageKey ? `${draftStorageKey}.model` : undefined;
   const [selectedModel, setSelectedModel] = useState(() => savedModel || readWorkspaceValue(modelStorageKey));
@@ -146,7 +147,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
  ******************************************************************************/
   const handleSend = useCallback(async () => {
     const text = draft.trim();
-    if (!text || loading || submitting) return;
+    if (!text || loading || submitting || scopePending) return;
     setSubmitting(true);
     setSendError("");
     try {
@@ -162,7 +163,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
     }
     // refocus after send
     setTimeout(() => inputRef.current?.focus(), 50);
-  }, [draft, loading, submitting, onSend, selectedModel, draftStorageKey]);
+  }, [draft, loading, submitting, scopePending, onSend, selectedModel, draftStorageKey]);
 
 /*******************************************************************************
  * Function: handleKeyDown
@@ -195,9 +196,11 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
       </div>
 
       {nodeContext && <div aria-label="Chat node editing context" className="flex shrink-0 items-center gap-3 border-b border-primary/20 bg-primary/5 px-4 py-3">
-        <div className="min-w-0 flex-1"><p className="text-xs font-semibold">Editing node · {nodeContext.nodeId}</p><p className="mt-1 text-[10px] text-gray-500">{nodeContext.label} · draft v{nodeContext.version}. Messages propose changes only to this node.</p></div>
+        <div className="min-w-0 flex-1"><p className="text-xs font-semibold">Editing node · {nodeContext.nodeId}</p><p className="mt-1 text-[10px] text-gray-500">{nodeContext.label} · {nodeContext.version ? `draft v${nodeContext.version}` : "saved revision loading"}. Messages propose changes only to this node.</p></div>
         <button type="button" aria-label="Exit node editing" onClick={onClearNodeContext} disabled={busy} className="rounded p-1 text-gray-500"><Icon icon="lucide:x" /></button>
       </div>}
+
+      {scopePending && <p role="status" className="shrink-0 px-4 py-2 text-xs text-gray-500">Refreshing selected-node context. Your text is kept; reload the workflow if this does not finish. No unscoped request will be sent.</p>}
 
       {/* ── Workflow edit context banner ── */}
       {editContext && !nodeContext && (
@@ -315,7 +318,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
                   type="button"
                   aria-label="Send message"
                   onClick={handleSend}
-                  disabled={busy || !draft.trim()}
+                  disabled={busy || scopePending || !draft.trim()}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary text-white transition hover:bg-primary/90 disabled:opacity-40"
                 >
                   {loading

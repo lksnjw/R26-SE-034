@@ -17,6 +17,7 @@ import { prepareCompiledExecution } from "../../workflows/read-compilation-lifec
 import { supportsCollectionReads } from "../../runner/read-collection-admission.js";
 import { readAuthoringContract } from "../../workflows/read-authoring.js";
 import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
+import { draftHistorySummary, resolveDraftCommand, saveDraftRevision } from "../../workflows/draft-history.js";
 import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
@@ -41,6 +42,7 @@ function ownedProposal(state: RepositoryState, actorId: string, workflowId: stri
 }
 
 export async function handleWorkflowCommand(kind: "commands" | "node-proposals" | "readiness", request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
+  let draftSaveAttempted = false;
   try {
     const workflowId = String((request.params as { id: string }).id);
     const current = await services.repository.read((state) => structuredClone(state.workflows[workflowId] ?? null));
@@ -70,7 +72,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       if (compilation.state === "BLOCKED") issues.push("Published execution artifact needs current capability review and explicit re-publication");
       const canAttempt = user.permissions.some((permission) => ["workflow:run", "workflow:run_own"].includes(permission)) &&
         (user.permissions.includes("workflow:run") || current.owner.id === user.id || (current.assignedUserIds ?? []).includes(user.id));
-      const authoring = await services.repository.readAuthoritative(state => {
+      const workspace = await services.repository.readAuthoritative(state => {
         assertActorAuthority(state, user);
         const fresh = state.workflows[workflowId];
         if (!fresh || !permitted(fresh, user, false)) throw new HandlerFailure(404, "Workflow not found");
@@ -78,10 +80,12 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         if (registryHash !== services.registries.hash()) throw new HandlerFailure(409, "Registry changed during readiness. Reload before continuing", { code: "READINESS_CONTEXT_CHANGED" });
         let blueprint;
         try { blueprint = parseWorkflowYAMLStrict(current.yaml); }
-        catch { return { profile: "read-authoring/v1", registryHash: services.registries.hash(), nodes: [], reason: "Workflow source cannot be parsed; existing values are preserved" }; }
-        return readAuthoringContract(blueprint, services.registries.snapshot().tools, user.role, services.registries.hash());
+        catch { return { authoring: { profile: "read-authoring/v1", registryHash: services.registries.hash(), nodes: [], reason: "Workflow source cannot be parsed; existing values are preserved" }, editHistory: draftHistorySummary(state, fresh) }; }
+        return { authoring: readAuthoringContract(blueprint, services.registries.snapshot().tools, user.role, services.registries.hash()), editHistory: draftHistorySummary(state, fresh) };
       });
+      const { authoring, editHistory } = workspace;
       return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation, authoring,
+        editHistory,
         can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
         authorization: "rechecked_at_dispatch", executionProfile: "receipt" in compilation && compilation.receipt?.schemaVersion === "workflow-read-ir/v4" ? "collection-read-v1" : "executionProfile" in authoring ? authoring.executionProfile : "sequential-read-v1" }, "Readiness checked", { traceId }));
@@ -140,10 +144,16 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
     const parsed = requestSchema.safeParse(request.body);
     if (!parsed.success) throw new HandlerFailure(400, "Invalid workflow command");
     requireBase(current, parsed.data.baseVersion, parsed.data.baseHash);
-    const yaml = apply(current.yaml, parsed.data.command);
+    const yaml = await services.repository.readAuthoritative(state => {
+      const fresh = state.workflows[workflowId];
+      if (!fresh) throw new HandlerFailure(404, "Workflow not editable");
+      assertCurrentWorkflowEditor(state, fresh, user); requireBase(fresh, parsed.data.baseVersion, parsed.data.baseHash);
+      return resolveDraftCommand(state, fresh, parsed.data.command);
+    });
     if (yaml.length > 200000) throw new HandlerFailure(422, "Resulting draft exceeds supported limits");
     const validation = validateWorkspaceDraft("WorkflowCommand", yaml, user.role, services.validator, services.registries.snapshot().tools);
-    const updated = await services.repository.mutate((state) => {
+    draftSaveAttempted = parsed.data.command.type !== "discardProposal";
+    const saved = await services.repository.mutate((state) => {
       const fresh = state.workflows[workflowId];
       if (!fresh || !permitted(fresh, user, true)) throw new HandlerFailure(404, "Workflow not editable");
       const editor = assertCurrentWorkflowEditor(state, fresh, user);
@@ -153,7 +163,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         item.status = "DISCARDED"; item.resolvedAt = new Date().toISOString(); item.resolvedBy = user.id;
         chat.updatedAt = String(item.resolvedAt);
         appendAudit(state, editor, "workflow.proposal.discard", "workflow", workflowId, {}, { proposalId: item.id }, request);
-        return structuredClone(fresh);
+        return { workflow: structuredClone(fresh), editHistory: draftHistorySummary(state, fresh) };
       }
       if (parsed.data.proposalId) {
         const { item, chat } = ownedProposal(state, user.id, workflowId, parsed.data.proposalId);
@@ -164,23 +174,17 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         item.resolvedAt = new Date().toISOString(); item.resolvedBy = user.id; chat.updatedAt = String(item.resolvedAt);
       }
       const beforeHash = workflowContentHash(fresh.yaml);
-      fresh.yaml = yaml; fresh.draftVersion += 1; fresh.canRun = false;
-      const blueprint = parseWorkflowYAMLStrict(yaml);
-      fresh.name = blueprint.name; fresh.description = blueprint.description ?? ""; fresh.steps = blueprint.steps.length;
-      fresh.trigger = blueprint.trigger; fresh.status = validation.passed ? "PENDING" : "draft-unvalidated";
-      fresh.updatedAt = new Date().toISOString(); delete fresh.canvas;
-      // An edit invalidates proposal acceptance, but never removes approval nodes.
-      const approvals = blueprint.steps.filter((step) => step.kind === "approval").map((step) => ({ stepId: step.id, description: step.description ?? "Runtime approval checkpoint" }));
-      fresh.pendingGenerationApproval = approvals.length ? { steps: approvals, requestedAt: fresh.updatedAt } : null;
-      const versions = state.versions[workflowId] ?? [];
-      versions.push({ id: nextID(state, "ver"), workflowId, version: fresh.draftVersion, artifactState: "DRAFT", yaml, createdAt: fresh.updatedAt, createdBy: { id: user.id, name: user.name } });
-      state.versions[workflowId] = versions;
+      saveDraftRevision(state, fresh, yaml, parsed.data.command, editor, validation.passed);
       appendAudit(state, editor, "workflow.command", "workflow", workflowId, { contentHash: beforeHash }, { contentHash: workflowContentHash(yaml), command: parsed.data.command.type, version: fresh.draftVersion, ...(parsed.data.proposalId ? { proposalId: parsed.data.proposalId } : {}) }, request);
-      return structuredClone(fresh);
+      return { workflow: structuredClone(fresh), editHistory: draftHistorySummary(state, fresh) };
     });
-    return reply.send(ok({ ...record(updated), validation }, parsed.data.command.type === "discardProposal" ? "Proposal discarded; draft unchanged" : "Draft saved; not published or executed", { traceId }));
+    const { workflow: updated, editHistory } = saved;
+    return reply.send(ok({ ...record(updated), validation, editHistory }, parsed.data.command.type === "discardProposal" ? "Proposal discarded; draft unchanged" : "Draft saved; not published or executed", { traceId }));
   } catch (error) {
     if (error instanceof HandlerFailure) return reply.status(error.status).send(fail(error.message, error.meta));
+    if (draftSaveAttempted) return reply.status(503).send(fail("Draft save outcome is unconfirmed. Reload authoritative storage before another edit; no automatic retry was sent", { code: "DRAFT_SAVE_UNCONFIRMED" }));
+    try { services.repository.assertAuthority(); }
+    catch { return reply.status(503).send(fail("Authoritative workflow storage is unavailable. Refresh saved history before another edit", { code: "WORKFLOW_STORAGE_UNAVAILABLE" })); }
     return reply.status(422).send(fail("Workflow command could not be parsed; nothing was changed", null));
   }
 }

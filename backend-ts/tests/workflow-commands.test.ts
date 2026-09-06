@@ -58,6 +58,100 @@ test("scoped node edit preserves unrelated nodes and control flow and creates a 
   expect(state.executions).toEqual({}); expect(s.fetchImplementation).not.toHaveBeenCalled();
 });
 
+const historyURL = (value: { version: number; contentHash: string }, extra = "") => `/api/workflows/report/versions?view=edit-history&baseVersion=${value.version}&baseHash=${value.contentHash}${extra}`;
+test("saved history undo/redo restores exact content as new nonrunnable revisions and never edits publications or executes", async () => {
+  const s = await setup();
+  const changed = (await s.edit({ type: "updateNode", nodeId: "first", patch: { description: "Changed label" } })).json().data;
+  expect(changed.editHistory).toMatchObject({ undoDepth: 1, redoDepth: 0 });
+  const entries = (await s.app.inject({ method: "GET", url: historyURL(changed), headers: s.headers() })).json().data;
+  expect(entries.entries).toHaveLength(2); expect(JSON.stringify(entries)).not.toContain('"yaml"');
+  const source = await s.app.inject({ method: "GET", url: historyURL(changed, `&versionId=${entries.entries[1].id}&contentHash=${entries.entries[1].contentHash}`), headers: s.headers() });
+  expect(source.json().data.yaml).toBe(yaml);
+  const undone = (await s.edit({ type: "undoDraft", versionId: changed.editHistory.undoTarget }, changed.version, changed.contentHash)).json().data;
+  expect(undone).toMatchObject({ version: 3, yaml, publishedVersion: 1, canRun: false, editHistory: { undoDepth: 0, redoDepth: 1 } });
+  const redone = (await s.edit({ type: "redoDraft", versionId: undone.editHistory.redoTarget }, undone.version, undone.contentHash)).json().data;
+  expect(redone).toMatchObject({ version: 4, yaml: changed.yaml, canRun: false, editHistory: { undoDepth: 1, redoDepth: 0 } });
+  const state = await s.repository.snapshot(); expect(state.versions.report![0]!.yaml).toBe(yaml);
+  expect(state.versions.report!.filter(value => value.change).map(value => (value.change as any).type)).toEqual(["baseline", "updateNode", "undoDraft", "redoDraft"]);
+  expect(state.executions).toEqual({}); expect(s.fetchImplementation).not.toHaveBeenCalled();
+});
+
+test("editing after undo abandons only the redo cursor, preserving the abandoned saved revision for explicit restoration", async () => {
+  const s = await setup(), change = (await s.edit({ type: "updateNode", nodeId: "first", patch: { description: "Branch A" } })).json().data;
+  const undone = (await s.edit({ type: "undoDraft", versionId: change.editHistory.undoTarget }, change.version, change.contentHash)).json().data;
+  const branch = (await s.edit({ type: "updateNode", nodeId: "first", patch: { description: "Branch B" } }, undone.version, undone.contentHash)).json().data;
+  expect(branch.editHistory.redoDepth).toBe(0);
+  const invalidRedo = await s.edit({ type: "redoDraft", versionId: undone.editHistory.redoTarget }, branch.version, branch.contentHash);
+  expect(invalidRedo.statusCode).toBe(409);
+  const old = (await s.repository.snapshot()).versions.report!.find(value => value.yaml === change.yaml)!;
+  const restored = await s.edit({ type: "restoreVersion", versionId: old.id, contentHash: workflowContentHash(change.yaml) }, branch.version, branch.contentHash);
+  expect(restored.statusCode, restored.body).toBe(200); expect(restored.json().data.yaml).toBe(change.yaml);
+  expect(restored.json().data).toMatchObject({ version: 5, canRun: false });
+});
+
+test("stale base, wrong undo target and tampered history cannot overwrite the draft", async () => {
+  const s = await setup(), changed = (await s.edit({ type: "updateNode", nodeId: "first", patch: { description: "Changed" } })).json().data;
+  for (const [command, version, hash] of [
+    [{ type: "undoDraft", versionId: changed.editHistory.undoTarget }, 1, workflowContentHash(yaml)],
+    [{ type: "undoDraft", versionId: "wrong" }, changed.version, changed.contentHash],
+    [{ type: "restoreVersion", versionId: changed.editHistory.undoTarget, contentHash: changed.contentHash }, changed.version, changed.contentHash],
+  ] as const) expect((await s.edit(command, version, hash)).statusCode).toBe(409);
+  await s.repository.mutate(state => { state.versions.report!.find(value => value.id === changed.editHistory.undoTarget)!.yaml = yaml.replace("original", "tampered"); });
+  const before = await s.repository.snapshot(), denied = await s.edit({ type: "undoDraft", versionId: changed.editHistory.undoTarget }, changed.version, changed.contentHash);
+  expect(denied.statusCode).toBe(409); expect(denied.json().meta.code).toBe("DRAFT_HISTORY_INVALID");
+  expect((await s.repository.snapshot()).workflows).toEqual(before.workflows);
+});
+
+test("history rejects other workflow IDs, duplicate version IDs and missing or changed scopes", async () => {
+  const s = await setup(), changed = (await s.edit({ type: "updateNode", nodeId: "first", patch: { description: "Saved" } })).json().data;
+  await s.repository.mutate(state => { state.versions.other = [{ id: "foreign", workflowId: "other", version: 1, yaml, artifactState: "DRAFT" }]; });
+  expect((await s.edit({ type: "restoreVersion", versionId: "foreign", contentHash: workflowContentHash(yaml) }, changed.version, changed.contentHash)).statusCode).toBe(409);
+  expect((await s.app.inject({ method: "GET", url: historyURL(changed), headers: s.headers("client") })).statusCode).toBe(404);
+  expect((await s.app.inject({ method: "GET", url: historyURL({ ...changed, version: 1 }), headers: s.headers() })).statusCode).toBe(409);
+  await s.repository.mutate(state => { const base = state.versions.report!.find(value => value.id === changed.editHistory.undoTarget)!; state.versions.report!.push(structuredClone(base)); });
+  const denied = await s.edit({ type: "undoDraft", versionId: changed.editHistory.undoTarget }, changed.version, changed.contentHash);
+  expect(denied.statusCode).toBe(409); expect(denied.json().meta.code).toBe("DRAFT_HISTORY_INVALID");
+});
+
+test("older history is paged in bounded stable server order without private compilation or workflow source", async () => {
+  const s = await setup(); let current = { version: 1, contentHash: workflowContentHash(yaml) };
+  for (let index = 0; index < 24; index++) current = (await s.edit({ type: "updateNode", nodeId: "first", patch: { description: String(index) } }, current.version, current.contentHash)).json().data;
+  const first = (await s.app.inject({ method: "GET", url: historyURL(current), headers: s.headers() })).json().data;
+  expect(first.entries).toHaveLength(20); expect(first.total).toBe(25); expect(first.entries[0].version).toBe(25);
+  const next = (await s.app.inject({ method: "GET", url: historyURL(current, `&beforeId=${first.nextBeforeId}`), headers: s.headers() })).json().data;
+  expect(next.entries.map((value: any) => value.version)).toEqual([5, 4, 3, 2, 1]); expect(next.nextBeforeId).toBeNull();
+  expect(JSON.stringify(first)).not.toMatch(/compiledRead|editHistory|"yaml"/);
+});
+
+test("legacy source replacement and version restore now record history and clear run readiness", async () => {
+  const s = await setup();
+  const updatedSource = stringify({ ...blueprint, description: "Source editor replacement" });
+  const replacement = await s.app.inject({ method: "PUT", url: "/api/workflows/report/yaml", headers: s.headers(), payload: { yaml: updatedSource, baseVersion: 1, baseHash: workflowContentHash(yaml) } });
+  expect(replacement.statusCode, replacement.body).toBe(200);
+  const state = await s.repository.snapshot(), baseline = state.versions.report!.find(value => value.change && (value.change as any).type === "baseline")!;
+  expect(state.workflows.report).toMatchObject({ draftVersion: 2, canRun: false });
+  const restored = await s.app.inject({ method: "POST", url: `/api/workflows/report/restore/${baseline.id}`, headers: s.headers(), payload: { baseVersion: 2, baseHash: workflowContentHash(updatedSource) } });
+  expect(restored.statusCode, restored.body).toBe(200); expect(restored.json().data).toMatchObject({ draftVersion: 3, canRun: false, publishedVersion: 1 });
+  expect((await s.repository.snapshot()).versions.report!.at(-1)?.change).toEqual({ type: "restoreVersion", sourceVersionId: baseline.id });
+  expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(yaml);
+  expect(s.fetchImplementation).not.toHaveBeenCalled();
+});
+
+test("a lost command acknowledgement never claims the already-saved draft was unchanged or retries it", async () => {
+  const s = await setup(), mutate = s.repository.mutate.bind(s.repository); let lost = false;
+  vi.spyOn(s.repository, "mutate").mockImplementation(async mutation => {
+    const result = await mutate(mutation);
+    if (!lost && (await s.repository.snapshot()).workflows.report!.draftVersion === 2) { lost = true; throw new Error("Synthetic committed response lost"); }
+    return result;
+  });
+  const response = await s.edit({ type: "updateNode", nodeId: "first", patch: { description: "Actually saved" } });
+  expect(response.statusCode, response.body).toBe(503); expect(response.json().meta.code).toBe("DRAFT_SAVE_UNCONFIRMED");
+  expect(response.json().message).not.toContain("nothing was changed");
+  expect((await s.repository.snapshot()).workflows.report!.draftVersion).toBe(2);
+  expect((await s.edit({ type: "updateNode", nodeId: "first", patch: { description: "Actually saved" } })).statusCode).toBe(409);
+  expect((await s.repository.snapshot()).versions.report!.filter(value => value.version === 2)).toHaveLength(1);
+});
+
 async function conditionSetup(output: unknown = { predicate: { kind: "literal", value: false } }) {
   const s = await setup(output);
   const source = stringify({ name: "Conditional report", trigger: { type: "manual" }, steps: ["first", "last"].map(id => ({ id, action: "demo.echo", parameters: { value: id } })),

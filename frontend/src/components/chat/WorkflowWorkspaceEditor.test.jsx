@@ -33,6 +33,36 @@ async function open(props = {}) {
 }
 async function selectNode() { fireEvent.click(screen.getByRole("button", { name: /01 first/ })); }
 
+test("reopened workspace undo/redo uses saved server targets instead of remembered client YAML", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, editHistory: { profile: "draft-edit-history/v1", undoTarget: "base-snapshot", redoTarget: "saved-edit" } });
+  await open(); fireEvent.click(screen.getByRole("button", { name: "Undo workflow edit" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: record.contentHash }), { type: "undoDraft", versionId: "base-snapshot" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Redo workflow edit" }).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Redo workflow edit" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenLastCalledWith("report", expect.objectContaining({ version: 1 }), { type: "redoDraft", versionId: "saved-edit" }));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("unknown history never enables local undo and read-only users cannot activate undo/redo", async () => {
+  const view = await open(); expect(screen.getByRole("button", { name: "Undo workflow edit" }).disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "Redo workflow edit" }).disabled).toBe(true);
+  view.unmount(); await open({ canEdit: false });
+  expect(screen.queryByRole("button", { name: "Undo workflow edit" })).toBeNull(); expect(screen.queryByRole("button", { name: "Redo workflow edit" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Edit history" })).toBeTruthy();
+});
+
+test("selected structural scope stays pending rather than becoming unscoped while a saved edit's readiness refresh is held", async () => {
+  const saved = collectionRecord(); let release; const onNodeContext = jest.fn();
+  workflowService.readiness.mockResolvedValueOnce(saved).mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+  workflowService.command.mockResolvedValue({ ...saved, version: 2, editHistory: { undoTarget: "base", redoTarget: null } });
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit onNodeContext={onNodeContext} />); fireEvent.click(await screen.findByRole("button", { name: "Select collection each" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Maximum collection items" }), { target: { value: "2" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview collection edit" })); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(onNodeContext).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "each", version: 2, pending: true })));
+  expect(screen.getByRole("button", { name: "Undo workflow edit" }).disabled).toBe(true);
+  release({ ...saved, version: 2 }); await waitFor(() => expect(onNodeContext).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "each", version: 2, pending: false })));
+});
+
 function collectionRecord() {
   const s = iterationFixture();
   return { ...record, yaml: s.yaml, contentHash: s.sourceHash, authoring: { profile: "read-authoring/v1", controlFlow: s.flow, collections: [{ nodeId: "each", itemSources: [], collectSources: [] }] } };

@@ -1,5 +1,7 @@
 # TypeScript backend port
 
+Saved undo/redo and full-draft restoration use immutable server version identities, current editor/revision/hash checks and revalidation. Normal commands, legacy YAML replacement and saved-version restoration share the history helper and invalidate run readiness. A lost save acknowledgment is reported as unconfirmed, never assumed unchanged or retried. See [saved history, actual Firestore restart/fault evidence and remaining goals](../docs/DRAFT_EDIT_HISTORY_AND_RECOVERY_2026-10-06.md).
+
 Selected collection, condition and return chat edits use dedicated tools-free patch contracts; actions retain their own patch contract. Saved proposals and draft apply/readiness now include pure structural compiler validation. Exact explicit apply preserves unrelated nodes and creates a nonrunnable draft, never automatic publication/execution. See [collection-node contract, actual Firestore persistence evidence and remaining full-goal gates](../docs/COLLECTION_NODE_CHAT_AND_DRAFT_VALIDATION_2026-10-06.md).
 
 This folder contains the isolated TypeScript backend. It listens on `:8081` by default, while the reference Go backend can continue listening on `:8080`. The TypeScript runtime does not import or start the Go backend.

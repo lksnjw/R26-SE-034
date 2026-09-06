@@ -34,6 +34,9 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("updateCollection"), nodeId: nodeIdSchema, patch: collectionPatchSchema }).strict(),
   z.object({ type: z.literal("removeCollection"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("restoreDraft"), yaml: z.string().min(1).max(200000) }).strict(),
+  z.object({ type: z.literal("undoDraft"), versionId: z.string().min(1).max(128) }).strict(),
+  z.object({ type: z.literal("redoDraft"), versionId: z.string().min(1).max(128) }).strict(),
+  z.object({ type: z.literal("restoreVersion"), versionId: z.string().min(1).max(128), contentHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
   z.object({ type: z.literal("setControlFlow"), flow: readControlFlowSchema }).strict(),
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
@@ -72,6 +75,7 @@ export function assertNodeContext(state: Readonly<RepositoryState>, context: Nod
 }
 export function applyWorkflowCommand(source: string, change: z.infer<typeof workflowCommandSchema>): string {
   if (change.type === "discardProposal") return source;
+  if (change.type === "undoDraft" || change.type === "redoDraft" || change.type === "restoreVersion") throw new HandlerFailure(422, "History commands require a saved server revision");
   const blueprint = parseWorkflowYAMLStrict(change.type === "restoreDraft" ? change.yaml : source);
   if (change.type === "restoreDraft") return stringifyWorkflowYAML(blueprint);
   if (change.type === "setControlFlow") { blueprint.metadata = { ...blueprint.metadata, controlFlow: change.flow }; return stringifyWorkflowYAML(blueprint); }

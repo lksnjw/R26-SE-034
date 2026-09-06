@@ -18,7 +18,7 @@ export function parseWorkflowPreview(source) {
       ids.add(id);
       return { id, label: String(step.name ?? step.id ?? `Step ${index + 1}`), action: String(step.action ?? step.kind ?? "Unspecified action"), source: step };
     });
-    return { name: String(document.name ?? "Workflow draft"), steps, error: "" };
+    return { name: String(document.name ?? "Workflow draft"), steps, description: document.description, trigger: document.trigger, metadata: document.metadata, error: "" };
   } catch (error) {
     return { steps: [], error: `Cannot preview this draft: ${error.message}` };
   }

@@ -162,6 +162,53 @@ try {
   assert.deepEqual((await repository.snapshot()).workflows.collection_edit, saved.workflows.collection_edit); assert.equal((await repository.snapshot()).chats[chatId].messages.at(-1).artifacts.proposal.status, "APPLIED");
   assert.equal(calls.length, callsBeforeNode); log("fresh application repository/HTTP worker startup preserved chats, proposals, versions and confirmed runs without replay");
 
+  const historyReady = (await request("GET", "/api/workflows/collection_edit/readiness", undefined, 200)).data;
+  assert.equal(historyReady.editHistory.undoDepth, 1); assert.equal(historyReady.editHistory.redoDepth, 0);
+  const undoPayload = { baseVersion: historyReady.version, baseHash: historyReady.contentHash, command: { type: "undoDraft", versionId: historyReady.editHistory.undoTarget } };
+  const undone = (await request("POST", "/api/workflows/collection_edit/commands", undoPayload, 200)).data;
+  assert.equal(undone.version, 3); assert.equal(undone.yaml, collection); assert.equal(undone.canRun, false); assert.equal(undone.publishedVersion, 0); assert.equal(undone.editHistory.redoDepth, 1);
+  await request("POST", "/api/workflows/collection_edit/commands", undoPayload, 409);
+  const historyAfterUndo = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).versions, historyAfterUndo.versions);
+  const reopened = (await request("GET", "/api/workflows/collection_edit/readiness", undefined, 200)).data;
+  assert.deepEqual(reopened.editHistory, undone.editHistory);
+  const redone = (await request("POST", "/api/workflows/collection_edit/commands", { baseVersion: reopened.version, baseHash: reopened.contentHash, command: { type: "redoDraft", versionId: reopened.editHistory.redoTarget } }, 200)).data;
+  assert.equal(redone.version, 4); assert.equal(redone.yaml, applied.yaml); assert.equal(redone.canRun, false); assert.equal(redone.publishedVersion, 0);
+  const historyQuery = `view=edit-history&baseVersion=${redone.version}&baseHash=${redone.contentHash}`;
+  const history = (await request("GET", `/api/workflows/collection_edit/versions?${historyQuery}`, undefined, 200)).data;
+  assert.equal(history.total, 4); assert.equal(history.entries[0].change.type, "redoDraft"); assert(!JSON.stringify(history).includes('"yaml"'));
+  assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsBeforeOwner + 1);
+  assert.equal((await repository.snapshot()).chats[chatId].messages.at(-1).artifacts.proposal.appliedVersion, 2);
+  log("normal Firestore saved-history HTTP undo/restart/redo preserved exact collection content, immutable revisions and historical proposal provenance without publication, SDK dispatch or model calls");
+
+  // Losing an edit's COMMIT acknowledgement must not be reported as "nothing
+  // changed": the durable revision may exist while the old cache is fenced.
+  const actualHistoryTransaction = persistence.records.db.runTransaction.bind(persistence.records.db); let lostHistoryAck = false;
+  persistence.records.db.runTransaction = async (callback, options) => {
+    let activated = false;
+    const value = await actualHistoryTransaction(async transaction => {
+      const set = transaction.set; transaction.set = function (ref, ...args) { if (ref.path === persistence.records.headPath) activated = true; return set.call(this, ref, ...args); };
+      try { return await callback(transaction); } finally { transaction.set = set; }
+    }, options);
+    if (activated && !lostHistoryAck) { lostHistoryAck = true; throw new Error("Synthetic saved-history post-COMMIT acknowledgement lost"); }
+    return value;
+  };
+  const uncertainUndo = { baseVersion: redone.version, baseHash: redone.contentHash, command: { type: "undoDraft", versionId: redone.editHistory.undoTarget } };
+  const uncertainEdit = await request("POST", "/api/workflows/collection_edit/commands", uncertainUndo, 503);
+  assert(lostHistoryAck); assert.equal(uncertainEdit.meta.code, "DRAFT_SAVE_UNCONFIRMED"); assert(!uncertainEdit.message.includes("nothing was changed"));
+  persistence.records.db.runTransaction = actualHistoryTransaction;
+  await repository.recoverPersistenceState();
+  const reconciledHistory = (await request("GET", "/api/workflows/collection_edit/readiness", undefined, 200)).data;
+  assert.equal(reconciledHistory.version, 5); assert.equal(reconciledHistory.yaml, collection); assert.equal(reconciledHistory.editHistory.redoDepth, 1);
+  await request("POST", "/api/workflows/collection_edit/commands", uncertainUndo, 409);
+  assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsBeforeOwner + 1);
+  // Storage reconciliation does not silently revive stopped dispatch workers.
+  // A fresh supervised application instance is required by this runtime.
+  await request("POST", "/api/workflows/collection/run", { mode: "async-read", idempotencyKey: "firestore-history-fenced-queue-0001", input: { rows: ["must-not-enter"] } }, 503);
+  await stop(); await start(await openApplicationRepository(config));
+  assert.equal((await repository.snapshot()).workflows.collection_edit.draftVersion, 5); assert(!calls.includes("must-not-enter"));
+  log("actual post-COMMIT edit acknowledgement loss reported an unconfirmed outcome, fenced the old cache and reconciled one saved draft; repeated stale undo did not create another revision or execute anything");
+
   const entered = barrier(), release = barrier(); sdkHook = async args => { if (args.id === "cancel-a") { entered.release(); await release.promise; } };
   const cancelRun = (await request("POST", "/api/workflows/collection/run", { mode: "async-read", idempotencyKey: "firestore-runtime-cancel-fixture-0001", input: { rows: ["cancel-a", "must-not-call"] } }, 202)).data.id;
   await boundedOperation(() => entered.promise, { timeoutMs: 20_000, label: "Synthetic cancellation SDK entry" }); await request("POST", `/api/executions/${cancelRun}/cancel`, {}, 202); release.release(); sdkHook = undefined;

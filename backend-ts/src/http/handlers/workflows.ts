@@ -10,6 +10,11 @@ import { checkErpPolicy, isPolicyCheckerEnabled } from "../../governance/rbac.js
 import { handleWorkflowCommand, assertCurrentWorkflowEditor } from "./workflow-commands.js";
 import { prepareReadPublication, assertReadPublicationCurrent } from "../../workflows/read-compilation-lifecycle.js";
 import { canonicalJSONBytes } from "../../core/canonical-json.js";
+import { z } from "zod";
+import { requireWorkflowBase, workflowRevisionSchema, permittedWorkflow } from "../../workflows/commands.js";
+import { historyPage, historyVersion, saveDraftRevision, savedDraftHistory } from "../../workflows/draft-history.js";
+import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
+import { assertActorAuthority } from "./model-selection.js";
 
 export const WORKFLOW_UNHANDLED = Symbol("workflow-unhandled");
 
@@ -204,6 +209,7 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
     if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
     const publisher = assertCurrentWorkflowEditor(state, item, user);
     if (item.draftVersion !== current.draftVersion || workflowContentHash(item.yaml) !== expectedHash) throw new HandlerFailure(409, "Workflow content changed during validation");
+    const editHistory = savedDraftHistory(state, item);
     if (compilation) assertReadPublicationCurrent(compilation, services, state, item.yaml, publisher.role);
     const previous = (state.versions[id] ?? []).findLast(value => value.version === item.draftVersion && value.artifactState === "PUBLISHED");
     if (previous) {
@@ -215,7 +221,7 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
     }
     item.publishedVersion = item.draftVersion; item.canRun = Boolean(compilation); item.updatedAt = now();
     const value = { id: nextID(state, "ver"), workflowId: id, version: item.publishedVersion, artifactState: "PUBLISHED", versionNote: stringValue(body.versionNote), yaml: item.yaml, createdAt: now(), createdBy: { id: user.id, name: user.name },
-      ...(compilation ? { compiledRead: compilation.stored } : {}), executionReadiness: compilation ? "COMPILED_READ" : "UNSUPPORTED_PROFILE" };
+      ...(compilation ? { compiledRead: compilation.stored } : {}), ...(editHistory ? { editHistory, contentHash: expectedHash } : {}), executionReadiness: compilation ? "COMPILED_READ" : "UNSUPPORTED_PROFILE" };
     const versions = state.versions[id] ?? [];
     versions.push(value); state.versions[id] = versions;
     appendAudit(state, publisher, "workflow.published", "workflow", id, null, { version: item.publishedVersion, contentHash: expectedHash, semanticHash: compilation?.stored.receipt.semanticHash ?? null }, request);
@@ -294,13 +300,26 @@ async function getWorkflowYAML(request: FastifyRequest, reply: FastifyReply, use
 async function putWorkflowYAML(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body");
   const raw = stringValue(body.yaml);
+  if (raw.length > 200000) throw new HandlerFailure(422, "Workflow source exceeds supported limits");
   let blueprint; try { blueprint = parseWorkflowYAMLStrict(raw); } catch (error) { throw new HandlerFailure(422, "Workflow YAML failed validation", { error: errorText(error) }); }
+  const id = requestParam(request, "id"), current = await services.repository.readAuthoritative(state => {
+    const item = state.workflows[id]; if (!item) throw new HandlerFailure(404, "Workflow not found");
+    assertCurrentWorkflowEditor(state, item, user); return structuredClone(item);
+  });
+  if (body.baseVersion !== undefined || body.baseHash !== undefined) {
+    const revision = z.object(workflowRevisionSchema).safeParse({ baseVersion: body.baseVersion, baseHash: body.baseHash });
+    if (!revision.success) throw new HandlerFailure(400, "Invalid draft revision");
+    requireWorkflowBase(current, revision.data.baseVersion, revision.data.baseHash);
+  }
   const traceId = requestTraceId(request);
   const gate = await validateWorkflow(services, "PutWorkflowYAML", raw, user, { traceId, workflowId: requestParam(request, "id") }); if (!gate.result.passed) throw new HandlerFailure(422, "Workflow YAML failed validation", { ...gate.result, traceId });
-  const id = requestParam(request, "id");
+  const validation = validateWorkspaceDraft("PutWorkflowYAML", raw, user.role, services.validator, services.registries.snapshot().tools);
+  if (!validation.passed) throw new HandlerFailure(422, "Workflow YAML failed validation", validation);
   const workflow = await services.repository.mutate((state) => {
     const item = state.workflows[id]; if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
-    item.yaml = raw; item.steps = blueprint.steps.length; item.draftVersion += 1; item.updatedAt = now(); item.status = item.status === "draft-unvalidated" ? "PENDING" : item.status; item.canvas = canvasFromBlueprint(id, blueprint);
+    const editor = assertCurrentWorkflowEditor(state, item, user); requireWorkflowBase(item, current.draftVersion, workflowContentHash(current.yaml));
+    saveDraftRevision(state, item, raw, { type: "restoreDraft", yaml: raw }, editor, true); item.canvas = canvasFromBlueprint(id, blueprint);
+    appendAudit(state, editor, "workflow.yaml.updated", "workflow", id, { contentHash: workflowContentHash(current.yaml) }, { contentHash: workflowContentHash(raw), version: item.draftVersion }, request);
     return structuredClone(item);
   });
   return reply.send(ok(yamlRecord(workflow), "Workflow YAML updated", null));
@@ -447,6 +466,22 @@ async function putWorkflowCanvas(request: FastifyRequest, reply: FastifyReply, s
  * Returns the saved versions of a workflow.
  ******************************************************************************/
 async function workflowVersions(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
+  if ((request.query as Record<string, unknown>)?.view === "edit-history") {
+    const query = z.object({ view: z.literal("edit-history"), baseVersion: z.coerce.number().int().min(1), baseHash: workflowRevisionSchema.baseHash,
+      beforeId: z.string().min(1).max(128).optional(), versionId: z.string().min(1).max(128).optional(), contentHash: workflowRevisionSchema.baseHash.optional() }).strict().safeParse(request.query);
+    if (!query.success || Boolean(query.data.versionId) !== Boolean(query.data.contentHash)) throw new HandlerFailure(400, "Invalid edit history request");
+    const result = await services.repository.readAuthoritative(state => {
+      assertActorAuthority(state, user); const workflow = state.workflows[requestParam(request, "id")];
+      if (!workflow || !permittedWorkflow(workflow, user, false)) throw new HandlerFailure(404, "Workflow not found");
+      requireWorkflowBase(workflow, query.data.baseVersion, query.data.baseHash);
+      if (query.data.versionId && query.data.contentHash) {
+        const version = historyVersion(state, workflow, { versionId: query.data.versionId, contentHash: query.data.contentHash });
+        return { id: version.id, version: version.version, contentHash: query.data.contentHash, yaml: version.yaml, artifactState: version.artifactState === "PUBLISHED" ? "PUBLISHED" : "DRAFT" };
+      }
+      return { ...historyPage(state, workflow, query.data.beforeId), persistence: services.repository.persistence ? "server-persisted" : "memory-only" };
+    });
+    return reply.send(ok(result, "Saved edit history loaded", null));
+  }
   const id = requestParam(request, "id"); if (await visibleWorkflow(id, user, services) === null) throw new HandlerFailure(404, "Workflow not found");
   const versions = await services.repository.read((state) => state.versions[id] ?? []);
   return reply.send(ok(versions.map(version => { const compiled = version.compiledRead as { receipt?: unknown } | undefined; return { ...version, ...(compiled ? { compiledRead: compiled.receipt } : {}) }; }), "OK", null));
@@ -461,9 +496,25 @@ async function restoreWorkflowVersion(request: FastifyRequest, reply: FastifyRep
   const id = requestParam(request, "id"); const versionID = requestParam(request, "versionId");
   const snapshot = await services.repository.read((state) => ({ workflow: state.workflows[id] ?? null, version: (state.versions[id] ?? []).find((item) => item.id === versionID) ?? null }));
   if (snapshot.workflow === null) throw new HandlerFailure(404, "Workflow not found"); if (snapshot.version === null) throw new HandlerFailure(404, "Workflow version not found");
+  if (!permittedWorkflow(snapshot.workflow, user, true)) throw new HandlerFailure(404, "Workflow not found");
+  const body = request.body === undefined ? {} : bodyRecord(request); if (!body) throw new HandlerFailure(400, "Invalid request body");
+  if (body.baseVersion !== undefined || body.baseHash !== undefined) {
+    const revision = z.object(workflowRevisionSchema).safeParse({ baseVersion: body.baseVersion, baseHash: body.baseHash });
+    if (!revision.success) throw new HandlerFailure(400, "Invalid draft revision");
+    requireWorkflowBase(snapshot.workflow, revision.data.baseVersion, revision.data.baseHash);
+  }
   const raw = stringValue(snapshot.version.yaml); let blueprint; try { blueprint = parseWorkflowYAMLStrict(raw); } catch (error) { throw new HandlerFailure(422, "Workflow validation failed", { error: errorText(error) }); }
   const traceId = requestTraceId(request, snapshot.workflow.traceId); const expectedHash = workflowContentHash(raw); const gate = await validateWorkflow(services, "RestoreWorkflowVersion", raw, user, { traceId, workflowId: id }); if (!gate.result.passed) throw new HandlerFailure(422, "Workflow validation failed", { ...gate.result, traceId });
-  const workflow = await services.repository.mutate((state) => { const item = state.workflows[id]; const version = (state.versions[id] ?? []).find((value) => value.id === versionID); if (item === undefined || version === undefined) throw new HandlerFailure(404, "Workflow version not found"); if (workflowContentHash(stringValue(version.yaml)) !== expectedHash) throw new HandlerFailure(409, "Workflow version content changed during validation"); item.yaml = raw; item.steps = blueprint.steps.length; item.draftVersion += 1; item.status = "PENDING"; item.updatedAt = now(); item.canvas = canvasFromBlueprint(id, blueprint); return structuredClone(item); });
+  const validation = validateWorkspaceDraft("RestoreWorkflowVersion", raw, user.role, services.validator, services.registries.snapshot().tools);
+  if (!validation.passed) throw new HandlerFailure(422, "Workflow validation failed", validation);
+  const workflow = await services.repository.mutate((state) => {
+    const item = state.workflows[id]; if (!item) throw new HandlerFailure(404, "Workflow not found");
+    const editor = assertCurrentWorkflowEditor(state, item, user); requireWorkflowBase(item, snapshot.workflow!.draftVersion, workflowContentHash(snapshot.workflow!.yaml));
+    const command = { type: "restoreVersion" as const, versionId: versionID, contentHash: expectedHash };
+    saveDraftRevision(state, item, raw, command, editor, true); item.canvas = canvasFromBlueprint(id, blueprint);
+    appendAudit(state, editor, "workflow.version.restored", "workflow", id, { contentHash: workflowContentHash(snapshot.workflow!.yaml) }, { versionId: versionID, version: item.draftVersion, contentHash: expectedHash }, request);
+    return structuredClone(item);
+  });
   return reply.send(ok(publicWorkflow(workflow), "Workflow restored", null));
 }
 
