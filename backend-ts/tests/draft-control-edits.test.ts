@@ -70,6 +70,57 @@ test("condition guidance offers only safe preceding in-scope booleans, never sib
   expect(JSON.stringify(guidance.conditions)).not.toMatch(/api_token|secret|last/);
 });
 
+function nestedFlow() {
+  let source = edit(wrap(), { type: "wrapCollection", nodeId: "first", loopId: "each", maxItems: 3,
+    items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "array", items: [{ kind: "literal", value: "one" }] } },
+    collect: { schema: { type: "string" }, value: { kind: "literal", value: "kept" } } });
+  source = edit(source, { type: "addReturn", nodeId: "answer", output: { schema: { type: "boolean" }, value: { kind: "literal", value: false } }, beforeNodeId: null, destination: { conditionId: "gate", branch: "else" } });
+  return source;
+}
+
+test("moving a complete condition preserves both paths, nested collection, return, definitions and metadata", () => {
+  const source = nestedFlow(), before = parseWorkflowYAMLStrict(source), owned = structuredClone(tree(source).nodes[0]);
+  const next = edit(source, { type: "moveNode", nodeId: "gate", beforeNodeId: null });
+  expect(tree(next).nodes).toEqual([{ kind: "action", nodeId: "last" }, owned]);
+  expect(actionOrder(tree(next))).toEqual(["last", "first"]);
+  expect(parseWorkflowYAMLStrict(next).steps).toEqual([before.steps[1], before.steps[0]]);
+  expect(parseWorkflowYAMLStrict(next).metadata!.ownerNotes).toBe("Preserve me");
+});
+
+test("collection and return relocation use explicit scopes without flattening or changing configuration", () => {
+  let source = nestedFlow(); const collection = structuredClone((tree(source).nodes[0] as any).then.nodes[0]);
+  source = edit(source, { type: "moveNode", nodeId: "each", beforeNodeId: "last" });
+  expect(tree(source).nodes[1]).toEqual(collection);
+  expect((tree(source).nodes[0] as any).then.nodes).toEqual([]);
+  source = edit(source, { type: "moveNode", nodeId: "answer", beforeNodeId: null, destination: { loopId: "each", scope: "body" } });
+  expect((tree(source).nodes[1] as any).body.nodes.at(-1)).toMatchObject({ kind: "return", id: "answer", output: { value: { kind: "literal", value: false } } });
+  expect((tree(source).nodes[0] as any).else.nodes).toEqual([]);
+});
+
+test.each([
+  { nodeId: "gate", beforeNodeId: "first" },
+  { nodeId: "gate", beforeNodeId: null, destination: { conditionId: "gate", branch: "else" } },
+  { nodeId: "gate", beforeNodeId: null, destination: { loopId: "each", scope: "body" } },
+  { nodeId: "each", beforeNodeId: "first" },
+  { nodeId: "each", beforeNodeId: null, destination: { loopId: "each", scope: "body" } },
+  { nodeId: "each", beforeNodeId: "last", destination: { conditionId: "gate", branch: "then" } },
+  { nodeId: "answer", beforeNodeId: "answer" },
+  { nodeId: "missing", beforeNodeId: null },
+  { nodeId: "gate", beforeNodeId: "last" },
+])("self/descendant, scope-escaping, missing and no-op subtree placement rejects %j", change => {
+  const source = nestedFlow(), unchanged = parseWorkflowYAMLStrict(source);
+  expect(() => edit(source, { type: "moveNode", ...change })).toThrow();
+  expect(parseWorkflowYAMLStrict(source)).toEqual(unchanged);
+});
+
+test("moving a subtree keeps broken downstream references intact for structural validation", () => {
+  const blueprint = parseWorkflowYAMLStrict(base); blueprint.steps[1]!.parameters = { id: "{{first.structuredContent.id}}" };
+  let source = wrap(stringify(blueprint));
+  source = edit(source, { type: "moveNode", nodeId: "gate", beforeNodeId: null });
+  expect(parseWorkflowYAMLStrict(source).steps[0]!.parameters).toEqual({ id: "{{first.structuredContent.id}}" });
+  expect(() => compileReadWorkflow(source, [tool], role)).toThrow();
+});
+
 test.each([
   { type: "wrapNode", nodeId: "first", conditionId: "last", predicate: { kind: "literal", value: true }, branch: "then" },
   { type: "moveNode", nodeId: "first", beforeNodeId: "first" },

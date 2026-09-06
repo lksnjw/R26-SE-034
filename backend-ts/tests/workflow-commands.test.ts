@@ -59,6 +59,34 @@ test("scoped node edit preserves unrelated nodes and control flow and creates a 
 });
 
 const historyURL = (value: { version: number; contentHash: string }, extra = "") => `/api/workflows/report/versions?view=edit-history&baseVersion=${value.version}&baseHash=${value.contentHash}${extra}`;
+test("whole-condition canvas moves save revisioned drafts, preserve approval/content and undo without provider or execution", async () => {
+  const s = await setup();
+  const wrapped = (await s.edit({ type: "wrapNode", nodeId: "first", conditionId: "gate", predicate: { kind: "literal", value: true }, branch: "then" })).json().data;
+  const next = await s.edit({ type: "moveNode", nodeId: "gate", beforeNodeId: null }, wrapped.version, wrapped.contentHash);
+  expect(next.statusCode, next.body).toBe(200); const moved = next.json().data;
+  expect(moved).toMatchObject({ version: 3, canRun: false, publishedVersion: 1, editHistory: { undoDepth: 2 } });
+  expect(parseWorkflowYAMLStrict(moved.yaml).steps).toEqual([blueprint.steps[1], blueprint.steps[2], blueprint.steps[0]]);
+  const source = parseWorkflowYAMLStrict(moved.yaml), flow = source.metadata!.controlFlow as any;
+  expect(flow.root.nodes.at(-1)).toMatchObject({ kind: "if", id: "gate", then: { nodes: [{ kind: "action", nodeId: "first" }] }, else: { nodes: [] } });
+  const stale = await s.edit({ type: "moveNode", nodeId: "gate", beforeNodeId: "approval" }, wrapped.version, wrapped.contentHash);
+  expect(stale.statusCode).toBe(409);
+  const denied = await s.edit({ type: "moveNode", nodeId: "gate", beforeNodeId: "approval" }, moved.version, moved.contentHash, "client"); expect(denied.statusCode).toBe(403);
+  const undone = await s.edit({ type: "undoDraft", versionId: moved.editHistory.undoTarget }, moved.version, moved.contentHash);
+  expect(undone.statusCode).toBe(200); expect(undone.json().data.yaml).toBe(wrapped.yaml);
+  const state = await s.repository.snapshot(); expect(state.versions.report![0]!.yaml).toBe(yaml);
+  expect(state.workflows.report!.pendingGenerationApproval?.steps[0]?.stepId).toBe("approval");
+  expect(state.executions).toEqual({}); expect(s.fetchImplementation).not.toHaveBeenCalled();
+});
+
+test("self/descendant subtree moves fail before saving a version or modifying an audit", async () => {
+  const s = await setup(), wrapped = (await s.edit({ type: "wrapNode", nodeId: "first", conditionId: "gate", predicate: { kind: "literal", value: true }, branch: "then" })).json().data;
+  const before = await s.repository.snapshot();
+  for (const target of [{ beforeNodeId: "first" }, { beforeNodeId: null, destination: { conditionId: "gate", branch: "else" } }]) {
+    const denied = await s.edit({ type: "moveNode", nodeId: "gate", ...target }, wrapped.version, wrapped.contentHash); expect(denied.statusCode).toBe(422);
+  }
+  const after = await s.repository.snapshot(); expect(after.versions).toEqual(before.versions); expect(after.workflows).toEqual(before.workflows); expect(after.auditLogs).toEqual(before.auditLogs);
+});
+
 test("saved history undo/redo restores exact content as new nonrunnable revisions and never edits publications or executes", async () => {
   const s = await setup();
   const changed = (await s.edit({ type: "updateNode", nodeId: "first", patch: { description: "Changed label" } })).json().data;

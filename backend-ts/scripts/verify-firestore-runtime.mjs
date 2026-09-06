@@ -209,6 +209,28 @@ try {
   assert.equal((await repository.snapshot()).workflows.collection_edit.draftVersion, 5); assert(!calls.includes("must-not-enter"));
   log("actual post-COMMIT edit acknowledgement loss reported an unconfirmed outcome, fenced the old cache and reconciled one saved draft; repeated stale undo did not create another revision or execute anything");
 
+  const canvasOriginal = (await request("GET", "/api/workflows/collection_edit/readiness", undefined, 200)).data;
+  const beforeCanvasVersions = (await repository.snapshot()).versions.collection_edit;
+  // Deliberately move the collection after its dependent return: source and
+  // bindings are preserved, but current compilation must block execution.
+  const canvasMoved = (await request("POST", "/api/workflows/collection_edit/commands", { baseVersion: canvasOriginal.version, baseHash: canvasOriginal.contentHash,
+    command: { type: "moveNode", nodeId: "each", beforeNodeId: null } }, 200)).data;
+  assert.equal(canvasMoved.version, 6); assert.equal(canvasMoved.canRun, false); assert.equal(canvasMoved.validation.passed, false);
+  const movedSource = parseWorkflowYAMLStrict(canvasMoved.yaml), originalCanvasSource = parseWorkflowYAMLStrict(canvasOriginal.yaml);
+  assert.deepEqual(movedSource.steps, originalCanvasSource.steps);
+  assert.deepEqual(movedSource.metadata.controlFlow.root.nodes, [originalCanvasSource.metadata.controlFlow.root.nodes[1], originalCanvasSource.metadata.controlFlow.root.nodes[0]]);
+  assert.deepEqual((await repository.snapshot()).versions.collection_edit.slice(0, beforeCanvasVersions.length), beforeCanvasVersions);
+  await request("POST", "/api/workflows/collection_edit/commands", { baseVersion: canvasMoved.version, baseHash: canvasMoved.contentHash,
+    command: { type: "moveNode", nodeId: "each", beforeNodeId: "lookup", destination: { loopId: "each", scope: "body" } } }, 422);
+  await stop(); await start(await openApplicationRepository(config));
+  const reopenedCanvas = (await request("GET", "/api/workflows/collection_edit/readiness", undefined, 200)).data;
+  assert.equal(reopenedCanvas.yaml, canvasMoved.yaml); assert.equal(reopenedCanvas.can_attempt_run, false); assert.equal(reopenedCanvas.validation.passed, false);
+  const canvasUndo = (await request("POST", "/api/workflows/collection_edit/commands", { baseVersion: reopenedCanvas.version, baseHash: reopenedCanvas.contentHash,
+    command: { type: "undoDraft", versionId: reopenedCanvas.editHistory.undoTarget } }, 200)).data;
+  assert.equal(canvasUndo.version, 7); assert.equal(canvasUndo.yaml, canvasOriginal.yaml);
+  assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsBeforeOwner + 1); assert.equal(canvasUndo.publishedVersion, 0);
+  log("normal Firestore whole-collection canvas move retained body/configuration and broken references as a blocked saved draft; restart and explicit undo preserved exact original content without publication, SDK or model calls");
+
   const entered = barrier(), release = barrier(); sdkHook = async args => { if (args.id === "cancel-a") { entered.release(); await release.promise; } };
   const cancelRun = (await request("POST", "/api/workflows/collection/run", { mode: "async-read", idempotencyKey: "firestore-runtime-cancel-fixture-0001", input: { rows: ["cancel-a", "must-not-call"] } }, 202)).data.id;
   await boundedOperation(() => entered.promise, { timeoutMs: 20_000, label: "Synthetic cancellation SDK entry" }); await request("POST", `/api/executions/${cancelRun}/cancel`, {}, 202); release.release(); sdkHook = undefined;

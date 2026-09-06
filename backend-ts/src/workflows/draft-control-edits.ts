@@ -45,6 +45,23 @@ export function insertionScope(root: ReadSequence, beforeNodeId: string | null, 
   }
   return { block, index: block.nodes.length };
 }
+// Relocate one owned subtree, never flattening its paths/body or regenerating
+// action definitions. Resolve both endpoints before changing either block.
+export function moveDraftNode(root: ReadSequence, nodeId: string, beforeNodeId: string | null, destination?: BranchDestination): void {
+  const found = locateFlowNode(root, nodeId);
+  if (!found) reject("Selected node does not exist");
+  if (beforeNodeId === nodeId) reject("A node cannot move before itself");
+  const target = insertionScope(root, beforeNodeId, destination);
+  const ownsBlock = (node: ReadControlNode, block: ReadSequence): boolean => {
+    const children = node.kind === "if" ? [node.then, node.else] : node.kind === "foreach" ? [node.body] : [];
+    return children.some(child => child === block || child.nodes.some(nested => ownsBlock(nested, block)));
+  };
+  if (ownsBlock(found.node, target.block)) reject("A node cannot move inside its own paths or collection body");
+  const index = target.index - (target.block === found.block && target.index > found.index ? 1 : 0);
+  if (target.block === found.block && index === found.index) reject("Node is already at the selected position");
+  found.block.nodes.splice(found.index, 1);
+  target.block.nodes.splice(index, 0, found.node);
+}
 export function saveDraftFlow(blueprint: WorkflowBlueprint, root: ReadSequence): void {
   const existing = (blueprint.metadata?.controlFlow as { schemaVersion?: string } | undefined)?.schemaVersion;
   const parsed = parseReadControlFlow({ schemaVersion: loopNodes(root).length || existing === "read-control-flow/v3" ? "read-control-flow/v3" : valueNodes(root).length || existing === "read-control-flow/v2" ? "read-control-flow/v2" : "read-control-flow/v1", root });

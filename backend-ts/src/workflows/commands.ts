@@ -4,7 +4,7 @@ import { parseWorkflowYAMLStrict, stringifyWorkflowYAML, workflowContentHash } f
 import { HandlerFailure, type CurrentUser } from "../http/handlers/common.js";
 import type { RepositoryState } from "../repository/store.js";
 import { readControlFlowSchema, readPredicateSchema, structuralNodes } from "./read-control-flow.js";
-import { draftFlow, locateFlowNode, insertionScope, saveDraftFlow } from "./draft-control-edits.js";
+import { draftFlow, locateFlowNode, insertionScope, moveDraftNode, saveDraftFlow } from "./draft-control-edits.js";
 import { readMergeSchema, readReturnSchema } from "./read-values.js";
 
 export const nodeIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
@@ -131,12 +131,13 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
       const target = insertionScope(root, change.beforeNodeId, change.destination);
       target.block.nodes.splice(target.index, 0, { kind: "action", nodeId: change.node.id }); blueprint.steps.push(change.node);
     } else if (change.type === "removeNode" || change.type === "moveNode") {
-      const found = locateFlowNode(root, change.nodeId);
-      if (!found || found.node.kind !== "action") throw new HandlerFailure(422, "Selected action does not exist");
-      if (change.type === "moveNode" && change.beforeNodeId === change.nodeId) throw new HandlerFailure(422, "A node cannot move before itself");
-      found.block.nodes.splice(found.index, 1);
-      if (change.type === "removeNode") blueprint.steps = blueprint.steps.filter(step => step.id !== change.nodeId);
-      else { const target = insertionScope(root, change.beforeNodeId, change.destination); target.block.nodes.splice(target.index, 0, found.node); }
+      if (change.type === "moveNode") moveDraftNode(root, change.nodeId, change.beforeNodeId, change.destination);
+      else {
+        const found = locateFlowNode(root, change.nodeId);
+        if (!found || found.node.kind !== "action") throw new HandlerFailure(422, "Selected action does not exist");
+        found.block.nodes.splice(found.index, 1);
+        blueprint.steps = blueprint.steps.filter(step => step.id !== change.nodeId);
+      }
     }
     if (blueprint.steps.length > 200) throw new HandlerFailure(422, "Draft must have at most 200 uniquely identified nodes");
     saveDraftFlow(blueprint, root); return stringifyWorkflowYAML(blueprint);

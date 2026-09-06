@@ -1,6 +1,12 @@
 .workspace-node { transition: border-color 160ms ease, transform 160ms ease, background-color 160ms ease; }
 .workspace-node:hover { transform: translateY(-1px); }
 .workspace-reveal { animation: workspace-reveal 180ms ease-out; }
-.workspace-flow > li:not(:last-child)::after { content: ""; position: absolute; left: 28px; top: 40px; bottom: -22px; width: 1px; background: #d1d5db; }
+.workspace-placement { border-left: 2px solid transparent; transition: border-color 160ms ease, background-color 160ms ease; }
+.workspace-placement:focus-within, .workspace-placement-over { border-left-color: var(--color-primary, #4f46e5); background: rgb(99 102 241 / 0.06); }
+.workspace-move-handle[draggable="true"] { cursor: grab; }
+.workspace-move-handle:active { cursor: grabbing; }
+.workspace-flow > li.workspace-placement::after { display: none; }
+.workspace-flow > li { position: relative; }
+.workspace-flow > li:not(:last-child)::after { content: ""; position: absolute; pointer-events: none; left: 28px; top: 40px; bottom: -22px; width: 1px; background: #d1d5db; }
 @keyframes workspace-reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-@media (prefers-reduced-motion: reduce) { .workspace-node { transition: none; } .workspace-node:hover { transform: none; } .workspace-reveal { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .workspace-node, .workspace-placement { transition: none; } .workspace-node:hover { transform: none; } .workspace-reveal { animation: none; } }

@@ -425,7 +425,90 @@ test("moving an action selects a named branch scope and keeps the action ID", as
   showConditions(); await open(); await selectNode();
   fireEvent.change(screen.getByRole("combobox", { name: "Move node destination" }), { target: { value: "gate:else" } });
   fireEvent.click(screen.getByRole("button", { name: "Move to selected scope end" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  expect(screen.getByText(/references and prerequisites may need repair/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
   await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "moveNode", nodeId: "first", beforeNodeId: null, destination: { conditionId: "gate", branch: "else" } }));
+});
+
+test("direct canvas placement is preview-only, revision-bound and available by keyboard-friendly buttons", async () => {
+  await open(); fireEvent.click(screen.getByRole("button", { name: "Arrange flow" }));
+  fireEvent.click(screen.getByRole("button", { name: "Move last" }));
+  fireEvent.click(screen.getByRole("button", { name: "Place last · Main sequence · before first" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  const view = screen.getByRole("region", { name: "Node change preview" }); expect(view.querySelector("pre")).toBeNull();
+  expect(within(view).getByText("Main sequence · before first")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "moveNode", nodeId: "last", beforeNodeId: "first" }));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("whole-condition canvas moves preserve both paths in the preview and disable all own-descendant positions", async () => {
+  const flow = JSON.parse(JSON.stringify(conditionFlow)); flow.nodes.push({ kind: "return", id: "answer", output: { schema: { type: "boolean" }, value: { kind: "literal", value: false } } });
+  showConditions({ authoring: { profile: "read-authoring/v1", controlFlow: flow } }); await open();
+  fireEvent.click(screen.getByRole("button", { name: "Arrange flow" })); fireEvent.click(screen.getByRole("button", { name: "Move Condition gate" }));
+  expect(screen.getByRole("button", { name: "Place gate · Main sequence → gate · If yes · end" }).disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "Place gate · Main sequence · before Return answer" }).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Place gate · Main sequence · end" }));
+  expect(screen.getAllByText("Included in move")).toHaveLength(3);
+  expect(screen.getByRole("region", { name: "gate If yes" })).toBeTruthy(); expect(screen.getByRole("region", { name: "gate If no" })).toBeTruthy();
+  expect(workflowService.command).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "moveNode", nodeId: "gate", beforeNodeId: null }));
+});
+
+test.each(["action", "if", "return"])("insert %s at a visible branch-before-action point requires explicit preview/apply", async kind => {
+  showConditions(); await open(); fireEvent.click(screen.getByRole("button", { name: "Arrange flow" }));
+  fireEvent.click(screen.getByRole("button", { name: "Insert step · Main sequence → gate · If no · before last" }));
+  const form = screen.getByRole("form", { name: "Insert canvas step" });
+  fireEvent.change(within(form).getByRole("combobox", { name: "Canvas step type" }), { target: { value: kind } });
+  fireEvent.change(within(form).getByRole("textbox", { name: "Canvas step ID" }), { target: { value: "inserted" } });
+  if (kind === "action") fireEvent.change(within(form).getByRole("textbox", { name: "Canvas step tool" }), { target: { value: "demo.echo" } });
+  fireEvent.submit(form); expect(workflowService.command).not.toHaveBeenCalled();
+  expect(screen.getByRole("region", { name: "Node change preview" }).querySelector("pre")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), expect.objectContaining({ type: kind === "action" ? "addNode" : kind === "if" ? "addCondition" : "addReturn", beforeNodeId: "last", destination: { conditionId: "gate", branch: "else" } })));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("foreign/stale drag payload cannot create a proposal; matching revision drag remains preview-only", async () => {
+  await open(); fireEvent.click(screen.getByRole("button", { name: "Arrange flow" }));
+  const data = new Map(), dataTransfer = { setData: (key, value) => data.set(key, value), getData: key => data.get(key) || "", effectAllowed: "", dropEffect: "" };
+  fireEvent.dragStart(screen.getByRole("button", { name: "Move last" }), { dataTransfer });
+  const target = screen.getByRole("listitem", { name: "Insertion point · Main sequence · before first" });
+  const exact = data.get("application/x-workflow-node");
+  for (const bad of ["{}", "not JSON", JSON.stringify({ ...JSON.parse(exact), workflowId: "other" }), JSON.stringify({ ...JSON.parse(exact), baseVersion: 0 }), "x".repeat(1025)]) {
+    data.set("application/x-workflow-node", bad); fireEvent.drop(target, { dataTransfer }); expect(screen.queryByRole("region", { name: "Node change preview" })).toBeNull();
+  }
+  data.set("application/x-workflow-node", exact); fireEvent.drop(target, { dataTransfer });
+  expect(screen.getByRole("region", { name: "Node change preview" })).toBeTruthy(); expect(workflowService.command).not.toHaveBeenCalled();
+});
+
+test("read-only and unconfirmed structural views expose no canvas mutations or invented editable chain", async () => {
+  const view = await open({ canEdit: false }); expect(screen.queryByRole("button", { name: "Arrange flow" })).toBeNull(); view.unmount();
+  workflowService.readiness.mockResolvedValue({ ...record, yaml: yaml + "metadata:\n  controlFlow:\n    schemaVersion: unknown\n" });
+  await open(); expect(screen.getByRole("button", { name: "Arrange flow" }).disabled).toBe(true);
+  expect(screen.getByText(/not a confirmed execution layout/)).toBeTruthy(); expect(screen.queryByRole("button", { name: /^Insert step/ })).toBeNull();
+});
+
+test.each([undefined, { data: { meta: { code: "DRAFT_SAVE_UNCONFIRMED" }, message: "Unconfirmed" } }])("unconfirmed save %j fences further edits, retains preview and requires authoritative reload", async response => {
+  workflowService.command.mockRejectedValueOnce({ response, message: "Lost response" }); await open(); await selectNode();
+  fireEvent.click(screen.getByRole("button", { name: "Move to end" })); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await screen.findByText(/Edit save outcome is unconfirmed/); expect(screen.getByRole("button", { name: "Apply to draft" }).disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "Arrange flow" }).disabled).toBe(true); expect(workflowService.command).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Reload workflow" })); await waitFor(() => expect(screen.getByRole("button", { name: "Apply to draft" }).disabled).toBe(false));
+  expect(workflowService.command).toHaveBeenCalledTimes(1);
+});
+
+test("reloading a changed revision clears old placement context and retains a stale preview without enabling apply", async () => {
+  await open(); fireEvent.click(screen.getByRole("button", { name: "Arrange flow" })); fireEvent.click(screen.getByRole("button", { name: "Move last" }));
+  fireEvent.click(screen.getByRole("button", { name: "Place last · Main sequence · before first" }));
+  workflowService.readiness.mockResolvedValue({ ...record, version: 2, contentHash: `sha256:${"b".repeat(64)}` });
+  fireEvent.click(screen.getByRole("button", { name: "Reload workflow" }));
+  await screen.findByText(/This preview belongs to an older draft/);
+  expect(screen.getByRole("button", { name: "Apply to draft" }).disabled).toBe(true); expect(workflowService.command).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Move last" }).disabled).toBe(false));
+  expect(screen.queryByRole("button", { name: /^Place last/ })).toBeNull();
 });
 
 test("wrapping an action requires a reviewed preview before saving its explicit branch meaning", async () => {
