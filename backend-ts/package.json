@@ -16,6 +16,7 @@
     "generate:routes": "node scripts/generate-route-table.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "verify:firestore-records": "node --import tsx/esm scripts/verify-firestore-records.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {
