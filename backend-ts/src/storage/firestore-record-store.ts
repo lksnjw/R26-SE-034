@@ -4,9 +4,10 @@ import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { recordKey, type RuntimeRecord } from "./execution-record-layout.js";
 import { RuntimeRecordIndex } from "./runtime-record-index.js";
 import { FirestoreRecordCodec, validateFirestoreNamespace, FIRESTORE_RECORD_BOUNDS as B, type FirestoreNamespace, type EncodedFirestoreRecord, type PrivateFirestoreDocument, type RecordChunk } from "./firestore-record-codec.js";
+import { FirestoreWriterOwnership, FirestoreOwnershipFailure, type FirestoreWriterClock } from "./firestore-writer-ownership.js";
 
 type Transition = { identity: string; inputHash: string; previousRevision: number; previousFingerprint: string };
-type Head = { profile: "firestore-record-head/v1"; revision: number; records: number; chunks: number; bytes: number; fingerprint: string; transition: Transition };
+type Head = { profile: "firestore-record-head/v2"; revision: number; records: number; chunks: number; bytes: number; fingerprint: string; writerGeneration: number | null; transition: Transition };
 type Manifest = { profile: "firestore-record-manifest/v1"; key: string; hash: string; bytes: number; chunks: string[] };
 type Entry = EncodedFirestoreRecord & { manifest: PrivateFirestoreDocument };
 type View = { head: Head | null; index: RuntimeRecordIndex; entries: Map<string, Entry> };
@@ -30,13 +31,18 @@ export class FirestoreRecordStore {
   readonly #views = new WeakMap<FirestoreRecordSnapshot, View>();
   #uncertain = false;
   #closed = false;
+  #writer: FirestoreWriterOwnership | null = null;
   readonly collectionPath: string;
   readonly chunkCollectionPath: string;
   readonly headPath: string;
+  readonly writerPath: string;
+  readonly writerGenerationPath: string;
   private constructor(readonly db: Firestore, codec: FirestoreRecordCodec) {
     this.#codec = codec; const namespace = codec.namespace;
     if (db.databaseId !== namespace.databaseId) throw new Error("Firestore client and explicit namespace differ");
     this.headPath = `workspaces/${namespace.workspaceId}/lcwe_runtime/head`;
+    this.writerPath = `workspaces/${namespace.workspaceId}/lcwe_runtime/writer`;
+    this.writerGenerationPath = `workspaces/${namespace.workspaceId}/lcwe_runtime/writer_generation`;
     this.collectionPath = `${this.headPath}/lcwe_private_records`;
     this.chunkCollectionPath = `${this.headPath}/lcwe_record_chunks`;
   }
@@ -48,9 +54,33 @@ export class FirestoreRecordStore {
     return new FirestoreRecordStore(db, codec);
   }
   private assertOpen() { if (this.#closed) throw new Error("Firestore record store is closed"); }
+  async acquireWriter(options: { duration?: number; clock?: FirestoreWriterClock } = {}): Promise<void> {
+    await this.#mutex.runExclusive(async () => {
+      this.assertOpen(); if (this.#writer) throw new FirestoreOwnershipFailure();
+      const writer = new FirestoreWriterOwnership(this.db, this.#codec, options.duration, options.clock); this.#writer = writer;
+      writer.observeUnavailable(() => { this.#uncertain = true; });
+      try { await writer.acquire(); this.assertOpen(); }
+      catch (error) { this.#uncertain = true; throw error; }
+    });
+  }
+  assertWriterActive(): void {
+    this.assertOpen(); if (!this.#writer || this.#uncertain) throw new FirestoreOwnershipFailure(); this.#writer.assertActive();
+  }
+  async renewWriter(): Promise<void> {
+    this.assertOpen(); if (!this.#writer) throw new FirestoreOwnershipFailure(); await this.#writer.renew();
+  }
+  observeWriterUnavailable(observer: () => void): () => void {
+    if (!this.#writer) throw new FirestoreOwnershipFailure(); return this.#writer.observeUnavailable(observer);
+  }
+  private withWriter<T>(operation: () => Promise<T>): Promise<T> { return this.#writer ? this.#writer.withAuthority(operation) : operation(); }
+  private async assertWriterTransaction(transaction: Transaction): Promise<void> {
+    if (this.#writer) await this.#writer.assertTransaction(transaction);
+    else if ((await transaction.getAll(this.db.doc(this.writerPath), this.db.doc(this.writerGenerationPath))).some(row => row.exists)) throw new FirestoreOwnershipFailure();
+  }
   async close(): Promise<void> {
     if (this.#closed) return; this.#closed = true;
-    await this.#mutex.runExclusive(() => this.db.terminate());
+    const release = this.#writer?.close();
+    await this.#mutex.runExclusive(async () => { try { await release; } finally { await this.db.terminate(); } });
   }
   get writeUncertain() { return this.#uncertain; }
   private view(snapshot: FirestoreRecordSnapshot): View {
@@ -64,6 +94,7 @@ export class FirestoreRecordStore {
   }
   readRecords(snapshot: FirestoreRecordSnapshot, paths?: readonly string[][]): RuntimeRecord[] {
     this.assertOpen();
+    this.#writer?.assertActive();
     if (this.#uncertain) throw new Error("Firestore snapshot reads are fenced until authoritative reload");
     const view = this.view(snapshot);
     if (!paths) return [...view.entries.values()].map(entry => structuredClone(entry.record));
@@ -75,9 +106,9 @@ export class FirestoreRecordStore {
   }
   private head(document: unknown): Head {
     const value = this.#codec.decodeHead(document);
-    if (!exact(value, ["profile", "revision", "records", "chunks", "bytes", "fingerprint", "transition"]) || value.profile !== "firestore-record-head/v1" ||
+    if (!exact(value, ["profile", "revision", "records", "chunks", "bytes", "fingerprint", "writerGeneration", "transition"]) || value.profile !== "firestore-record-head/v2" ||
         !bounded(value.revision, 1, Number.MAX_SAFE_INTEGER) || !bounded(value.records, 1, B.recordCount) || !bounded(value.chunks, Number(value.records), B.chunkCount) ||
-        !bounded(value.bytes, 1, B.imageBytes) || !fingerprint(value.fingerprint) || !exact(value.transition, ["identity", "inputHash", "previousRevision", "previousFingerprint"]) ||
+        !bounded(value.bytes, 1, B.imageBytes) || !fingerprint(value.fingerprint) || value.writerGeneration !== null && !bounded(value.writerGeneration, 1, Number.MAX_SAFE_INTEGER) || !exact(value.transition, ["identity", "inputHash", "previousRevision", "previousFingerprint"]) ||
         !fingerprint(value.transition.identity) || !fingerprint(value.transition.inputHash) || !fingerprint(value.transition.previousFingerprint) || value.transition.previousRevision !== Number(value.revision) - 1) throw new Error("Invalid authenticated Firestore head");
     return value as Head;
   }
@@ -110,11 +141,13 @@ export class FirestoreRecordStore {
     return documents;
   }
   async load(): Promise<FirestoreRecordSnapshot> {
-    return this.#mutex.runExclusive(async () => {
+    return this.#mutex.runExclusive(() => this.withWriter(async () => {
       this.assertOpen();
       try {
         const view = await this.db.runTransaction(async transaction => {
+          if (this.#writer) await this.assertWriterTransaction(transaction);
           const headDoc = await transaction.get(this.db.doc(this.headPath)), head = headDoc.exists ? this.head(headDoc.data()) : null;
+          if (head?.writerGeneration !== undefined && head.writerGeneration !== null && this.#writer && this.#writer.generation! < head.writerGeneration) throw new FirestoreOwnershipFailure();
           const rows = await transaction.get(this.db.collection(this.collectionPath).limit((head?.records ?? 0) + 1));
           if (!head) {
             if (!rows.empty) throw new Error("Firestore manifests have no authoritative head");
@@ -138,7 +171,7 @@ export class FirestoreRecordStore {
         }, { readOnly: true });
         this.assertOpen(); this.#uncertain = false; return this.snapshot(view);
       } catch (error) { this.#uncertain = true; throw error; }
-    });
+    }));
   }
   private async stage(chunks: RecordChunk[]): Promise<void> {
     let cursor = 0, failed = false;
@@ -162,7 +195,7 @@ export class FirestoreRecordStore {
     const failure = results.find(result => result.status === "rejected"); if (failure?.status === "rejected") throw failure.reason;
   }
   async commit(snapshot: FirestoreRecordSnapshot, mutation: FirestoreRecordMutation): Promise<FirestoreRecordSnapshot> {
-    return this.#mutex.runExclusive(async () => {
+    return this.#mutex.runExclusive(() => this.withWriter(async () => {
       this.assertOpen();
       if (this.#uncertain) throw new Error("Firestore must be authoritatively reloaded after an uncertain operation");
       const base = this.view(snapshot);
@@ -195,7 +228,7 @@ export class FirestoreRecordStore {
         inputHash: this.#codec.identity("mutation", { revision: base.head?.revision ?? 0, fingerprint: base.index.fingerprint,
           upsert: mutation.upsert.map(record => [recordKey(record.path), next.get(recordKey(record.path))!.hash]).sort((a, b) => a[0]! < b[0]! ? -1 : a[0]! > b[0]! ? 1 : 0), remove: (mutation.remove ?? []).map(recordKey).sort() }),
         previousRevision: base.head?.revision ?? 0, previousFingerprint: base.index.fingerprint };
-      const head: Head = { profile: "firestore-record-head/v1", revision, records: next.size, chunks, bytes: totalBytes, fingerprint: index.fingerprint, transition }, headDocument = this.#codec.encodeHead(head);
+      const head: Head = { profile: "firestore-record-head/v2", revision, records: next.size, chunks, bytes: totalBytes, fingerprint: index.fingerprint, writerGeneration: this.#writer?.generation ?? base.head?.writerGeneration ?? null, transition }, headDocument = this.#codec.encodeHead(head);
       let wireBytes = headDocument.payload.length + 8192;
       for (const [id, document] of writes) wireBytes += (document ?? expected.get(id))!.payload.length + 8192;
       if (writes.size + 1 > B.transactionWrites || wireBytes > B.transactionBytes) throw new Error("Firestore atomic transaction budget exceeded; staged migration or a smaller checkpoint is required");
@@ -203,7 +236,9 @@ export class FirestoreRecordStore {
       try {
         await this.stage(prepared); this.assertOpen();
         const acknowledged = await this.db.runTransaction(async transaction => {
+          await this.assertWriterTransaction(transaction);
           const doc = await transaction.get(this.db.doc(this.headPath)), actual = doc.exists ? this.head(doc.data()) : null;
+          if (actual?.writerGeneration !== undefined && actual.writerGeneration !== null && (!this.#writer || this.#writer.generation! < actual.writerGeneration)) throw new FirestoreOwnershipFailure();
           const duplicate = actual?.transition.identity === transition.identity;
           if (duplicate) {
             if (!same(actual, head)) throw new Error("Firestore transition identity was reused with different input");
@@ -224,6 +259,7 @@ export class FirestoreRecordStore {
           const actualChunks = await this.readChunks(transaction, [...referenced.keys()]);
           for (const [id, wanted] of referenced) if (!sameDocument(actualChunks.get(id), wanted)) throw new Error("Firestore touched record changed without its authenticated head");
           this.assertOpen();
+          this.#writer?.assertTransactionDeadline();
           // All reads precede writes. Staged bodies are never copied into this
           // commit request, and preparation is never presented as success.
           if (duplicate) return acknowledgedDocuments;
@@ -238,6 +274,6 @@ export class FirestoreRecordStore {
         }
         this.assertOpen(); return this.snapshot({ head, index, entries: next });
       } catch (error) { this.#uncertain = true; throw error; }
-    });
+    }));
   }
 }

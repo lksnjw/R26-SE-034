@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
+import { fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { FirestoreRecordStore } from "../src/storage/firestore-record-store.js";
 import { FirestoreRecordCodec, FIRESTORE_RECORD_BOUNDS as B } from "../src/storage/firestore-record-codec.js";
 import { splitFirestoreState, assembleFirestoreState } from "../src/storage/firestore-record-layout.js";
@@ -19,6 +21,14 @@ const check = message => console.log(`PASS: ${message}`);
 const rawChunkPath = record => `${store.chunkCollectionPath}/${codec.encodeRecord(record).chunks[0].id}`;
 const scoped = (snapshot, path) => store.readRecords(snapshot, [path])[0];
 let initialRecords;
+let child;
+const childCommand = message => new Promise((resolve, reject) => {
+  if (!child || !child.connected) { reject(new Error("Synthetic child is not live")); return; }
+  const timer = setTimeout(() => { cleanup(); reject(new Error("Synthetic child command timed out")); }, 15_000);
+  const cleanup = () => { clearTimeout(timer); child.off("message", answered); child.off("exit", exited); child.off("error", failed); };
+  const answered = reply => { cleanup(); resolve(reply); }, exited = () => { cleanup(); reject(new Error("Synthetic child exited before acknowledgement")); }, failed = () => { cleanup(); reject(new Error("Synthetic child launch failed")); };
+  child.once("message", answered); child.once("exit", exited); child.once("error", failed); child.send(message);
+});
 
 try {
   const empty = await store.load(); assert.equal(empty.recordCount, 0);
@@ -162,9 +172,65 @@ try {
   assert.equal((await store.load()).revision, closingBase.revision);
   check("close during actual SDK final reference reads denied activation and left the authoritative revision unchanged");
 
+  const ownedScope = { ...namespace, workspaceId: `${workspaceId}_owned` }, ownedCodec = new FirestoreRecordCodec(key, ownedScope), writer = create(ownedScope);
+  await writer.acquireWriter(); const ownedEmpty = await writer.load();
+  const ownedSaved = await writer.commit(ownedEmpty, { transitionId: "exclusive-owned-checkpoint", upsert: [item("owned", "fixture answer")] });
+  assert.equal(ownedCodec.decodeHead((await writer.db.doc(writer.headPath).get()).data()).writerGeneration, 1);
+  const contender = create(ownedScope); await assert.rejects(contender.acquireWriter()); writer.assertWriterActive();
+  const unowned = create(ownedScope), unownedBase = await unowned.load();
+  await assert.rejects(unowned.commit(unownedBase, { transitionId: "unowned-activation-denied", upsert: [item("owned", "must not activate")] }));
+  assert.equal((await writer.load()).revision, ownedSaved.revision);
+  await writer.renewWriter(); writer.assertWriterActive(); await writer.close();
+  const successor = create(ownedScope); await successor.acquireWriter();
+  const successorBase = await successor.load(); assert.deepEqual(successor.readRecords(successorBase), [item("owned", "fixture answer")]);
+  await successor.commit(successorBase, { transitionId: "next-owner-checkpoint", upsert: [item("owned", "successor answer")] });
+  assert.equal(ownedCodec.decodeHead((await successor.db.doc(successor.headPath).get()).data()).writerGeneration, 2);
+  check("actual encrypted writer acquisition, competing/unowned denial, renewal and explicit generation handoff preserved record authority");
+
+  for (const applied of [false, true]) {
+    const faultScope = { ...namespace, workspaceId: `${workspaceId}_renew_${applied}` }, faulty = create(faultScope), faultCodec = new FirestoreRecordCodec(key, faultScope);
+    await faulty.acquireWriter(); const faultBase = await faulty.load();
+    const actual = faulty.db.runTransaction.bind(faulty.db);
+    faulty.db.runTransaction = async (callback, options) => { if (applied) await actual(callback, options); throw new Error("synthetic lost writer-renewal ACK"); };
+    await assert.rejects(faulty.renewWriter()); faulty.db.runTransaction = actual;
+    assert.throws(() => faulty.assertWriterActive()); assert.throws(() => faulty.readRecords(faultBase)); await assert.rejects(faulty.load());
+    assert.equal(faultCodec.decodeHead((await faulty.db.doc(faulty.writerPath).get()).data()).sequence, applied ? 2 : 1);
+  }
+  check("actual SDK pre/post-commit writer-renewal lost ACKs denied cached authority and preserved the exact remote lease outcome");
+
+  for (const deleted of ["lease", "anchor"]) {
+    const damagedScope = { ...namespace, workspaceId: `${workspaceId}_delete_${deleted}` }, damagedOwner = create(damagedScope);
+    await damagedOwner.acquireWriter();
+    await damagedOwner.db.doc(deleted === "lease" ? damagedOwner.writerPath : damagedOwner.writerGenerationPath).delete();
+    const newOwner = create(damagedScope); await assert.rejects(newOwner.acquireWriter());
+    const rawOwner = create(damagedScope), noHead = await rawOwner.load(); assert.equal(noHead.revision, 0);
+    await assert.rejects(rawOwner.commit(noHead, { transitionId: "missing-ownership-bypass", upsert: [item("owner", "must not activate")] }));
+    await assert.rejects(damagedOwner.load()); assert.throws(() => damagedOwner.assertWriterActive());
+  }
+  check("missing lease/anchor refused both a new owner and unowned activation, even before the first data checkpoint");
+
+  // A separate live Node process holds the first controller; no model/ERP
+  // worker is launched, and fixture key/scope travel only over private IPC.
+  const processScope = { ...namespace, workspaceId: `${workspaceId}_process` };
+  child = fork(fileURLToPath(new URL("./firestore-writer-fixture-child.mjs", import.meta.url)), [], { execArgv: ["--import", "tsx/esm"], stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  child.stderr.on("data", () => { /* Do not log private packets or child configuration. */ });
+  assert.deepEqual(await childCommand({ command: "acquire", namespace: processScope, key, duration: 5000 }), { status: "ready" });
+  const processContender = create(processScope); await assert.rejects(processContender.acquireWriter());
+  const processObserver = create(processScope), packet = await processObserver.db.doc(processObserver.writerPath).get(), processCodec = new FirestoreRecordCodec(key, processScope);
+  const wait = Math.max(0, Math.ceil(processCodec.decodeHead(packet.data()).expiresAt - packet.readTime.toMillis())) + 500;
+  assert.ok(wait <= 6000); await new Promise(resolve => setTimeout(resolve, wait));
+  const processSuccessor = create(processScope); await processSuccessor.acquireWriter();
+  const processBase = await processSuccessor.load(); assert.deepEqual(processSuccessor.readRecords(processBase), [item("process", "synthetic child answer")]);
+  await processSuccessor.commit(processBase, { transitionId: "process-successor-checkpoint", upsert: [item("process", "synthetic successor answer")] });
+  assert.deepEqual(await childCommand({ command: "assert" }), { status: "denied" });
+  assert.deepEqual(await childCommand({ command: "close" }), { status: "closed" });
+  processSuccessor.assertWriterActive(); assert.equal((await processSuccessor.load()).revision, processBase.revision + 1);
+  check("two actual Node processes contended; expiry advanced generation, the stale child denied entry, and its close could not release the successor");
+
   const inspect = await store.db.collection(store.collectionPath).get();
   for (const row of inspect.docs) assert.ok(row.data().payload.length + 8192 < B.documentBytes);
   console.log(`Firestore foundation qualification complete in synthetic workspace ${workspaceId}. No application data, cloud project, ERP/model/email calls, durable-admission markers or production latency claim.`);
 } finally {
+  if (child?.connected) { try { await childCommand({ command: "close" }); } catch { if (child.exitCode === null && child.signalCode === null) child.kill(); } }
   for (const storage of stores) await storage.close();
 }

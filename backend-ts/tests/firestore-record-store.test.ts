@@ -8,58 +8,7 @@ import { recordKey } from "../src/storage/execution-record-layout.js";
 
 const runtime = vi.hoisted(() => ({ db: null as any }));
 vi.mock("@google-cloud/firestore", () => ({ Firestore: class { constructor(settings: any) { return new FakeClient(runtime.db, settings); } } }));
-const clone = (value: any) => value && { ...value, payload: Buffer.isBuffer(value.payload) ? Buffer.from(value.payload) : value.payload };
-class Database {
-  documents = new Map<string, any>(); version = 0; callbacks = 0; invocations = 0;
-  fault: "retry" | "before-commit" | "after-commit" | null = null;
-  writes: Array<Array<{ path: string; data: any }>> = []; reads: string[] = []; settings: any[] = [];
-  staged: string[] = []; stageFaultAt = -1; stageHook: (() => Promise<void>) | null = null;
-}
-class FakeClient {
-  closed = false; constructor(readonly database: Database, readonly settings: any) { database.settings.push(settings); }
-  get databaseId() { return this.settings.databaseId; }
-  doc(path: string) { return { path,
-    get: async () => ({ exists: this.database.documents.has(path), data: () => clone(this.database.documents.get(path)) }),
-    create: async (value: any) => {
-      if (this.closed) throw new Error("closed");
-      this.database.staged.push(path);
-      if (this.database.staged.length === this.database.stageFaultAt) throw new Error("synthetic staging failure");
-      if (this.database.stageHook) await this.database.stageHook();
-      if (this.database.documents.has(path)) throw Object.assign(new Error("already exists"), { code: 6 });
-      this.database.documents.set(path, clone(value)); this.database.version++;
-    },
-  }; }
-  collection(path: string) { return { doc: (id: string) => this.doc(`${path}/${id}`), limit: (limit: number) => ({ path, limit, query: true }) }; }
-  async terminate() { this.closed = true; }
-  async runTransaction(callback: (tx: any) => Promise<unknown>, options: any) {
-    this.database.invocations++;
-    for (let attempt = 0; attempt < (options.maxAttempts ?? 1); attempt++) {
-      if (this.closed) throw new Error("closed");
-      const start = this.database.version, image = new Map(this.database.documents), writes: Array<{ path: string; data: any }> = [];
-      const row = (ref: any) => ({ id: ref.path.split("/").at(-1), exists: image.has(ref.path), data: () => clone(image.get(ref.path)) });
-      const read = () => { if (writes.length) throw new Error("SDK disallows reads after writes"); };
-      const tx = {
-        get: async (ref: any) => { read(); this.database.reads.push(ref.path);
-          if (!ref.query) return row(ref);
-          const docs = [...image.keys()].filter(path => path.startsWith(ref.path + "/") && !path.slice(ref.path.length + 1).includes("/")).sort().slice(0, ref.limit).map(path => row({ path }));
-          return { docs, size: docs.length, empty: !docs.length };
-        },
-        getAll: async (...refs: any[]) => { read(); this.database.reads.push(...refs.map(ref => ref.path)); return refs.map(row); },
-        set: (ref: any, value: any) => { writes.push({ path: ref.path, data: clone(value) }); image.set(ref.path, clone(value)); },
-        delete: (ref: any) => { writes.push({ path: ref.path, data: null }); image.delete(ref.path); },
-      };
-      this.database.callbacks++; const result = await callback(tx); this.database.writes.push(writes);
-      if (options.readOnly) { if (writes.length) throw new Error("read-only write"); return result; }
-      if (this.database.fault === "retry") { this.database.fault = null; continue; }
-      if (this.database.fault === "before-commit") { this.database.fault = null; throw new Error("commit unconfirmed"); }
-      if (this.database.version !== start) continue;
-      if (writes.length) { this.database.documents = image; this.database.version++; }
-      if (this.database.fault === "after-commit") { this.database.fault = null; throw new Error("commit acknowledgement lost"); }
-      return result;
-    }
-    throw new Error("retry budget exhausted");
-  }
-}
+import { Database, FakeClient, clone } from "./fixtures/fake-firestore.js";
 const scope = { projectId: "demo-lcwe-records", databaseId: "(default)", workspaceId: "fixture_workspace" }, key = "k".repeat(32);
 const record = (id: string, value: unknown): RuntimeRecord => ({ profile: "runtime-record/v1", path: ["domain", "settings", id], value });
 let db: Database;
@@ -274,4 +223,75 @@ test("closed stores refuse cached reads and writes", async () => {
   const { storage, first } = await setup(); await storage.close();
   expect(() => storage.readRecords(first)).toThrow("closed"); await expect(storage.load()).rejects.toThrow("closed");
   await expect(storage.commit(first, { transitionId: "closed-operation", upsert: [] })).rejects.toThrow("closed");
+});
+
+test("an exclusive writer activates the generation atomically and rejects an unowned client", async () => {
+  const { storage, first } = await setup(); await storage.acquireWriter(); storage.assertWriterActive();
+  const owned = await storage.commit(first, { transitionId: "owned-first-checkpoint", upsert: [record("one", true)] });
+  const codec = new FirestoreRecordCodec(key, scope), head = codec.decodeHead(db.documents.get(storage.headPath)) as any;
+  expect(head.writerGeneration).toBe(1); expect(owned.revision).toBe(2);
+  const other = store(), read = await other.load();
+  await expect(other.commit(read, { transitionId: "unowned-write-attempt", upsert: [record("one", "must not write")] })).rejects.toThrow("ownership");
+  expect((await storage.load()).revision).toBe(2);
+});
+
+test("a retained owned head prevents unowned writes even if its lease document is deleted", async () => {
+  const { storage, first } = await setup(); await storage.acquireWriter();
+  await storage.commit(first, { transitionId: "owned-protected-head", upsert: [record("one", true)] });
+  db.documents.delete(storage.writerPath);
+  const other = store(), read = await other.load(), before = clone(db.documents.get(storage.headPath));
+  await expect(other.commit(read, { transitionId: "lease-deletion-bypass", upsert: [record("one", "must not write")] })).rejects.toThrow("ownership");
+  expect(db.documents.get(storage.headPath)).toEqual(before);
+  await expect(storage.load()).rejects.toThrow("ownership");
+  await expect(storage.commit(first, { transitionId: "lost-owner-mutation", upsert: [] })).rejects.toThrow("ownership");
+});
+
+test("an owned lease handoff preserves records and advances the next activated generation", async () => {
+  const { storage, first } = await setup(); await storage.acquireWriter();
+  const owned = await storage.commit(first, { transitionId: "owned-before-handoff", upsert: [record("one", true)] });
+  await storage.close(); const next = store(); await next.acquireWriter();
+  const restored = await next.load(); expect(restored.revision).toBe(owned.revision);
+  await next.commit(restored, { transitionId: "owned-after-handoff", upsert: [record("one", "next")] });
+  expect((new FirestoreRecordCodec(key, scope).decodeHead(db.documents.get(next.headPath)) as any).writerGeneration).toBe(2);
+});
+
+test("lost writer-renewal ACK immediately fences record reads, activation and attempted reload", async () => {
+  const { storage, first } = await setup(); await storage.acquireWriter();
+  let denials = 0; storage.observeWriterUnavailable(() => { denials++; }); db.fault = "after-commit";
+  await expect(storage.renewWriter()).rejects.toThrow("ownership"); expect(denials).toBe(1); expect(storage.writeUncertain).toBe(true);
+  expect(() => storage.assertWriterActive()).toThrow(); expect(() => storage.readRecords(first)).toThrow();
+  await expect(storage.load()).rejects.toThrow();
+  await expect(storage.commit(first, { transitionId: "after-renewal-fault", upsert: [record("one", true)] })).rejects.toThrow();
+});
+
+test("the generation anchor blocks an unowned writer even before the first owned data checkpoint", async () => {
+  const storage = store(); await storage.acquireWriter(); db.documents.delete(storage.writerPath);
+  const raw = store(), empty = await raw.load(); expect(empty.revision).toBe(0);
+  await expect(raw.commit(empty, { transitionId: "early-owner-bypass", upsert: [record("one", true)] })).rejects.toThrow("ownership");
+  const fresh = store(); await expect(fresh.acquireWriter()).rejects.toThrow("ownership"); expect(db.documents.has(storage.headPath)).toBe(false);
+});
+
+test("ownership expiry during awaited chunk reads denies metadata activation before writes", async () => {
+  const { storage, first } = await setup(), head = clone(db.documents.get(storage.headPath)); let wall = Date.now(), monotonic = 100;
+  await storage.acquireWriter({ duration: 5000, clock: { sample: () => ({ wall, monotonic }) } });
+  const original = storage.db.runTransaction.bind(storage.db);
+  storage.db.runTransaction = ((callback: any, options: any) => original(async (tx: any) => {
+    const get = tx.getAll.bind(tx);
+    tx.getAll = async (...refs: any[]) => { const rows = await get(...refs); if (refs[0]?.path.startsWith(storage.chunkCollectionPath)) { wall += 5000; monotonic += 5000; db.serverTime += 5000; } return rows; };
+    return callback(tx);
+  }, options)) as any;
+  await expect(storage.commit(first, { transitionId: "expiry-at-activation", upsert: [record("one", true)] })).rejects.toThrow("ownership");
+  expect(db.documents.get(storage.headPath)).toEqual(head); expect(storage.writeUncertain).toBe(true); expect(() => storage.assertWriterActive()).toThrow();
+});
+
+test("a future head generation denies owned load and a replayed older ownership cannot acquire the same generation", async () => {
+  const { storage, first } = await setup(), codec = new FirestoreRecordCodec(key, scope); await storage.acquireWriter();
+  await storage.commit(first, { transitionId: "owned-generation-bind", upsert: [record("one", true)] });
+  const head = codec.decodeHead(db.documents.get(storage.headPath)) as any;
+  db.documents.set(storage.headPath, codec.encodeHead({ ...head, writerGeneration: 2 }));
+  await expect(storage.load()).rejects.toThrow("ownership");
+  const owner = codec.decodeHead(db.documents.get(storage.writerPath)) as any;
+  db.documents.set(storage.writerPath, codec.encodeHead({ ...owner, state: "RELEASED", expiresAt: owner.issuedAt }));
+  const another = store(); await expect(another.acquireWriter()).rejects.toThrow("ownership");
+  expect((codec.decodeHead(db.documents.get(storage.headPath)) as any).writerGeneration).toBe(2);
 });
