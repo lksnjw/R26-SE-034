@@ -767,6 +767,18 @@ export const routeTable = [
   {
     "method": "POST",
     "path": "/api/chat/operations/:id/cancel"
+  },
+  {
+    "method": "GET",
+    "path": "/api/executions/:id/readbacks"
+  },
+  {
+    "method": "POST",
+    "path": "/api/executions/:id/readbacks"
+  },
+  {
+    "method": "POST",
+    "path": "/api/executions/:id/readbacks/:queryId/cancel"
   }
 ] as const;
 export type RouteDefinition = (typeof routeTable)[number];

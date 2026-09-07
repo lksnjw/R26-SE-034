@@ -57,6 +57,7 @@ import { runVerifiedRead } from "./handlers/read-execution.js";
 import { boundedReadFixtureRequest, handleReadFixtureSimulation } from "./handlers/read-simulation.js";
 import { readJobQueue, supportsReadJobs } from "../runner/read-jobs.js";
 import { operationJobQueue, supportsOperationJobs } from "../runner/operation-jobs.js";
+import { operationReadbackQueue } from "../runner/operation-readback-jobs.js";
 import { chatJobQueue, supportsChatJobs } from "../agent/chat-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
 import { runtimeApprovalAdministration, runtimeApprovalView } from "../runner/runtime-approvals.js";
@@ -194,6 +195,9 @@ export async function buildApp(
     const queue = operationJobQueue(services);
     app.addHook("onReady", () => queue.start());
     app.addHook("onClose", () => queue.stop());
+    const readbacks = operationReadbackQueue(services);
+    app.addHook("onReady", () => readbacks.start());
+    app.addHook("onClose", () => readbacks.stop());
   }
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
@@ -304,9 +308,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 192)
+  if (routeTable.length !== 195)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 192`,
+      `route table has ${routeTable.length} routes, expected 195`,
     );
   return app;
 }
@@ -1480,6 +1484,8 @@ function routePolicy(
     return { required: ["provider:manage"], any: false };
   if (path === "/api/execution-reviews" && route.method === "GET")
     return { required: ["execution:approve", "execution:reconcile"], any: true };
+  if (path.startsWith("/api/executions"))
+    if (path === "/api/executions/:id/readbacks" && route.method === "GET") return { required: ["workflow:read", "execution:read_own", "execution:reconcile"], any: true };
   if (path.startsWith("/api/executions"))
     if (path === "/api/executions/:id/reconcile" && route.method === "POST") return { required: ["execution:reconcile"], any: false };
   if (path.startsWith("/api/executions"))

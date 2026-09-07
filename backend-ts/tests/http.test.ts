@@ -125,6 +125,7 @@ describe("complete HTTP route graph", () => {
     expect(captured.filter((route) => !actual.includes(route))).toEqual([]);
     expect(actual.filter((route) => !captured.includes(route)).sort()).toEqual([
       "POST /api/executions/:id/approve", "POST /api/executions/:id/reject", "POST /api/executions/:id/reconcile",
+      "GET /api/executions/:id/readbacks", "POST /api/executions/:id/readbacks", "POST /api/executions/:id/readbacks/:queryId/cancel",
       "POST /api/workflows/:id/approve-generation", "POST /api/workflows/:id/reject-generation",
       "POST /api/workflows/:id/commands", "POST /api/workflows/:id/node-proposals", "GET /api/workflows/:id/readiness",
       "GET /api/executions/:id/events",

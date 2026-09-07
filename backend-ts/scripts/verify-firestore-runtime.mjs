@@ -383,6 +383,64 @@ try {
   assert.equal(afterReadback.executions[lostOperation].status, "RECONCILIATION_REQUIRED");
   log("actual Firestore publication/restart retained exact separately reviewed read-back binding; an explicitly authorized synthetic broker query classified fresh settled evidence without changing, resending or resolving the original uncertain run; review-only dispatch was denied");
 
+  // Normal read-back HTTP admission, durable worker and private saved evidence.
+  // Query events append separately; no original effect/timeline/answer changes.
+  const queryHistory = (await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 200)).data;
+  assert.equal(queryHistory.canQuery, true); assert.deepEqual(queryHistory.jobs, []);
+  const normalQueryCommand = { intentId: queryHistory.intentId, baseVersion: queryHistory.baseVersion, factsHash: queryHistory.factsHash, idempotencyKey: "firestore-normal-query-0001" };
+  await request("POST", `/api/executions/${lostOperation}/readbacks`, normalQueryCommand, 403, "reviewer");
+  const normalQuery = (await request("POST", `/api/executions/${lostOperation}/readbacks`, normalQueryCommand, 202)).data;
+  await waitFor(async () => (await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[normalQuery.id].state === "ANSWERED", "normal read-back saved evidence");
+  const checkOriginalOperation = async () => {
+    const saved = await repository.snapshot(), execution = saved.executions[lostOperation];
+    assert.equal(execution.status, reconciledOperation.status); assert.equal(execution.completedAt, reconciledOperation.completedAt);
+    assert.deepEqual(execution.operationSecret.intents, reconciledOperation.operationSecret.intents);
+    assert.deepEqual(execution.stepOutputs, reconciledOperation.stepOutputs); assert.equal(execution.finalOutput, undefined);
+    assert.equal(execution.readProgress.epoch, reconciledOperation.readProgress.epoch); assert.equal(execution.readProgress.nextStepIndex, reconciledOperation.readProgress.nextStepIndex);
+    assert.deepEqual(saved.timelines[lostOperation], readbackSnapshot.timelines[lostOperation]);
+    assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
+  };
+  await checkOriginalOperation(); assert.equal(readbacks.length, 2);
+  const savedQuery = (await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[normalQuery.id];
+  assert.equal(savedQuery.result.structuredContent.id, "OPERATION-LOST-INTENT"); assert.equal(savedQuery.evaluation.outcome, "NOT_APPLIED"); assert.equal(savedQuery.lease, undefined);
+  const normalHistory = (await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 200)).data;
+  assert.equal(normalHistory.jobs[0].observation.deliveryVerified, false); assert.equal(normalHistory.jobs[0].canResume, false);
+  assert(!/"(?:arguments|result|admission|keyHash|connectionBinding)":/.test(JSON.stringify(normalHistory)));
+  assert.equal((await request("POST", `/api/executions/${lostOperation}/readbacks`, normalQueryCommand, 202)).data.replayed, true);
+  await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[normalQuery.id], savedQuery);
+  await checkOriginalOperation(); assert.equal(readbacks.length, 2);
+  log("actual Firestore normal status-query HTTP/worker saved private qualified evidence and separate events, survived fresh restart and original-key replay, denied review-only dispatch, and preserved the original unknown action/answers/timeline with zero effect/model replay");
+
+  for (const phase of ["admission", "intent", "result"]) {
+    const history = (await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 200)).data;
+    const previousIds = new Set(history.jobs.map(job => job.id)), readbacksBeforeLoss = readbacks.length;
+    const command = { intentId: history.intentId, baseVersion: history.baseVersion, factsHash: history.factsHash, idempotencyKey: `firestore-query-${phase}-ack-0001` };
+    const actualQueryCheckpoint = persistence.saveExecutionCheckpoint.bind(persistence); let lostQueryACK = false;
+    persistence.saveExecutionCheckpoint = async checkpoint => {
+      await actualQueryCheckpoint(checkpoint);
+      const query = checkpoint.executionId === lostOperation && Object.values(checkpoint.execution?.operationSecret?.readbacks ?? {}).find(job => !previousIds.has(job.id));
+      if (!lostQueryACK && query && (phase === "admission" ? query.state === "QUEUED" : phase === "intent" ? query.state === "RUNNING" && query.dispatchIntentAt : query.state === "ANSWERED")) {
+        lostQueryACK = true; throw new Error(`Synthetic actual Firestore query ${phase} post-COMMIT acknowledgement lost`);
+      }
+    };
+    await request("POST", `/api/executions/${lostOperation}/readbacks`, command, phase === "admission" ? 503 : 202);
+    await waitFor(() => lostQueryACK, `query ${phase} post-COMMIT acknowledgement loss`);
+    assert.throws(() => repository.assertAuthority()); await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 503);
+    persistence.saveExecutionCheckpoint = actualQueryCheckpoint; await repository.recoverPersistenceState();
+    const recovered = Object.values((await repository.snapshot()).executions[lostOperation].operationSecret.readbacks).find(job => !previousIds.has(job.id));
+    assert(recovered); await stop(); await start(await openApplicationRepository(config));
+    const expected = phase === "intent" ? "RECOVERY_REQUIRED" : "ANSWERED";
+    await waitFor(async () => (await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[recovered.id].state === expected, `query ${phase} authoritative recovery`);
+    const recoveredHistory = (await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 200)).data;
+    assert.equal(recoveredHistory.jobs.find(job => job.id === recovered.id).state, expected);
+    if (phase === "intent") assert.equal(recoveredHistory.jobs.find(job => job.id === recovered.id).observation, null);
+    const replay = (await request("POST", `/api/executions/${lostOperation}/readbacks`, command, 202)).data;
+    assert.equal(replay.id, recovered.id); assert.equal(replay.replayed, true);
+    assert.equal(readbacks.length, readbacksBeforeLoss + (phase === "intent" ? 0 : 1)); await checkOriginalOperation();
+    log(`actual Firestore normal read-back ${phase} post-COMMIT ACK loss returned unavailable history, recovered one original-key record across fresh restart, and never replayed an entered query or the original effect`);
+  }
+
   // Independent operator evidence is an attestation, never an SDK ACK. Exercise
   // real scoped Firestore commits, unknown decision ACK and restart, not merely
   // a private schema or a synthetic pre-resolved record.
@@ -420,6 +478,9 @@ try {
   assert(recoveryHistoryInbox.items.some(item => item.executionId === lostOperation && !item.actionable && item.statusLabel === "Closed by operator evidence"));
   assert.equal(recoveryHistory.state, "RESOLVED"); assert.equal(recoveryHistory.canRecord, false); assert.equal(recoveryHistory.history.length, 1);
   assert.equal(recoveryHistory.history[0].basis, "operator-attestation"); assert.equal(recoveryHistory.canResume, false);
+  const closedQueryHistory = (await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 200, "operator")).data;
+  assert.equal(closedQueryHistory.canQuery, false); assert.equal(closedQueryHistory.jobs.length, 4);
+  assert.equal(closedQueryHistory.jobs.find(job => job.id === normalQuery.id).observation.outcome, "NOT_APPLIED");
   await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
   log("actual Firestore normal independent external-evidence recovery survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; one private attestation, no new SDK/model calls, no fabricated answer or resume");
   log("actual Firestore review inbox discovered independent normal waits and uncertain effects after restart, then preserved truthful approval/operator decision history without arguments, self-review or new SDK/model calls");

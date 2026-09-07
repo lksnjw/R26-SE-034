@@ -43,7 +43,7 @@ function requireStorage(repository: Repository) {
 /** Historical proof, not current dispatch authority. Expired approvals or a
  * disconnected/revoked connector do not erase an uncertain business outcome.
  * The original arguments, publication, approval and intent must still agree. */
-function caseEvidence(state: Readonly<RepositoryState>, executionId: string) {
+export function operationCaseEvidence(state: Readonly<RepositoryState>, executionId: string) {
   const execution = state.executions[executionId], job = execution?.operationSecret, snapshot = execution?.workflowSnapshot;
   if (!execution || !job || job.profile !== "operation-job/v1" || snapshot?.executionProfile !== "sequential-operation-v1") deny("Operation reconciliation not found", 404);
   if (!["RECONCILIATION_REQUIRED", "RECONCILED"].includes(execution.status) || execution.completedAt === null || job.lease ||
@@ -71,7 +71,9 @@ function caseEvidence(state: Readonly<RepositoryState>, executionId: string) {
       node.capability.toolId !== tool.data.tool_id || node.capability.contractHash !== binding.contractHash || node.effectClass !== tool.data.operation_contract.effect_class ||
       compiled.verifiedRole !== job.admittedRole || job.intents[intent.nodeId] !== intent)
     deny("Historical operation, approval, publication or capability evidence changed");
-  const args = resolveReadBinding(node.inputs, { input: snapshot.input, ...execution.stepOutputs });
+  const rawArgs = resolveReadBinding(node.inputs, { input: snapshot.input, ...execution.stepOutputs });
+  if (!rawArgs || typeof rawArgs !== "object" || Array.isArray(rawArgs)) deny("Exact historical arguments must be an object");
+  const args = rawArgs as Record<string, unknown>;
   if (digest(args) !== intent.argumentHash || !canonicalJSONBytes(args).equals(canonicalJSONBytes(record.arguments)) ||
       !canonicalJSONBytes(args).equals(canonicalJSONBytes(withoutSecretFields(args)))) deny("Exact historical arguments are unavailable or changed");
   const { reconciliationId: _resolution, ...originalIntent } = intent;
@@ -93,7 +95,9 @@ function caseEvidence(state: Readonly<RepositoryState>, executionId: string) {
   }
   const resolved = history.at(-1)?.outcome !== undefined && history.at(-1)!.outcome !== "UNRESOLVED";
   if (resolved !== (execution.status === "RECONCILED") || (resolved ? intent.reconciliationId !== history.at(-1)!.id : intent.reconciliationId !== undefined)) deny("Reconciliation state disagrees with its evidence");
-  return { execution, intent, tool: tool.data, args, history, resolved, version: history.length + 1, factsHash: historyHash(history) };
+  const currentFactsHash = historyHash(history);
+  return { execution, intent, node, connectionBinding: binding.connectionBinding, tool: tool.data, args, history, resolved, version: history.length + 1, factsHash: currentFactsHash,
+    factsHashes: [...history.map(item => item.factsHash), currentFactsHash] };
 }
 const publicRecord = ({ id, outcome, evidence, actorId, recordedAt, basis }: OperationReconciliationRecord) => ({ id, outcome, evidence, actorId, recordedAt, basis });
 export const hasOperationReconciliation = (execution: Execution) => execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" &&
@@ -103,7 +107,7 @@ export function operationReconciliationView(state: Readonly<RepositoryState>, ex
   const execution = state.executions[executionId], current = currentActor(state, actorId);
   if (!execution || !(current.permissions.includes("execution:reconcile") || current.permissions.some(key => ["workflow:read", "execution:read_own"].includes(key)) && canReadExecution({ id: actorId, permissions: current.permissions }, execution)))
     deny("Operation reconciliation not found", 404);
-  const value = caseEvidence(state, executionId);
+  const value = operationCaseEvidence(state, executionId);
   return { id: executionId, workflowId: execution.workflowId, workflowName: execution.workflowName, status: execution.status, operationReconciliation: {
     profile: "operation-reconciliation/v1", intentId: value.intent.id, nodeId: value.intent.nodeId, invocationId: value.intent.invocationId, operationKey: value.intent.operationKey,
     preparedAt: value.intent.preparedAt, requesterId: execution.startedBy.id, toolName: value.tool.name, remoteToolName: exactBridgeName(value.tool),
@@ -125,7 +129,7 @@ export async function recordOperationReconciliation(repository: Repository, exec
   try { return await repository.mutateExecution(executionId, state => {
     const execution = state.executions[executionId], current = currentActor(state, user.id);
     if (!execution || !canRecord(state, execution, user.id) || current.role.name !== user.role || !user.permissions.includes("execution:reconcile")) deny("Current independent execution:reconcile authority is required", 403);
-    const value = caseEvidence(state, executionId), previous = value.history.find(item => item.keyHash === keyHash);
+    const value = operationCaseEvidence(state, executionId), previous = value.history.find(item => item.keyHash === keyHash);
     if (previous) { if (previous.fingerprint !== fingerprint) deny("Reconciliation key already belongs to different evidence"); return receipt(execution, previous, previous.baseVersion + 1, true); }
     if (command.intentId !== value.intent.id || command.baseVersion !== value.version || command.factsHash !== value.factsHash || value.resolved || value.history.length >= 100)
       deny("Reconciliation case changed or is closed; reload exact evidence before recording");
@@ -146,7 +150,7 @@ export async function recordOperationReconciliation(repository: Repository, exec
     state.auditLogs.push({ id: `reconciliation-audit-${randomBytes(12).toString("hex")}`, actor: { id: current.actor.id, name: current.actor.name }, action: "operation.reconciliation_recorded",
       resource: { type: "execution", id: executionId }, after: { recordId, intentId: value.intent.id, factsHash: command.factsHash, outcome: command.outcome, basis: record.basis }, createdAt: now });
     // Check the resulting history/state before its durable acknowledgement.
-    caseEvidence(state, executionId);
+    operationCaseEvidence(state, executionId);
     return receipt(execution, record, value.version + 1, false);
   }); } catch (error) {
     if (error instanceof HandlerFailure) throw error;

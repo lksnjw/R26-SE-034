@@ -19,6 +19,7 @@ import { operationJobQueue } from "../src/runner/operation-jobs.js";
 import { splitFirestoreState, assembleFirestoreState } from "../src/storage/firestore-record-layout.js";
 import { withoutSecretFields } from "../src/redact/secrets.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
+import { operationReadbackQueue } from "../src/runner/operation-readback-jobs.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -60,7 +61,9 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   const authorize = admissionAuthorizer(repository, registries);
   const sdk = { metadataComplete: true, connect: vi.fn(async () => {}), close: vi.fn(async () => {}), listTools: vi.fn(async () => tools.map(tool => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), outputSchema: tool.bridge_contract!.output_schema!,
     _meta: { "toolplane.resourceDigest": tool.bridge_contract!.resource_digest, "toolplane.resourceVersion": "1.0.0", "io.erpbridge/allowedRoles": [] } }))),
-    callTool: vi.fn(async (name: string, args: Record<string, unknown>, _meta?: Record<string, unknown>): Promise<unknown> => name === exactBridgeName(read) ? { content: [], structuredContent: { value: String(args.value).toUpperCase() } } : { content: [], structuredContent: { accepted: true, id: "fixture-message" } }) };
+    callTool: vi.fn(async (name: string, args: Record<string, unknown>, _meta?: Record<string, unknown>): Promise<unknown> => name === exactBridgeName(read) ? { content: [], structuredContent: { value: String(args.value).toUpperCase() } } :
+      readback && name === exactBridgeName(readback) ? { content: [], structuredContent: { value: args.value, state: "ABSENT", settled: true, observedAt: new Date().toISOString() } } :
+      { content: [], structuredContent: { accepted: true, id: "fixture-message" } }) };
   const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: sdk,
     admissionAuthorizer: async (...args) => { await authorize(...args); if (!args[0].is_read_only) await dispatchAdmissionHook?.(); } }); closers.push(session);
   await repository.mutate(state => {
@@ -176,6 +179,267 @@ test("reviewed operation does not acquire read authority or bypass approval with
   expect(resolved.capability).not.toBeNull();
   await expect(s.session.clientFor(s.write).execute(s.write.name, resolved.capability!, { value: "fixture report" }, identity, undefined, async () => {}, () => {}, { profile: "operation-sdk-permit/v1" })).rejects.toThrow(/authentic exact/);
   expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+async function uncertainReadbackOperation(storage: PersistenceBackend | null = null) {
+  const s = await setup(storage, false, true), id = await s.admit();
+  s.sdk.callTool.mockImplementationOnce(async () => { throw new Error("Synthetic unknown original send; never automatically replay"); });
+  const approved = await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer"); expect(approved.statusCode, approved.body).toBe(200);
+  await s.wait(id, "RECONCILIATION_REQUIRED");
+  const history = async (actor = "requester") => {
+    const reply = await s.request("GET", `/api/executions/${id}/readbacks`, undefined, actor); expect(reply.statusCode, reply.body).toBe(200); return reply.json().data;
+  };
+  const queryCommand = async (key = "readback-query-key-0001") => {
+    const value = await history(); return { intentId: value.intentId, baseVersion: value.baseVersion, factsHash: value.factsHash, idempotencyKey: key };
+  };
+  const waitQuery = async (queryId: string, status: string) => {
+    await vi.waitFor(async () => { expect((await s.repository.snapshot()).executions[id]!.operationSecret!.readbacks![queryId]!.state).toBe(status); }, { timeout: 4000 });
+  };
+  return { ...s, id, history, queryCommand, waitQuery };
+}
+
+test.each([['APPLIED', true, 'APPLIED'], ['ABSENT', true, 'NOT_APPLIED'], ['PENDING', true, 'UNRESOLVED'], ['ABSENT', false, 'UNRESOLVED']] as const)("normal saved read-back classifies %s/settled=%s without closing, replaying or resuming its original operation", async (stateLabel, settled, outcome) => {
+  const s = await uncertainReadbackOperation(), before = await s.repository.snapshot(), original = before.executions[s.id]!;
+  s.sdk.callTool.mockImplementationOnce(async (_name, args) => ({ content: [], structuredContent: { value: args.value, state: stateLabel, settled, observedAt: new Date().toISOString() } }));
+  const command = await s.queryCommand(), admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, command); expect(admitted.statusCode, admitted.body).toBe(202);
+  const queryId = admitted.json().data.id; await s.waitQuery(queryId, "ANSWERED");
+  const after = await s.repository.snapshot(), run = after.executions[s.id]!, job = run.operationSecret!.readbacks![queryId]!;
+  expect(job.evaluation).toMatchObject({ outcome, settled, canResume: false, noReplay: true, deliveryVerified: false });
+  expect(job.result).toMatchObject({ structuredContent: { value: "fixture report" } }); expect(job.lease).toBeUndefined();
+  expect(run.status).toBe("RECONCILIATION_REQUIRED"); expect(run.completedAt).toBe(original.completedAt); expect(run.operationSecret!.intents).toEqual(original.operationSecret!.intents);
+  expect(run.stepOutputs).toEqual(original.stepOutputs); expect(run.finalOutput).toBeUndefined(); expect(run.readProgress!.epoch).toBe(original.readProgress!.epoch);
+  expect(run.readProgress!.nextStepIndex).toBe(original.readProgress!.nextStepIndex); expect(after.timelines[s.id]).toEqual(before.timelines[s.id]);
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.write), exactBridgeName(s.readback!)]);
+  expect(s.sdk.callTool.mock.calls[1]![1]).toEqual({ value: "fixture report" });
+  const history = await s.history(); expect(history).toMatchObject({ canQuery: true, canResume: false, jobs: [{ id: queryId, state: "ANSWERED", basis: "queried-operation-state", observation: { outcome } }] });
+  expect(JSON.stringify(history)).not.toMatch(/"(?:arguments|result|admission|connectionBinding|keyHash|requestFingerprint)":/);
+  expect((await s.request("POST", `/api/executions/${s.id}/readbacks`, command)).json().data).toMatchObject({ id: queryId, replayed: true, state: "ANSWERED" });
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+  const queryEvents = after.executionEvents[s.id]!.filter(event => event.type.startsWith("operation.readback_"));
+  expect(queryEvents.map(event => event.type)).toEqual(["operation.readback_queued", "operation.readback_started", "operation.readback_dispatch_intent", "operation.readback_answered"]);
+  expect(queryEvents.every(event => event.attemptId === queryId && event.nodeId === "send")).toBe(true);
+});
+
+test("status history is minimum/scoped and review or reconciliation authority alone never grants query dispatch", async () => {
+  const s = await uncertainReadbackOperation();
+  await s.repository.mutate(state => {
+    state.roles.recovery_only = { id: "recovery_only", name: "Recovery only", description: "No dispatch grant", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
+    state.users.operator = { ...state.users.reviewer!, id: "operator", roleId: "recovery_only" };
+    state.users.outsider = { ...state.users.reviewer!, id: "outsider", roleId: "role_client" };
+  });
+  expect(await s.history("operator")).toMatchObject({ canQuery: false, jobs: [] }); const command = await s.queryCommand();
+  for (const actor of ["reviewer", "operator", "outsider"]) {
+    expect((await s.request("POST", `/api/executions/${s.id}/readbacks`, command, actor)).statusCode).toBe(actor === "outsider" ? 404 : 403);
+  }
+  expect((await s.request("GET", `/api/executions/${s.id}/readbacks`, undefined, "reviewer")).statusCode).toBe(403);
+  expect((await s.request("GET", `/api/executions/${s.id}/readbacks`, undefined, "outsider")).statusCode).toBe(404);
+  expect((await s.request("GET", `/api/executions/${s.id}`, undefined, "operator")).statusCode).toBe(404);
+  const unauthenticated = await s.app.inject({ method: "GET", url: `/api/executions/${s.id}/readbacks` }); expect(unauthenticated.statusCode).toBe(401);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+});
+
+test.each(["client-result", "role", "bad-key", "wrong-intent", "stale-case", "wrong-facts"])("normal read-back admission rejects %s without another tool call", async scenario => {
+  const s = await uncertainReadbackOperation(), command: Record<string, unknown> = await s.queryCommand();
+  if (scenario === "client-result") command.result = { state: "APPLIED" };
+  if (scenario === "role") command.role = "Platform Admin";
+  if (scenario === "bad-key") command.idempotencyKey = "short";
+  if (scenario === "wrong-intent") command.intentId = "not-the-original-intent";
+  if (scenario === "stale-case") command.baseVersion = 100;
+  if (scenario === "wrong-facts") command.factsHash = `sha256:${"0".repeat(64)}`;
+  const response = await s.request("POST", `/api/executions/${s.id}/readbacks`, command);
+  expect(response.statusCode, response.body).toBe(["client-result", "role", "bad-key"].includes(scenario) ? 422 : 409);
+  expect((await s.history()).jobs).toEqual([]); expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+});
+
+test.each(["wrong-identity", "stale-result", "text-only", "tool-error"])("normal read-back cannot save %s as qualified evidence", async scenario => {
+  const s = await uncertainReadbackOperation();
+  s.sdk.callTool.mockImplementationOnce(async () => {
+    const structuredContent = { value: scenario === "wrong-identity" ? "ANOTHER" : "fixture report", state: "APPLIED", settled: true,
+      observedAt: new Date(Date.now() - (scenario === "stale-result" ? 120000 : 0)).toISOString() };
+    return scenario === "text-only" ? { content: [{ type: "text", text: "Sent successfully" }] } : { content: [], structuredContent, ...(scenario === "tool-error" ? { isError: true } : {}) };
+  });
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand()); expect(admitted.statusCode, admitted.body).toBe(202);
+  // Reviewed-schema and tool-error failures are contained by the SDK adapter
+  // before the broker returns an envelope. They cannot become query evidence.
+  const interrupted = ["text-only", "tool-error"].includes(scenario);
+  const id = admitted.json().data.id; await s.waitQuery(id, interrupted ? "RECOVERY_REQUIRED" : "FAILED");
+  const job = (await s.repository.snapshot()).executions[s.id]!.operationSecret!.readbacks![id]!;
+  expect(job.result).toBeUndefined(); expect(job.evaluation).toBeUndefined(); expect(job.failure).toBe(interrupted ? "READBACK_INTERRUPTED" : "READBACK_RESULT_UNQUALIFIED");
+  expect((await s.history()).jobs[0]).toMatchObject({ queryOutcome: interrupted ? "UNKNOWN" : "UNQUALIFIED_RESULT", observation: null, noReplay: true, canResume: false });
+  const run = (await s.repository.snapshot()).executions[s.id]!;
+  expect(run.status).toBe("RECONCILIATION_REQUIRED"); expect(run.operationSecret!.intents.send!.state).toBe("UNKNOWN"); expect(run.stepOutputs).toEqual({});
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test.each(["disable-actor", "revoke-run", "disable-target", "change-role-map", "change-target"])("read-back %s immediately after intent acknowledgement fences final SDK entry", async scenario => {
+  const s = await uncertainReadbackOperation(), mutate = s.repository.mutateExecution.bind(s.repository); let injected = false;
+  vi.spyOn(s.repository, "mutateExecution").mockImplementation(async (...args) => {
+    const result = await mutate(...args), jobs = (await s.repository.snapshot()).executions[s.id]!.operationSecret!.readbacks;
+    const job = Object.values(jobs ?? {}).find(job => job.state === "RUNNING" && job.dispatchIntentAt);
+    if (job && !injected) {
+      injected = true;
+      if (scenario === "change-role-map") s.services.config.erpbridgeRoleMap = { "Platform Admin": "another-role" };
+      else if (scenario === "change-target") s.readback!.description = "Changed after exact query intent";
+      else await s.repository.mutate(state => {
+        if (scenario === "disable-actor") state.users.requester!.status = "Disabled";
+        if (scenario === "revoke-run") state.users.requester!.roleId = "review";
+        if (scenario === "disable-target") state.capabilityAdmissions[job.admission.capabilityId]!.state = "DISABLED";
+      });
+    }
+    return result;
+  });
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand()); expect(admitted.statusCode, admitted.body).toBe(202);
+  await s.waitQuery(admitted.json().data.id, "RECOVERY_REQUIRED"); expect(injected).toBe(true); expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+});
+
+test("an entered query can be cancelled without adopting a late answer or changing its original unknown effect", async () => {
+  const s = await uncertainReadbackOperation(); let release!: () => void;
+  s.sdk.callTool.mockImplementationOnce(async () => { await new Promise<void>(resolve => { release = resolve; }); return { content: [], structuredContent: {
+    value: "fixture report", state: "APPLIED", settled: true, observedAt: new Date().toISOString() } }; });
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand()); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id; await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  expect((await s.request("POST", `/api/executions/${s.id}/readbacks/${id}/cancel`, {})).statusCode).toBe(202); release();
+  await s.waitQuery(id, "RECOVERY_REQUIRED"); const run = (await s.repository.snapshot()).executions[s.id]!;
+  expect(run.operationSecret!.readbacks![id]!.result).toBeUndefined(); expect(run.operationSecret!.intents.send!.state).toBe("UNKNOWN");
+  expect(run.status).toBe("RECONCILIATION_REQUIRED"); expect(run.stepOutputs).toEqual({}); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test.each(["intent", "result"])("durable read-back %s post-COMMIT ACK loss survives authoritative recovery/restart without another query or effect", async phase => {
+  const storage = new Records(), s = await uncertainReadbackOperation(storage), command = await s.queryCommand(); let lost = false;
+  storage.loseWhen = state => {
+    const job = Object.values(state.executions[s.id]!.operationSecret!.readbacks ?? {})[0];
+    if (!job || (phase === "intent" ? !job.dispatchIntentAt || job.state !== "RUNNING" : job.state !== "ANSWERED")) return false;
+    lost = true; return true;
+  };
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, command); expect(admitted.statusCode, admitted.body).toBe(202);
+  await vi.waitFor(() => expect(lost).toBe(true)); expect(() => s.repository.assertAuthority()).toThrow();
+  expect((await s.request("GET", `/api/executions/${s.id}/readbacks`)).statusCode).toBe(503);
+  await s.repository.recoverPersistenceState(); const count = s.sdk.callTool.mock.calls.length;
+  await operationReadbackQueue(s.services).stop(); const restarted = operationReadbackQueue(s.services); closers.push({ close: () => restarted.stop() }); await restarted.start();
+  const id = admitted.json().data.id; await s.waitQuery(id, phase === "intent" ? "RECOVERY_REQUIRED" : "ANSWERED");
+  const history = await s.history(); expect(history.jobs[0]).toMatchObject({ id, state: phase === "intent" ? "RECOVERY_REQUIRED" : "ANSWERED" });
+  const replay = await s.request("POST", `/api/executions/${s.id}/readbacks`, command); expect(replay.statusCode, replay.body).toBe(202); expect(replay.json().data).toMatchObject({ id, replayed: true });
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(count); expect(count).toBe(phase === "intent" ? 1 : 2);
+  const layout = splitFirestoreState(await s.repository.snapshot()), leaf = layout.find(record => record.path[0] === "operation-readbacks" && record.path[2] === id);
+  expect(leaf).toBeDefined(); expect((layout.find(record => record.path[0] === "executions" && record.path[1] === s.id)!.value as any).operationSecret.readbacks).toEqual({});
+  expect(assembleFirestoreState(layout).executions[s.id]!.operationSecret!.readbacks![id]).toEqual((await s.repository.snapshot()).executions[s.id]!.operationSecret!.readbacks![id]);
+});
+
+test.each(["arguments", "classification", "result", "target-pin", "source-facts", "request-fingerprint", "actor", "key", "state"])("altered saved read-back %s cannot be shown as trusted historical evidence", async scenario => {
+  const s = await uncertainReadbackOperation(), admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand());
+  expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id; await s.waitQuery(id, "ANSWERED");
+  await s.repository.mutate(state => {
+    const job = state.executions[s.id]!.operationSecret!.readbacks![id]!;
+    if (scenario === "arguments") job.arguments.value = "FORGED";
+    if (scenario === "classification") job.evaluation!.outcome = "APPLIED";
+    if (scenario === "result") job.result!.structuredContent.value = "ANOTHER";
+    if (scenario === "target-pin") job.admission.admissionVersion++;
+    if (scenario === "source-facts") job.factsHash = `sha256:${"0".repeat(64)}`;
+    if (scenario === "request-fingerprint") job.requestFingerprint = `sha256:${"0".repeat(64)}`;
+    if (scenario === "actor") job.actorId = "another-actor";
+    if (scenario === "key") job.keyHash = `sha256:${"0".repeat(64)}`;
+    if (scenario === "state") job.state = "RECOVERY_REQUIRED";
+  });
+  const denied = await s.request("GET", `/api/executions/${s.id}/readbacks`); expect(denied.statusCode, denied.body).toBe(409); expect(denied.json().data).toBeNull(); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("query admission post-COMMIT ACK loss reloads the original key and one queued query without repeating its effect", async () => {
+  const storage = new Records(), s = await uncertainReadbackOperation(storage), command = await s.queryCommand();
+  storage.loseWhen = state => Object.values(state.executions[s.id]!.operationSecret!.readbacks ?? {}).some(job => job.state === "QUEUED");
+  const unconfirmed = await s.request("POST", `/api/executions/${s.id}/readbacks`, command); expect(unconfirmed.statusCode, unconfirmed.body).toBe(503);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(() => s.repository.assertAuthority()).toThrow();
+  await s.repository.recoverPersistenceState(); const queued = Object.values((await s.repository.snapshot()).executions[s.id]!.operationSecret!.readbacks!);
+  expect(queued).toHaveLength(1); expect(queued[0]!.state).toBe("QUEUED");
+  await operationReadbackQueue(s.services).stop(); const restarted = operationReadbackQueue(s.services); closers.push({ close: () => restarted.stop() }); await restarted.start();
+  await s.waitQuery(queued[0]!.id, "ANSWERED");
+  const events = (await s.repository.snapshot()).executionEvents[s.id];
+  const replay = await s.request("POST", `/api/executions/${s.id}/readbacks`, command); expect(replay.statusCode, replay.body).toBe(202);
+  expect(replay.json().data).toMatchObject({ id: queued[0]!.id, replayed: true, state: "ANSWERED" });
+  expect((await s.repository.snapshot()).executionEvents[s.id]).toEqual(events); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("query keys cannot be reused for different case evidence", async () => {
+  const s = await uncertainReadbackOperation(), command = await s.queryCommand();
+  const receipt = await s.request("POST", `/api/executions/${s.id}/readbacks`, command); await s.waitQuery(receipt.json().data.id, "ANSWERED");
+  const denied = await s.request("POST", `/api/executions/${s.id}/readbacks`, { ...command, baseVersion: command.baseVersion + 1 });
+  expect(denied.statusCode, denied.body).toBe(409); expect((await s.history()).jobs).toHaveLength(1); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("one queued query per case is enforced and queued cancellation starts no SDK call", async () => {
+  const s = await uncertainReadbackOperation(); await operationReadbackQueue(s.services).stop();
+  const paused = operationReadbackQueue(s.services); closers.push({ close: () => paused.stop() });
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand()); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id; expect(admitted.json().data.state).toBe("QUEUED"); expect((await s.history()).canQuery).toBe(false);
+  expect((await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand("different-query-key-0001"))).statusCode).toBe(429);
+  expect((await s.request("POST", `/api/executions/${s.id}/readbacks/${id}/cancel`, { result: "cancelled" })).statusCode).toBe(400);
+  const cancelled = await s.request("POST", `/api/executions/${s.id}/readbacks/${id}/cancel`, {}); expect(cancelled.statusCode, cancelled.body).toBe(200);
+  expect(cancelled.json().data).toMatchObject({ state: "CANCELLED", queryOutcome: "NOT_DISPATCHED" });
+  await paused.start(); expect((await s.history()).canQuery).toBe(true); expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+});
+
+test.each(["disconnect", "revoke-target", "revoke-run"])("saved query history survives %s without granting another dispatch", async scenario => {
+  const s = await uncertainReadbackOperation(), admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand());
+  const id = admitted.json().data.id; await s.waitQuery(id, "ANSWERED"); const history = await s.history();
+  if (scenario === "disconnect") s.services.erpbridgeSession = { ...s.session, available: false };
+  else await s.repository.mutate(state => {
+    if (scenario === "revoke-run") state.users.requester!.permissionOverrides = ["execution:read_own"], state.users.requester!.roleId = "review";
+    else state.capabilityAdmissions[state.executions[s.id]!.operationSecret!.readbacks![id]!.admission.capabilityId]!.state = "DISABLED";
+  });
+  const after = await s.history(); expect(after.jobs).toEqual(history.jobs); expect(after.canQuery).toBe(false);
+  const denied = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand("new-after-revoke-key-0001"));
+  expect([403, 409, 503]).toContain(denied.statusCode); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("independent observations and closure keep earlier query evidence bound to its historical case revision", async () => {
+  const s = await uncertainReadbackOperation(), first = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand());
+  await s.waitQuery(first.json().data.id, "ANSWERED"); const originalQuery = (await s.history()).jobs[0];
+  await s.repository.mutate(state => {
+    state.roles.recovery_only = { id: "recovery_only", name: "Recovery only", description: "No dispatch", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
+    state.users.operator = { ...state.users.reviewer!, id: "operator", roleId: "recovery_only" };
+  });
+  for (const outcome of ["UNRESOLVED", "NOT_APPLIED"] as const) {
+    const view = (await s.request("GET", `/api/executions/${s.id}?view=reconciliation`, undefined, "operator")).json().data.operationReconciliation;
+    const response = await s.request("POST", `/api/executions/${s.id}/reconcile`, { intentId: view.intentId, baseVersion: view.version, factsHash: view.factsHash,
+      decisionKey: `readback-observation-${outcome}`, outcome, evidence: { kind: "external-support", reference: "SYNTHETIC-ONLY", note: "Independent fixture evidence, not delivery proof", observedAt: new Date().toISOString() } }, "operator");
+    expect(response.statusCode, response.body).toBe(200);
+    const history = await s.history(); expect(history.jobs[0]).toEqual(originalQuery); expect(history.baseVersion).toBe(view.version + 1);
+    expect(history.canQuery).toBe(outcome === "UNRESOLVED");
+  }
+  const run = (await s.repository.snapshot()).executions[s.id]!; expect(run.status).toBe("RECONCILED");
+  expect(run.operationSecret!.intents.send!.state).toBe("UNKNOWN"); expect(run.stepOutputs).toEqual({}); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("query lease expiry discards a late SDK answer and never repeats the original effect", async () => {
+  const s = await uncertainReadbackOperation(); let release!: () => void;
+  s.sdk.callTool.mockImplementationOnce(async () => { await new Promise<void>(resolve => { release = resolve; }); return { content: [], structuredContent: {
+    value: "fixture report", state: "APPLIED", settled: true, observedAt: new Date().toISOString() } }; });
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand()), id = admitted.json().data.id;
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  await s.repository.mutateExecution(s.id, state => { state.executions[s.id]!.operationSecret!.readbacks![id]!.lease!.expiresAt = Date.now() - 1; });
+  release(); await s.waitQuery(id, "RECOVERY_REQUIRED");
+  const history = await s.history(); expect(history.jobs[0]).toMatchObject({ queryOutcome: "UNKNOWN", observation: null, canResume: false, noReplay: true });
+  expect((await s.repository.snapshot()).executions[s.id]!.operationSecret!.intents.send!.state).toBe("UNKNOWN"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("query heartbeat ACK loss fences an entered query and recovery never adopts its late answer", async () => {
+  const storage = new Records(), s = await uncertainReadbackOperation(storage); s.services.config.readWorkerLeaseMs = 3000;
+  let release!: () => void;
+  s.sdk.callTool.mockImplementationOnce(async () => { await new Promise<void>(resolve => { release = resolve; }); return { content: [], structuredContent: {
+    value: "fixture report", state: "APPLIED", settled: true, observedAt: new Date().toISOString() } }; });
+  const command = await s.queryCommand(), admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, command), id = admitted.json().data.id;
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  const initialExpiry = (await s.repository.snapshot()).executions[s.id]!.operationSecret!.readbacks![id]!.lease!.expiresAt; let lost = false;
+  storage.loseWhen = state => {
+    const query = state.executions[s.id]!.operationSecret!.readbacks![id]!;
+    if (query.state !== "RUNNING" || !query.lease || query.lease.expiresAt <= initialExpiry) return false;
+    lost = true; return true;
+  };
+  await vi.waitFor(() => expect(lost).toBe(true), { timeout: 3000 }); expect(() => s.repository.assertAuthority()).toThrow(); release();
+  expect((await s.request("GET", `/api/executions/${s.id}/readbacks`)).statusCode).toBe(503);
+  await s.repository.recoverPersistenceState(); await operationReadbackQueue(s.services).stop();
+  const restarted = operationReadbackQueue(s.services); closers.push({ close: () => restarted.stop() }); await restarted.start(); await s.waitQuery(id, "RECOVERY_REQUIRED");
+  expect((await s.history()).jobs[0]).toMatchObject({ queryOutcome: "UNKNOWN", observation: null });
+  expect((await s.request("POST", `/api/executions/${s.id}/readbacks`, command)).json().data.replayed).toBe(true); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
 });
 test.each(["reject", "cancel", "self", "revoke-requester", "revoke-admission", "change-args", "expire"])("a waiting operation contains %s without write dispatch", async scenario => {
   const s = await setup(null, false), id = await s.admit(), command = await s.command(id);

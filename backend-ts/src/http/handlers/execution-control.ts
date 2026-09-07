@@ -6,11 +6,32 @@ import { appendAudit, HandlerFailure, requestParam, type CurrentUser, type Handl
 import { ok } from "../../models/schemas.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
 import { recordOperationReconciliation } from "../../runner/operation-reconciliation.js";
+import { operationReadbackHistory, operationReadbackQueue } from "../../runner/operation-readback-jobs.js";
 
 export const EXECUTION_CONTROL_UNHANDLED = Symbol("execution-control-unhandled");
 
 export async function handleExecutionControlRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const path = `${services.config.apiBasePath}/executions/:id`;
+  if (route.path === `${path}/readbacks` && route.method === "GET") {
+    if (Object.keys(request.query as Record<string, unknown>).length) throw new HandlerFailure(400, "Status query history accepts no query overrides");
+    let history;
+    try { history = await services.repository.readAuthoritative(state => operationReadbackHistory(state, services, requestParam(request, "id"), user.id)); }
+    catch (error) {
+      try { services.repository.assertAuthority(); }
+      catch { throw new HandlerFailure(503, "Status query history is unavailable until authoritative storage is recovered. No evidence is confirmed."); }
+      throw error;
+    }
+    return reply.send(ok(history, "Reviewed status queries; no original resend, resolution or resume", null));
+  }
+  if (route.path === `${path}/readbacks` && route.method === "POST") {
+    const receipt = await operationReadbackQueue(services).admit(requestParam(request, "id"), user, request.body);
+    return reply.status(202).send(ok(receipt, "Read-only status query admitted; the original action remains uncertain", null));
+  }
+  if (route.path === `${path}/readbacks/:queryId/cancel` && route.method === "POST") {
+    if (request.body !== undefined && (typeof request.body !== "object" || request.body === null || Array.isArray(request.body) || Object.keys(request.body).length)) throw new HandlerFailure(400, "Query cancellation accepts an empty body");
+    const receipt = await operationReadbackQueue(services).cancel(requestParam(request, "id"), requestParam(request, "queryId"), user);
+    return reply.status(receipt.state === "RUNNING" ? 202 : 200).send(ok(receipt, "Query cancellation only; no original effect replay or resume", null));
+  }
   if (route.path === `${path}/reconcile` && route.method === "POST") {
     const receipt = await recordOperationReconciliation(services.repository, requestParam(request, "id"), user, request.body);
     return reply.send(ok(receipt, "External evidence recorded; no execution, resume or replay", null));
