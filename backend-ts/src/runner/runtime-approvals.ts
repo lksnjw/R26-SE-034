@@ -96,15 +96,16 @@ function ledger(execution: Execution): RuntimeApprovalLedger {
 function reviewHash(record: Pick<RuntimeApprovalRecord, "id" | "binding" | "arguments" | "reason" | "requestedAt" | "expiresAt">) {
   return digest({ id: record.id, binding: record.binding, arguments: record.arguments, reason: record.reason, requestedAt: record.requestedAt, expiresAt: record.expiresAt });
 }
-function active(execution: Execution): RuntimeApprovalRecord {
-  const journal = ledger(execution), parsed = recordSchema.safeParse(journal.records[journal.activeId]);
-  if (!parsed.success || parsed.data.id !== journal.activeId) deny("Stored runtime approval is malformed");
+export function runtimeApprovalEvidence(execution: Execution, approvalId: string): RuntimeApprovalRecord {
+  const journal = ledger(execution), parsed = recordSchema.safeParse(journal.records[approvalId]);
+  if (!parsed.success || parsed.data.id !== approvalId) deny("Stored runtime approval is malformed");
   const record = parsed.data;
   if (record.reviewHash !== reviewHash(record) || record.binding.argumentHash !== digest(record.arguments) ||
       (record.state === "PENDING" ? !!record.decision || !!record.consumption : !record.decision || record.decision.outcome !== (record.state === "REJECTED" ? "REJECTED" : "APPROVED")) ||
       (record.state === "CONSUMED") !== !!record.consumption) deny("Stored runtime approval evidence is inconsistent");
   return record;
 }
+function active(execution: Execution): RuntimeApprovalRecord { return runtimeApprovalEvidence(execution, ledger(execution).activeId); }
 function approver(state: Readonly<RepositoryState>, record: RuntimeApprovalRecord, actorId: string) {
   const actor = state.users[actorId], role = actor && state.roles[actor.roleId], policy = currentPolicy(state);
   if (!actor || actor.status.toLowerCase() !== "active" || !role || actorId === record.binding.requesterId ||

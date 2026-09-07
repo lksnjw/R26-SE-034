@@ -51,6 +51,20 @@ export const executionService = {
       throw new Error("Exact transaction review is unavailable. Reload before deciding.");
     return value;
   },
+  async getReconciliation(id) {
+    const value = unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}`, { params: { view: "reconciliation" } }));
+    const review = value?.operationReconciliation;
+    if (value?.id !== id || review?.profile !== "operation-reconciliation/v1" || !["OPEN", "RESOLVED"].includes(review.state) ||
+        !Number.isSafeInteger(review.version) || review.version < 1 || !/^sha256:[a-f0-9]{64}$/.test(review.factsHash) ||
+        typeof review.canRecord !== "boolean" || review.canResume !== false || review.noReplay !== true || review.basis !== "operator-attestation" ||
+        typeof review.intentId !== "string" || !review.intentId || !Array.isArray(review.history) || review.history.length > 100 ||
+        !review.arguments || typeof review.arguments !== "object" || Array.isArray(review.arguments))
+      throw new Error("Exact uncertain-operation evidence is unavailable. Reload before recording a decision.");
+    return value;
+  },
+  async reconcile(id, command) {
+    return unwrap(await apiClient.post(`/executions/${encodeURIComponent(id)}/reconcile`, command));
+  },
 /*******************************************************************************
  * Function: getLogs
  *

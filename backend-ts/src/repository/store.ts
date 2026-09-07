@@ -461,7 +461,7 @@ export function restoreState(payload: Uint8Array): RepositoryState {
  ******************************************************************************/
 export function initialState(): RepositoryState {
   const createdAt = new Date().toISOString();
-  const permissionKeys = ["workflow:read", "workflow:write", "workflow:run", "workflow:read_own", "workflow:run_own", "execution:read_own", "execution:approve", "workflow_view_all", "chat:use", "registry:read", "registry:write", "settings:manage", "provider:manage", "user:manage", "audit:read"];
+  const permissionKeys = ["workflow:read", "workflow:write", "workflow:run", "workflow:read_own", "workflow:run_own", "execution:read_own", "execution:approve", "execution:reconcile", "workflow_view_all", "chat:use", "registry:read", "registry:write", "settings:manage", "provider:manage", "user:manage", "audit:read"];
   const permissions = permissionKeys.map((key) => ({ key, name: permissionName(key), description: permissionDescription(key), group: permissionGroup(key) }));
   return {
     version: 1,

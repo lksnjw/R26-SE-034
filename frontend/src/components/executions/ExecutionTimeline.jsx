@@ -4,6 +4,7 @@ import { isGovernanceBlock } from "../../constants/workflowStatus";
 import StepLogItem from "./StepLogItem";
 import { ReadableResult } from "../chat/ReadableValue";
 import { iterationPositionLabel } from "../../utils/iterationEvidence";
+import OperationReconciliationEvidence from "./OperationReconciliationEvidence";
 
 /*******************************************************************************
  * Function: ExecutionTimeline
@@ -36,7 +37,8 @@ function ExecutionTimeline({ timeline = [] }) {
                 Blocked by {step.failure.ruleId} — tool never called
               </p>
             ) : null}
-            {step.status === "UNKNOWN" && <p className="ml-9 mt-1 text-xs text-amber-700 dark:text-amber-300">The read may have reached ERP, but no confirmed answer was saved. Do not assume success or retry it automatically.</p>}
+            {step.status === "UNKNOWN" && <p className="ml-9 mt-1 text-xs text-amber-700 dark:text-amber-300">{step.sideEffect ? "The operation may have taken effect in ERP, but no confirmed SDK result was saved. Do not assume success or replay automatically." : "The read may have reached ERP, but no confirmed answer was saved. Do not assume success or retry it automatically."}</p>}
+            {step.reconciliation && <div className="ml-9 mt-2"><OperationReconciliationEvidence record={step.reconciliation} /></div>}
             {step.status === "SKIPPED" && <p className="ml-9 mt-1 text-xs text-gray-500">{step.reason?.kind === "empty-collection" ? "Empty collection. No tool call or answer." : step.outcome === "AFTER_RETURN" || step.reason?.kind === "return" ? `Skipped after return ${step.returnId || step.reason.returnId}. No tool call or answer.` : "Not selected by the recorded condition. No tool call or answer."}</p>}
             {step.outcome === "CONDITION_SELECTED" && <p className="ml-9 mt-1 text-xs text-gray-500">{step.output?.selectedBranch} selected · deterministic condition, not an ERP tool result.</p>}
             {["VALUE_MERGED", "WORKFLOW_RETURNED"].includes(step.outcome) && <div className="ml-9 mt-2"><p className="mb-1 text-xs text-gray-500">{step.outcome === "VALUE_MERGED" ? "Selected branch value saved" : "Workflow returned · later actions stopped"} · no tool call</p><ReadableResult value={step.output?.value} /></div>}

@@ -682,6 +682,10 @@ export const routeTable = [
   },
   {
     "method": "POST",
+    "path": "/api/executions/:id/reconcile"
+  },
+  {
+    "method": "POST",
     "path": "/api/workflows/:id/approve-generation"
   },
   {

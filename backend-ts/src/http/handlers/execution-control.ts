@@ -5,11 +5,16 @@ import { appendExecutionEvent, assertCurrentRunController } from "../../runner/r
 import { appendAudit, HandlerFailure, requestParam, type CurrentUser, type HandlerServices } from "./common.js";
 import { ok } from "../../models/schemas.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
+import { recordOperationReconciliation } from "../../runner/operation-reconciliation.js";
 
 export const EXECUTION_CONTROL_UNHANDLED = Symbol("execution-control-unhandled");
 
 export async function handleExecutionControlRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const path = `${services.config.apiBasePath}/executions/:id`;
+  if (route.path === `${path}/reconcile` && route.method === "POST") {
+    const receipt = await recordOperationReconciliation(services.repository, requestParam(request, "id"), user, request.body);
+    return reply.send(ok(receipt, "External evidence recorded; no execution, resume or replay", null));
+  }
   if (route.path === `${path}/events` && route.method === "GET") {
     const query = request.query as Record<string, unknown>;
     if (Object.keys(query).some((key) => !["after", "limit"].includes(key))) throw new HandlerFailure(400, "Unsupported event query");

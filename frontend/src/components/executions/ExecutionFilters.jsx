@@ -26,6 +26,7 @@ function ExecutionFilters({ query, status, range, onQueryChange, onStatusChange,
           <option value="CANCELLED">Cancelled</option>
           <option value="RECOVERY_REQUIRED">Recovery required</option>
           <option value="RECONCILIATION_REQUIRED">ERP reconciliation required</option>
+          <option value="RECONCILED">Closed by operator evidence</option>
         </Select>
       </div>
     </div>

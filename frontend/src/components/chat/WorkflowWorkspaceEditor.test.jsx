@@ -339,6 +339,18 @@ test("an uncertain operation node explains possible ERP effects and cannot start
   expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true); expect(workflowService.run).not.toHaveBeenCalled();
 });
 
+test("operator-closed canvas retains external evidence beside the unknown node without fabricating a tool answer or rerun", async () => {
+  const closed = { id: "operation-closed", workflowId: "report", status: "RECONCILED", hasOperationReconciliation: true, startedAt: "2026-10-06T00:00:00Z", workflowSnapshot: { yaml, version: 1, executionProfile: "sequential-operation-v1" }, readProgress: { profile: "read-progress-v1", lastSequence: 1 }, stepOutputs: {} };
+  executionService.list.mockResolvedValue([closed]); executionService.get.mockResolvedValue(closed);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "UNKNOWN", sideEffect: true, reconciliation: { id: "evidence", outcome: "APPLIED", basis: "operator-attestation", actorId: "operator", recordedAt: closed.startedAt, evidence: { reference: "ERP-123", note: "Inspected external record", kind: "erp-record", observedAt: closed.startedAt } } }]);
+  jest.spyOn(executionService, "getEvents").mockResolvedValue({ events: [{ version: 1, executionId: closed.id, sequence: 1, timestamp: closed.startedAt, type: "operation.reconciliation_recorded", nodeId: "first", payload: { outcome: "APPLIED" } }], cursor: 1, lastSequence: 1, hasMore: false, status: closed.status, profile: "read-progress-v1" });
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, can_attempt_run: true, executionProfile: "sequential-operation-v1", operation_job_admission: "operation-job/v1" });
+  await open({ canControl: true }); await screen.findByText("Effect observed · operator attestation");
+  // The optional collapsed YAML source is not the business-evidence display.
+  expect(screen.getByText("ERP-123")).toBeTruthy(); expect(screen.getByText(/Not a saved tool answer/)).toBeTruthy(); expect(screen.getByLabelText("Operator evidence").querySelector("pre")).toBeNull();
+  expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true); expect(screen.queryByText(/Node answer/)).toBeNull(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
 test("schema guidance selects readable data and applies only the reviewed revision-bound draft", async () => {
   workflowService.readiness.mockResolvedValue({ ...record, authoring: { profile: "read-authoring/v1", nodes: [{ nodeId: "first", actions: ["demo.echo"], inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false }, dataSources: [{ expression: "{{input.report}}", label: "Workflow input · report", schema: { type: "string" } }] }] } });
   await open(); await selectNode();

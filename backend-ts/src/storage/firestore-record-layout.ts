@@ -17,7 +17,7 @@ const arrayLength = (value: unknown): number => {
   if (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 1_000_000) throw new Error("Invalid Firestore array length");
   return Number(value);
 };
-const executionSections = new Set(["executions", "readJobs", "readContinuations", "timelines", "executionLogs", "executionEvents", "attempts", "receipts", "outputs", "values", "runtime-approvals", "operation-intents", "timeline-entry", "log-entry", "event-entry"]);
+const executionSections = new Set(["executions", "readJobs", "readContinuations", "timelines", "executionLogs", "executionEvents", "attempts", "receipts", "outputs", "values", "runtime-approvals", "operation-intents", "operation-reconciliations", "timeline-entry", "log-entry", "event-entry"]);
 /** Domain/chat/version records can share a run's ID without belonging to it.
  * Only known runtime sections participate in scoped checkpoint replacement. */
 export function firestoreExecutionRecordScope(record: RuntimeRecord): string | null {

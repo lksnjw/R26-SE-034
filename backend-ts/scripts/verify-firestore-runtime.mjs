@@ -332,6 +332,39 @@ try {
   assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
   log("actual Firestore post-COMMIT operation intent ACK loss fenced SDK entry; authoritative reload/restart preserved the read answer and unknown intent for reconciliation, without operation replay");
 
+  // Independent operator evidence is an attestation, never an SDK ACK. Exercise
+  // real scoped Firestore commits, unknown decision ACK and restart, not merely
+  // a private schema or a synthetic pre-resolved record.
+  await repository.mutate(state => {
+    state.roles.recovery_operator = { id: "recovery_operator", name: "Independent recovery operator", description: "Synthetic recovery only", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
+    state.users.operator = { ...state.users.reviewer, id: "operator", name: "Recovery operator", email: "operator@example.test", roleId: "recovery_operator" };
+  });
+  const recoveryView = (await request("GET", `/api/executions/${lostOperation}?view=reconciliation`, undefined, 200, "operator")).data.operationReconciliation;
+  assert.equal(recoveryView.canRecord, true); assert.deepEqual(recoveryView.arguments, { id: "OPERATION-LOST-INTENT" });
+  await request("GET", `/api/executions/${lostOperation}`, undefined, 404, "operator"); await request("GET", `/api/executions/${lostOperation}/logs`, undefined, 403, "operator");
+  const recoveryCommand = { intentId: recoveryView.intentId, baseVersion: recoveryView.version, factsHash: recoveryView.factsHash, decisionKey: "firestore-external-evidence-0001", outcome: "NOT_APPLIED",
+    evidence: { kind: "external-support", reference: "SYNTHETIC-INTENT-ACK-LOSS-CHECK", note: "Independent local fixture observed no SDK entry. This is recorded operator evidence, not a live ERP or delivery audit.", observedAt: new Date().toISOString() } };
+  await request("POST", `/api/executions/${lostOperation}/reconcile`, recoveryCommand, 403, "owner");
+  const actualRecoveryCheckpoint = persistence.saveExecutionCheckpoint.bind(persistence); let lostRecoveryACK = false;
+  persistence.saveExecutionCheckpoint = async checkpoint => { await actualRecoveryCheckpoint(checkpoint);
+    if (!lostRecoveryACK && checkpoint.executionId === lostOperation && checkpoint.execution?.status === "RECONCILED") { lostRecoveryACK = true; throw new Error("Synthetic actual Firestore external-evidence decision post-COMMIT acknowledgement loss"); }
+  };
+  await request("POST", `/api/executions/${lostOperation}/reconcile`, recoveryCommand, 503, "operator"); assert.equal(lostRecoveryACK, true);
+  persistence.saveExecutionCheckpoint = actualRecoveryCheckpoint; await repository.recoverPersistenceState();
+  const closedRecovery = (await repository.snapshot()).executions[lostOperation]; assert.equal(closedRecovery.status, "RECONCILED");
+  assert.equal(closedRecovery.operationSecret.intents.send.state, "UNKNOWN"); assert.equal(closedRecovery.readProgress.attempts.send.status, "UNKNOWN");
+  assert.deepEqual(closedRecovery.stepOutputs, reconciledOperation.stepOutputs); assert.equal(closedRecovery.finalOutput, undefined);
+  const recoveryEvents = (await repository.snapshot()).executionEvents[lostOperation];
+  assert.equal((await request("POST", `/api/executions/${lostOperation}/reconcile`, recoveryCommand, 200, "operator")).data.replayed, true);
+  assert.deepEqual((await repository.snapshot()).executionEvents[lostOperation], recoveryEvents);
+  await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[lostOperation], closedRecovery);
+  const recoveryHistory = (await request("GET", `/api/executions/${lostOperation}?view=reconciliation`, undefined, 200, "operator")).data.operationReconciliation;
+  assert.equal(recoveryHistory.state, "RESOLVED"); assert.equal(recoveryHistory.canRecord, false); assert.equal(recoveryHistory.history.length, 1);
+  assert.equal(recoveryHistory.history[0].basis, "operator-attestation"); assert.equal(recoveryHistory.canResume, false);
+  await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
+  log("actual Firestore normal independent external-evidence recovery survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; one private attestation, no new SDK/model calls, no fabricated answer or resume");
+
   const entered = barrier(), release = barrier(); sdkHook = async args => { if (args.id === "cancel-a") { entered.release(); await release.promise; } };
   const cancelRun = (await request("POST", "/api/workflows/collection/run", { mode: "async-read", idempotencyKey: "firestore-runtime-cancel-fixture-0001", input: { rows: ["cancel-a", "must-not-call"] } }, 202)).data.id;
   await boundedOperation(() => entered.promise, { timeoutMs: 20_000, label: "Synthetic cancellation SDK entry" }); await request("POST", `/api/executions/${cancelRun}/cancel`, {}, 202); release.release(); sdkHook = undefined;

@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import jwt from "jsonwebtoken";
 import { stringify } from "yaml";
 import { afterEach, expect, test, vi } from "vitest";
-import { Repository, type PersistenceBackend, type RepositoryState } from "../src/repository/store.js";
+import { Repository, restoreState, type PersistenceBackend, type RepositoryState } from "../src/repository/store.js";
 import { applyExecutionCheckpoint, type ExecutionCheckpoint } from "../src/repository/execution-transaction.js";
 import { RegistryService } from "../src/registry/service.js";
 import { toolSchema } from "../src/registry/schemas.js";
@@ -259,4 +259,167 @@ test("stable operation admission rejects changed input and still deduplicates th
   s.services.config.jwtSecret = "rotated-fixture-secret-at-least-32-characters";
   const replay = await s.run(); expect(replay.statusCode).toBe(202); expect(replay.json().data.id).toBe(id);
   expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+async function uncertainOperation(storage: PersistenceBackend | null = null) {
+  const system = await setup(storage), id = await system.admit();
+  system.sdk.callTool.mockRejectedValueOnce(new Error("Synthetic effect response lost after possible acceptance"));
+  const approved = await system.request("POST", `/api/executions/${id}/approve`, await system.command(id), "reviewer");
+  expect(approved.statusCode, approved.body).toBe(200); await system.wait(id, "RECONCILIATION_REQUIRED");
+  await system.repository.mutate(state => {
+    state.roles.reconciler = { id: "reconciler", name: "Business recovery operator", description: "Minimum recovery only", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
+    state.users.operator = { ...state.users.reviewer!, id: "operator", name: "Operator", email: "operator@example.test", roleId: "reconciler" };
+    state.users.outsider = { ...state.users.reviewer!, id: "outsider", name: "Other client", email: "other@example.test", roleId: "role_client" };
+  });
+  const caseView = async (user = "operator") => {
+    const response = await system.request("GET", `/api/executions/${id}?view=reconciliation`, undefined, user);
+    expect(response.statusCode, response.body).toBe(200); return response.json().data.operationReconciliation;
+  };
+  const evidenceCommand = async (outcome = "APPLIED") => {
+    const view = await caseView(); return { intentId: view.intentId, baseVersion: view.version, factsHash: view.factsHash, decisionKey: "reconciliation-decision-0001", outcome,
+      evidence: { kind: "erp-record", reference: "SANDBOX-ERP-RECORD-123", note: "Independently inspected the synthetic operation record. This is not a delivery guarantee.", observedAt: new Date().toISOString() } };
+  };
+  return { ...system, id, caseView, evidenceCommand };
+}
+
+test.each(["APPLIED", "NOT_APPLIED"])("normal independent %s external evidence closes a case without granting SDK/result/resume authority", async outcome => {
+  const s = await uncertainOperation(), command = await s.evidenceCommand(outcome), before = await s.repository.snapshot();
+  const response = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator"); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ intentId: command.intentId, outcome, state: "RESOLVED", version: 2, basis: "operator-attestation", toolWasCalled: false, canResume: false, noReplay: true, replayed: false });
+  const after = await s.repository.snapshot(), execution = after.executions[s.id]!;
+  expect(execution.status).toBe("RECONCILED"); expect(execution.operationSecret!.state).toBe("FINISHED"); expect(execution.operationSecret!.lease).toBeUndefined();
+  expect(execution.operationSecret!.intents.send!.state).toBe("UNKNOWN"); expect(execution.readProgress).toEqual({ ...before.executions[s.id]!.readProgress!, lastSequence: before.executions[s.id]!.readProgress!.lastSequence + 1 });
+  expect(execution.stepOutputs).toEqual(before.executions[s.id]!.stepOutputs); expect(execution.stepOutputs).not.toHaveProperty("send"); expect(execution.finalOutput).toBeUndefined();
+  expect(after.timelines[s.id]!.find(item => item.nodeId === "send")).toMatchObject({ status: "UNKNOWN", outcome: "UNKNOWN", reconciliation: { outcome, basis: "operator-attestation", evidence: command.evidence } });
+  expect((await s.caseView())).toMatchObject({ state: "RESOLVED", canRecord: false, canResume: false, noReplay: true, version: 2 });
+  const replay = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator"); expect(replay.statusCode, replay.body).toBe(200); expect(replay.json().data.replayed).toBe(true);
+  expect((await s.repository.snapshot()).executionEvents[s.id]).toEqual(after.executionEvents[s.id]); expect((await s.repository.snapshot()).auditLogs).toEqual(after.auditLogs);
+  expect((await s.request("POST", `/api/executions/${s.id}/retry`, {})).statusCode).toBe(409);
+  expect((await s.run()).json().data.id).toBe(s.id); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+  const publicRun = (await s.request("GET", `/api/executions/${s.id}`)).json().data;
+  expect(publicRun).not.toHaveProperty("operationSecret"); expect(publicRun).not.toHaveProperty("runtimeApprovalSecret");
+});
+
+test("unresolved observations append exact versioned evidence, then a fresh definitive decision closes without a call", async () => {
+  const s = await uncertainOperation(), first = await s.evidenceCommand("UNRESOLVED");
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, first, "operator")).statusCode).toBe(200);
+  const view = await s.caseView(); expect(view).toMatchObject({ version: 2, state: "OPEN", canRecord: true }); expect(view.factsHash).not.toBe(first.factsHash);
+  expect((await s.repository.snapshot()).executions[s.id]!.status).toBe("RECONCILIATION_REQUIRED");
+  const stale = { ...first, decisionKey: "reconciliation-stale-command", outcome: "APPLIED" };
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, stale, "operator")).statusCode).toBe(409);
+  const second = { ...await s.evidenceCommand("NOT_APPLIED"), decisionKey: "reconciliation-second-command" };
+  const response = await s.request("POST", `/api/executions/${s.id}/reconcile`, second, "operator"); expect(response.statusCode, response.body).toBe(200);
+  expect((await s.caseView()).history.map((record: { outcome: string }) => record.outcome)).toEqual(["UNRESOLVED", "NOT_APPLIED"]);
+  const previousReplay = await s.request("POST", `/api/executions/${s.id}/reconcile`, first, "operator"); expect(previousReplay.statusCode).toBe(200); expect(previousReplay.json().data).toMatchObject({ state: "OPEN", version: 2, replayed: true });
+  expect((await s.repository.snapshot()).executions[s.id]!.status).toBe("RECONCILED"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("reconciliation-only roles get minimum exact evidence, not full executions/logs/approval or unrelated clients' data", async () => {
+  const s = await uncertainOperation(), view = await s.caseView();
+  expect(view).toMatchObject({ arguments: { value: "FIXTURE REPORT" }, toolName: s.write.name, canRecord: true });
+  for (const key of ["decisionKey", "keyHash", "fingerprint", "connectionBinding", "operationSecret", "stepOutputs"]) expect(view).not.toHaveProperty(key);
+  expect((await s.request("GET", `/api/executions/${s.id}`, undefined, "operator")).statusCode).toBe(404);
+  expect((await s.request("GET", `/api/executions/${s.id}/logs`, undefined, "operator")).statusCode).toBe(403);
+  expect((await s.request("GET", `/api/executions/${s.id}?view=approval`, undefined, "operator")).statusCode).toBe(403);
+  expect((await s.request("GET", `/api/executions/${s.id}?view=reconciliation`, undefined, "outsider")).statusCode).toBe(404);
+  expect((await s.request("GET", `/api/executions/${s.id}?view=reconciliation`, undefined, "reviewer")).statusCode).toBe(404);
+  expect((await s.caseView("requester")).canRecord).toBe(false);
+  const command = await s.evidenceCommand();
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "requester")).statusCode).toBe(403);
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "reviewer")).statusCode).toBe(403);
+  expect((await s.request("GET", `/api/executions/${s.id}?view=reconciliation&extra=1`, undefined, "operator")).statusCode).toBe(400);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test.each(["review", "reconciler"])("the original requester downgraded to %s-only authority loses full run access even though ownership is unchanged", async roleId => {
+  const s = await uncertainOperation();
+  await s.repository.mutate(state => { state.users.requester!.roleId = roleId; });
+  expect((await s.request("GET", `/api/executions/${s.id}`)).statusCode).toBe(404);
+  expect((await s.request("GET", `/api/executions/${s.id}/logs`)).statusCode).toBe(403);
+  if (roleId === "reconciler") expect((await s.caseView("requester")).canRecord).toBe(false);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test.each(["role", "disabled", "permission", "owner"])("%s change after review cannot authorize a recovery decision", async scenario => {
+  const s = await uncertainOperation(), command = await s.evidenceCommand();
+  await s.repository.mutate(state => {
+    if (scenario === "role") state.users.operator!.roleId = "review";
+    if (scenario === "disabled") state.users.operator!.status = "Disabled";
+    if (scenario === "permission") state.roles.reconciler!.permissions = [];
+    if (scenario === "owner") state.executions[s.id]!.startedBy.id = "operator";
+  });
+  const response = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator"); expect([401, 403]).toContain(response.statusCode);
+  expect((await s.repository.snapshot()).executions[s.id]!.operationSecret!.reconciliations).toBeUndefined(); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test.each(["arguments", "publication", "intent", "lease", "epoch"])("changed historical %s evidence fences reconciliation instead of trusting browser fields", async scenario => {
+  const s = await uncertainOperation(), command = await s.evidenceCommand();
+  await s.repository.mutate(state => {
+    const execution = state.executions[s.id]!;
+    if (scenario === "arguments") execution.stepOutputs!.lookup = { structuredContent: { value: "changed report" } };
+    if (scenario === "publication") state.versions.flow![0]!.yaml += "# changed immutable content";
+    if (scenario === "intent") execution.operationSecret!.intents.send!.argumentHash = `sha256:${"c".repeat(64)}`;
+    if (scenario === "lease") execution.operationSecret!.lease = { id: "unexpected-owner", workerId: "stale-worker", expiresAt: Date.now() + 10000 };
+    if (scenario === "epoch") execution.readProgress!.epoch = 1;
+  });
+  const response = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator"); expect(response.statusCode, response.body).toBe(409);
+  expect((await s.repository.snapshot()).executions[s.id]!.operationSecret!.reconciliations).toBeUndefined(); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("malformed/future/pre-intent evidence and changed idempotent payload cannot manufacture a successful tool result", async () => {
+  const s = await uncertainOperation(), command = await s.evidenceCommand();
+  for (const bad of [{ ...command, output: { accepted: true } }, { ...command, evidence: { ...command.evidence, reference: "" } },
+    { ...command, evidence: { ...command.evidence, observedAt: "2020-01-01T00:00:00.000Z" } }, { ...command, evidence: { ...command.evidence, observedAt: new Date(Date.now() + 60000).toISOString() } }])
+    expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, bad, "operator")).statusCode).toBe(422);
+  const ok = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator"); expect(ok.statusCode, ok.body).toBe(200);
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, { ...command, outcome: "NOT_APPLIED" }, "operator")).statusCode).toBe(409);
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, { ...command, decisionKey: "closed-case-new-command-01" }, "operator")).statusCode).toBe(409);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("external historical recovery does not require expired dispatch authority or an active connector", async () => {
+  const s = await uncertainOperation(), command = await s.evidenceCommand();
+  await s.repository.mutate(state => { state.settings.rbac = {}; state.users.reviewer!.status = "Disabled"; const run = state.executions[s.id]!;
+    state.capabilityAdmissions[run.runtimeApprovalSecret!.records[run.runtimeApprovalSecret!.activeId]!.binding.capabilityId]!.state = "DISABLED"; });
+  await s.session.close();
+  vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.now() + 301000);
+  const response = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator"); expect(response.statusCode, response.body).toBe(200);
+  expect((await s.caseView()).state).toBe("RESOLVED"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("normalized private recovery records reopen exactly and do not auto-grant the new permission to stored roles", async () => {
+  const storage = new Records(), s = await uncertainOperation(storage), command = await s.evidenceCommand();
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator")).statusCode).toBe(200);
+  const snapshot = await s.repository.snapshot(), cells = splitFirestoreState(snapshot);
+  expect(cells.filter(item => item.path[0] === "operation-reconciliations")).toHaveLength(1); expect(assembleFirestoreState(cells)).toEqual(snapshot);
+  expect(cells.find(item => item.path[0] === "executions" && item.path[1] === s.id)!.value).toMatchObject({ operationSecret: { reconciliations: {} } });
+  const reopened = await Repository.open(storage); expect((await reopened.snapshot()).executions[s.id]!.operationSecret).toEqual(snapshot.executions[s.id]!.operationSecret);
+  const legacy = structuredClone(snapshot); legacy.permissions = legacy.permissions.filter(item => item.key !== "execution:reconcile"); legacy.roles.role_admin!.permissions = legacy.roles.role_admin!.permissions.filter(key => key !== "execution:reconcile");
+  const restored = restoreState(Buffer.from(JSON.stringify(legacy)));
+  expect(restored.permissions.some(item => item.key === "execution:reconcile")).toBe(true); expect(restored.roles.role_admin!.permissions).not.toContain("execution:reconcile");
+});
+
+test("post-commit recovery decision ACK loss reloads one record and replay never dispatches or appends another decision", async () => {
+  const storage = new Records(), s = await uncertainOperation(storage), command = await s.evidenceCommand();
+  storage.loseWhen = state => state.executions[s.id]?.status === "RECONCILED";
+  const response = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator"); expect(response.statusCode).toBe(503);
+  expect(JSON.parse(storage.bytes!.toString()).executions[s.id].status).toBe("RECONCILED"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+  await s.repository.recoverPersistenceState();
+  const authoritative = await s.repository.snapshot(), replay = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator");
+  expect(replay.statusCode, replay.body).toBe(200); expect(replay.json().data.replayed).toBe(true);
+  expect((await s.repository.snapshot()).executionEvents[s.id]).toEqual(authoritative.executionEvents[s.id]); expect(Object.keys(authoritative.executions[s.id]!.operationSecret!.reconciliations!)).toHaveLength(1);
+  await s.app.close(); const repository = await Repository.open(storage), queue = operationJobQueue({ ...s.services, repository });
+  await queue.start(); expect((await repository.snapshot()).executions[s.id]!.status).toBe("RECONCILED"); await queue.stop(); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("altered saved attestation or corrupt event cursor cannot be repaired by another decision", async () => {
+  const s = await uncertainOperation(), first = await s.evidenceCommand("UNRESOLVED");
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, first, "operator")).statusCode).toBe(200);
+  const second = { ...await s.evidenceCommand(), decisionKey: "reconciliation-next-key-0001" };
+  await s.repository.mutate(state => { Object.values(state.executions[s.id]!.operationSecret!.reconciliations!)[0]!.evidence.note = "Altered after record"; });
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, second, "operator")).statusCode).toBe(409);
+  const other = await uncertainOperation(), command = await other.evidenceCommand();
+  await other.repository.mutate(state => { state.executions[other.id]!.readProgress!.lastSequence += 10; });
+  expect((await other.request("POST", `/api/executions/${other.id}/reconcile`, command, "operator")).statusCode).toBe(503);
+  expect((await other.repository.snapshot()).executions[other.id]!.operationSecret!.reconciliations).toBeUndefined();
 });

@@ -56,3 +56,10 @@ test("uncertain operations show reconciliation and no retry or cancellation acti
   expect(screen.getByRole("status").textContent).toMatch(/No automatic retry or replay/);
   expect(screen.queryByRole("button", { name: /Request cancellation|Retry/ })).toBeNull();
 });
+
+test("operator-reconciled status links exact external evidence but never presents done, retry or resume", () => {
+  render(<ExecutionRunControls execution={{ ...run, status: "RECONCILED", hasOperationReconciliation: true, workflowSnapshot: { executionProfile: "sequential-operation-v1" } }} canControl />);
+  expect(screen.getByTestId("execution-status").textContent).toBe("Closed by operator evidence"); expect(screen.getByRole("status").textContent).toMatch(/not completed successfully/);
+  expect(screen.getByRole("link", { name: "Review external outcome evidence" }).getAttribute("href")).toBe("/executions/run?view=reconciliation");
+  expect(screen.queryByRole("button", { name: /Request cancellation|Retry|Resume/ })).toBeNull();
+});

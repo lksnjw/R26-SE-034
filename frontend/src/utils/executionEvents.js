@@ -48,6 +48,7 @@ const eventNames = {
   "iteration.return.done": "Workflow return saved", "iteration.return.failed": "Workflow return invalid",
 };
 export function executionEventLabel(event) {
+  if (event.type === "operation.reconciliation_recorded") return event.payload?.outcome === "UNRESOLVED" ? "External evidence saved · outcome still unresolved" : "Operator outcome attestation saved · no resume or replay";
   if (event.type === "run.queued" && event.payload?.profile === "operation-job/v1") return "Operation queued";
   if (event.type === "node.dispatch_intent" && event.payload?.sideEffect === true) return "Operation dispatch recorded — outcome not yet saved";
   if (event.type === "node.completed" && ["operation-accepted", "operation-confirmed"].includes(event.payload?.outcome)) return event.payload.outcome === "operation-accepted" ? "Tool acceptance saved · delivery not independently verified" : "Tool-reported operation confirmation saved";

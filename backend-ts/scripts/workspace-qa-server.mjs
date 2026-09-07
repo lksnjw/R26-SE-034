@@ -25,6 +25,8 @@ const fixtureWorker = process.env.WORKSPACE_QA_READ_STATE === "worker";
 const collectionCanvas = process.env.WORKSPACE_QA_CANVAS === "collection";
 const approvalFixture = process.env.WORKSPACE_QA_APPROVAL === "1";
 const operationFixture = process.env.WORKSPACE_QA_OPERATION === "1";
+const unknownOperation = process.env.WORKSPACE_QA_OPERATION_OUTCOME === "unknown";
+if (unknownOperation && !operationFixture) throw new Error("Unknown-outcome QA requires the isolated normal operation fixture");
 if (operationFixture && (approvalFixture || collectionCanvas || fixtureWorker)) throw new Error("Operation QA is an isolated synthetic normal-worker mode; do not combine fixture modes");
 if (approvalFixture && (collectionCanvas || fixtureWorker)) throw new Error("Approval QA uses only its isolated memory-only checkpoint, without a worker or collection mode");
 const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "local-workspace-qa-only-not-production-secret", STORAGE_DRIVER: "memory", MCP_MODE: "mock", CORS_ORIGINS: "http://localhost:5173,http://localhost:5191",
@@ -91,6 +93,11 @@ if (operationFixture) {
     state.roles.qa_review_only = { id: "qa_review_only", name: "Review only", description: "LOCAL independent approver", permissions: ["execution:approve"], createdAt };
     state.users.qa_reviewer = { ...state.users.qa, id: "qa_reviewer", name: "Local reviewer", email: "reviewer@example.test", roleId: "qa_review_only" };
     state.passwordHashes.qa_reviewer = passwordHash;
+    if (unknownOperation) {
+      state.roles.qa_recovery_only = { id: "qa_recovery_only", name: "Recovery only", description: "LOCAL external evidence only", permissions: ["execution:reconcile"], createdAt };
+      state.users.qa_operator = { ...state.users.qa, id: "qa_operator", name: "Local recovery operator", email: "operator@example.test", roleId: "qa_recovery_only" };
+      state.passwordHashes.qa_operator = passwordHash;
+    }
     updateRuntimeApprovalPolicy(state, actor, { profile: "runtime-approval-policy/v1", baseRevision: 0, enabled: true, approverRoleIds: ["qa_review_only"], ttlSeconds: 3600, separationOfDuties: true });
   });
 }
@@ -132,7 +139,11 @@ providerRuntime.activate({ id: "qa-fixture", name: "Local fixture", type: "opena
 const erpbridgeSession = operationFixture ? await createErpbridgeMcpSession({ baseURL: "https://fixture.invalid", token: "fixture-only", timeoutMs: 1000, validator, admissionAuthorizer: admissionAuthorizer(repository, registries),
   sdkClient: { metadataComplete: true, connect: async () => {}, close: async () => {}, listTools: async () => operationTools.map(tool => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), outputSchema: tool.bridge_contract.output_schema,
     _meta: { "toolplane.resourceDigest": tool.bridge_contract.resource_digest, "toolplane.resourceVersion": "1.0.0", "io.erpbridge/allowedRoles": [] } })),
-    callTool: async name => name === exactBridgeName(operationTools[0]) ? { content: [], structuredContent: { value: "LOCAL invoice fixture: FIXTURE-001 · LKR 12500. Not live ERP data." } } : { content: [], structuredContent: { accepted: true, id: "LOCAL-synthetic-acceptance-only" } } } }) : fixtureWorker ? await createErpbridgeMcpSession({ baseURL: "https://fixture.invalid", token: "fixture-only", timeoutMs: 1000, validator,
+    callTool: async name => {
+      if (name === exactBridgeName(operationTools[0])) return { content: [], structuredContent: { value: "LOCAL invoice fixture: FIXTURE-001 · LKR 12500. Not live ERP data." } };
+      if (unknownOperation) throw new Error("LOCAL synthetic lost operation response; never a real ERP/email effect");
+      return { content: [], structuredContent: { accepted: true, id: "LOCAL-synthetic-acceptance-only" } };
+    } } }) : fixtureWorker ? await createErpbridgeMcpSession({ baseURL: "https://fixture.invalid", token: "fixture-only", timeoutMs: 1000, validator,
   sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => [{ name: "demo.echo", inputSchema: registries.snapshot().tools[0].input_schema }],
     callTool: async (_name, args) => {
       const delay = Number(process.env.WORKSPACE_QA_READ_DELAY_MS || 30000);

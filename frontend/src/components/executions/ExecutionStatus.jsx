@@ -11,6 +11,7 @@ const icons = {
   CANCELLED: "mdi:stop-circle-outline",
   RECOVERY_REQUIRED: "mdi:help-circle-outline",
   RECONCILIATION_REQUIRED: "mdi:help-circle-outline",
+  RECONCILED: "mdi:clipboard-check-outline",
   UNKNOWN: "mdi:help-circle-outline",
 };
 

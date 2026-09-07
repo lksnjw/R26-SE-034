@@ -346,7 +346,7 @@ async function retryExecution(
     services,
   );
   if (["PENDING", "RUNNING", "AWAITING_APPROVAL", "RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED"].includes(prior.status)) throw new HandlerFailure(409, "A queued, running, waiting or uncertain execution cannot be replayed through Retry; inspect its recorded outcomes first");
-  if (prior.operationSecret && Object.values(prior.operationSecret.intents).some(intent => intent.state === "ACKNOWLEDGED")) throw new HandlerFailure(409, "Retry cannot repeat acknowledged ERP operations. Use a separately reviewed operation or qualified recovery artifact.");
+  if (prior.operationSecret && Object.keys(prior.operationSecret.intents).length) throw new HandlerFailure(409, "Retry cannot repeat recorded ERP operation intents, including operator-reconciled outcomes. Use a separately reviewed operation or qualified recovery artifact.");
   const workflow = await services.repository.read(
     (state) => state.workflows[prior.workflowId] ?? null,
   );

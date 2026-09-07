@@ -8,7 +8,7 @@ const routes = capture.routes.map(({ method, pattern }) => ({ method, path: patt
 if (routes.length !== 168) throw new Error(`expected 168 explicit routes, found ${routes.length}`);
 // Keep the captured graph immutable; name every intentional product extension.
 routes.push(...[
-  "/api/executions/:id/approve", "/api/executions/:id/reject",
+  "/api/executions/:id/approve", "/api/executions/:id/reject", "/api/executions/:id/reconcile",
   "/api/workflows/:id/approve-generation", "/api/workflows/:id/reject-generation",
   "/api/workflows/:id/commands", "/api/workflows/:id/node-proposals",
   "/api/workflows/:id/readiness",

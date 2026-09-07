@@ -6,6 +6,7 @@ export const WORKFLOW_STATUS = {
   CANCELLED: "CANCELLED",
   RECOVERY_REQUIRED: "RECOVERY_REQUIRED",
   RECONCILIATION_REQUIRED: "RECONCILIATION_REQUIRED",
+  RECONCILED: "RECONCILED",
   UNKNOWN: "UNKNOWN",
   HEALING: "HEALING",
   AWAITING_APPROVAL: "AWAITING_APPROVAL",
@@ -53,6 +54,10 @@ export const STATUS_META = {
   UNKNOWN: {
     label: "Outcome unknown", tone: "amber",
     color: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+  },
+  RECONCILED: {
+    label: "Closed by operator evidence", tone: "gray",
+    color: "bg-gray-100 text-gray-700 dark:bg-gray-500/15 dark:text-gray-300",
   },
   AWAITING_APPROVAL: {
     label: "Awaiting approval",

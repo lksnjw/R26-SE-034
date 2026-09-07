@@ -78,3 +78,14 @@ test("review-only authority does not open run history or logs", async () => {
   }
   expect(useExecution).not.toHaveBeenCalled();
 });
+
+test("reconciliation-only deep link opens exact evidence without opening the full run hook", async () => {
+  permissions = new Set(["execution:reconcile"]);
+  const definition = protectedRouteDefinitions.find(route => route.id === "executions.detail");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  const load = jest.spyOn(executionService, "getReconciliation").mockResolvedValue({ id: "run-recovery", workflowName: "Minimum recovery", status: "RECONCILIATION_REQUIRED", operationReconciliation: {
+    profile: "operation-reconciliation/v1", intentId: "intent", version: 1, factsHash: `sha256:${"a".repeat(64)}`, state: "OPEN", arguments: { recipient: "manager@example.test" }, history: [], canRecord: true, canResume: false, noReplay: true, toolName: "Email", remoteToolName: "mail.send__1.0.0" } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/executions/run-recovery"]}><Routes><Route path={definition.path} element={<ProtectedScreen definition={definition} />} /></Routes></MemoryRouter></QueryClientProvider>);
+  await screen.findByRole("heading", { name: "Reconcile operation" }); expect(load).toHaveBeenCalledWith("run-recovery"); expect(useExecution).not.toHaveBeenCalled();
+  cleanup(); client.clear();
+});
