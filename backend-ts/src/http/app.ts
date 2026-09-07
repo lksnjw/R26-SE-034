@@ -59,7 +59,7 @@ import { readJobQueue, supportsReadJobs } from "../runner/read-jobs.js";
 import { operationJobQueue, supportsOperationJobs } from "../runner/operation-jobs.js";
 import { chatJobQueue, supportsChatJobs } from "../agent/chat-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
-import { runtimeApprovalView } from "../runner/runtime-approvals.js";
+import { runtimeApprovalAdministration, runtimeApprovalView } from "../runner/runtime-approvals.js";
 import { operationReconciliationView, hasOperationReconciliation } from "../runner/operation-reconciliation.js";
 import {
   REGISTRY_UNHANDLED,
@@ -304,9 +304,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 191)
+  if (routeTable.length !== 192)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 191`,
+      `route table has ${routeTable.length} routes, expected 192`,
     );
   return app;
 }
@@ -444,6 +444,10 @@ async function handleRoute(
     try { services.repository.assertAuthority(); }
     catch { return reply.status(503).send(fail("The review inbox is unavailable until authoritative storage is recovered. No tasks or actions are confirmed.", null)); }
   }
+  if (route.path === `${services.config.apiBasePath}/settings/runtime-approval-policy`) {
+    try { services.repository.assertAuthority(); }
+    catch { return reply.status(503).send(fail("Approval settings are unavailable until authoritative storage is recovered. No policy is confirmed.", null)); }
+  }
   const auth = publicRoutes.has(routeKey)
     ? null
     : await authenticate(request, reply, services);
@@ -525,6 +529,17 @@ async function handleRoute(
       throw error;
     }
     return reply.send(ok(page, "Current minimum review tasks; no decision or dispatch authority", null));
+  }
+  if (route.path === `${services.config.apiBasePath}/settings/runtime-approval-policy` && route.method === "GET") {
+    if (!isRecord(request.query) || Object.keys(request.query).length) throw new HandlerFailure(400, "Approval settings do not accept query overrides");
+    let view;
+    try { view = await services.repository.readAuthoritative(state => runtimeApprovalAdministration(state, current!)); }
+    catch (error) {
+      try { services.repository.assertAuthority(); }
+      catch { throw new HandlerFailure(503, "Approval settings are unavailable until authoritative storage is recovered. No policy is confirmed."); }
+      throw error;
+    }
+    return reply.send(ok({ ...view, memoryOnly: services.repository.persistence === null }, "Current exact approval policy; no execution authority", null));
   }
   if (
     route.path === `${services.config.apiBasePath}/executions/:id` &&

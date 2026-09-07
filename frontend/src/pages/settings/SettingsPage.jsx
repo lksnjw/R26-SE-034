@@ -4,6 +4,7 @@ import Toggle from "../../components/shared/ui/Toggle";
 import ApiKeyCard from "../../components/settings/ApiKeyCard";
 import IntegrationCard from "../../components/settings/IntegrationCard";
 import McpConnectionPanel from "../../components/settings/McpConnectionPanel";
+import RuntimeApprovalPolicyPanel from "../../components/settings/RuntimeApprovalPolicyPanel";
 import LlmModelSelector from "../../components/settings/LlmModelSelector";
 import WebhookForm from "../../components/settings/WebhookForm";
 import { EmptyState, ErrorState, LoadingState } from "../../components/shared/ResourceState";
@@ -40,6 +41,7 @@ function SettingsPage({ view = "general" }) {
         <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
           <div className="space-y-4">
             <PolicyCheckerCard enabled={settings.rbac?.enabled === true} onChanged={reload} />
+            <RuntimeApprovalPolicyPanel />
             <SettingsValues title="General runtime" values={settings.general} />
           </div>
           <ApiKeyCard keys={data?.apiKeys || []} />

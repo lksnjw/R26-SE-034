@@ -265,7 +265,7 @@ async function getSettings(reply: FastifyReply, services: HandlerServices): Prom
  *
  * Applies the supplied updates to application settings.
  ******************************************************************************/
-async function patchSettings(request: FastifyRequest, reply: FastifyReply, services: HandlerServices, user: CurrentUser): Promise<unknown> { const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const settings = await services.repository.mutate((state) => { for (const group of ["general", "llm", "rbac"]) if (isRecord(body[group])) applySettingsGroup(state, group, body[group], user); return structuredClone(state.settings); }); return reply.send(ok(withoutSecretFields(settings), "Settings updated", null)); }
+async function patchSettings(request: FastifyRequest, reply: FastifyReply, services: HandlerServices, user: CurrentUser): Promise<unknown> { const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const settings = await confirmedSettingsMutation(services, isRecord(body.rbac) && Object.hasOwn(body.rbac, "runtimeApprovalPolicy"), () => services.repository.mutate((state) => { for (const group of ["general", "llm", "rbac"]) if (isRecord(body[group])) applySettingsGroup(state, group, body[group], user); return structuredClone(state.settings); })); return reply.send(ok(withoutSecretFields(settings), "Settings updated", null)); }
 /*******************************************************************************
  * Function: getSettingsGroup
  *
@@ -277,7 +277,18 @@ async function getSettingsGroup(reply: FastifyReply, services: HandlerServices, 
  *
  * Applies updates to a requested settings group.
  ******************************************************************************/
-async function patchSettingsGroup(request: FastifyRequest, reply: FastifyReply, services: HandlerServices, group: string, message: string, user: CurrentUser, redact = false): Promise<unknown> { const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const value = await services.repository.mutate((state) => { applySettingsGroup(state, group, body, user); return structuredClone(state.settings[group]); }); return reply.send(ok(redact ? withoutSecretFields(value) : value, message, null)); }
+async function patchSettingsGroup(request: FastifyRequest, reply: FastifyReply, services: HandlerServices, group: string, message: string, user: CurrentUser, redact = false): Promise<unknown> { const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const value = await confirmedSettingsMutation(services, Object.hasOwn(body, "runtimeApprovalPolicy"), () => services.repository.mutate((state) => { applySettingsGroup(state, group, body, user); return structuredClone(state.settings[group]); })); return reply.send(ok(redact ? withoutSecretFields(value) : value, message, null)); }
+
+async function confirmedSettingsMutation<T>(services: HandlerServices, protectedPolicy: boolean, action: () => Promise<T>): Promise<T> {
+  try { return await action(); }
+  catch (error) {
+    if (protectedPolicy && !(error instanceof HandlerFailure)) {
+      try { services.repository.assertAuthority(); }
+      catch { throw new HandlerFailure(503, "Approval policy save was not acknowledged. Reload authoritative settings before another change; do not resend."); }
+    }
+    throw error;
+  }
+}
 
 function applySettingsGroup(state: RepositoryState, group: string, body: Record<string, unknown>, user: CurrentUser): void {
   if (Object.hasOwn(body, "runtimeApprovalPolicy")) {

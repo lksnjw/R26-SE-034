@@ -714,6 +714,10 @@ export const routeTable = [
   },
   {
     "method": "GET",
+    "path": "/api/settings/runtime-approval-policy"
+  },
+  {
+    "method": "GET",
     "path": "/api/chat/models"
   },
   {

@@ -73,6 +73,24 @@ function currentPolicy(state: Readonly<RepositoryState>): RuntimeApprovalPolicy 
   return policy.data;
 }
 export const runtimeApprovalPolicyHash = (state: Readonly<RepositoryState>) => digest(currentPolicy(state));
+/** Minimum settings projection. Role discovery never grants role permissions. */
+export function runtimeApprovalAdministration(state: Readonly<RepositoryState>, user: CurrentUser) {
+  const actor = state.users[user.id], role = actor && state.roles[actor.roleId];
+  if (!actor || actor.status.toLowerCase() !== "active" || !role || role.name !== user.role ||
+      ![...role.permissions, ...actor.permissionOverrides].includes("settings:manage")) deny("Current settings authority is required", 403);
+  const raw = (state.settings.rbac as Record<string, unknown> | undefined)?.runtimeApprovalPolicy;
+  const parsed = raw === undefined ? null : policySchema.safeParse(raw);
+  if (parsed && !parsed.success) deny("Stored runtime approval policy requires repair; no editable default is assumed");
+  const policy = parsed?.success ? parsed.data : null;
+  const selected = new Set(policy?.approverRoleIds ?? []);
+  const roleIds = [...new Set([...Object.keys(state.roles).filter(key => state.roles[key]!.permissions.includes("execution:approve")), ...selected])];
+  if (roleIds.length > 1000 || roleIds.some(key => !id.safeParse(key).success)) deny("Reviewer role metadata exceeds supported bounds");
+  const roles = roleIds.map(key => ({ id: key, name: state.roles[key]?.name.slice(0, 200) || "Unavailable reviewer role",
+    eligible: !!state.roles[key]?.permissions.includes("execution:approve") }));
+  roles.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return { profile: "runtime-approval-administration/v1" as const, policy, revision: policy?.revision ?? 0, roles,
+    canManage: role.name === "Platform Admin", asOf: new Date().toISOString(), canExecute: false as const };
+}
 function reviewArguments(args: Record<string, unknown>): Record<string, unknown> {
   let count = 0;
   const walk = (value: unknown, depth: number): void => {

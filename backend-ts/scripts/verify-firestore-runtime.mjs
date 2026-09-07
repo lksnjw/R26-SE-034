@@ -413,6 +413,33 @@ try {
   assert.equal(operations.length, operationsBeforeHistory + 2); assert.equal(models.length, modelsBeforeHistory);
   log("actual Firestore multi-operation wait/restart retained both exact independent reviews; record-bound history links and signed pages inspect earlier decisions without another SDK/model call or reapproval");
 
+  const policyMetadata = (await request("GET", "/api/settings/runtime-approval-policy", undefined, 200)).data;
+  assert.equal(policyMetadata.canManage, true); assert.equal(policyMetadata.memoryOnly, false);
+  assert(policyMetadata.roles.some(role => role.id === "approval_fixture" && role.eligible));
+  await request("GET", "/api/settings/runtime-approval-policy", undefined, 403, "reviewer");
+  const { revision: policyRevision, ...policyConfiguration } = policyMetadata.policy;
+  const policyCommand = { ...policyConfiguration, baseRevision: policyRevision, ttlSeconds: 600 };
+  const policyTransaction = persistence.records.db.runTransaction.bind(persistence.records.db); let losePolicyACK = true;
+  persistence.records.db.runTransaction = async (callback, options) => {
+    let activated = false;
+    const result = await policyTransaction(async transaction => {
+      const set = transaction.set; transaction.set = function (ref, ...args) { if (ref.path === persistence.records.headPath) activated = true; return set.call(this, ref, ...args); };
+      return callback(transaction);
+    }, options);
+    if (activated && losePolicyACK) { losePolicyACK = false; throw new Error("Synthetic policy post-COMMIT ACK lost"); }
+    return result;
+  };
+  try { await request("PATCH", "/api/settings/rbac", { runtimeApprovalPolicy: policyCommand }, 503); }
+  finally { persistence.records.db.runTransaction = policyTransaction; }
+  await request("GET", "/api/settings/runtime-approval-policy", undefined, 503);
+  await repository.recoverPersistenceState(); await stop(); await start(await openApplicationRepository(config));
+  const recoveredPolicy = (await request("GET", "/api/settings/runtime-approval-policy", undefined, 200)).data;
+  assert.equal(recoveredPolicy.revision, policyRevision + 1); assert.equal(recoveredPolicy.policy.ttlSeconds, 600);
+  await request("PATCH", "/api/settings/rbac", { runtimeApprovalPolicy: policyCommand }, 409);
+  assert.equal((await repository.snapshot()).auditLogs.filter(item => item.action === "runtime_approval.policy_changed").length, policyRevision + 1);
+  assert.equal(operations.length, operationsBeforeHistory + 2); assert.equal(models.length, modelsBeforeHistory);
+  log("actual Firestore approval administration policy post-COMMIT ACK loss fenced stale metadata; authoritative reload/restart retained one new revision/audit and rejected resubmission without a tool/model call or permission grant");
+
   const entered = barrier(), release = barrier(); sdkHook = async args => { if (args.id === "cancel-a") { entered.release(); await release.promise; } };
   const cancelRun = (await request("POST", "/api/workflows/collection/run", { mode: "async-read", idempotencyKey: "firestore-runtime-cancel-fixture-0001", input: { rows: ["cancel-a", "must-not-call"] } }, 202)).data.id;
   await boundedOperation(() => entered.promise, { timeoutMs: 20_000, label: "Synthetic cancellation SDK entry" }); await request("POST", `/api/executions/${cancelRun}/cancel`, {}, 202); release.release(); sdkHook = undefined;

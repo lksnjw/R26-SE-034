@@ -76,6 +76,78 @@ test("normal HTTP gives an independent review-only role minimal payload, exact a
   expect((await s.request("POST", "/api/executions/run/reject", command)).statusCode).toBe(409);
   expect((await s.request("POST", "/api/executions/run/approve", command, "second")).statusCode).toBe(409);
 });
+
+test("approval administration is current settings-scoped metadata only and makes no mutation or authorization grant", async () => {
+  const s = await setup(), before = await s.repository.snapshot();
+  const response = await s.request("GET", "/api/settings/runtime-approval-policy", undefined, "owner");
+  expect(response.statusCode, response.body).toBe(200); expect(response.json().data).toMatchObject({ profile: "runtime-approval-administration/v1", revision: 1,
+    policy: { profile: policy.profile, approverRoleIds: ["reviewer"], separationOfDuties: true }, canManage: true, memoryOnly: true, canExecute: false });
+  expect(response.json().data.roles).toContainEqual({ id: "reviewer", name: "Transaction reviewer", eligible: true });
+  expect(response.body).not.toMatch(/"(?:users|passwordHashes|arguments|auditLogs|execution|permissions|runtimeApprovalSecret)":/);
+  expect(await s.repository.snapshot()).toEqual(before);
+  expect((await s.request("GET", "/api/settings/runtime-approval-policy")).statusCode).toBe(403);
+  expect((await s.app.inject({ method: "GET", url: "/api/settings/runtime-approval-policy" })).statusCode).toBe(401);
+});
+
+test("unconfigured policy is explicit, not an editable fake saved default or automatic reviewer assignment", async () => {
+  const s = await setup(); await s.repository.mutate(state => { delete (state.settings.rbac as Record<string, unknown>).runtimeApprovalPolicy; });
+  const before = await s.repository.snapshot(), view = (await s.request("GET", "/api/settings/runtime-approval-policy", undefined, "owner")).json().data;
+  expect(view).toMatchObject({ policy: null, revision: 0, canManage: true }); expect(await s.repository.snapshot()).toEqual(before);
+  expect((await s.request("PATCH", "/api/settings/rbac", { runtimeApprovalPolicy: { ...policy, approverRoleIds: [] } }, "owner")).statusCode).toBe(422);
+  expect((await s.repository.snapshot()).roles).toEqual(before.roles);
+});
+
+test("revoked selected reviewer roles stay visible as ineligible and cannot silently gain permission on save", async () => {
+  const s = await setup(); await s.repository.mutate(state => { state.roles.reviewer!.permissions = []; });
+  const view = (await s.request("GET", "/api/settings/runtime-approval-policy", undefined, "owner")).json().data;
+  expect(view.roles).toContainEqual({ id: "reviewer", name: "Transaction reviewer", eligible: false });
+  expect((await s.request("PATCH", "/api/settings/rbac", { runtimeApprovalPolicy: { ...policy, baseRevision: 1 } }, "owner")).statusCode).toBe(422);
+  expect((await s.repository.snapshot()).roles.reviewer!.permissions).toEqual([]);
+});
+
+test("malformed saved policies and query overrides fail instead of becoming editable defaults", async () => {
+  const s = await setup();
+  for (const query of ["?actorId=owner", "?revision=0", "?enabled=true&enabled=false"]) expect((await s.request("GET", `/api/settings/runtime-approval-policy${query}`, undefined, "owner")).statusCode).toBe(400);
+  await s.repository.mutate(state => { (state.settings.rbac as Record<string, unknown>).runtimeApprovalPolicy = { ...policy, revision: 1, separationOfDuties: false }; });
+  const bad = await s.request("GET", "/api/settings/runtime-approval-policy", undefined, "owner"); expect(bad.statusCode).toBe(409); expect(bad.json().data).toBeNull();
+});
+
+test("settings readers can inspect but only a current Platform Admin can change exact approval policy", async () => {
+  const s = await setup(); await s.repository.mutate(state => { state.roles.reader = { ...state.roles.reviewer!, id: "reader", name: "Settings reader", permissions: ["settings:manage"] }; state.users.other!.roleId = "reader"; });
+  expect((await s.request("GET", "/api/settings/runtime-approval-policy", undefined, "other")).json().data.canManage).toBe(false);
+  expect((await s.request("PATCH", "/api/settings/rbac", { runtimeApprovalPolicy: { ...policy, baseRevision: 1 } }, "other")).statusCode).toBe(403);
+  await s.repository.mutate(state => { state.roles.reader!.permissions = []; });
+  expect((await s.request("GET", "/api/settings/runtime-approval-policy", undefined, "other")).statusCode).toBe(403);
+});
+
+test("a saved policy change invalidates an earlier exact wait instead of approving or dispatching it", async () => {
+  const s = await setup(); await s.create(); const command = await s.command();
+  expect((await s.request("PATCH", "/api/settings/rbac", { runtimeApprovalPolicy: { ...policy, baseRevision: 1, ttlSeconds: 600 } }, "owner")).statusCode).toBe(200);
+  const review = (await s.request("GET", "/api/executions/run?view=approval")).json().data.runtimeApproval;
+  expect(review.canDecide).toBe(false); expect(review.unavailable).toMatch(/policy/i);
+  expect((await s.request("POST", "/api/executions/run/approve", command)).statusCode).toBe(409);
+  const run = (await s.repository.snapshot()).executions.run!; expect(run.runtimeApprovalSecret!.records[command.approvalId]!.decision).toBeUndefined();
+});
+
+test("lost durable policy save ACK fences old settings, reload preserves one revision and a stale request cannot write twice", async () => {
+  let stored: Buffer | null = null, lose = false;
+  const persistence: PersistenceBackend = { load: async () => stored, save: async bytes => { stored = Buffer.from(bytes); if (lose) { lose = false; throw new Error("Synthetic policy save acknowledgement loss"); } }, probe: async () => {}, close: async () => {} };
+  const s = await setup(persistence), command = { ...policy, baseRevision: 1, ttlSeconds: 600 }; lose = true;
+  const save = await s.request("PATCH", "/api/settings/rbac", { runtimeApprovalPolicy: command }, "owner"); expect(save.statusCode).toBe(503);
+  const blocked = await s.request("GET", "/api/settings/runtime-approval-policy", undefined, "owner"); expect(blocked.statusCode).toBe(503); expect(blocked.json().data).toBeNull();
+  await s.repository.recoverPersistenceState();
+  expect((await s.request("GET", "/api/settings/runtime-approval-policy", undefined, "owner")).json().data).toMatchObject({ revision: 2, policy: { ttlSeconds: 600 } });
+  expect((await s.request("PATCH", "/api/settings/rbac", { runtimeApprovalPolicy: command }, "owner")).statusCode).toBe(409);
+  const state = await s.repository.snapshot(); expect(state.auditLogs.filter(item => item.action === "runtime_approval.policy_changed")).toHaveLength(2);
+});
+
+test("disabling approval policy blocks a new wait rather than bypassing independent approval", async () => {
+  const s = await setup();
+  expect((await s.request("PATCH", "/api/settings/rbac", { runtimeApprovalPolicy: { ...policy, baseRevision: 1, enabled: false }, enabled: false }, "owner")).statusCode).toBe(200);
+  expect((await s.request("GET", "/api/settings/runtime-approval-policy", undefined, "owner")).json().data.policy.enabled).toBe(false);
+  await expect(s.create()).rejects.toThrow(/enabled exact runtime approval policy/);
+  expect((await s.repository.snapshot()).executions.run!.runtimeApprovalSecret).toBeUndefined();
+});
 test.each(["self", "other-admin", "expiry", "policy", "capability", "admission", "source", "epoch", "requester-role", "disabled-requester", "revoked-approver", "cancel", "arguments", "version", "review", "extra", "legacy"])("normal decisions deny %s without a decision", async scenario => {
   const s = await setup(); await s.create(); const command = await s.command();
   await s.repository.mutate(state => {
