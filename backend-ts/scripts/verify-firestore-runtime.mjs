@@ -390,6 +390,8 @@ try {
   const normalQueryCommand = { intentId: queryHistory.intentId, baseVersion: queryHistory.baseVersion, factsHash: queryHistory.factsHash, idempotencyKey: "firestore-normal-query-0001" };
   await request("POST", `/api/executions/${lostOperation}/readbacks`, normalQueryCommand, 403, "reviewer");
   const normalQuery = (await request("POST", `/api/executions/${lostOperation}/readbacks`, normalQueryCommand, 202)).data;
+  assert.equal(normalQuery.executionId, lostOperation); assert.equal(normalQuery.intentId, queryHistory.intentId); assert.equal(normalQuery.nodeId, queryHistory.nodeId);
+  assert.equal(normalQuery.canCancel, undefined);
   await waitFor(async () => (await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[normalQuery.id].state === "ANSWERED", "normal read-back saved evidence");
   const checkOriginalOperation = async () => {
     const saved = await repository.snapshot(), execution = saved.executions[lostOperation];
@@ -404,6 +406,9 @@ try {
   const savedQuery = (await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[normalQuery.id];
   assert.equal(savedQuery.result.structuredContent.id, "OPERATION-LOST-INTENT"); assert.equal(savedQuery.evaluation.outcome, "NOT_APPLIED"); assert.equal(savedQuery.lease, undefined);
   const normalHistory = (await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 200)).data;
+  assert.equal(normalHistory.executionId, lostOperation); assert.equal(normalHistory.nodeId, queryHistory.nodeId);
+  assert.equal(normalHistory.jobs[0].executionId, lostOperation); assert.equal(normalHistory.jobs[0].intentId, normalHistory.intentId); assert.equal(normalHistory.jobs[0].nodeId, normalHistory.nodeId);
+  assert.equal(normalHistory.jobs[0].canCancel, false);
   assert.equal(normalHistory.jobs[0].observation.deliveryVerified, false); assert.equal(normalHistory.jobs[0].canResume, false);
   assert(!/"(?:arguments|result|admission|keyHash|connectionBinding)":/.test(JSON.stringify(normalHistory)));
   assert.equal((await request("POST", `/api/executions/${lostOperation}/readbacks`, normalQueryCommand, 202)).data.replayed, true);
@@ -480,6 +485,7 @@ try {
   assert.equal(recoveryHistory.history[0].basis, "operator-attestation"); assert.equal(recoveryHistory.canResume, false);
   const closedQueryHistory = (await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 200, "operator")).data;
   assert.equal(closedQueryHistory.canQuery, false); assert.equal(closedQueryHistory.jobs.length, 4);
+  assert(closedQueryHistory.jobs.every(job => job.executionId === lostOperation && job.intentId === closedQueryHistory.intentId && job.nodeId === closedQueryHistory.nodeId && job.canCancel === false));
   assert.equal(closedQueryHistory.jobs.find(job => job.id === normalQuery.id).observation.outcome, "NOT_APPLIED");
   await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
   log("actual Firestore normal independent external-evidence recovery survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; one private attestation, no new SDK/model calls, no fabricated answer or resume");

@@ -26,6 +26,10 @@ const collectionCanvas = process.env.WORKSPACE_QA_CANVAS === "collection";
 const approvalFixture = process.env.WORKSPACE_QA_APPROVAL === "1";
 const operationFixture = process.env.WORKSPACE_QA_OPERATION === "1";
 const unknownOperation = process.env.WORKSPACE_QA_OPERATION_OUTCOME === "unknown";
+const readbackFixture = process.env.WORKSPACE_QA_READBACK === "1";
+const statusOutcome = process.env.WORKSPACE_QA_STATUS_OUTCOME || "ABSENT";
+const queryDelay = Number(process.env.WORKSPACE_QA_QUERY_DELAY_MS || 0);
+if (readbackFixture && (!unknownOperation || !["APPLIED", "ABSENT", "PENDING"].includes(statusOutcome) || !Number.isSafeInteger(queryDelay) || queryDelay < 0 || queryDelay > 8000)) throw new Error("Status-query QA requires the isolated unknown operation and a bounded synthetic result/delay");
 if (unknownOperation && !operationFixture) throw new Error("Unknown-outcome QA requires the isolated normal operation fixture");
 if (operationFixture && (approvalFixture || collectionCanvas || fixtureWorker)) throw new Error("Operation QA is an isolated synthetic normal-worker mode; do not combine fixture modes");
 if (approvalFixture && (collectionCanvas || fixtureWorker)) throw new Error("Approval QA uses only its isolated memory-only checkpoint, without a worker or collection mode");
@@ -84,7 +88,13 @@ if (operationFixture) {
     required_parameters: ["recipient", "subject", "body"], side_effects: ["LOCAL synthetic notification acceptance"], input_schema: { type: "object", properties: { recipient: { type: "string" }, subject: { type: "string" }, body: { type: "string" } }, required: ["recipient", "subject", "body"], additionalProperties: false },
     operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
     bridge_contract: { ...read.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
-  operationTools = [read, write];
+  const status = readbackFixture ? toolSchema.parse({ ...read, tool_id: "QA-OPERATION-STATUS", name: "demo.status", mcp_tool_name: "demo.status", description: "LOCAL operation-state condition only; never delivery or send attribution",
+    input_schema: { type: "object", properties: { recipient: { type: "string" }, subject: { type: "string" } }, required: ["recipient", "subject"], additionalProperties: false }, required_parameters: ["recipient", "subject"],
+    bridge_contract: { ...read.bridge_contract, resource_digest: "c".repeat(64), output_schema: { type: "object", properties: { recipient: { type: "string" }, subject: { type: "string" }, state: { type: "string" }, settled: { type: "boolean" }, observedAt: { type: "string" } }, required: ["recipient", "subject", "state", "settled", "observedAt"], additionalProperties: false } } }) : undefined;
+  if (status) write.operation_contract.readback = { profile: "operation-readback-contract/v1", tool_id: status.tool_id, contract_hash: capabilityContractHash(status),
+    arguments: [{ parameter: "recipient", source_path: ["recipient"] }, { parameter: "subject", source_path: ["subject"] }], correlation: [{ source_path: ["recipient"], result_path: ["recipient"] }, { source_path: ["subject"], result_path: ["subject"] }],
+    outcome: { path: ["state"], applied: "APPLIED", not_applied: "ABSENT" }, settled_path: ["settled"], observed_at_path: ["observedAt"], max_age_seconds: 60, evidence_meaning: "operation-state" };
+  operationTools = [read, write, ...(status ? [status] : [])];
   registries.snapshot = () => ({ ...original, tools: operationTools });
   registries.findTool = name => operationTools.find(tool => [tool.tool_id, tool.name, tool.mcp_tool_name].includes(name));
   registries.hash = () => resolvedParameterHashBytes(canonicalJSONBytes({ tools: operationTools, rules: original.rules }));
@@ -136,11 +146,12 @@ const providerRuntime = new ProviderRuntime(repository, executor, async (_url, i
   return Response.json({ choices: [{ message: { content: JSON.stringify(collectionPatch ? { maxItems: 2 } : { description: "Invoice step reviewed by local fixture agent" }) } }] });
 });
 providerRuntime.activate({ id: "qa-fixture", name: "Local fixture", type: "openai_compatible", baseURL: "https://fixture.invalid/v1", apiKey: "fixture-no-network", model: "fixture-only", temperature: 0, timeoutMs: 1000 });
-const erpbridgeSession = operationFixture ? await createErpbridgeMcpSession({ baseURL: "https://fixture.invalid", token: "fixture-only", timeoutMs: 1000, validator, admissionAuthorizer: admissionAuthorizer(repository, registries),
+const erpbridgeSession = operationFixture ? await createErpbridgeMcpSession({ baseURL: "https://fixture.invalid", token: "fixture-only", timeoutMs: readbackFixture ? 10000 : 1000, validator, admissionAuthorizer: admissionAuthorizer(repository, registries),
   sdkClient: { metadataComplete: true, connect: async () => {}, close: async () => {}, listTools: async () => operationTools.map(tool => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), outputSchema: tool.bridge_contract.output_schema,
     _meta: { "toolplane.resourceDigest": tool.bridge_contract.resource_digest, "toolplane.resourceVersion": "1.0.0", "io.erpbridge/allowedRoles": [] } })),
-    callTool: async name => {
+    callTool: async (name, args) => {
       if (name === exactBridgeName(operationTools[0])) return { content: [], structuredContent: { value: "LOCAL invoice fixture: FIXTURE-001 · LKR 12500. Not live ERP data." } };
+      if (readbackFixture && name === exactBridgeName(operationTools[2])) { if (queryDelay) await new Promise(resolve => setTimeout(resolve, queryDelay)); return { content: [], structuredContent: { recipient: args.recipient, subject: args.subject, state: statusOutcome, settled: statusOutcome !== "PENDING", observedAt: new Date().toISOString() } }; }
       if (unknownOperation) throw new Error("LOCAL synthetic lost operation response; never a real ERP/email effect");
       return { content: [], structuredContent: { accepted: true, id: "LOCAL-synthetic-acceptance-only" } };
     } } }) : fixtureWorker ? await createErpbridgeMcpSession({ baseURL: "https://fixture.invalid", token: "fixture-only", timeoutMs: 1000, validator,

@@ -13,6 +13,7 @@ import Card from "../../components/shared/ui/Card";
 import { useExecution } from "../../hooks/useExecution";
 import TraceIdentifier from "../../components/shared/TraceIdentifier";
 import ExecutionRunControls from "../../components/executions/ExecutionRunControls";
+import OperationStatusQueries from "../../components/executions/OperationStatusQueries";
 import usePermissions from "../../hooks/usePermissions";
 import { projectExecutionIterationEvidence } from "../../utils/iterationEvidence";
 
@@ -55,6 +56,7 @@ function ExecutionRunDetail({ executionId }) {
         <ExecutionStatus status={execution.status} failure={execution.failure} />
       </section>
       <ExecutionRunControls key={execution.id} execution={execution} monitor={monitor} canControl={hasAny(["workflow:run", "workflow:run_own"])} onChanged={reload} />
+      {execution.hasOperationReconciliation === true && <OperationStatusQueries executionId={execution.id} onHistoryChanged={monitor.refresh} />}
       {execution.status === "AWAITING_APPROVAL" || execution.hasRuntimeApproval ? (
         <PendingApprovalCard execution={execution} onChanged={reload} />
       ) : null}

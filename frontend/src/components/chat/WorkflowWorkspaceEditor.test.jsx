@@ -4,6 +4,8 @@ import { jest, test, expect, beforeEach, afterEach } from "@jest/globals";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { workflowService } from "../../services/workflow.service";
 import { executionService } from "../../services/execution.service";
+import { operationReadbackService } from "../../services/operation-readback.service";
+import { statusHistory } from "../../services/operation-readback.fixture";
 import { within } from "@testing-library/react";
 import { iterationFixture } from "../../utils/iterationEvidence.fixture";
 
@@ -24,6 +26,7 @@ beforeEach(() => {
   jest.spyOn(executionService, "list").mockResolvedValue([]);
   jest.spyOn(executionService, "getTimeline").mockResolvedValue([]);
   jest.spyOn(executionService, "get").mockResolvedValue({ id: "run-failed", status: "FAILED", workflowSnapshot: { version: 1 }, stepOutputs: { first: { structuredContent: { value: "real answer" } } } });
+  jest.spyOn(operationReadbackService, "history").mockImplementation(async id => ({ ...statusHistory(), executionId: id, nodeId: "first", jobs: [], canQuery: false }));
 });
 afterEach(() => { cleanup(); sessionStorage.clear(); jest.restoreAllMocks(); });
 async function open(props = {}) {
@@ -349,6 +352,25 @@ test("operator-closed canvas retains external evidence beside the unknown node w
   // The optional collapsed YAML source is not the business-evidence display.
   expect(screen.getByText("ERP-123")).toBeTruthy(); expect(screen.getByText(/Not a saved tool answer/)).toBeTruthy(); expect(screen.getByLabelText("Operator evidence").querySelector("pre")).toBeNull();
   expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true); expect(screen.queryByText(/Node answer/)).toBeNull(); expect(workflowService.run).not.toHaveBeenCalled();
+  expect(await screen.findByRole("region", { name: "ERP status queries" })).toBeTruthy();
+});
+
+test("matching uncertain canvas shows saved status observation beside its source node without producing a node answer", async () => {
+  const run = { id: "query-run", workflowId: "report", status: "RECONCILIATION_REQUIRED", hasOperationReconciliation: true, workflowSnapshot: { yaml, version: 1, executionProfile: "sequential-operation-v1" }, stepOutputs: {} };
+  executionService.list.mockResolvedValue([run]); executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "UNKNOWN", sideEffect: true }]);
+  const history = statusHistory(); history.executionId = run.id; history.nodeId = "first"; history.jobs[0] = { ...history.jobs[0], executionId: run.id, nodeId: "first" };
+  operationReadbackService.history.mockResolvedValue(history); const submit = jest.spyOn(operationReadbackService, "admit").mockResolvedValue({ ...history.jobs[0], replayed: true });
+  await open(); const region = await screen.findByRole("region", { name: "ERP status queries" }); await within(region).findByText("Not-applied condition observed");
+  expect(region.closest("li").querySelector("button").textContent).toMatch(/first/); expect(screen.queryByText(/Node answer/)).toBeNull();
+  fireEvent.click(within(region).getByRole("button", { name: "Query current ERP state" })); await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+  expect(submit.mock.calls[0][0]).toEqual({ executionId: run.id, intentId: history.intentId, nodeId: "first" }); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("a changed draft does not attach historical query observations to its current node", async () => {
+  const run = { id: "older-query-run", workflowId: "report", status: "RECONCILIATION_REQUIRED", hasOperationReconciliation: true, workflowSnapshot: { yaml: `${yaml}# old snapshot`, version: 1, executionProfile: "sequential-operation-v1" }, stepOutputs: {} };
+  executionService.list.mockResolvedValue([run]); executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "UNKNOWN", sideEffect: true }]);
+  await open(); const region = await screen.findByRole("region", { name: "ERP status queries" });
+  expect(region.closest("li")).toBeNull(); expect(screen.getByText(/different or unverified run snapshot/)).toBeTruthy();
 });
 
 test("schema guidance selects readable data and applies only the reviewed revision-bound draft", async () => {

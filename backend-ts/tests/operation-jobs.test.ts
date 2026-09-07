@@ -211,7 +211,8 @@ test.each([['APPLIED', true, 'APPLIED'], ['ABSENT', true, 'NOT_APPLIED'], ['PEND
   expect(run.readProgress!.nextStepIndex).toBe(original.readProgress!.nextStepIndex); expect(after.timelines[s.id]).toEqual(before.timelines[s.id]);
   expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.write), exactBridgeName(s.readback!)]);
   expect(s.sdk.callTool.mock.calls[1]![1]).toEqual({ value: "fixture report" });
-  const history = await s.history(); expect(history).toMatchObject({ canQuery: true, canResume: false, jobs: [{ id: queryId, state: "ANSWERED", basis: "queried-operation-state", observation: { outcome } }] });
+  const history = await s.history(); expect(history).toMatchObject({ executionId: s.id, intentId: original.operationSecret!.intents.send!.id, nodeId: "send", canQuery: true, canResume: false,
+    jobs: [{ id: queryId, executionId: s.id, intentId: original.operationSecret!.intents.send!.id, nodeId: "send", state: "ANSWERED", canCancel: false, basis: "queried-operation-state", observation: { outcome } }] });
   expect(JSON.stringify(history)).not.toMatch(/"(?:arguments|result|admission|connectionBinding|keyHash|requestFingerprint)":/);
   expect((await s.request("POST", `/api/executions/${s.id}/readbacks`, command)).json().data).toMatchObject({ id: queryId, replayed: true, state: "ANSWERED" });
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
@@ -369,12 +370,34 @@ test("one queued query per case is enforced and queued cancellation starts no SD
   const s = await uncertainReadbackOperation(); await operationReadbackQueue(s.services).stop();
   const paused = operationReadbackQueue(s.services); closers.push({ close: () => paused.stop() });
   const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand()); expect(admitted.statusCode, admitted.body).toBe(202);
-  const id = admitted.json().data.id; expect(admitted.json().data.state).toBe("QUEUED"); expect((await s.history()).canQuery).toBe(false);
+  const id = admitted.json().data.id; expect(admitted.json().data).toMatchObject({ executionId: s.id, intentId: (await s.history()).intentId, nodeId: "send", state: "QUEUED" });
+  expect(admitted.json().data).not.toHaveProperty("canCancel");
+  expect(await s.history()).toMatchObject({ canQuery: false, jobs: [{ id, canCancel: true }] });
   expect((await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand("different-query-key-0001"))).statusCode).toBe(429);
   expect((await s.request("POST", `/api/executions/${s.id}/readbacks/${id}/cancel`, { result: "cancelled" })).statusCode).toBe(400);
   const cancelled = await s.request("POST", `/api/executions/${s.id}/readbacks/${id}/cancel`, {}); expect(cancelled.statusCode, cancelled.body).toBe(200);
-  expect(cancelled.json().data).toMatchObject({ state: "CANCELLED", queryOutcome: "NOT_DISPATCHED" });
+  expect(cancelled.json().data).toMatchObject({ executionId: s.id, intentId: admitted.json().data.intentId, nodeId: "send", state: "CANCELLED", queryOutcome: "NOT_DISPATCHED" });
+  expect((await s.history()).jobs[0].canCancel).toBe(false);
   await paused.start(); expect((await s.history()).canQuery).toBe(true); expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+});
+
+test("query history control metadata follows fresh authority without granting minimum recovery-only readers cancellation", async () => {
+  const s = await uncertainReadbackOperation(); await operationReadbackQueue(s.services).stop();
+  const paused = operationReadbackQueue(s.services); closers.push({ close: () => paused.stop() });
+  await s.repository.mutate(state => {
+    state.roles.recovery_only = { id: "recovery_only", name: "Recovery only", description: "No query control", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
+    state.users.operator = { ...state.users.reviewer!, id: "operator", roleId: "recovery_only" };
+  });
+  const receipt = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand()), id = receipt.json().data.id;
+  expect(receipt.statusCode, receipt.body).toBe(202);
+  expect((await s.history()).jobs[0]).toMatchObject({ id, executionId: s.id, nodeId: "send", canCancel: true });
+  const minimum = await s.history("operator");
+  expect(minimum).toMatchObject({ executionId: s.id, nodeId: "send", canQuery: false, jobs: [{ id, intentId: minimum.intentId, canCancel: false }] });
+  expect((await s.request("POST", `/api/executions/${s.id}/readbacks/${id}/cancel`, {}, "operator")).statusCode).toBe(403);
+  expect((await s.request("GET", `/api/executions/${s.id}`, undefined, "operator")).statusCode).toBe(404);
+  await s.repository.mutate(state => { state.users.requester!.roleId = "review"; state.users.requester!.permissionOverrides = ["execution:read_own"]; });
+  expect(await s.history()).toMatchObject({ canQuery: false, jobs: [{ id, state: "QUEUED", canCancel: false }] });
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
 });
 
 test.each(["disconnect", "revoke-target", "revoke-run"])("saved query history survives %s without granting another dispatch", async scenario => {

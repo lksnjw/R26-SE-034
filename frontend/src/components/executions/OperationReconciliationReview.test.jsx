@@ -30,6 +30,15 @@ test("exact readable arguments precede independent evidence consent, never raw J
     evidence: { kind: "erp-record", reference: "ERP-RECORD-123", note: "Independently inspected ERP receipt", observedAt: expect.stringMatching(/Z$/) } }));
   expect(screen.getByRole("status").textContent).toMatch(/closed—not completed successfully/); expect(screen.getByRole("button", { name: "Record external evidence" }).disabled).toBe(true); expect(submit).toHaveBeenCalledTimes(1);
 });
+test("minimum reconciliation view places saved query evidence after exact arguments without granting full-run controls", () => {
+  render(<OperationReconciliationReview execution={execution} onReload={jest.fn()} statusQueries={<section aria-label="ERP status queries">Saved operation-state observation</section>} />);
+  const argumentsHeading = screen.getByRole("heading", { name: "Exact business arguments" });
+  const queries = screen.getByRole("region", { name: "ERP status queries" });
+  const decision = screen.getByRole("combobox", { name: "Observed outcome" });
+  expect(argumentsHeading.compareDocumentPosition(queries) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(queries.compareDocumentPosition(decision) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.queryByText(/Execution Logs|Step Timeline|Saved run history/)).toBeNull();
+});
 test("lost evidence ACK locks the case and reload needs fresh consent, never an automatic resubmission", async () => {
   const submit = jest.spyOn(executionService, "reconcile").mockRejectedValue(new Error("Lost acknowledgement")), reload = jest.fn().mockResolvedValue(execution);
   render(<OperationReconciliationReview execution={execution} onReload={reload} />); fill(); fireEvent.click(screen.getByRole("button", { name: "Record external evidence" }));

@@ -32,6 +32,14 @@ export function reconcileExecutionEvents(events, cursor, page, executionId) {
 }
 
 const eventNames = {
+  "operation.readback_queued": "ERP status query queued · original action unchanged",
+  "operation.readback_started": "Checking reviewed ERP state",
+  "operation.readback_dispatch_intent": "Status-query dispatch recorded · no answer yet",
+  "operation.readback_answered": "ERP status observation saved · no delivery or resume confirmation",
+  "operation.readback_cancel_requested": "Status-query cancellation requested · original action unchanged",
+  "operation.readback_cancelled": "Status query cancelled before dispatch",
+  "operation.readback_failed": "Status query stopped · no qualified observation",
+  "operation.readback_recovery_required": "Status-query answer unconfirmed · no automatic replay",
   "run.queued": "Read job queued",
   "run.started": "Run started", "node.preparing": "Checking node", "node.dispatch_intent": "Read dispatch recorded — answer not yet saved",
   "node.completed": "Node answer saved", "node.failed": "Node stopped", "node.outcome_unknown": "Node outcome unknown",

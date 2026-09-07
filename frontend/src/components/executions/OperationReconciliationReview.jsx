@@ -4,7 +4,7 @@ import { completeApprovalDisplay } from "./RuntimeApprovalReview";
 import OperationReconciliationEvidence from "./OperationReconciliationEvidence";
 import { executionService } from "../../services/execution.service";
 
-export default function OperationReconciliationReview({ execution, onReload }) {
+export default function OperationReconciliationReview({ execution, onReload, statusQueries }) {
   const review = execution.operationReconciliation;
   const [outcome, setOutcome] = useState("UNRESOLVED"), [kind, setKind] = useState("erp-record");
   const [reference, setReference] = useState(""), [note, setNote] = useState(""), [observedAt, setObservedAt] = useState("");
@@ -47,6 +47,7 @@ export default function OperationReconciliationReview({ execution, onReload }) {
     <dl className="grid gap-4 text-xs sm:grid-cols-2">{Object.entries({ Tool: review.toolName || "Unavailable", "Exact remote tool": review.remoteToolName || "Unavailable", Requester: review.requesterId, Invocation: review.invocationId,
       "Local operation key—not an ERP idempotency guarantee": review.operationKey, "Intent saved": review.preparedAt }).map(([label, value]) => <div key={label}><dt className="text-gray-500 dark:text-gray-400">{label}</dt><dd className="mt-1 break-words [overflow-wrap:anywhere]">{value}</dd></div>)}</dl>
     <div><h2 className="mb-3 text-sm font-semibold">Exact business arguments</h2><ReadableValue value={review.arguments} /></div>
+    {statusQueries}
     {review.history.length > 0 && <div className="space-y-4"><h2 className="text-sm font-semibold">Saved external evidence</h2>{review.history.map(record => <OperationReconciliationEvidence key={record.id} record={record} />)}</div>}
     {!complete && <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">The exact tool or complete argument display is unavailable. Recording is disabled; a shortened preview is not a full review.</p>}
     {!review.canRecord && review.state === "OPEN" && <p className="text-sm text-gray-500 dark:text-gray-400">Recording requires an independent active account with explicit execution:reconcile permission. The requester cannot reconcile their own action.</p>}

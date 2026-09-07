@@ -29,9 +29,11 @@ function Field({ label, value, mono }) {
 function GovernanceBlockPanel({ failure }) {
   if (!failure) return null;
 
-  if (["READ_OUTCOME_UNKNOWN", "LEGACY_OUTCOME_UNKNOWN", "READ_INTERRUPTED"].includes(failure.failureCategory)) return <section data-testid="recovery-required-panel" className="border-y border-amber-200 py-4 text-sm text-amber-900 dark:border-amber-700 dark:text-amber-200">
-    <h2 className="font-semibold">{failure.failureCategory === "READ_INTERRUPTED" ? "Run interrupted" : "Outcome unknown"}</h2>
-    <p className="mt-2">Saved completed answers remain available. {failure.failureCategory === "READ_INTERRUPTED" ? "The run stopped before its next completion checkpoint." : "An unconfirmed call may have reached ERP; it is not a confirmed tool failure or success."} No automatic replay was performed.</p>
+  const interrupted = ["READ_INTERRUPTED", "OPERATION_INTERRUPTED"].includes(failure.failureCategory);
+  const operationBlocked = failure.failureCategory === "OPERATION_BLOCKED_BEFORE_DISPATCH";
+  if (["READ_OUTCOME_UNKNOWN", "LEGACY_OUTCOME_UNKNOWN", "OPERATION_OUTCOME_UNKNOWN"].includes(failure.failureCategory) || interrupted || operationBlocked) return <section data-testid="recovery-required-panel" className="border-y border-amber-200 py-4 text-sm text-amber-900 dark:border-amber-700 dark:text-amber-200">
+    <h2 className="font-semibold">{interrupted ? "Run interrupted" : operationBlocked ? "Operation stopped before dispatch" : "Outcome unknown"}</h2>
+    <p className="mt-2">Saved completed answers remain available. {interrupted ? "The run stopped before its next completion checkpoint." : operationBlocked ? "Current checks denied the next operation before dispatch. Previous acknowledged results are not rolled back." : "An unconfirmed call may have reached ERP; it is not a confirmed tool failure or success."} No automatic replay was performed.</p>
     {failure.failedStepId && <p className="mt-2">Step <span className="font-mono">{failure.failedStepId}</span></p>}
   </section>;
 

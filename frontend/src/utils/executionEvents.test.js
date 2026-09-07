@@ -46,3 +46,16 @@ test("approval waits remain monitored and operation status is not mislabeled as 
   expect(executionEventLabel({ type: "node.completed", payload: { outcome: "operation-confirmed" } })).toBe("Tool-reported operation confirmation saved");
   expect(executionEventLabel({ type: "node.not_dispatched" })).toBe("Node stopped before dispatch");
 });
+
+test.each([
+  ["queued", "ERP status query queued · original action unchanged"],
+  ["started", "Checking reviewed ERP state"],
+  ["dispatch_intent", "Status-query dispatch recorded · no answer yet"],
+  ["answered", "ERP status observation saved · no delivery or resume confirmation"],
+  ["cancel_requested", "Status-query cancellation requested · original action unchanged"],
+  ["cancelled", "Status query cancelled before dispatch"],
+  ["failed", "Status query stopped · no qualified observation"],
+  ["recovery_required", "Status-query answer unconfirmed · no automatic replay"],
+])("separate status-query %s events have explicit non-replaying, non-delivery labels", (state, label) => {
+  expect(executionEventLabel({ type: `operation.readback_${state}` })).toBe(label);
+});

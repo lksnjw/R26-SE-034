@@ -74,7 +74,7 @@ function currentQuery(state: Readonly<RepositoryState>, services: HandlerService
   return { source, target: matches[0]!, actor, session };
 }
 function publicJob(job: OperationReadbackJob) {
-  return { id: job.id, state: job.state, createdAt: job.createdAt, startedAt: job.startedAt ?? null, completedAt: job.completedAt ?? null, actorId: job.actorId,
+  return { id: job.id, executionId: job.executionId, intentId: job.intentId, nodeId: job.nodeId, state: job.state, createdAt: job.createdAt, startedAt: job.startedAt ?? null, completedAt: job.completedAt ?? null, actorId: job.actorId,
     basis: "queried-operation-state", dispatchIntentRecorded: !!job.dispatchIntentAt,
     queryOutcome: job.state === "ANSWERED" ? "ANSWER_CONFIRMED" : job.failure === "READBACK_RESULT_UNQUALIFIED" ? "UNQUALIFIED_RESULT" : job.dispatchIntentAt ? "UNKNOWN" : "NOT_DISPATCHED",
     observation: job.evaluation ?? null, failure: job.failure ?? null, cancellationRequested: !!job.cancellation,
@@ -102,6 +102,8 @@ export function operationReadbackHistory(state: Readonly<RepositoryState>, servi
   operationReconciliationView(state, executionId, actorId);
   const source = operationCaseEvidence(state, executionId), jobs = journal(state, executionId);
   for (const job of jobs) historicalQuery(state, job);
+  let controller: CurrentUser | undefined;
+  try { controller = queryActor(state, executionId, actorId); } catch { /* Minimum history access is not query control authority. */ }
   let canQuery = false;
   try {
     const actor = queryActor(state, executionId, actorId), binding = source.node.readback, session = services.erpbridgeSession;
@@ -113,8 +115,9 @@ export function operationReadbackHistory(state: Readonly<RepositoryState>, servi
       canQuery = jobs.length < 100 && !jobs.some(pending);
     }
   } catch { /* Historical evidence remains inspectable; no query authority. */ }
-  return { profile: "operation-readback-history/v1", executionId, intentId: source.intent.id, baseVersion: source.version, factsHash: source.factsHash,
-    canQuery, memoryOnly: services.repository.persistence === null, jobs: jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).map(publicJob),
+  return { profile: "operation-readback-history/v1", executionId, intentId: source.intent.id, nodeId: source.intent.nodeId, baseVersion: source.version, factsHash: source.factsHash,
+    canQuery, memoryOnly: services.repository.persistence === null, jobs: jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).map(job => ({ ...publicJob(job),
+      canCancel: !!controller && pending(job) && (job.actorId === controller.id || controller.permissions.includes("workflow:run")) })),
     canResume: false, noReplay: true, deliveryVerified: false,
     explanation: "A status query checks the reviewed operation-state condition. It does not prove unique send attribution or recipient delivery, close this case, resend the original action or resume later nodes." };
 }
