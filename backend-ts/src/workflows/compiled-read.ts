@@ -10,6 +10,7 @@ import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow
 import { parseReadControlFlow, validateReadControlFlow, controlNodes, loopNodes, type ReadSequence } from "./read-control-flow.js";
 import { checkBinding, schemaAt } from "./read-binding-validation.js";
 import { ReadValueBudget } from "./read-value-budget.js";
+import { assertOperationReadbackTarget } from "../tools/operation-readback-contract.js";
 
 export type ReadReference = { kind: "ref"; source: "workflowInput" | "nodeOutput"; nodeId?: string; path: string[] };
 export type ReadBinding = ReadReference | { kind: "literal"; value: string | number | boolean | null } |
@@ -116,7 +117,8 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
 }
 
 export type OperationIR = { schemaVersion: "workflow-operation-ir/v1"; compilerVersion: "operation-compiler/v1"; trigger: { kind: "manual" };
-  inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: Array<ReadIR["root"]["nodes"][number] & { effectClass: "read" | "write" | "notification" }> } };
+  inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: Array<ReadIR["root"]["nodes"][number] & { effectClass: "read" | "write" | "notification";
+    readback?: { profile: "operation-readback-binding/v1"; toolId: string; contractHash: string; admission: ReadAdmissionPin } }> } };
 export type CompiledOperationPlan = { ir: OperationIR; semanticHash: string; sourceHash: string };
 export type OperationCompilationReceipt = { schemaVersion: OperationIR["schemaVersion"]; compilerVersion: OperationIR["compilerVersion"]; semanticHash: string; sourceHash: string;
   registryHash: string; origin: "PUBLICATION"; admissionMode: "reviewed" };
@@ -127,7 +129,19 @@ export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefin
     const tool = tools.find(tool => tool.tool_id === node.capability.toolId)!;
     if (!node.capability.admission || !tool.bridge_contract) built.issues.push("Every operation action requires a reviewed capability pin");
     if (!tool.is_read_only && (!tool.operation_contract || !["low", "medium"].includes(tool.risk_level.toLowerCase()))) built.issues.push("Write actions require an explicit supported operation contract");
-    return { ...node, effectClass: tool.is_read_only ? "read" as const : tool.operation_contract?.effect_class ?? "write" as const };
+    let readback: OperationIR["root"]["nodes"][number]["readback"];
+    if (tool.operation_contract?.readback) {
+      try {
+        const contract = tool.operation_contract.readback, targets = tools.filter(target => target.tool_id === contract.tool_id);
+        if (targets.length !== 1) throw new Error("Read-back target has no unique exact local contract");
+        assertOperationReadbackTarget(tool, targets[0]!);
+        const admission = pins.get(contract.tool_id);
+        if (!admission || admission.contractHash !== contract.contract_hash || admission.connectionId !== node.capability.admission?.connectionId)
+          throw new Error("Read-back target requires a current read admission on the same ERP connection");
+        readback = { profile: "operation-readback-binding/v1", toolId: contract.tool_id, contractHash: contract.contract_hash, admission: { ...admission } };
+      } catch (error) { built.issues.push(error instanceof Error ? error.message : "Invalid operation read-back binding"); }
+    }
+    return { ...node, effectClass: tool.is_read_only ? "read" as const : tool.operation_contract?.effect_class ?? "write" as const, ...(readback ? { readback } : {}) };
   });
   if (!nodes.some(node => node.effectClass !== "read")) built.issues.push("Read-only workflows must use the read profile");
   if (built.issues.length) throw new Error(`Operation compilation failed: ${built.issues.join("; ")}`);

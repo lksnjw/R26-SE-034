@@ -12,6 +12,7 @@ import type { FastifyRequest } from "fastify";
 import type { AppConfig } from "../config/config.js";
 import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
 import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
+import { assertOperationReadbackSources } from "../tools/operation-readback-contract.js";
 
 export const DEFAULT_BRIDGE_CONNECTION = "erpbridge-default";
 export function requireProductionAdmissionProfile(config: Pick<AppConfig, "mcpMode" | "mcpTransport">) {
@@ -68,6 +69,10 @@ export function supportedOperation(tool: ToolDefinition): void {
   const expectedType = typeof contract.confirmation.expected;
   if (!schema || ![expectedType, expectedType === "number" ? "integer" : expectedType].includes(String((schema as { type?: unknown }).type)))
     throw new HandlerFailure(422, "Operation confirmation must select a declared scalar output field", { code: "ADMISSION_REVIEW_UNSUPPORTED" });
+  if (contract.readback) {
+    try { assertOperationReadbackSources(tool); }
+    catch { throw new HandlerFailure(422, "Operation read-back selectors require supported declared non-secret business fields", { code: "ADMISSION_REVIEW_UNSUPPORTED" }); }
+  }
 }
 function publicRevision(raw: unknown) {
   const revision = revisionSchema.parse(raw);

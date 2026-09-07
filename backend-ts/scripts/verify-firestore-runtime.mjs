@@ -21,6 +21,7 @@ import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js"
 import { exactBridgeName, bridgeTransportSchema } from "../src/tools/erpbridge-contract.js";
 import { capabilityContractHash, admissionAuthorizer, observeCapabilities, reviewCapability } from "../src/registry/capability-admission.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
+import { evaluateOperationReadback, resolveOperationReadbackArguments } from "../src/tools/operation-readback-contract.js";
 import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 import { requestRuntimeApproval, runtimeApprovalPolicyHash, consumeRuntimeApproval } from "../src/runner/runtime-approvals.js";
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
@@ -50,14 +51,23 @@ const collection = stringify({ name: "Firestore collection", description: "Bound
 const tool = toolSchema.parse({ tool_id: "FIXTURE-READ", name: "read", mcp_tool_name: "read", is_read_only: true, allowed_roles: ["Platform Admin"], risk_level: "low", side_effects: [],
   input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
   bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: ["platform_admin"] } });
+const readbackTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-NOTIFICATION-STATUS", name: "fixture.notification-status", mcp_tool_name: "fixture.notification-status",
+  bridge_contract: { ...tool.bridge_contract, resource_digest: "c".repeat(64), output_schema: { type: "object", properties: {
+    id: { type: "string" }, state: { type: "string" }, settled: { type: "boolean" }, observedAt: { type: "string" },
+  }, required: ["id", "state", "settled", "observedAt"], additionalProperties: false } } });
 const operationTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-NOTIFICATION", name: "fixture.notification", mcp_tool_name: "fixture.notification", is_read_only: false, side_effects: ["Synthetic notification acknowledgement"],
-  operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
+  operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" }, readback: {
+    profile: "operation-readback-contract/v1", tool_id: readbackTool.tool_id, contract_hash: capabilityContractHash(readbackTool),
+    arguments: [{ parameter: "id", source_path: ["id"] }], correlation: [{ source_path: ["id"], result_path: ["id"] }],
+    settled_path: ["settled"], observed_at_path: ["observedAt"], max_age_seconds: 60,
+    outcome: { path: ["state"], applied: "APPLIED", not_applied: "ABSENT" }, evidence_meaning: "operation-state",
+  } },
   bridge_contract: { ...tool.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
-const fixtureTools = [tool, operationTool];
+const fixtureTools = [tool, operationTool, readbackTool];
 const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions: { tools: "fixture-v1", rules: "fixture-v1" } }), hash: () => resolvedParameterHashBytes(canonicalJSONBytes(fixtureTools)),
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
-const calls = [], models = [], operations = [];
+const calls = [], models = [], operations = [], readbacks = [];
 let sdkHook, modelHook;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
@@ -76,6 +86,10 @@ async function start(repositoryValue) {
       callTool: async (name, args, meta) => {
         assert.equal(args.role, "platform_admin");
         if (name === exactBridgeName(operationTool)) { assert.equal(meta["toolplane.resourceDigest"], "b".repeat(64)); operations.push(args.id); return { content: [], structuredContent: { accepted: true, id: args.id } }; }
+        if (name === exactBridgeName(readbackTool)) {
+          assert.equal(meta["toolplane.resourceDigest"], "c".repeat(64)); readbacks.push(args.id);
+          return { content: [], structuredContent: { id: args.id, state: operations.includes(args.id) ? "APPLIED" : "ABSENT", settled: true, observedAt: new Date().toISOString() } };
+        }
         assert.equal(name, exactBridgeName(tool)); assert.equal(meta["toolplane.resourceDigest"], "a".repeat(64));
         calls.push(args.id); await sdkHook?.(args); return { content: [], structuredContent: { id: args.id.toUpperCase(), token: "synthetic-remote-secret" } };
       } } });
@@ -295,6 +309,10 @@ try {
   const operationPublication = (await request("POST", "/api/workflows/operation/publish", {}, 200)).data;
   assert.equal(operationPublication.executionReadiness, "COMPILED_OPERATION");
   assert.equal((await request("GET", "/api/workflows/operation/readiness", undefined, 200)).data.can_attempt_run, true);
+  const publishedOperation = (await repository.snapshot()).versions.operation.at(-1), readbackBinding = publishedOperation.compiledOperation.plan.ir.root.nodes[1].readback;
+  assert.equal(readbackBinding.profile, "operation-readback-binding/v1"); assert.equal(readbackBinding.toolId, readbackTool.tool_id);
+  assert.equal(readbackBinding.contractHash, capabilityContractHash(readbackTool));
+  assert.equal(publishedOperation.compiledOperation.plan.ir.root.nodes.length, 2); assert.equal(readbacks.length, 0);
   const modelsBeforeOperation = models.length;
   const operationRun = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-normal-0001", input: { id: "operation-fixture-one" } }, 202)).data.id;
   await waitFor(async () => (await repository.snapshot()).executions[operationRun].status === "AWAITING_APPROVAL", "normal operation approval producer");
@@ -302,6 +320,7 @@ try {
   assert.equal(waitingOperation.operationSecret.state, "WAITING"); assert.equal(waitingOperation.operationSecret.lease, undefined);
   await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).executions[operationRun], waitingOperation); assert.equal(operations.length, 0);
+  assert.deepEqual((await repository.snapshot()).versions.operation.at(-1).compiledOperation.plan.ir.root.nodes[1].readback, readbackBinding);
   const operationReview = (await request("GET", `/api/executions/${operationRun}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
   const waitingInbox = (await request("GET", "/api/execution-reviews?kind=approval&limit=5", undefined, 200, "reviewer")).data;
   assert(waitingInbox.items.some(item => item.executionId === operationRun && item.actionable && item.statusLabel === "Awaiting decision"));
@@ -342,6 +361,27 @@ try {
   assert.equal(reconciledOperation.readProgress.attempts.send.status, "UNKNOWN"); assert.equal(reconciledOperation.stepOutputs.lookup.structuredContent.id, "OPERATION-LOST-INTENT");
   assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
   log("actual Firestore post-COMMIT operation intent ACK loss fenced SDK entry; authoritative reload/restart preserved the read answer and unknown intent for reconciliation, without operation replay");
+
+  // Explicit broker/helper qualification only, not a durable read-back job,
+  // saved evidence ledger, recovery command or permission grant. Deliberately
+  // omit the original executionId so this independent query cannot change its
+  // audit timeline or turn the original unknown effect into an SDK answer.
+  const readbackCase = (await request("GET", `/api/executions/${lostOperation}?view=reconciliation`, undefined, 200)).data.operationReconciliation;
+  const readbackArgs = resolveOperationReadbackArguments(operationTool, readbackTool, readbackCase.arguments);
+  assert.deepEqual(readbackArgs, { id: "OPERATION-LOST-INTENT" });
+  const readbackSnapshot = await repository.snapshot();
+  const beforeReadback = canonicalJSONBytes([readbackSnapshot.executions[lostOperation], readbackSnapshot.timelines[lostOperation], readbackSnapshot.executionEvents[lostOperation]]);
+  await assert.rejects(() => dispatchReadTool(services, "reviewer", readbackTool.name, readbackArgs), /current actor is not authorized/);
+  assert.equal(readbacks.length, 0);
+  const readbackResult = await dispatchReadTool(services, "owner", readbackTool.name, readbackArgs);
+  const evaluation = evaluateOperationReadback(operationTool, readbackTool, readbackCase.arguments, readbackResult, readbackCase.preparedAt);
+  assert.equal(evaluation.outcome, "NOT_APPLIED"); assert.equal(evaluation.settled, true);
+  assert.equal(evaluation.canResume, false); assert.equal(evaluation.noReplay, true); assert.equal(evaluation.deliveryVerified, false);
+  assert.deepEqual(readbacks, ["OPERATION-LOST-INTENT"]); assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
+  const afterReadback = await repository.snapshot();
+  assert(beforeReadback.equals(canonicalJSONBytes([afterReadback.executions[lostOperation], afterReadback.timelines[lostOperation], afterReadback.executionEvents[lostOperation]])));
+  assert.equal(afterReadback.executions[lostOperation].status, "RECONCILIATION_REQUIRED");
+  log("actual Firestore publication/restart retained exact separately reviewed read-back binding; an explicitly authorized synthetic broker query classified fresh settled evidence without changing, resending or resolving the original uncertain run; review-only dispatch was denied");
 
   // Independent operator evidence is an attestation, never an SDK ACK. Exercise
   // real scoped Firestore commits, unknown decision ACK and restart, not merely

@@ -3,7 +3,7 @@ import { HandlerFailure } from "../http/handlers/common.js";
 import type { RepositoryState, StoredRecord } from "../repository/store.js";
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
-import { captureCapabilityAdmissionPin } from "../registry/capability-admission.js";
+import { captureCapabilityAdmissionPin, captureReadAdmissionPin } from "../registry/capability-admission.js";
 import { discoverTools } from "../agent/tool-discovery.js";
 import { compileOperationWorkflow, operationCompilationReceipt, type CompiledOperationPlan, type OperationCompilationReceipt, type ReadAdmissionPin } from "./compiled-read.js";
 
@@ -20,6 +20,12 @@ function compileCurrent(state: Readonly<RepositoryState>, services: HandlerServi
     const tool = matches[0]!, pin = expected?.ir.root.nodes.find(node => node.id === step.id)?.capability.admission;
     if (expected && !pin) throw new Error("Stored operation lacks an exact pin");
     pins.set(tool.tool_id, captureCapabilityAdmissionPin(state, services.registries, tool, session.admissionBinding, pin));
+    if (tool.operation_contract?.readback) {
+      const targets = tools.filter(target => target.tool_id === tool.operation_contract!.readback!.tool_id);
+      const readback = expected?.ir.root.nodes.find(node => node.id === step.id)?.readback;
+      if (targets.length !== 1 || expected && !readback) throw new Error("Operation lacks an exact reviewed read-back target");
+      pins.set(targets[0]!.tool_id, captureReadAdmissionPin(state, services.registries, targets[0]!, session.admissionBinding, readback?.admission, pin?.connectionId));
+    }
   }
   const plan = compileOperationWorkflow(yaml, tools, role, pins);
   if (expected && !canonicalJSONBytes(expected).equals(canonicalJSONBytes(plan))) throw new Error("Operation source, semantics or admission changed");

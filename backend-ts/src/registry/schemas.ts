@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { jsonObjectSchema, jsonValueSchema } from "../models/schemas.js";
+import { operationReadbackSchema } from "./operation-readback-schema.js";
 
 export const toolSchema = z.object({
   tool_id: z.string().default(""),
@@ -34,6 +35,7 @@ export const toolSchema = z.object({
       expected: z.union([z.string().min(1).max(256), z.number().finite(), z.boolean()]),
       meaning: z.enum(["operation-accepted", "operation-confirmed"]),
     }).strict(),
+    readback: operationReadbackSchema.optional(),
   }).strict().optional(),
   required_parameters: z.array(z.string()).default([]),
   optional_parameters: z.array(z.string()).default([]),

@@ -32,7 +32,7 @@ class Records implements PersistenceBackend {
   async saveExecutionCheckpoint(checkpoint: ExecutionCheckpoint) { await this.save(Buffer.from(JSON.stringify(applyExecutionCheckpoint(JSON.parse(this.bytes!.toString()), checkpoint)))); }
   async probe() {} async close() {}
 }
-async function setup(storage: PersistenceBackend | null = null, withRead = true) {
+async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false) {
   const repository = await Repository.open(storage), registries = await RegistryService.load(resolve("tests/fixtures/tools.json"), resolve("tests/fixtures/rules.json"));
   const base = registries.snapshot(), original = base.tools[0]!;
   const read = toolSchema.parse({ ...original, allowed_roles: ["Platform Admin"], bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [],
@@ -40,10 +40,20 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true)
   const write = toolSchema.parse({ ...read, tool_id: "operation-fixture", name: "demo.dispatch", mcp_tool_name: "demo.dispatch", is_read_only: false, risk_level: "low", side_effects: ["Synthetic message acceptance"],
     operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
     bridge_contract: { ...read.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
-  const tools = [read, write];
+  const readback = withReadback ? toolSchema.parse({ ...read, tool_id: "readback-fixture", name: "demo.status", mcp_tool_name: "demo.status",
+    input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+    bridge_contract: { ...read.bridge_contract, resource_digest: "c".repeat(64), output_schema: { type: "object", properties: {
+      value: { type: "string" }, state: { type: "string" }, settled: { type: "boolean" }, observedAt: { type: "string" } }, required: ["value", "state", "settled", "observedAt"], additionalProperties: false } } }) : undefined;
+  if (readback) {
+    write.input_schema = { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false };
+    write.operation_contract!.readback = { profile: "operation-readback-contract/v1", tool_id: readback.tool_id, contract_hash: capabilityContractHash(readback),
+    arguments: [{ parameter: "value", source_path: ["value"] }], correlation: [{ source_path: ["value"], result_path: ["value"] }],
+      outcome: { path: ["state"], applied: "APPLIED", not_applied: "ABSENT" }, settled_path: ["settled"], observed_at_path: ["observedAt"], max_age_seconds: 60, evidence_meaning: "operation-state" };
+  }
+  const tools = [read, write, ...(readback ? [readback] : [])];
   vi.spyOn(registries, "snapshot").mockImplementation(() => ({ ...base, tools }));
   vi.spyOn(registries, "findTool").mockImplementation(name => tools.find(tool => [tool.tool_id, tool.name, tool.mcp_tool_name].includes(name)));
-  vi.spyOn(registries, "hash").mockImplementation(() => capabilityContractHash(toolSchema.parse({ ...write, execution_notes: capabilityContractHash(read) })));
+  vi.spyOn(registries, "hash").mockImplementation(() => capabilityContractHash(toolSchema.parse({ ...write, execution_notes: [read, ...(readback ? [readback] : [])].map(capabilityContractHash).join(":") })));
   const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "operation-fixture-secret-at-least-32-characters", MCP_MODE: "mock", STORAGE_DRIVER: "memory", STORAGE_ENCRYPTION_KEY: "x".repeat(32) });
   const validator = new RegistryValidator(registries, repository);
   let dispatchAdmissionHook: (() => Promise<void>) | undefined;
@@ -82,7 +92,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true)
     const run = (await repository.snapshot()).executions[id]!; expect(run.status, JSON.stringify({ failure: run.failure, progress: run.readProgress, summary: run.agentSummary, sdkCalls: sdk.callTool.mock.calls })).toBe(status);
   };
   const admit = async () => { const pub = await publish(); expect(pub.statusCode, pub.body).toBe(200); const response = await run(); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id; await wait(id, "AWAITING_APPROVAL"); return id as string; };
-  return { repository, services, app, actor, read, write, sdk, session, request, publish, run, review, command, wait, admit,
+  return { repository, services, app, actor, read, write, readback, sdk, session, request, publish, run, review, command, wait, admit,
     setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; } };
 }
 
@@ -110,6 +120,53 @@ test("normal publish/readiness/run/approve worker executes exact sequential oper
   expect((await s.request("POST", `/api/executions/${id}/approve`, command, "reviewer")).json().data.replayed).toBe(true);
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
 });
+
+test("normal operation publication/readiness binds its separately reviewed read-back target without calling it", async () => {
+  const s = await setup(null, false, true), published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const snapshot = await s.repository.snapshot(), stored = snapshot.versions.flow![0]!.compiledOperation as any;
+  expect(stored.plan.ir.root.nodes[0].readback).toMatchObject({ profile: "operation-readback-binding/v1", toolId: s.readback!.tool_id, contractHash: capabilityContractHash(s.readback!) });
+  expect(stored.plan.ir.root.nodes).toHaveLength(1);
+  const ready = await s.request("GET", "/api/workflows/flow/readiness"); expect(ready.statusCode, ready.body).toBe(200); expect(ready.json().data.can_attempt_run).toBe(true);
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["disabled-before-publication", "changed-target", "changed-admission", "tampered-binding"])("normal operation gates deny %s read-back qualification before any call", async scenario => {
+  const s = await setup(null, false, true);
+  const targetPin = await s.repository.readAuthoritative(state => captureReadAdmissionPin(state, s.services.registries, s.readback!, s.session.admissionBinding!));
+  if (scenario === "disabled-before-publication") {
+    await s.repository.mutate(state => { state.capabilityAdmissions[targetPin.capabilityId]!.state = "DISABLED"; });
+    const denied = await s.publish(); expect(denied.statusCode, denied.body).toBe(422);
+  } else {
+    const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+    if (scenario === "changed-target") s.readback!.description = "Unreviewed changed status contract";
+    if (scenario === "changed-admission") await s.repository.mutate(state => { (state.capabilityAdmissions[targetPin.capabilityId] as { version: number }).version++; });
+    if (scenario === "tampered-binding") await s.repository.mutate(state => { (state.versions.flow![0]!.compiledOperation as any).plan.ir.root.nodes[0].readback.admission.contractHash = `sha256:${"0".repeat(64)}`; });
+    const denied = await s.run(); expect(denied.statusCode, denied.body).toBe(409);
+  }
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+test.each(["disabled-admission", "changed-admission", "changed-contract", "tampered-binding"])("read-back %s at final consumed-intent admission fences the original SDK entry", async scenario => {
+  const s = await setup(null, false, true), id = await s.admit(), command = await s.command(id);
+  const targetPin = await s.repository.readAuthoritative(state => captureReadAdmissionPin(state, s.services.registries, s.readback!, s.session.admissionBinding!));
+  let hookEntered = false;
+  s.setDispatchAdmissionHook(async () => {
+    const run = (await s.repository.snapshot()).executions[id]!;
+    if (!run.operationSecret!.intents.send) return;
+    expect(run.operationSecret!.intents.send!.state).toBe("DISPATCH_INTENT");
+    expect(run.runtimeApprovalSecret!.records[run.runtimeApprovalSecret!.activeId]!.state).toBe("CONSUMED"); hookEntered = true;
+    if (scenario === "changed-contract") s.readback!.description = "Changed after the acknowledged original intent";
+    else await s.repository.mutate(state => {
+      if (scenario === "disabled-admission") state.capabilityAdmissions[targetPin.capabilityId]!.state = "DISABLED";
+      if (scenario === "changed-admission") (state.capabilityAdmissions[targetPin.capabilityId] as { version: number }).version++;
+      if (scenario === "tampered-binding") (state.versions.flow![0]!.compiledOperation as any).plan.ir.root.nodes[0].readback.admission.admissionVersion++;
+    });
+  });
+  const response = await s.request("POST", `/api/executions/${id}/approve`, command, "reviewer"); expect(response.statusCode, response.body).toBe(200);
+  await s.wait(id, "RECONCILIATION_REQUIRED"); expect(hookEntered).toBe(true); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  const run = (await s.repository.snapshot()).executions[id]!;
+  expect(run.operationSecret!.intents.send!.state).toBe("UNKNOWN"); expect(run.stepOutputs).toEqual({}); expect(run.finalOutput).toBeUndefined();
+});
+
 test("reviewed operation does not acquire read authority or bypass approval with a validator capability/callback/forged permit", async () => {
   const s = await setup(null, false); const yaml = (await s.repository.snapshot()).workflows.flow!.yaml;
   await expect(s.repository.readAuthoritative(state => captureReadAdmissionPin(state, s.services.registries, s.write, s.session.admissionBinding!))).rejects.toThrow();
