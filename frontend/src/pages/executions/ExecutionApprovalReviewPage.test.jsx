@@ -25,7 +25,7 @@ test("review-only page requests the minimal projection, not full run or logs, an
   show(); await screen.findByRole("heading", { name: "Review transaction" });
   expect(review).toHaveBeenCalledWith("run"); expect(review).toHaveBeenCalledTimes(1);
   expect(full).not.toHaveBeenCalled(); expect(logs).not.toHaveBeenCalled();
-  expect(screen.getByRole("link", { name: "← Company" }).getAttribute("href")).toBe("/company");
+  expect(screen.getByRole("link", { name: "← Review inbox" }).getAttribute("href")).toBe("/executions/reviews");
   expect(screen.queryByRole("link", { name: "← Workspace" })).toBeNull();
 });
 test("workspace users retain the chat return link without broadening review-only permissions", async () => {

@@ -40,14 +40,15 @@ const allNavigationGroups = [
   {
     id: "executions",
     label: "Executions",
-    description: "Runs, logs, and healing",
+    description: "Runs and exact action reviews",
     icon: "mdi:play-circle-outline",
 		clientLabel: "My Executions",
-		requiredAny: ["workflow:read", "execution:read_own"],
+		requiredAny: ["workflow:read", "execution:read_own", "execution:approve", "execution:reconcile"],
     subMenu: [
-      { id: "history", label: "Run History", path: "/executions" },
-      { id: "live", label: "Live Logs", path: "/executions/logs", hasNotification: true },
-      { id: "healing", label: "Healing Events", path: "/executions/healing" },
+      { id: "history", label: "Run History", path: "/executions", requiredAny: ["workflow:read", "execution:read_own"] },
+      { id: "reviews", label: "Review Inbox", path: "/executions/reviews", requiredAny: ["execution:approve", "execution:reconcile"] },
+      { id: "live", label: "Live Logs", path: "/executions/logs", hasNotification: true, requiredAny: ["workflow:read", "execution:read_own"] },
+      { id: "healing", label: "Healing Events", path: "/executions/healing", requiredAny: ["workflow:read", "execution:read_own"] },
     ],
   },
   {

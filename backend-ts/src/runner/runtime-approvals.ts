@@ -106,6 +106,13 @@ export function runtimeApprovalEvidence(execution: Execution, approvalId: string
   return record;
 }
 function active(execution: Execution): RuntimeApprovalRecord { return runtimeApprovalEvidence(execution, ledger(execution).activeId); }
+/** Discovery scope only. Never authorizes a decision or exposes its arguments. */
+export function runtimeApprovalInboxAuthority(state: Readonly<RepositoryState>, actorId: string): boolean {
+  const actor = state.users[actorId], role = actor && state.roles[actor.roleId];
+  const policy = policySchema.safeParse((state.settings.rbac as Record<string, unknown> | undefined)?.runtimeApprovalPolicy);
+  return !!actor && actor.status.toLowerCase() === "active" && !!role && policy.success && policy.data.enabled &&
+    policy.data.approverRoleIds.includes(role.id) && [...role.permissions, ...actor.permissionOverrides].includes("execution:approve");
+}
 function approver(state: Readonly<RepositoryState>, record: RuntimeApprovalRecord, actorId: string) {
   const actor = state.users[actorId], role = actor && state.roles[actor.roleId], policy = currentPolicy(state);
   if (!actor || actor.status.toLowerCase() !== "active" || !role || actorId === record.binding.requesterId ||
@@ -251,9 +258,11 @@ export function assertConsumedRuntimeApproval(state: RepositoryState, executionI
 }
 /** Minimum review projection. The private journal is excluded by the common
  * secret redactor on every existing execution/trace/chat serialization path. */
-export function runtimeApprovalView(state: RepositoryState, executionId: string, actorId: string) {
+export function runtimeApprovalView(state: RepositoryState, executionId: string, actorId: string, approvalId?: string) {
+  currentPolicy(state);
+  if (!runtimeApprovalInboxAuthority(state, actorId)) deny("Current independent transaction approver authority is required", 403);
   const execution = state.executions[executionId]; if (!execution) deny("Approval execution not found", 404);
-  const record = active(execution); const { role } = approver(state, record, actorId);
+  const record = approvalId ? runtimeApprovalEvidence(execution, approvalId) : active(execution); const { role } = approver(state, record, actorId);
   const definition = toolSchema.safeParse(state.capabilityRevisions[record.binding.capabilityRevision]?.definition);
   let unavailable: string | null = null;
   // Completed decisions are historical evidence, not new dispatch authority.
@@ -269,7 +278,7 @@ export function runtimeApprovalView(state: RepositoryState, executionId: string,
       nodeId: record.binding.nodeId, invocationId: record.binding.invocationId, connectionId: record.binding.connectionId, capabilityRevision: record.binding.capabilityRevision,
       toolName: definition.success ? definition.data.name : null, remoteToolName: definition.success ? exactBridgeName(definition.data) : null,
       sourceHash: record.binding.sourceHash, semanticHash: record.binding.semanticHash, reason: record.reason, requestedAt: record.requestedAt, expiresAt: record.expiresAt,
-      requesterId: record.binding.requesterId, arguments: withoutSecretFields(record.arguments), canDecide: !unavailable && execution.status === "AWAITING_APPROVAL" && record.state === "PENDING",
+      requesterId: record.binding.requesterId, arguments: withoutSecretFields(record.arguments), canDecide: !unavailable && record.id === execution.runtimeApprovalSecret!.activeId && execution.status === "AWAITING_APPROVAL" && record.state === "PENDING",
       operationManaged: execution.workflowSnapshot?.executionProfile === "sequential-operation-v1",
       unavailable, approverRole: role.name, decision: record.decision ? { outcome: record.decision.outcome, actorId: record.decision.actorId, decidedAt: record.decision.decidedAt } : null,
       canResume: false, resumeReason: execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" ? "An approved operation is queued automatically for fresh authorization. This decision is not execution or delivery confirmation." : "Safe effect resume/outbox dispatch is not connected yet. Approval alone does not execute or send." } };

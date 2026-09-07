@@ -89,3 +89,16 @@ test("reconciliation-only deep link opens exact evidence without opening the ful
   await screen.findByRole("heading", { name: "Reconcile operation" }); expect(load).toHaveBeenCalledWith("run-recovery"); expect(useExecution).not.toHaveBeenCalled();
   cleanup(); client.clear();
 });
+test("historical approval deep links load their exact saved decision, not the latest approval or full execution", async () => {
+  permissions = new Set(["execution:approve"]);
+  const definition = protectedRouteDefinitions.find(route => route.id === "executions.detail");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  const load = jest.spyOn(executionService, "getApproval").mockResolvedValue({ id: "run-history", workflowName: "Historical exact approval", status: "AWAITING_APPROVAL", runtimeApproval: {
+    profile: "runtime-approval/v1", id: "earlier", version: 3, reviewHash: `sha256:${"a".repeat(64)}`, state: "CONSUMED", arguments: { recipient: "earlier-manager@example.test" },
+    toolName: "Send earlier report", remoteToolName: "fixture.send", canDecide: false, canResume: false, decision: { outcome: "APPROVED", actorId: "reviewer", decidedAt: "2026-10-06T10:00:00.000Z" } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/executions/run-history?view=approval&approvalId=earlier"]}><Routes>
+    <Route path={definition.path} element={<ProtectedScreen definition={definition} />} /></Routes></MemoryRouter></QueryClientProvider>);
+  await screen.findByRole("heading", { name: "Review transaction" }); expect(load).toHaveBeenCalledWith("run-history", "earlier");
+  expect(screen.getByText("earlier-manager@example.test")).toBeTruthy(); expect(screen.queryByRole("checkbox")).toBeNull(); expect(useExecution).not.toHaveBeenCalled();
+  cleanup(); client.clear();
+});

@@ -244,6 +244,13 @@ test("each effect in a multi-operation workflow obtains a different exact indepe
     expect(run.status).toBe("AWAITING_APPROVAL"); expect(run.pendingApproval?.stepId).toBe("send_again");
   });
   const second = await s.command(id); expect(second.approvalId).not.toBe(first.approvalId);
+  const historicalReview = await s.request("GET", `/api/executions/${id}?view=approval&approvalId=${encodeURIComponent(first.approvalId)}`, undefined, "reviewer");
+  expect(historicalReview.statusCode, historicalReview.body).toBe(200);
+  expect(historicalReview.json().data.runtimeApproval).toMatchObject({ id: first.approvalId, state: "CONSUMED", canDecide: false, arguments: { value: "first report" } });
+  const pendingReviews = (await s.request("GET", "/api/execution-reviews?kind=approval", undefined, "reviewer")).json().data.items;
+  expect(pendingReviews.map((item: { reviewId: string }) => item.reviewId)).toEqual([second.approvalId]);
+  const priorReviews = (await s.request("GET", "/api/execution-reviews?kind=approval&state=closed", undefined, "reviewer")).json().data.items;
+  expect(priorReviews.map((item: { reviewId: string }) => item.reviewId)).toEqual([first.approvalId]); expect(priorReviews[0].actionable).toBe(false);
   expect((await s.request("POST", `/api/executions/${id}/approve`, first, "reviewer")).statusCode).toBe(409);
   expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect((await s.review(id)).arguments).toEqual({ value: "fixture-message" });
   await s.request("POST", `/api/executions/${id}/approve`, second, "reviewer"); await s.wait(id, "DONE");
@@ -251,6 +258,10 @@ test("each effect in a multi-operation workflow obtains a different exact indepe
   const records = Object.values((await s.repository.snapshot()).executions[id]!.runtimeApprovalSecret!.records);
   expect(records).toHaveLength(2); expect(records.every(record => record.state === "CONSUMED")).toBe(true);
   expect(new Set(records.map(record => record.consumption!.intentId)).size).toBe(2);
+  const firstPage = (await s.request("GET", "/api/execution-reviews?kind=approval&state=closed&limit=1", undefined, "reviewer")).json().data;
+  const secondPage = (await s.request("GET", `/api/execution-reviews?kind=approval&state=closed&limit=1&cursor=${encodeURIComponent(firstPage.nextCursor)}`, undefined, "reviewer")).json().data;
+  expect(firstPage.items[0].executionId).toBe(secondPage.items[0].executionId); expect(firstPage.items[0].reviewId).not.toBe(secondPage.items[0].reviewId);
+  expect(secondPage.hasMore).toBe(false); expect(secondPage.nextCursor).toBeNull(); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
 });
 
 test("stable operation admission rejects changed input and still deduplicates through credential rotation", async () => {
@@ -281,6 +292,91 @@ async function uncertainOperation(storage: PersistenceBackend | null = null) {
   };
   return { ...system, id, caseView, evidenceCommand };
 }
+
+test("review inbox discovers exact independent approval waits without arguments, full runs, mutation or SDK calls", async () => {
+  const s = await setup(), id = await s.admit(), before = await s.repository.snapshot(), calls = s.sdk.callTool.mock.calls.length;
+  const response = await s.request("GET", "/api/execution-reviews", undefined, "reviewer"); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ profile: "execution-review-inbox/v1", kind: "all", state: "open", scopes: { approval: true, reconciliation: false },
+    hasMore: false, nextCursor: null, canResume: false, noReplay: true, items: [{ executionId: id, kind: "approval", state: "open", statusLabel: "Awaiting decision", actionable: true }] });
+  expect(response.body).not.toContain("FIXTURE REPORT");
+  expect(response.body).not.toMatch(/"(?:arguments|decisionKey|reviewHash|connectionBinding|stepOutputs|runtimeApprovalSecret|operationSecret)":/);
+  expect((await s.request("GET", "/api/execution-reviews")).json().data.items).toEqual([]);
+  expect((await s.request("GET", `/api/executions/${id}`, undefined, "reviewer")).statusCode).toBe(404);
+  expect(s.sdk.callTool.mock.calls).toHaveLength(calls); expect(await s.repository.snapshot()).toEqual(before);
+  const noAuth = await s.app.inject({ method: "GET", url: "/api/execution-reviews" }); expect(noAuth.statusCode).toBe(401);
+});
+
+test("review inbox keyset pages remain actor/filter/authority bound and cannot forge a task or command", async () => {
+  const s = await setup(); await s.admit();
+  for (const key of ["inbox-operation-run-0002", "inbox-operation-run-0003"]) { const response = await s.run(key); await s.wait(response.json().data.id, "AWAITING_APPROVAL"); }
+  const list = async (query: string, actor = "reviewer") => s.request("GET", `/api/execution-reviews?${query}`, undefined, actor);
+  const first = (await list("limit=1&kind=approval")).json().data; expect(first.items).toHaveLength(1); expect(first.hasMore).toBe(true);
+  const cursor = encodeURIComponent(first.nextCursor), second = (await list(`limit=1&kind=approval&cursor=${cursor}`)).json().data;
+  const third = (await list(`limit=1&kind=approval&cursor=${encodeURIComponent(second.nextCursor)}`)).json().data;
+  expect(new Set([...first.items, ...second.items, ...third.items].map(item => item.executionId)).size).toBe(3); expect(third.nextCursor).toBeNull();
+  expect((await list(`kind=reconciliation&cursor=${cursor}`)).statusCode).toBe(400);
+  expect((await list(`kind=approval&state=closed&cursor=${cursor}`)).statusCode).toBe(400);
+  expect((await list(`kind=approval&cursor=${cursor}`, "requester")).statusCode).toBe(400);
+  expect((await list(`kind=approval&cursor=${encodeURIComponent(first.nextCursor.slice(0, -1) + (first.nextCursor.endsWith("a") ? "b" : "a"))}`)).statusCode).toBe(400);
+  await s.repository.mutate(state => { state.roles.review!.permissions.push("execution:reconcile"); });
+  expect((await list(`kind=approval&cursor=${cursor}`)).statusCode).toBe(400);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(3);
+});
+
+test.each(["limit=0", "limit=51", "limit=1.5", "kind=write", "state=all", "cursor=forged", "view=approval", "actorId=requester", "kind=approval&kind=reconciliation"])("review inbox rejects unsupported query %s", async query => {
+  const s = await setup(); expect((await s.request("GET", `/api/execution-reviews?${query}`, undefined, "reviewer")).statusCode).toBe(400); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test("current policy scope, active roles and revocation filter discovery without accepting a requester as its own reviewer", async () => {
+  const s = await setup(); await s.admit();
+  await s.repository.mutate(state => {
+    state.roles.other_review = { ...state.roles.review!, id: "other_review" };
+    state.users.other_review = { ...state.users.reviewer!, id: "other_review", roleId: "other_review" };
+    state.users.ordinary = { ...state.users.reviewer!, id: "ordinary", roleId: "role_builder" };
+  });
+  expect((await s.request("GET", "/api/execution-reviews", undefined, "other_review")).json().data).toMatchObject({ scopes: { approval: false }, items: [] });
+  expect((await s.request("GET", "/api/execution-reviews", undefined, "ordinary")).statusCode).toBe(403);
+  await s.repository.mutate(state => { state.users.requester!.roleId = "review"; });
+  expect((await s.request("GET", "/api/execution-reviews", undefined, "requester")).json().data.items).toEqual([]);
+  await s.repository.mutate(state => { state.roles.review!.permissions = []; });
+  expect((await s.request("GET", "/api/execution-reviews", undefined, "reviewer")).statusCode).toBe(403);
+});
+
+test("tampered exact waits remain visible as unavailable tasks and the inbox never repairs or approves them", async () => {
+  const s = await setup(), id = await s.admit();
+  await s.repository.mutate(state => { const run = state.executions[id]!; run.runtimeApprovalSecret!.records[run.runtimeApprovalSecret!.activeId]!.arguments = { value: "tampered" }; });
+  const response = await s.request("GET", "/api/execution-reviews", undefined, "reviewer"); expect(response.statusCode).toBe(200);
+  expect(response.json().data.items).toMatchObject([{ executionId: id, reviewAvailable: false, actionable: false, statusLabel: "Review unavailable" }]);
+  expect(response.body).not.toContain("tampered"); expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+});
+
+test("inbox denies an uncertain durable authorization image and reload observes the remotely committed revocation", async () => {
+  const storage = new Records(), s = await setup(storage); await s.admit();
+  storage.loseWhen = state => state.roles.review!.permissions.length === 0;
+  await expect(s.repository.mutate(state => { state.roles.review!.permissions = []; })).rejects.toThrow(/acknowledgement loss/);
+  const uncertain = await s.request("GET", "/api/execution-reviews", undefined, "reviewer");
+  expect(uncertain.statusCode).toBe(503); expect(uncertain.body).not.toContain("Awaiting decision");
+  await s.repository.recoverPersistenceState();
+  expect((await s.request("GET", "/api/execution-reviews", undefined, "reviewer")).statusCode).toBe(403);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+});
+
+test("decision history and independent recovery inbox distinguish approval, unknown effect and operator closure", async () => {
+  const s = await uncertainOperation(), calls = s.sdk.callTool.mock.calls.length;
+  expect((await s.request("GET", "/api/execution-reviews?kind=approval", undefined, "reviewer")).json().data.items).toEqual([]);
+  const history = (await s.request("GET", "/api/execution-reviews?state=closed", undefined, "reviewer")).json().data;
+  expect(history.items).toMatchObject([{ executionId: s.id, kind: "approval", actionable: false, statusLabel: "Approved — not delivery confirmation" }]);
+  const open = (await s.request("GET", "/api/execution-reviews", undefined, "operator")).json().data;
+  expect(open).toMatchObject({ scopes: { approval: false, reconciliation: true }, items: [{ executionId: s.id, kind: "reconciliation", statusLabel: "Outcome uncertain", actionable: true }] });
+  expect(JSON.stringify(open)).not.toContain("FIXTURE REPORT");
+  expect(JSON.stringify(open)).not.toMatch(/"(?:arguments|operationKey|factsHash|evidence)":/);
+  expect((await s.request("GET", "/api/execution-reviews", undefined, "outsider")).statusCode).toBe(403);
+  await s.request("POST", `/api/executions/${s.id}/reconcile`, await s.evidenceCommand("NOT_APPLIED"), "operator");
+  expect((await s.request("GET", "/api/execution-reviews", undefined, "operator")).json().data.items).toEqual([]);
+  expect((await s.request("GET", "/api/execution-reviews?state=closed", undefined, "operator")).json().data.items).toMatchObject([
+    { executionId: s.id, kind: "reconciliation", actionable: false, statusLabel: "Closed by operator evidence", canResume: false, noReplay: true }]);
+  expect(s.sdk.callTool.mock.calls).toHaveLength(calls);
+});
 
 test.each(["APPLIED", "NOT_APPLIED"])("normal independent %s external evidence closes a case without granting SDK/result/resume authority", async outcome => {
   const s = await uncertainOperation(), command = await s.evidenceCommand(outcome), before = await s.repository.snapshot();

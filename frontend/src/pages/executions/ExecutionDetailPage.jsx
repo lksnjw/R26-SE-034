@@ -26,7 +26,7 @@ function ExecutionDetailPage() {
   const [query] = useSearchParams();
   const { hasAny } = usePermissions();
   if (query.get("view") === "reconciliation") return <ExecutionReconciliationPage executionId={executionId} />;
-  if (query.get("view") === "approval") return <ExecutionApprovalReviewPage executionId={executionId} />;
+  if (query.get("view") === "approval") return <ExecutionApprovalReviewPage executionId={executionId} approvalId={query.get("approvalId") || undefined} />;
   if (!hasAny(["workflow:read", "execution:read_own"]) && hasAny(["execution:reconcile"])) return <Navigate replace to={`/executions/${encodeURIComponent(executionId)}?view=reconciliation`} />;
   if (!hasAny(["workflow:read", "execution:read_own"]) && hasAny(["execution:approve"])) return <Navigate replace to={`/executions/${encodeURIComponent(executionId)}?view=approval`} />;
   return <ExecutionRunDetail executionId={executionId} />;

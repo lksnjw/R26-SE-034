@@ -30,6 +30,7 @@ import type { SynthesisService } from "../synthesis/service.js";
 import type { ValidationGate } from "../governance/gate.js";
 import { ResourceMutations } from "./resource-mutations.js";
 import { type Executor } from "../runner/executor.js";
+import { executionReviewInbox } from "../runner/execution-review-inbox.js";
 import type { RegistryValidator } from "../validator/registry-validator.js";
 import { routeTable, type RouteDefinition } from "./generated-routes.js";
 import { isPolicyCheckerEnabled, checkErpPolicy } from "../governance/rbac.js";
@@ -303,9 +304,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 190)
+  if (routeTable.length !== 191)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 190`,
+      `route table has ${routeTable.length} routes, expected 191`,
     );
   return app;
 }
@@ -437,6 +438,12 @@ async function handleRoute(
         ),
       );
 
+  // Storage denial must not masquerade as an empty inbox, an expired login or
+  // a generic crash. This read-only route never falls back to a stale image.
+  if (route.path === `${services.config.apiBasePath}/execution-reviews`) {
+    try { services.repository.assertAuthority(); }
+    catch { return reply.status(503).send(fail("The review inbox is unavailable until authoritative storage is recovered. No tasks or actions are confirmed.", null)); }
+  }
   const auth = publicRoutes.has(routeKey)
     ? null
     : await authenticate(request, reply, services);
@@ -509,6 +516,16 @@ async function handleRoute(
     route.method === "GET"
   )
     return listExecutions(request, reply, current!, services);
+  if (route.path === `${services.config.apiBasePath}/execution-reviews` && route.method === "GET") {
+    let page;
+    try { page = await services.repository.readAuthoritative(state => executionReviewInbox(state, current!, request.query, services.config.jwtSecret)); }
+    catch (error) {
+      try { services.repository.assertAuthority(); }
+      catch { throw new HandlerFailure(503, "The review inbox is unavailable until authoritative storage is recovered. No tasks or actions are confirmed."); }
+      throw error;
+    }
+    return reply.send(ok(page, "Current minimum review tasks; no decision or dispatch authority", null));
+  }
   if (
     route.path === `${services.config.apiBasePath}/executions/:id` &&
     route.method === "GET"
@@ -1356,8 +1373,10 @@ async function getExecution(
     return reply.send(ok(review, "Exact uncertain operation evidence only; no dispatch authority", null));
   }
   if (isRecord(request.query) && request.query.view === "approval") {
-    if (Object.keys(request.query).some(key => key !== "view")) throw new HandlerFailure(400, "Unsupported approval review query");
-    const review = await services.repository.readAuthoritative(state => runtimeApprovalView(state, param(request, "id"), user.id));
+    if (Object.keys(request.query).some(key => !["view", "approvalId"].includes(key)) ||
+        request.query.approvalId !== undefined && !z.string().min(1).max(256).safeParse(request.query.approvalId).success) throw new HandlerFailure(400, "Unsupported approval review query");
+    const approvalId = request.query.approvalId as string | undefined;
+    const review = await services.repository.readAuthoritative(state => runtimeApprovalView(state, param(request, "id"), user.id, approvalId));
     return reply.send(ok(review, "Exact transaction review only; approval does not execute", null));
   }
   // A review-only permission is not a read grant, even if this account started
@@ -1444,6 +1463,8 @@ function routePolicy(
     return { required: ["settings:manage"], any: false };
   if (path.startsWith("/api/providers"))
     return { required: ["provider:manage"], any: false };
+  if (path === "/api/execution-reviews" && route.method === "GET")
+    return { required: ["execution:approve", "execution:reconcile"], any: true };
   if (path.startsWith("/api/executions"))
     if (path === "/api/executions/:id/reconcile" && route.method === "POST") return { required: ["execution:reconcile"], any: false };
   if (path.startsWith("/api/executions"))

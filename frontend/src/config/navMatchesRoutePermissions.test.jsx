@@ -14,6 +14,8 @@ const ROLES = {
   "System Admin": ["user:manage", "registry:read", "audit:read"],
   "Workflow Builder": ["workflow:read", "workflow:write", "workflow:run", "workflow_view_all", "chat:use", "registry:read"],
   Client: ["chat:use", "workflow:read_own", "workflow:run_own", "execution:read_own"],
+  "Approval only": ["execution:approve"],
+  "Recovery only": ["execution:reconcile"],
 };
 
 const ROLE_IDS = {
@@ -21,6 +23,8 @@ const ROLE_IDS = {
   "System Admin": "role_system_admin",
   "Workflow Builder": "role_builder",
   Client: "role_client",
+  "Approval only": "role_reviewer",
+  "Recovery only": "role_reconciler",
 };
 
 const routeByPath = new Map(protectedRouteDefinitions.map((route) => [route.path, route]));
@@ -84,4 +88,8 @@ test("the command palette hides quick targets a role cannot open", () => {
 test("a role with no permissions is offered no navigation at all", () => {
   expect(visibleNavEntries([], "role_none").filter((entry) => entry.surface === "sidebar").map((e) => e.path))
     .toEqual(["/company", "/profile", "/profile/security"]);
+});
+test.each(["execution:approve", "execution:reconcile"])("%s-only navigation exposes the inbox, never full run/log/healing pages", permission => {
+  const paths = visibleNavEntries([permission], "role_review").filter(entry => entry.group === "executions").map(entry => entry.path);
+  expect(paths.length).toBeGreaterThan(0); expect(new Set(paths)).toEqual(new Set(["/executions/reviews"]));
 });

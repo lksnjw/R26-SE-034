@@ -303,6 +303,11 @@ try {
   await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).executions[operationRun], waitingOperation); assert.equal(operations.length, 0);
   const operationReview = (await request("GET", `/api/executions/${operationRun}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  const waitingInbox = (await request("GET", "/api/execution-reviews?kind=approval&limit=5", undefined, 200, "reviewer")).data;
+  assert(waitingInbox.items.some(item => item.executionId === operationRun && item.actionable && item.statusLabel === "Awaiting decision"));
+  assert(!JSON.stringify(waitingInbox).includes('"arguments":')); assert(!JSON.stringify(waitingInbox).includes("OPERATION-FIXTURE-ONE"));
+  assert(!(await request("GET", "/api/execution-reviews?kind=approval", undefined, 200)).data.items.some(item => item.executionId === operationRun));
+  assert.equal(operations.length, 0); assert.equal(models.length, modelsBeforeOperation);
   assert.deepEqual(operationReview.arguments, { id: "OPERATION-FIXTURE-ONE" }); assert.equal(operationReview.operationManaged, true);
   const operationCommand = { approvalId: operationReview.id, baseVersion: operationReview.version, reviewHash: operationReview.reviewHash, decisionKey: "firestore-operation-decision-0001" };
   assert.equal((await request("POST", `/api/executions/${operationRun}/approve`, operationCommand, 200, "reviewer")).data.resumeQueued, true);
@@ -313,6 +318,12 @@ try {
   assert.equal(JSON.stringify((await request("GET", `/api/executions/${operationRun}`, undefined, 200)).data).includes("operationSecret"), false);
   assert.equal((await request("POST", `/api/executions/${operationRun}/approve`, operationCommand, 200, "reviewer")).data.replayed, true);
   await stop(); await start(await openApplicationRepository(config)); assert.deepEqual((await repository.snapshot()).executions[operationRun], completedOperation); assert.equal(operations.length, 1);
+  const approvalHistoryInbox = (await request("GET", "/api/execution-reviews?kind=approval&state=closed", undefined, 200, "reviewer")).data;
+  assert(approvalHistoryInbox.items.some(item => item.executionId === operationRun && !item.actionable && item.statusLabel === "Approved — not delivery confirmation"));
+  const savedReviewEntry = approvalHistoryInbox.items.find(item => item.executionId === operationRun);
+  assert.equal(savedReviewEntry.reviewId, operationReview.id);
+  const historicalApproval = (await request("GET", `/api/executions/${operationRun}?view=approval&approvalId=${encodeURIComponent(savedReviewEntry.reviewId)}`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.equal(historicalApproval.id, operationReview.id); assert.equal(historicalApproval.state, "CONSUMED"); assert.equal(historicalApproval.canDecide, false);
   log("actual Firestore normal operation publication/run produced a durable exact approval wait, survived restart without calls, then consumed independent approval and acknowledged one synthetic SDK result; zero model calls and no duplicate after decision replay/restart");
 
   const lostOperation = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-lost-intent-0001", input: { id: "operation-lost-intent" } }, 202)).data.id;
@@ -340,6 +351,10 @@ try {
     state.users.operator = { ...state.users.reviewer, id: "operator", name: "Recovery operator", email: "operator@example.test", roleId: "recovery_operator" };
   });
   const recoveryView = (await request("GET", `/api/executions/${lostOperation}?view=reconciliation`, undefined, 200, "operator")).data.operationReconciliation;
+  const recoveryInbox = (await request("GET", "/api/execution-reviews?kind=reconciliation", undefined, 200, "operator")).data;
+  assert.deepEqual(recoveryInbox.scopes, { approval: false, reconciliation: true });
+  assert(recoveryInbox.items.some(item => item.executionId === lostOperation && item.statusLabel === "Outcome uncertain" && item.actionable));
+  assert(!JSON.stringify(recoveryInbox).includes('"arguments":')); assert(!JSON.stringify(recoveryInbox).includes("OPERATION-LOST-INTENT"));
   assert.equal(recoveryView.canRecord, true); assert.deepEqual(recoveryView.arguments, { id: "OPERATION-LOST-INTENT" });
   await request("GET", `/api/executions/${lostOperation}`, undefined, 404, "operator"); await request("GET", `/api/executions/${lostOperation}/logs`, undefined, 403, "operator");
   const recoveryCommand = { intentId: recoveryView.intentId, baseVersion: recoveryView.version, factsHash: recoveryView.factsHash, decisionKey: "firestore-external-evidence-0001", outcome: "NOT_APPLIED",
@@ -360,10 +375,43 @@ try {
   await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).executions[lostOperation], closedRecovery);
   const recoveryHistory = (await request("GET", `/api/executions/${lostOperation}?view=reconciliation`, undefined, 200, "operator")).data.operationReconciliation;
+  assert(!(await request("GET", "/api/execution-reviews", undefined, 200, "operator")).data.items.some(item => item.executionId === lostOperation));
+  const recoveryHistoryInbox = (await request("GET", "/api/execution-reviews?state=closed", undefined, 200, "operator")).data;
+  assert(recoveryHistoryInbox.items.some(item => item.executionId === lostOperation && !item.actionable && item.statusLabel === "Closed by operator evidence"));
   assert.equal(recoveryHistory.state, "RESOLVED"); assert.equal(recoveryHistory.canRecord, false); assert.equal(recoveryHistory.history.length, 1);
   assert.equal(recoveryHistory.history[0].basis, "operator-attestation"); assert.equal(recoveryHistory.canResume, false);
   await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
   log("actual Firestore normal independent external-evidence recovery survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; one private attestation, no new SDK/model calls, no fabricated answer or resume");
+  log("actual Firestore review inbox discovered independent normal waits and uncertain effects after restart, then preserved truthful approval/operator decision history without arguments, self-review or new SDK/model calls");
+
+  const historicalYAML = stringify({ name: "Two independent synthetic reviews", description: "Verify separate exact decisions and historical review after a durable restart using synthetic operations only.", trigger: { type: "manual" }, steps: [
+    { id: "first", action: operationTool.name, parameters: { id: "history-first" } },
+    { id: "second", action: operationTool.name, parameters: { id: "{{first.structuredContent.id}}" } },
+  ] });
+  await repository.mutate(state => { state.workflows.multi_review_history = { ...state.workflows.operation, id: "multi_review_history", name: "Two independent synthetic reviews", yaml: historicalYAML,
+    publishedVersion: 0, draftVersion: 1, steps: 2, canRun: false }; state.versions.multi_review_history = []; });
+  await request("POST", "/api/workflows/multi_review_history/publish", {}, 200);
+  const operationsBeforeHistory = operations.length, modelsBeforeHistory = models.length;
+  const historyRun = (await request("POST", "/api/workflows/multi_review_history/run", { mode: "async-operation", idempotencyKey: "firestore-multi-review-history-0001" }, 202)).data.id;
+  await waitFor(async () => (await repository.snapshot()).executions[historyRun].status === "AWAITING_APPROVAL", "first historical operation review");
+  const firstHistorical = (await request("GET", `/api/executions/${historyRun}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  await request("POST", `/api/executions/${historyRun}/approve`, { approvalId: firstHistorical.id, baseVersion: firstHistorical.version, reviewHash: firstHistorical.reviewHash, decisionKey: "firestore-historical-first-0001" }, 200, "reviewer");
+  await waitFor(async () => { const run = (await repository.snapshot()).executions[historyRun]; return run.status === "AWAITING_APPROVAL" && run.runtimeApprovalSecret.activeId !== firstHistorical.id; }, "second independent operation review");
+  const secondHistorical = (await request("GET", `/api/executions/${historyRun}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.notEqual(firstHistorical.id, secondHistorical.id); assert.equal(operations.length, operationsBeforeHistory + 1);
+  const oldBeforeRestart = (await request("GET", `/api/executions/${historyRun}?view=approval&approvalId=${encodeURIComponent(firstHistorical.id)}`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.equal(oldBeforeRestart.state, "CONSUMED"); assert.equal(oldBeforeRestart.canDecide, false);
+  await stop(); await start(await openApplicationRepository(config));
+  const oldAfterRestart = (await request("GET", `/api/executions/${historyRun}?view=approval&approvalId=${encodeURIComponent(firstHistorical.id)}`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.deepEqual(oldAfterRestart, oldBeforeRestart); assert.equal(operations.length, operationsBeforeHistory + 1);
+  await request("POST", `/api/executions/${historyRun}/approve`, { approvalId: secondHistorical.id, baseVersion: secondHistorical.version, reviewHash: secondHistorical.reviewHash, decisionKey: "firestore-historical-second-0001" }, 200, "reviewer");
+  await waitFor(async () => (await repository.snapshot()).executions[historyRun].status === "DONE", "historical operation completion");
+  const historyFirstPage = (await request("GET", "/api/execution-reviews?kind=approval&state=closed&limit=1", undefined, 200, "reviewer")).data;
+  const historySecondPage = (await request("GET", `/api/execution-reviews?kind=approval&state=closed&limit=1&cursor=${encodeURIComponent(historyFirstPage.nextCursor)}`, undefined, 200, "reviewer")).data;
+  assert.equal(historyFirstPage.items[0].executionId, historyRun); assert.equal(historySecondPage.items[0].executionId, historyRun);
+  assert.deepEqual([historyFirstPage.items[0].reviewId, historySecondPage.items[0].reviewId], [secondHistorical.id, firstHistorical.id]);
+  assert.equal(operations.length, operationsBeforeHistory + 2); assert.equal(models.length, modelsBeforeHistory);
+  log("actual Firestore multi-operation wait/restart retained both exact independent reviews; record-bound history links and signed pages inspect earlier decisions without another SDK/model call or reapproval");
 
   const entered = barrier(), release = barrier(); sdkHook = async args => { if (args.id === "cancel-a") { entered.release(); await release.promise; } };
   const cancelRun = (await request("POST", "/api/workflows/collection/run", { mode: "async-read", idempotencyKey: "firestore-runtime-cancel-fixture-0001", input: { rows: ["cancel-a", "must-not-call"] } }, 202)).data.id;
@@ -429,6 +477,8 @@ try {
   await assert.rejects(dispatchReadTool(services, "owner", "read", { id: "fenced" }));
   await assert.rejects(session.callToolDirect("read", { id: "fenced" })); await assert.rejects(services.providerRuntime.queryWithTools([{ role: "user", content: "fenced" }], [], { temperature: 0 }));
   const denied = await app.inject({ method: "POST", url: "/api/workflows/single/run", headers: headers(), payload: { input: { id: "fenced" } } }); assert(denied.statusCode >= 400);
+  const deniedInbox = await request("GET", "/api/execution-reviews", undefined, 503, "reviewer");
+  assert.equal(deniedInbox.success, false); assert.equal(deniedInbox.data, null);
   assert.equal(calls.length, callsBeforeFence); assert.equal(models.length, modelsBeforeFence); await assert.rejects(persistence.load());
   await app.close(); app = undefined;
   const observer = FirestoreRecordStore.create(key, namespace);
