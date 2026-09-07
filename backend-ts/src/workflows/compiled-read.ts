@@ -36,6 +36,12 @@ const hashIR = (ir: ReadIR) => `sha256:${createHash("sha256").update(canonicalJS
  * compiler errors until their structured semantics are implemented. */
 export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin> = new Map()):
   { ir: ReadIR; semanticHash: string; issues: string[] } {
+  return buildActionBindingsIR(blueprint, tools, role, pins, false);
+}
+/** Shared bounded binding compiler, not an execution/admission switch. The
+ * operation compiler has a different IR/receipt and mandatory reviewed pins. */
+function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>, operations: boolean):
+  { ir: ReadIR; semanticHash: string; issues: string[] } {
   const issues: string[] = [], ids = new Set<string>(), outputs = new Map<string, Record<string, unknown>>();
   let bindingNodes = 0;
   const inputSchema = blueprint.trigger.config?.inputSchema;
@@ -45,6 +51,7 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
     ...(inputSchema === undefined ? {} : { inputSchema: structuredClone(inputSchema) as Record<string, unknown> }), root: { kind: "sequence", nodes: [] } };
   const mergedIDs = new Set<string>();
   if (blueprint.metadata?.controlFlow !== undefined) {
+    if (operations) issues.push("Operation control flow requires an operation-specific interpreter; it cannot use read-only control semantics");
     ir.schemaVersion = "workflow-read-ir/v2"; ir.compilerVersion = "read-compiler/v2";
     try {
       const parsed = parseReadControlFlow(blueprint.metadata.controlFlow); ir.flow = parsed.root;
@@ -60,7 +67,7 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(step.id) || step.id === "input" || reserved.has(step.id) || ids.has(step.id)) issues.push("Step IDs must be unique, reference-safe and non-reserved");
     if (effectiveStepKind(step) !== "tool" || Object.keys(step).some(key => !supported.has(key))) issues.push(`Step ${step.id} uses unsupported execution semantics`);
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action), tool = matches.length === 1 ? matches[0] : undefined;
-    if (!tool || !tool.tool_id || !tool.mcp_tool_name || !tool.is_read_only || !tool.allowed_roles.includes(role)) issues.push(`Step ${step.id} requires a unique role-granted registered read tool`);
+    if (!tool || !tool.tool_id || !tool.mcp_tool_name || (!tool.is_read_only && !operations) || !tool.allowed_roles.includes(role)) issues.push(`Step ${step.id} requires a unique role-granted registered ${operations ? "operation" : "read"} tool`);
     else issues.push(...validateToolSchemaProfile(tool.input_schema));
     const reference = (expression: string): ReadReference => {
       const path = expression.trim().split("."), root = path.shift()!;
@@ -106,6 +113,30 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
   if (ir.flow) issues.push(...validateReadControlFlow(ir.flow, ir, outputs, new Map(ir.root.nodes.map(node => [node.id, tools.find(tool => tool.tool_id === node.capability.toolId)?.input_schema ?? {}]))).issues);
   if (canonicalJSONBytes(ir).length > 1_000_000) issues.push("Compiled read artifact exceeds supported size");
   return { ir, semanticHash: hashIR(ir), issues: [...new Set(issues)] };
+}
+
+export type OperationIR = { schemaVersion: "workflow-operation-ir/v1"; compilerVersion: "operation-compiler/v1"; trigger: { kind: "manual" };
+  inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: Array<ReadIR["root"]["nodes"][number] & { effectClass: "read" | "write" | "notification" }> } };
+export type CompiledOperationPlan = { ir: OperationIR; semanticHash: string; sourceHash: string };
+export type OperationCompilationReceipt = { schemaVersion: OperationIR["schemaVersion"]; compilerVersion: OperationIR["compilerVersion"]; semanticHash: string; sourceHash: string;
+  registryHash: string; origin: "PUBLICATION"; admissionMode: "reviewed" };
+export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>): CompiledOperationPlan {
+  if (Buffer.byteLength(yaml) > 200_000) throw new Error("Operation source exceeds supported bounds");
+  const built = buildActionBindingsIR(parseWorkflowYAMLStrict(yaml), tools, role, pins, true);
+  const nodes = built.ir.root.nodes.map(node => {
+    const tool = tools.find(tool => tool.tool_id === node.capability.toolId)!;
+    if (!node.capability.admission || !tool.bridge_contract) built.issues.push("Every operation action requires a reviewed capability pin");
+    if (!tool.is_read_only && (!tool.operation_contract || !["low", "medium"].includes(tool.risk_level.toLowerCase()))) built.issues.push("Write actions require an explicit supported operation contract");
+    return { ...node, effectClass: tool.is_read_only ? "read" as const : tool.operation_contract?.effect_class ?? "write" as const };
+  });
+  if (!nodes.some(node => node.effectClass !== "read")) built.issues.push("Read-only workflows must use the read profile");
+  if (built.issues.length) throw new Error(`Operation compilation failed: ${built.issues.join("; ")}`);
+  const ir: OperationIR = { schemaVersion: "workflow-operation-ir/v1", compilerVersion: "operation-compiler/v1", trigger: { kind: "manual" },
+    ...(built.ir.inputSchema ? { inputSchema: built.ir.inputSchema } : {}), root: { kind: "sequence", nodes } };
+  return { ir, semanticHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(ir)).digest("hex")}`, sourceHash: workflowContentHash(yaml) };
+}
+export function operationCompilationReceipt(plan: CompiledOperationPlan, registryHash: string): OperationCompilationReceipt {
+  return { schemaVersion: plan.ir.schemaVersion, compilerVersion: plan.ir.compilerVersion, semanticHash: plan.semanticHash, sourceHash: plan.sourceHash, registryHash, origin: "PUBLICATION", admissionMode: "reviewed" };
 }
 
 export function compileReadWorkflow(yaml: string, tools: readonly ToolDefinition[], role: string, pins?: ReadonlyMap<string, ReadAdmissionPin>): CompiledReadPlan {

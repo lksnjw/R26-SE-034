@@ -313,6 +313,32 @@ test("async-ready workspace admits once, receives the run ID and starts monitori
   expect(workflowService.run).toHaveBeenCalledTimes(1);
 });
 
+test("operation-ready workspace uses separate admission and continues managing an exact approval wait", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, can_attempt_run: true, executionProfile: "sequential-operation-v1", operation_job_admission: "operation-job/v1" });
+  const admitted = { id: "operation-wait", status: "AWAITING_APPROVAL", readProgress: { profile: "read-progress-v1", lastSequence: 1 }, workflowSnapshot: { yaml, version: 1, executionProfile: "sequential-operation-v1" }, stepOutputs: {} };
+  workflowService.run.mockResolvedValue(admitted); executionService.get.mockResolvedValue(admitted);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "AWAITING_APPROVAL", sideEffect: true }]);
+  jest.spyOn(executionService, "getEvents").mockResolvedValue({ events: [{ version: 1, executionId: admitted.id, sequence: 1, timestamp: "2026-10-06T00:00:00Z", type: "approval.requested" }], cursor: 1, lastSequence: 1, hasMore: false, status: admitted.status, profile: "read-progress-v1" });
+  await open({ canControl: true }); fireEvent.click(screen.getByRole("button", { name: "Run published version" }));
+  await screen.findByText("Exact operation approval requested");
+  expect(workflowService.run).toHaveBeenCalledWith("report", {}, expect.objectContaining({ mode: "async-operation", idempotencyKey: expect.stringMatching(/^[a-f0-9-]{36}$/) }));
+  expect(screen.getByText(/this operation has not been dispatched/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Request cancellation" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
+  expect(workflowService.run).toHaveBeenCalledTimes(1);
+});
+
+test("an uncertain operation node explains possible ERP effects and cannot start another run", async () => {
+  const interrupted = { id: "operation-unknown", workflowId: "report", status: "RECONCILIATION_REQUIRED", startedAt: "2026-10-06T00:00:00Z", workflowSnapshot: { yaml, version: 1, executionProfile: "sequential-operation-v1" }, readProgress: { profile: "read-progress-v1", lastSequence: 1 }, stepOutputs: {} };
+  executionService.list.mockResolvedValue([interrupted]); executionService.get.mockResolvedValue(interrupted);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "UNKNOWN", sideEffect: true }]);
+  jest.spyOn(executionService, "getEvents").mockResolvedValue({ events: [{ version: 1, executionId: interrupted.id, sequence: 1, timestamp: interrupted.startedAt, type: "node.outcome_unknown", nodeId: "first" }], cursor: 1, lastSequence: 1, hasMore: false, status: interrupted.status, profile: "read-progress-v1" });
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, can_attempt_run: true, executionProfile: "sequential-operation-v1", operation_job_admission: "operation-job/v1" });
+  await open({ canControl: true }); await screen.findByText(/operation may have taken effect in ERP/);
+  expect(screen.queryByText(/the read may have reached ERP/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
 test("schema guidance selects readable data and applies only the reviewed revision-bound draft", async () => {
   workflowService.readiness.mockResolvedValue({ ...record, authoring: { profile: "read-authoring/v1", nodes: [{ nodeId: "first", actions: ["demo.echo"], inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false }, dataSources: [{ expression: "{{input.report}}", label: "Workflow input · report", schema: { type: "string" } }] }] } });
   await open(); await selectNode();

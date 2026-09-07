@@ -72,3 +72,15 @@ test("legacy pending approval has no resume or approve button, while exact recor
   render(<MemoryRouter><PendingApprovalCard execution={{ id: "run", hasRuntimeApproval: true }} /></MemoryRouter>);
   expect(screen.getByRole("link", { name: "Review exact transaction" }).getAttribute("href")).toBe("/executions/run?view=approval");
 });
+
+test("managed operation consent authorizes queued execution but its receipt never claims delivery", async () => {
+  const operation = { ...view, runtimeApproval: { ...view.runtimeApproval, operationManaged: true, resumeReason: "Approval queues fresh checks, not delivery confirmation." } };
+  const save = jest.spyOn(executionService, "approve").mockResolvedValue({ ...receipt, operationManaged: true, resumeQueued: true, executionStatus: "PENDING" });
+  render(<RuntimeApprovalReview execution={operation} onReload={jest.fn().mockResolvedValue(operation)} />);
+  expect(screen.getByLabelText(/authorize this operation to be queued for fresh checks and execution/)).toBeTruthy();
+  expect(screen.queryByText(/understand that approval does not send or execute/)).toBeNull();
+  acknowledge(); fireEvent.click(screen.getByRole("button", { name: "Record approval" }));
+  await screen.findByText(/operation worker rechecks authority before dispatch/);
+  expect(screen.getByRole("status").textContent).toMatch(/does not confirm delivery/); expect(save).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button", { name: "Record approval" }).disabled).toBe(true);
+});

@@ -13,6 +13,7 @@ import { toolSchema, type ToolDefinition } from "../registry/schemas.js";
 import { exactBridgeName } from "../tools/erpbridge-contract.js";
 import { resolveReadBinding } from "../workflows/compiled-read.js";
 import type { StoredReadCompilation } from "../workflows/read-compilation-lifecycle.js";
+import type { StoredOperationCompilation } from "../workflows/operation-compilation-lifecycle.js";
 
 const id = z.string().min(1).max(256), hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -110,18 +111,19 @@ function approver(state: Readonly<RepositoryState>, record: RuntimeApprovalRecor
       !policy.approverRoleIds.includes(role.id) || ![...role.permissions, ...actor.permissionOverrides].includes("execution:approve")) deny("Current independent transaction approver authority is required", 403);
   return { actor, role };
 }
-function assertBinding(state: RepositoryState, execution: Execution, record: RuntimeApprovalRecord, now: number) {
+function assertBinding(state: RepositoryState, execution: Execution, record: RuntimeApprovalRecord, now: number, consumedIntent = false) {
   const b = record.binding, snapshot = execution.workflowSnapshot, requester = state.users[b.requesterId];
+  const receipt = snapshot?.operationCompilation ?? snapshot?.compilation;
   const attempt = execution.readProgress?.attempts[b.nodeId];
   if (execution.id !== b.executionId || execution.workflowId !== b.workflowId || execution.startedBy.id !== b.requesterId || execution.completedAt !== null ||
-      !snapshot || snapshot.contentHash !== b.sourceHash || workflowContentHash(snapshot.yaml) !== b.sourceHash || snapshot.compilation?.semanticHash !== b.semanticHash ||
-      snapshot.compilation.sourceHash !== b.sourceHash || execution.readProgress?.epoch !== b.workerEpoch || execution.readProgress.cancellation ||
-      !requester || requester.roleId !== b.requesterRoleId || !attempt || attempt.id !== b.invocationId || attempt.status !== "PREPARING" ||
-      attempt.dispatchIntentAt !== undefined || attempt.completedAt !== undefined || execution.readProgress.nextStepIndex !== attempt.stepIndex || attempt.nodeId !== b.nodeId)
+      !snapshot || snapshot.contentHash !== b.sourceHash || workflowContentHash(snapshot.yaml) !== b.sourceHash || receipt?.semanticHash !== b.semanticHash ||
+      receipt.sourceHash !== b.sourceHash || execution.readProgress?.epoch !== b.workerEpoch || execution.readProgress.cancellation ||
+      !requester || requester.roleId !== b.requesterRoleId || !attempt || attempt.id !== b.invocationId || attempt.status !== (consumedIntent ? "DISPATCH_INTENT" : "PREPARING") ||
+      (consumedIntent ? !attempt.dispatchIntentAt : attempt.dispatchIntentAt !== undefined) || attempt.completedAt !== undefined || execution.readProgress.nextStepIndex !== attempt.stepIndex || attempt.nodeId !== b.nodeId)
     deny("Approval execution, source, invocation or requester changed");
   try { assertCurrentRunController(state, execution, b.requesterId, state.roles[b.requesterRoleId]?.name); } catch { deny("Requester execution authority changed", 403); }
   const publication = (state.versions[b.workflowId] ?? []).findLast(version => version.version === snapshot.version && version.artifactState === "PUBLISHED");
-  const compiled = publication?.compiledRead as StoredReadCompilation | undefined;
+  const compiled = (snapshot.executionProfile === "sequential-operation-v1" ? publication?.compiledOperation : publication?.compiledRead) as StoredReadCompilation | StoredOperationCompilation | undefined;
   const step = parseWorkflowYAMLStrict(snapshot.yaml).steps[attempt.stepIndex];
   if (!publication || publication.yaml !== snapshot.yaml || compiled?.receipt?.semanticHash !== b.semanticHash || compiled.receipt.sourceHash !== b.sourceHash || step?.id !== b.nodeId) deny("Approval is not bound to an immutable published node");
   const node = compiled.plan?.ir.root.nodes[attempt.stepIndex], pin = node?.capability.admission;
@@ -150,7 +152,8 @@ function event(state: RepositoryState, execution: Execution, record: RuntimeAppr
     resource: { type: "execution", id: execution.id }, after: { approvalId: record.id, state: record.state, reviewHash: record.reviewHash }, createdAt: timestamp });
 }
 /** Server-only checkpoint producer. No HTTP/model request can supply a binding
- * or replace the review payload. Existing read workers do NOT call this yet. */
+ * or replace the review payload. Operation workers produce these waits;
+ * read-only workers do not acquire effect authority. */
 export async function requestRuntimeApproval(repository: Repository, executionId: string, binding: RuntimeApprovalBinding, args: Record<string, unknown>, reason: string): Promise<string> {
   requireApprovalStorage(repository);
   const captured = bindingSchema.parse(structuredClone(binding)), capturedArgs = reviewArguments(args);
@@ -166,7 +169,12 @@ export async function requestRuntimeApproval(repository: Repository, executionId
     record.reviewHash = reviewHash(record); assertBinding(state, execution, record, Date.now());
     execution.runtimeApprovalSecret = { profile: "runtime-approvals/v1", activeId: approvalId, records: { ...(previous?.records ?? {}), [approvalId]: record } };
     execution.status = "AWAITING_APPROVAL";
+    if (execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" && execution.operationSecret?.profile === "operation-job/v1") {
+      execution.operationSecret.state = "WAITING"; delete execution.operationSecret.lease;
+    }
     execution.pendingApproval = { stepId: captured.nodeId, description: reason, requestedAt };
+    const entry = state.timelines[executionId]?.find(item => item.attemptId === captured.invocationId);
+    if (entry) { entry.status = "AWAITING_APPROVAL"; entry.phase = "PREPARING"; }
     execution.agentSummary = "Waiting for an independent decision on exact transaction details. Nothing has been dispatched by this approval checkpoint.";
     event(state, execution, record, "approval.requested"); return approvalId;
   });
@@ -184,7 +192,8 @@ export async function decideRuntimeApproval(repository: Repository, executionId:
     if (record.id !== command.approvalId || record.reviewHash !== command.reviewHash) deny("Approval review changed; reload the exact transaction");
     if (record.decision) {
       if (record.decision.actorId === actor.id && record.decision.roleId === role.id && record.decision.decisionKey === command.decisionKey && record.decision.fingerprint === fingerprint)
-        return { replayed: true, approvalId: record.id, state: record.state, version: record.version, executionId, executionStatus: execution.status, canResume: false };
+        return { replayed: true, approvalId: record.id, state: record.state, version: record.version, executionId, executionStatus: execution.status, canResume: false,
+          operationManaged: execution.workflowSnapshot?.executionProfile === "sequential-operation-v1", resumeQueued: execution.operationSecret?.state === "QUEUED" };
       deny("This approval already has a different decision");
     }
     assertBinding(state, execution, record, Date.now());
@@ -192,29 +201,52 @@ export async function decideRuntimeApproval(repository: Repository, executionId:
     record.version++; record.state = outcome;
     record.decision = { actorId: actor.id, roleId: role.id, decisionKey: command.decisionKey, fingerprint, outcome, note: command.note, decidedAt: new Date().toISOString() };
     ledger(execution).records[record.id] = record;
-    execution.status = outcome === "APPROVED" ? "BLOCKED" : "FAILED";
+    const resumeQueued = outcome === "APPROVED" && execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" && execution.operationSecret?.profile === "operation-job/v1" && execution.operationSecret.state === "WAITING";
+    execution.status = outcome === "APPROVED" ? resumeQueued ? "PENDING" : "BLOCKED" : "FAILED";
+    if (execution.operationSecret) { execution.operationSecret.state = resumeQueued ? "QUEUED" : outcome === "REJECTED" ? "FINISHED" : execution.operationSecret.state; delete execution.operationSecret.lease; }
     if (outcome === "REJECTED") { execution.completedAt = record.decision.decidedAt; execution.durationMs = Math.max(0, Date.parse(execution.completedAt) - Date.parse(execution.startedAt)); }
+    const attempt = execution.readProgress!.attempts[record.binding.nodeId]!;
+    const entry = state.timelines[executionId]?.find(item => item.attemptId === attempt.id);
+    if (outcome === "REJECTED") {
+      attempt.status = "FAILED"; attempt.completedAt = record.decision.decidedAt;
+      execution.failure = { failureCategory: "RUNTIME_APPROVAL_REJECTED", failedStepId: record.binding.nodeId };
+      if (entry) Object.assign(entry, { status: "FAILED", outcome: "NOT_DISPATCHED", completedAt: record.decision.decidedAt });
+      appendExecutionEvent(state, execution, "node.not_dispatched", { status: "FAILED", outcome: "NOT_DISPATCHED" }, attempt.nodeId, attempt.id);
+    } else if (resumeQueued && entry) { entry.status = "RUNNING"; entry.phase = "PREPARING"; }
     delete execution.pendingApproval;
-    execution.agentSummary = outcome === "APPROVED" ? "Exact approval recorded. Safe effect resume/outbox dispatch is not connected yet; no ERP action or email was sent." : "Transaction rejected. This approval checkpoint did not dispatch its operation.";
+    execution.agentSummary = outcome === "APPROVED" ? resumeQueued ? "Exact approval recorded and the operation is queued for fresh authorization. Approval is not confirmation of execution or delivery." : "Exact approval recorded. Safe effect resume/outbox dispatch is not connected yet; no ERP action or email was sent." : "Transaction rejected. This approval checkpoint did not dispatch its operation.";
     event(state, execution, record, outcome === "APPROVED" ? "approval.granted" : "approval.rejected");
-    return { replayed: false, approvalId: record.id, state: record.state, version: record.version, executionId, executionStatus: execution.status, canResume: false };
+    return { replayed: false, approvalId: record.id, state: record.state, version: record.version, executionId, executionStatus: execution.status, canResume: false, resumeQueued,
+      operationManaged: execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" };
   }); } catch (error) {
     if (error instanceof HandlerFailure) throw error;
     throw new HandlerFailure(503, "Approval acknowledgement is unconfirmed. Reload authoritative storage before another decision; do not automatically retry.", { code: "RUNTIME_APPROVAL_SAVE_UNCONFIRMED" });
   }
 }
-/** Pure transition for a FUTURE broker's atomic dispatch-intent transaction.
+/** Pure transition inside the operation worker's atomic dispatch-intent transaction.
  * Consuming a decision is not a capability, lease, job or SDK authorization. */
 export function consumeRuntimeApproval(state: RepositoryState, executionId: string, expected: RuntimeApprovalBinding, args: Record<string, unknown>, intentId: string): void {
   const execution = state.executions[executionId]; if (!execution) deny("Approval execution not found");
   const record = active(execution);
-  if (execution.status !== "BLOCKED" || record.state !== "APPROVED" || !canonicalJSONBytes(bindingSchema.parse(expected)).equals(canonicalJSONBytes(record.binding)) ||
+  const operation = execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" && execution.operationSecret?.profile === "operation-job/v1" && execution.operationSecret.state === "CLAIMED";
+  if (!(execution.status === "BLOCKED" || operation && execution.status === "RUNNING") || record.state !== "APPROVED" || !canonicalJSONBytes(bindingSchema.parse(expected)).equals(canonicalJSONBytes(record.binding)) ||
       !canonicalJSONBytes(args).equals(canonicalJSONBytes(record.arguments)) || !id.safeParse(intentId).success) deny("Approval cannot authorize a changed or repeated operation");
   assertBinding(state, execution, record, Date.now());
   const decision = record.decision!, current = approver(state, record, decision.actorId);
   if (current.role.id !== decision.roleId) deny("Approver authority changed since the decision");
   record.state = "CONSUMED"; record.version++; record.consumption = { intentId, consumedAt: new Date().toISOString() };
   ledger(execution).records[record.id] = record; event(state, execution, record, "approval.consumed");
+}
+/** Fresh denial-only proof at operation SDK entry. A consumed decision alone
+ * cannot authorize another intent, changed facts or a revoked approver. */
+export function assertConsumedRuntimeApproval(state: RepositoryState, executionId: string, intentId: string): void {
+  const execution = state.executions[executionId];
+  if (!execution || execution.status !== "RUNNING" || execution.workflowSnapshot?.executionProfile !== "sequential-operation-v1") deny("Operation is not current");
+  const record = active(execution), intent = execution.operationSecret?.intents[record.binding.nodeId];
+  if (record.state !== "CONSUMED" || record.consumption?.intentId !== intentId || intent?.id !== intentId || intent.state !== "DISPATCH_INTENT" ||
+      intent.approvalId !== record.id || intent.operationKey !== record.binding.operationKey || intent.argumentHash !== record.binding.argumentHash) deny("Exact consumed approval does not own this operation intent");
+  assertBinding(state, execution, record, Date.now(), true);
+  if (approver(state, record, record.decision!.actorId).role.id !== record.decision!.roleId) deny("Approver authority changed");
 }
 /** Minimum review projection. The private journal is excluded by the common
  * secret redactor on every existing execution/trace/chat serialization path. */
@@ -223,13 +255,21 @@ export function runtimeApprovalView(state: RepositoryState, executionId: string,
   const record = active(execution); const { role } = approver(state, record, actorId);
   const definition = toolSchema.safeParse(state.capabilityRevisions[record.binding.capabilityRevision]?.definition);
   let unavailable: string | null = null;
-  try { assertBinding(state, execution, record, Date.now()); } catch (error) { unavailable = error instanceof Error ? error.message : "Approval context is unavailable"; }
+  // Completed decisions are historical evidence, not new dispatch authority.
+  // Their expected consumed/completed invocation must not masquerade as drift.
+  // The decision and SDK-entry paths still enforce all current binding checks.
+  if (["PENDING", "APPROVED"].includes(record.state)) {
+    if (execution.completedAt !== null) unavailable = execution.failure?.failureCategory === "RUNTIME_APPROVAL_EXPIRED"
+      ? "Approval expired before dispatch. This checkpoint is closed." : "This execution checkpoint is closed; the approval cannot authorize another operation.";
+    else try { assertBinding(state, execution, record, Date.now()); } catch (error) { unavailable = error instanceof Error ? error.message : "Approval context is unavailable"; }
+  }
   return { id: execution.id, workflowId: execution.workflowId, workflowName: execution.workflowName, status: execution.status,
     runtimeApproval: { profile: record.profile, id: record.id, version: record.version, state: record.state, reviewHash: record.reviewHash,
       nodeId: record.binding.nodeId, invocationId: record.binding.invocationId, connectionId: record.binding.connectionId, capabilityRevision: record.binding.capabilityRevision,
       toolName: definition.success ? definition.data.name : null, remoteToolName: definition.success ? exactBridgeName(definition.data) : null,
       sourceHash: record.binding.sourceHash, semanticHash: record.binding.semanticHash, reason: record.reason, requestedAt: record.requestedAt, expiresAt: record.expiresAt,
       requesterId: record.binding.requesterId, arguments: withoutSecretFields(record.arguments), canDecide: !unavailable && execution.status === "AWAITING_APPROVAL" && record.state === "PENDING",
+      operationManaged: execution.workflowSnapshot?.executionProfile === "sequential-operation-v1",
       unavailable, approverRole: role.name, decision: record.decision ? { outcome: record.decision.outcome, actorId: record.decision.actorId, decidedAt: record.decision.decidedAt } : null,
-      canResume: false, resumeReason: "Safe effect resume/outbox dispatch is not connected yet. Approval alone does not execute or send." } };
+      canResume: false, resumeReason: execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" ? "An approved operation is queued automatically for fresh authorization. This decision is not execution or delivery confirmation." : "Safe effect resume/outbox dispatch is not connected yet. Approval alone does not execute or send." } };
 }

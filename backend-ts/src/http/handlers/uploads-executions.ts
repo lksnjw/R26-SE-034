@@ -345,7 +345,8 @@ async function retryExecution(
     user,
     services,
   );
-  if (["PENDING", "RUNNING", "RECOVERY_REQUIRED"].includes(prior.status)) throw new HandlerFailure(409, "A queued, running or uncertain execution cannot be replayed through Retry; inspect its recorded outcomes first");
+  if (["PENDING", "RUNNING", "AWAITING_APPROVAL", "RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED"].includes(prior.status)) throw new HandlerFailure(409, "A queued, running, waiting or uncertain execution cannot be replayed through Retry; inspect its recorded outcomes first");
+  if (prior.operationSecret && Object.values(prior.operationSecret.intents).some(intent => intent.state === "ACKNOWLEDGED")) throw new HandlerFailure(409, "Retry cannot repeat acknowledged ERP operations. Use a separately reviewed operation or qualified recovery artifact.");
   const workflow = await services.repository.read(
     (state) => state.workflows[prior.workflowId] ?? null,
   );
@@ -390,7 +391,7 @@ async function approveExecution(
 ): Promise<unknown> {
   if (await services.repository.read(state => Boolean(state.executions[requestParam(request, "id")]?.runtimeApprovalSecret))) {
     const decision = await decideRuntimeApproval(services.repository, requestParam(request, "id"), user, request.body, "APPROVED");
-    return reply.send(ok(decision, "Exact approval recorded, not execution. Safe effect resume/outbox dispatch remains unavailable.", null));
+    return reply.send(ok(decision, decision.operationManaged ? "Exact approval recorded. The operation worker must recheck authority before dispatch; this receipt is not execution or delivery confirmation." : "Exact approval recorded, not execution. Safe effect resume/outbox dispatch remains unavailable.", null));
   }
   const execution = await requireExecution(requestParam(request, "id"), user, services);
   const body = bodyRecord(request);

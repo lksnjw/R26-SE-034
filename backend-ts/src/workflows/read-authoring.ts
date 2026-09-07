@@ -88,12 +88,12 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   let prefix = blueprint.trigger.type === "manual" && Object.keys(blueprint.trigger.config ?? {}).every(key => key === "inputSchema"), seen = new Set<string>();
   const nodes = blueprint.steps.slice(0, 200).map(step => {
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action), tool = matches.length === 1 ? matches[0] : undefined;
-    const granted = !!tool && !!tool.tool_id.trim() && !!tool.mcp_tool_name.trim() && tool.input_schema.type === "object" && tool.is_read_only && tool.allowed_roles.includes(role) && effectiveStepKind(step) === "tool";
+    const granted = !!tool && !!tool.tool_id.trim() && !!tool.mcp_tool_name.trim() && tool.input_schema.type === "object" && (tool.is_read_only || !!tool.operation_contract && blueprint.metadata?.controlFlow === undefined) && tool.allowed_roles.includes(role) && effectiveStepKind(step) === "tool";
     const schema = granted ? project(tool.input_schema) : undefined;
     const outputSchema = granted && tool?.bridge_contract?.output_schema ? project(tool.bridge_contract.output_schema) : undefined;
     const validScope = prefix && safeID(step.id) && !seen.has(step.id) && Object.keys(step).every(key => ["id", "kind", "action", "parameters", "description"].includes(key));
     const result = { nodeId: step.id, sourceAction: step.action ?? "", state: schema ? "LOCAL_CONTRACT" : "UNAVAILABLE",
-      ...(schema && tool ? { inputSchema: schema, ...(outputSchema ? { outputSchema } : {}), contractHash: capabilityContractHash(tool), actions: [tool.name, tool.mcp_tool_name] } : {}),
+      ...(schema && tool ? { inputSchema: schema, ...(outputSchema ? { outputSchema } : {}), contractHash: capabilityContractHash(tool), actions: [tool.name, tool.mcp_tool_name], effectClass: tool.is_read_only ? "read" : tool.operation_contract!.effect_class, requiresIndependentApproval: !tool.is_read_only } : {}),
       dataSources: validScope && (!compiled || scopes) ? upstream.filter(source => scopedSource(source, step.id) && (!scopes || source.binding.source === "workflowInput" || scopes.get(step.id)?.has(source.binding.nodeId!))).slice(-32).map(source => structuredClone(source)) : [],
       reason: schema ? "Local schema guidance only; live admission and runtime checks are separate" : "No supported role-granted local read schema; existing values are preserved" };
     prefix = validScope && granted && !!schema;

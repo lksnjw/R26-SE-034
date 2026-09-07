@@ -5,6 +5,7 @@ export const WORKFLOW_STATUS = {
   FAILED: "FAILED",
   CANCELLED: "CANCELLED",
   RECOVERY_REQUIRED: "RECOVERY_REQUIRED",
+  RECONCILIATION_REQUIRED: "RECONCILIATION_REQUIRED",
   UNKNOWN: "UNKNOWN",
   HEALING: "HEALING",
   AWAITING_APPROVAL: "AWAITING_APPROVAL",
@@ -43,6 +44,10 @@ export const STATUS_META = {
   },
   RECOVERY_REQUIRED: {
     label: "Recovery required", tone: "amber",
+    color: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
+  },
+  RECONCILIATION_REQUIRED: {
+    label: "ERP reconciliation required", tone: "amber",
     color: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
   },
   UNKNOWN: {

@@ -36,6 +36,7 @@ const eventNames = {
   "run.started": "Run started", "node.preparing": "Checking node", "node.dispatch_intent": "Read dispatch recorded — answer not yet saved",
   "node.completed": "Node answer saved", "node.failed": "Node stopped", "node.outcome_unknown": "Node outcome unknown",
   "node.interrupted": "Node interrupted before dispatch", "node.cancelled": "Node cancelled before dispatch",
+  "node.not_dispatched": "Node stopped before dispatch",
   "run.cancel_requested": "Cancellation requested", "run.completed": "Run finished", "run.recovery_required": "Run requires recovery review",
   "iteration.action.preparing": "Checking item read", "iteration.action.dispatch_intent": "Item dispatch recorded — answer not yet saved",
   "iteration.action.completed": "Item answer saved", "iteration.action.failed": "Item read stopped", "iteration.action.stopped": "Item read stopped before dispatch",
@@ -46,5 +47,11 @@ const eventNames = {
   "iteration.collection-item.done": "Typed item value saved", "iteration.collection-item.failed": "Typed item value invalid",
   "iteration.return.done": "Workflow return saved", "iteration.return.failed": "Workflow return invalid",
 };
-export function executionEventLabel(event) { return eventNames[event.type] ?? "Unrecognized run event"; }
-export function isActiveExecution(status) { return status === "RUNNING" || status === "PENDING"; }
+export function executionEventLabel(event) {
+  if (event.type === "run.queued" && event.payload?.profile === "operation-job/v1") return "Operation queued";
+  if (event.type === "node.dispatch_intent" && event.payload?.sideEffect === true) return "Operation dispatch recorded — outcome not yet saved";
+  if (event.type === "node.completed" && ["operation-accepted", "operation-confirmed"].includes(event.payload?.outcome)) return event.payload.outcome === "operation-accepted" ? "Tool acceptance saved · delivery not independently verified" : "Tool-reported operation confirmation saved";
+  const operationEvents = { "approval.requested": "Exact operation approval requested", "approval.granted": "Exact approval recorded", "approval.rejected": "Exact operation rejected", "approval.consumed": "Exact approval bound to dispatch intent", "run.done": "Run finished", "run.failed": "Run stopped", "run.cancelled": "Run cancelled", "run.reconciliation_required": "ERP outcome requires reconciliation" };
+  return operationEvents[event.type] ?? eventNames[event.type] ?? "Unrecognized run event";
+}
+export function isActiveExecution(status) { return ["RUNNING", "PENDING", "AWAITING_APPROVAL"].includes(status); }

@@ -39,14 +39,25 @@ export async function handleExecutionControlRoute(route: RouteDefinition, reques
     try { actor = assertCurrentRunController(state, execution, user.id); }
     catch { throw new HandlerFailure(404, "Execution not controllable by the current user"); }
     if (execution.status === "CANCELLED") return structuredClone(execution);
-    if (!["RUNNING", "PENDING"].includes(execution.status)) throw new HandlerFailure(409, "Execution is not running; cancellation cannot change a terminal outcome");
+    const operation = execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" && execution.operationSecret?.profile === "operation-job/v1";
+    if (!["RUNNING", "PENDING", ...(operation ? ["AWAITING_APPROVAL"] : [])].includes(execution.status)) throw new HandlerFailure(409, "Execution is not running; cancellation cannot change a terminal outcome");
     if (execution.readProgress?.profile !== "read-progress-v1") throw new HandlerFailure(501, "This legacy execution has no safe cancellation boundary");
     if (!execution.readProgress.cancellation) {
       execution.readProgress.cancellation = { requestedAt: new Date().toISOString(), requestedBy: actor };
       appendExecutionEvent(state, execution, "run.cancel_requested", { requestedBy: actor.id });
       appendAudit(state, { ...user, ...actor }, "execution.cancel_requested", "execution", execution.id, null, { status: "CANCELLATION_REQUESTED", transportInterrupted: false }, request);
     }
-    if (execution.status === "PENDING") {
+    if (operation && ["PENDING", "AWAITING_APPROVAL"].includes(execution.status)) {
+      if (!["QUEUED", "WAITING"].includes(execution.operationSecret!.state)) throw new HandlerFailure(409, "Operation has no cancellable queue or approval wait");
+      execution.operationSecret!.state = "FINISHED"; delete execution.operationSecret!.lease;
+      execution.status = "CANCELLED"; execution.completedAt = new Date().toISOString(); execution.durationMs = Math.max(0, Date.parse(execution.completedAt) - Date.parse(execution.startedAt));
+      delete execution.pendingApproval;
+      for (const attempt of Object.values(execution.readProgress.attempts)) if (attempt.status === "PREPARING") { attempt.status = "CANCELLED"; attempt.completedAt = execution.completedAt;
+        const entry = state.timelines[execution.id]?.find(entry => entry.attemptId === attempt.id); if (entry) { entry.status = "CANCELLED"; entry.completedAt = execution.completedAt; entry.outcome = "NOT_DISPATCHED"; }
+      }
+      execution.agentSummary = "Operation cancelled before a new dispatch. Previous acknowledged results remain saved.";
+      appendExecutionEvent(state, execution, "run.completed", { status: "CANCELLED", outcome: "NOT_DISPATCHED" });
+    } else if (execution.status === "PENDING") {
       const job = state.readJobs[execution.id];
       if (job?.state !== "QUEUED") throw new HandlerFailure(409, "Pending run has no cancellable queued job");
       job.state = "FINISHED"; job.finishedAt = new Date().toISOString(); delete job.inputCiphertext;
@@ -56,7 +67,7 @@ export async function handleExecutionControlRoute(route: RouteDefinition, reques
     }
     return structuredClone(execution);
   });
-  return reply.status(item.status === "CANCELLED" ? 200 : 202).send(ok(item, item.status === "CANCELLED" ? "Execution already cancelled" : "Cancellation requested. Any in-flight read must finish; no further calls will start after the request is observed.", { transportInterrupted: false }));
+  return reply.status(item.status === "CANCELLED" ? 200 : 202).send(ok(withoutSecretFields(item), item.status === "CANCELLED" ? "Execution already cancelled" : "Cancellation requested. An in-flight operation may already have taken effect; no further calls will start after cancellation is observed.", { transportInterrupted: false }));
 }
 
 function integer(value: unknown, minimum: number, maximum: number): number {

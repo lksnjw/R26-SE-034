@@ -18,7 +18,8 @@ function restoreDecision(actorId) {
         !value.capabilityId || value.capabilityId.length > 256 || !value.body || typeof value.body.note !== "string" ||
         !value.body.note.trim() || value.body.note.length > 2000) throw new Error();
     if (value.action === "review" && (typeof value.body.observationId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.body.contractHash) ||
-        !/^[A-Za-z0-9_-]{16,128}$/.test(value.body.decisionKey) || value.body.effectClass !== "read" || value.body.riskClass !== "low" || value.body.dataClass !== "internal" || value.body.retryPolicy !== "never")) throw new Error();
+        !/^[A-Za-z0-9_-]{16,128}$/.test(value.body.decisionKey) || value.body.dataClass !== "internal" || value.body.retryPolicy !== "never" ||
+        !(value.body.effectClass === "read" && value.body.riskClass === "low" || ["write", "notification"].includes(value.body.effectClass) && ["low", "medium"].includes(value.body.riskClass) && value.body.requireIndependentApproval === true))) throw new Error();
     if (value.action === "disable" && (typeof value.body.revisionId !== "string" || !Number.isSafeInteger(value.body.baseVersion) || value.body.baseVersion < 1)) throw new Error();
     return value;
   } catch { return { invalid: true }; }
@@ -96,7 +97,9 @@ function ReviewWorkspace({ actorId, canReview }) {
       if (action === "review" && !entry.reviewEligible) throw new Error("Review unavailable");
       const decision = { action, capabilityId: entry.capabilityId, body: action === "review" ? {
         observationId: entry.observation.id, contractHash: entry.observation.contractHash,
-        decisionKey: `review_${crypto.randomUUID()}`, effectClass: "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: note.trim(),
+        decisionKey: `review_${crypto.randomUUID()}`, effectClass: entry.observation.definition.is_read_only ? "read" : entry.observation.definition.operation_contract?.effect_class,
+        riskClass: entry.observation.definition.is_read_only ? "low" : entry.observation.definition.risk_level.toLowerCase(), dataClass: "internal", retryPolicy: "never", note: note.trim(),
+        ...(entry.observation.definition.is_read_only ? {} : { requireIndependentApproval: true }),
       } : { revisionId: entry.admission.revisionId, baseVersion: entry.admission.version, note: note.trim() } };
       // No credentials, arguments or results are stored. If local persistence
       // fails, don't submit a request whose decision identity could be lost.
@@ -106,7 +109,7 @@ function ReviewWorkspace({ actorId, canReview }) {
   }
   return <section aria-label="ERP capability review" className="border-t border-gray-200 pt-6 dark:border-gray-800">
     <div className="flex flex-wrap items-start justify-between gap-4">
-      <div><h2 className="section-title">ERP capability review</h2><p className="mt-2 max-w-3xl text-sm text-gray-500">Discovery records evidence. Only an explicit administrator decision can enable a supported low-risk read.</p></div>
+      <div><h2 className="section-title">ERP capability review</h2><p className="mt-2 max-w-3xl text-sm text-gray-500">Discovery records evidence. An administrator reviews capability contracts; each operation still needs independent exact approval.</p></div>
       <div className="flex gap-2"><Button variant="secondary" disabled={busy} onClick={() => query.refetch()}>Reload review status</Button>
         {canReview ? <Button disabled={!ready || busy || Boolean(pending) || !query.data?.connection.discoveryAvailable} onClick={() => run("Discovery", async () => {
           const result = await capabilityService.discover();
@@ -159,12 +162,13 @@ function CapabilityInspector({ entry, canReview, onDecision }) {
   const [note, setNote] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const definition = entry.observation?.definition ?? entry.revision?.definition;
+  const operation = definition?.is_read_only === false;
   const complete = fullyVisible(definition);
   const validNote = note.trim().length > 0 && note.length <= 2000;
   return <div className="min-w-0">
     <h3 className="text-base font-semibold">Contract and authority</h3>
     <dl className="mt-3 space-y-2 break-words text-sm"><div><dt className="text-xs text-gray-500">Current state (not a dispatch guarantee)</dt><dd>{label(entry.effectiveState)}</dd></div>
-      <div><dt className="text-xs text-gray-500">Review eligibility</dt><dd>{entry.reviewEligible ? "Supported read; explicit review required" : label(entry.reviewReason)}</dd></div>
+      <div><dt className="text-xs text-gray-500">Review eligibility</dt><dd>{entry.reviewEligible ? operation ? "Supported operation contract; independent approval required for every invocation" : "Supported read; explicit review required" : label(entry.reviewReason)}</dd></div>
       <div><dt className="text-xs text-gray-500">Observation time</dt><dd>{entry.observation?.discoveredAt ?? "No observation"}</dd></div>
       <div><dt className="text-xs text-gray-500">Exact contract hash</dt><dd className="font-mono text-xs">{entry.observation?.contractHash ?? entry.revision?.contractHash}</dd></div>
       <div><dt className="text-xs text-gray-500">Output schema validation</dt><dd>{definition?.bridge_contract?.output_schema ? "Declared schema checked before downstream use" : "No declared output schema; bounded result handling still applies"}</dd></div>
@@ -174,10 +178,10 @@ function CapabilityInspector({ entry, canReview, onDecision }) {
     {entry.revision ? <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold">Saved review policy and previous contract</summary><div className="mt-3 max-h-[28rem] overflow-auto">{fullyVisible(entry.revision.definition) ? <Fields value={{ policy: entry.revision.policy, definition: entry.revision.definition }} /> : <p>Saved definition exceeds the inspector budget. Inspect the complete saved revision through the administrator API.</p>}</div></details> : null}
     <details open className="mt-4"><summary className="cursor-pointer text-sm font-semibold">Observed definition · inputs, outputs, roles, and constraints</summary><div className="mt-3 max-h-[32rem] overflow-auto pr-2">{complete ? <Fields value={definition} /> : <p className="text-sm">This definition exceeds the readable inspector budget. New review is unavailable; inspect and simplify the contract using the administrator API.</p>}</div></details>
     {canReview ? <div className="mt-5 border-t border-gray-200 pt-4 dark:border-gray-800">
-      <p className="text-sm">Supported policy: read-only · low risk · internal data · no application replay. This does not approve external email or data sharing.</p>
+      <p className="text-sm">{operation ? `Operation policy: ${definition.operation_contract?.effect_class || "unsupported"} · ${definition.risk_level} risk · internal data · independent exact approval · no automatic replay. This review does not authorize a particular send or ERP change.` : "Supported policy: read-only · low risk · internal data · no application replay. This does not approve external email or data sharing."}</p>
       <label className="mt-3 block text-sm font-semibold">Decision note<textarea aria-label="Capability decision note" maxLength={2000} rows={3} value={note} onChange={(event) => setNote(event.target.value)} className="mt-2 w-full rounded-lg border border-gray-300 bg-transparent p-3 font-normal dark:border-gray-700" /></label>
       <label className="mt-3 flex items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} className="mt-1" />I inspected this exact contract and understand this changes authority for new dispatch.</label>
-      <div className="mt-4 flex flex-wrap gap-2"><Button disabled={!entry.reviewEligible || !complete || !validNote || !confirmed} onClick={() => onDecision("review", entry, note)}>Save explicit read review</Button>
+      <div className="mt-4 flex flex-wrap gap-2"><Button disabled={!entry.reviewEligible || !complete || !validNote || !confirmed} onClick={() => onDecision("review", entry, note)}>{operation ? "Save explicit operation review" : "Save explicit read review"}</Button>
         {entry.admission && entry.admission.state !== "DISABLED" ? <Button variant="danger" disabled={!validNote || !confirmed} onClick={() => onDecision("disable", entry, note)}>Disable new dispatch</Button> : null}</div>
     </div> : null}
   </div>;

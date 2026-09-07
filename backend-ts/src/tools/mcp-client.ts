@@ -28,6 +28,7 @@ export type GovernedMCPClient = Readonly<{
     signal?: AbortSignal,
     beforeDispatch?: () => Promise<void>,
     assertDispatch?: () => void,
+    operationPermit?: import("./operation-dispatch-permit.js").OperationDispatchPermit | undefined,
   ): Promise<Record<string, unknown>>;
 }>;
 

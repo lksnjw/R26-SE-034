@@ -15,6 +15,8 @@ import { assertActorAuthority, assertChatAuthority, selectProvider } from "./mod
 import { activeChatStatus } from "../../agent/chat-jobs.js";
 import { prepareCompiledExecution } from "../../workflows/read-compilation-lifecycle.js";
 import { supportsCollectionReads } from "../../runner/read-collection-admission.js";
+import { prepareOperationExecution, prepareOperationPublication } from "../../workflows/operation-compilation-lifecycle.js";
+import { supportsOperationJobs } from "../../runner/operation-jobs.js";
 import { readAuthoringContract } from "../../workflows/read-authoring.js";
 import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 import { draftHistorySummary, resolveDraftCommand, saveDraftRevision } from "../../workflows/draft-history.js";
@@ -53,12 +55,17 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       const registryHash = services.registries.hash();
       const validation = validateWorkspaceDraft("WorkspaceReadiness", current.yaml, user.role, services.validator, services.registries.snapshot().tools);
       let issues: string[] = [], bridge = "not_connected";
+      let operationProfile = false;
       try {
         const blueprint = parseWorkflowYAMLStrict(current.yaml);
-        issues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role, supportsCollectionReads(services));
+        operationProfile = blueprint.steps.some(step => services.registries.snapshot().tools.some(tool => !tool.is_read_only && [tool.name, tool.mcp_tool_name].includes(step.action ?? "")));
+        if (operationProfile) {
+          try { await prepareOperationPublication(services, current.yaml, user); if (!supportsOperationJobs(services)) issues.push("Operation checkpoint persistence is not qualified"); }
+          catch { issues.push("Operation requires a supported reviewed sequential artifact and current connection"); }
+        } else issues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role, supportsCollectionReads(services));
         if (services.erpbridgeSession !== undefined) {
           bridge = "discovery_available";
-          try { issues.push(...inspectReadWorkflow(blueprint, await discoverTools(services.erpbridgeSession, services.registries), user.role, supportsCollectionReads(services))); }
+          try { const live = await discoverTools(services.erpbridgeSession, services.registries); if (!operationProfile) issues.push(...inspectReadWorkflow(blueprint, live, user.role, supportsCollectionReads(services))); }
           catch { bridge = "discovery_failed"; }
         }
       } catch { issues.push("Workflow could not be parsed"); }
@@ -66,7 +73,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       const compilation = await services.repository.readAuthoritative(state => {
         const version = (state.versions[workflowId] ?? []).findLast(value => value.artifactState === "PUBLISHED" && value.version === current.publishedVersion && value.yaml === current.yaml);
         if (!version) return { state: "NOT_PUBLISHED" };
-        try { return { state: "CURRENT", receipt: prepareCompiledExecution(state, services, version, current.yaml, user.role).receipt }; }
+        try { return { state: "CURRENT", receipt: operationProfile ? prepareOperationExecution(state, services, version, current.yaml, user.role).receipt : prepareCompiledExecution(state, services, version, current.yaml, user.role).receipt }; }
         catch { return { state: "BLOCKED", reason: "Review and explicitly republish current capability bindings" }; }
       });
       if (compilation.state === "BLOCKED") issues.push("Published execution artifact needs current capability review and explicit re-publication");
@@ -88,7 +95,8 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         editHistory,
         can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
-        authorization: "rechecked_at_dispatch", executionProfile: "receipt" in compilation && compilation.receipt?.schemaVersion === "workflow-read-ir/v4" ? "collection-read-v1" : "executionProfile" in authoring ? authoring.executionProfile : "sequential-read-v1" }, "Readiness checked", { traceId }));
+        operation_job_admission: operationProfile && supportsOperationJobs(services) ? "operation-job/v1" : "unavailable",
+        authorization: "rechecked_at_dispatch", executionProfile: operationProfile ? "sequential-operation-v1" : "receipt" in compilation && compilation.receipt?.schemaVersion === "workflow-read-ir/v4" ? "collection-read-v1" : "executionProfile" in authoring ? authoring.executionProfile : "sequential-read-v1" }, "Readiness checked", { traceId }));
     }
     if (kind === "node-proposals") {
       const parsed = proposalSchema.safeParse(request.body);

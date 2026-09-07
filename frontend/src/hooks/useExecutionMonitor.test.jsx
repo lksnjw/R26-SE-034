@@ -111,3 +111,17 @@ test("a journal temporarily behind a terminal snapshot does not hot-loop empty p
   await tick(1000); expect(executionService.getEvents).toHaveBeenCalledTimes(2);
   await tick(1000); expect(executionService.getEvents).toHaveBeenCalledTimes(3);
 });
+
+test("keeps monitoring through approval and queued resume, then stops at the acknowledged result", async () => {
+  executionService.getEvents.mockResolvedValueOnce(page([event(1, "approval.requested")], "AWAITING_APPROVAL"))
+    .mockResolvedValueOnce(page([event(2, "approval.granted")], "PENDING"))
+    .mockResolvedValueOnce(page([event(3, "run.done")], "DONE"));
+  executionService.get.mockResolvedValueOnce(snapshot(1, "AWAITING_APPROVAL"))
+    .mockResolvedValueOnce(snapshot(2, "PENDING")).mockResolvedValueOnce(snapshot(3, "DONE"));
+  const { result } = renderHook(() => useExecutionMonitor("run")); await flush();
+  expect(result.current.execution.status).toBe("AWAITING_APPROVAL");
+  await tick(); expect(result.current.execution.status).toBe("PENDING");
+  await tick(); expect(result.current.execution.status).toBe("DONE");
+  await tick(20000); expect(executionService.getEvents).toHaveBeenCalledTimes(3);
+  expect(result.current.events.map(item => item.sequence)).toEqual([1, 2, 3]);
+});

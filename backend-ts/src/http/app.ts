@@ -55,6 +55,7 @@ import { inspectReadWorkflow } from "../runner/read-workflow.js";
 import { runVerifiedRead } from "./handlers/read-execution.js";
 import { boundedReadFixtureRequest, handleReadFixtureSimulation } from "./handlers/read-simulation.js";
 import { readJobQueue, supportsReadJobs } from "../runner/read-jobs.js";
+import { operationJobQueue, supportsOperationJobs } from "../runner/operation-jobs.js";
 import { chatJobQueue, supportsChatJobs } from "../agent/chat-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
 import { runtimeApprovalView } from "../runner/runtime-approvals.js";
@@ -184,6 +185,11 @@ export async function buildApp(
   }
   if (supportsReadJobs(services)) {
     const queue = readJobQueue(services);
+    app.addHook("onReady", () => queue.start());
+    app.addHook("onClose", () => queue.stop());
+  }
+  if (supportsOperationJobs(services)) {
+    const queue = operationJobQueue(services);
     app.addHook("onReady", () => queue.start());
     app.addHook("onClose", () => queue.stop());
   }
@@ -1187,8 +1193,8 @@ async function runWorkflow(
 }
 
 // Shared by POST /workflows/:id/run and POST /executions/:id/retry — the ONLY
-// workflow execution path: exact published sequential reads through the
-// governed broker, with no LLM reinterpretation or automatic replay.
+// normal workflow admission path: exact published read/collection or separately
+// compiled independently approved operations, without LLM reinterpretation.
 /*******************************************************************************
  * Function: runWorkflowFor
  *
@@ -1223,6 +1229,16 @@ export async function runWorkflowFor(
       .send(fail("Workflow is not assigned to the current user", null));
   if (workflow.yaml.length > 200_000) return reply.status(422).send(fail("Workflow source exceeds supported limits", { traceId }));
   if (parsed.data.simulation !== undefined && !parsed.data.dryRun) return reply.status(400).send(fail("Fixture simulation requires dryRun; test data cannot be used for real execution", { code: "SIMULATION_MODE_REQUIRED", traceId }));
+  // Routing only, never authority. Admission/worker decisions recheck inside
+  // acknowledged transactions. Preserve the read simulation's own error/fence.
+  const operationPublication = await services.repository.read(state => (state.versions[workflow.id] ?? []).findLast(version => version.version === workflow.publishedVersion && version.artifactState === "PUBLISHED"));
+  if (operationPublication?.compiledOperation || parsed.data.mode === "async-operation") {
+    if (!["", "execute", "async-read", "async-operation"].includes(parsed.data.mode)) return reply.status(422).send(fail("Unsupported operation execution mode", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));
+    if (parsed.data.dryRun) return reply.send(ok({ dry_run: true, simulation: "static-operation-plan", can_execute: false, live_readiness: "not_checked", requires_independent_approval: true,
+      planned_steps: withoutSecretFields(parseWorkflowYAMLStrict(workflow.yaml).steps) }, "Static operation plan only; no ERP calls or effects occurred", { traceId }));
+    const admission = await operationJobQueue(services).admit(workflow, parsed.data.input ?? {}, user, parsed.data.idempotencyKey, traceId);
+    return reply.status(202).send(ok(admission.execution, admission.replayed ? "Existing operation run; no additional run admitted" : "Operation queued; verification and independent approvals are required before writes", { traceId, admission: "operation-job/v1", replayed: admission.replayed }));
+  }
   const asyncRead = parsed.data.mode === "async-read";
   if (asyncRead) {
     if (parsed.data.dryRun) return reply.status(422).send(fail("Async admission is not a dry-run mode", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));

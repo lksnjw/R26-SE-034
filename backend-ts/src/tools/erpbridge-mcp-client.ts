@@ -14,6 +14,7 @@ import type { DispatchIdentity } from "./registry.js";
 import type { GovernedMCPClient } from "./mcp-client.js";
 import type { McpNotificationState } from "./mcp-notification-stream.js";
 import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
+import { consumeOperationDispatchPermit, type OperationDispatchPermit } from "./operation-dispatch-permit.js";
 
 export type ErpbridgeMcpSdkTool = {
   name: string;
@@ -224,6 +225,7 @@ function createToolClient(
       signal?: AbortSignal,
       beforeDispatch?: () => Promise<void>,
       assertDispatch?: () => void,
+      operationPermit?: OperationDispatchPermit,
     ): Promise<Record<string, unknown>> {
       if (signal?.aborted)
         throw signal.reason instanceof Error
@@ -256,6 +258,7 @@ function createToolClient(
       const result = await callTool(remoteName || action, args, signal, beforeDispatch, () => {
         if (signal?.aborted || isClosed()) throw new Error("ERPBridge dispatch was cancelled or disconnected");
         assertDispatch?.();
+        if (!definition.is_read_only) consumeOperationDispatchPermit(operationPermit, definition, parameterBytes, identity);
         validator.verifyAndConsumeCapability(capability, action, parameterBytes, identity);
       });
       const envelope = boundResult(result, definition);

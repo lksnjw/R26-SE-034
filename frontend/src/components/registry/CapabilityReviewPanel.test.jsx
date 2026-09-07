@@ -86,3 +86,20 @@ test("pagination is bounded and clears the inspector; corrupted retry records re
   expect(await screen.findByText("The local decision record needs recovery.")).not.toBeNull(); expect(screen.queryByRole("button", { name: "Retry exact decision" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Reload status and end local retries" })); expect(await screen.findByText(/Local retries ended/)).not.toBeNull(); expect(sessionStorage.length).toBe(0);
 });
+
+test("operation review preserves the observed effect/risk and mandatory independent approval across an uncertain remount", async () => {
+  const value = entry(), definition = value.observation.definition;
+  definition.display_name = "Send invoice report"; definition.is_read_only = false; definition.risk_level = "medium";
+  definition.operation_contract = { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } };
+  catalog.mockResolvedValue(page(value)); review.mockRejectedValueOnce(new Error("Lost operation review acknowledgement"));
+  const first = mount(); fireEvent.click(await screen.findByRole("button", { name: /Send invoice report/ }));
+  expect(screen.getByText(/independent approval required for every invocation/)).toBeTruthy();
+  expect(screen.getByText(/This review does not authorize a particular send or ERP change/)).toBeTruthy();
+  confirm(); fireEvent.click(screen.getByRole("button", { name: "Save explicit operation review" }));
+  await screen.findByText("Unconfirmed review decision"); const request = review.mock.calls[0];
+  expect(request[1]).toMatchObject({ effectClass: "notification", riskClass: "medium", requireIndependentApproval: true, retryPolicy: "never" });
+  first.unmount(); mount(); review.mockRejectedValueOnce(new Error("Still unconfirmed"));
+  fireEvent.click(await screen.findByRole("button", { name: "Retry exact decision" }));
+  await waitFor(() => expect(review).toHaveBeenCalledTimes(2)); expect(review.mock.calls[1]).toEqual(request);
+  expect(screen.queryByText("The local decision record needs recovery.")).toBeNull();
+});

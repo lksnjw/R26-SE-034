@@ -35,7 +35,7 @@ export default function RuntimeApprovalReview({ execution, onReload }) {
     try {
       const result = await executionService[outcome](execution.id, command);
       if (result?.approvalId !== review.id || result.executionId !== execution.id || result.canResume !== false || !["APPROVED", "REJECTED", "CONSUMED"].includes(result.state)) throw new Error("Unconfirmed decision response");
-      setReceipt(result); setNotice(result.state === "REJECTED" ? "Exact transaction rejected. This checkpoint did not dispatch its operation." : "Exact approval saved. This is not resumed, sent or completed; safe effect dispatch remains unavailable.");
+      setReceipt(result); setNotice(result.state === "REJECTED" ? "Exact transaction rejected. This checkpoint did not dispatch its operation." : result.operationManaged === true ? "Exact approval saved. The operation worker rechecks authority before dispatch. Check run history for the actual outcome; this receipt does not confirm delivery." : "Exact approval saved. This is not resumed, sent or completed; safe effect dispatch remains unavailable.");
       try { await onReload(); } catch { setNotice("Decision was acknowledged, but refreshing its review failed. Reload to see current state; do not submit it again."); }
     } catch (error) {
       const status = error?.response?.status;
@@ -63,7 +63,7 @@ export default function RuntimeApprovalReview({ execution, onReload }) {
     {review.state === "PENDING" && <div className="space-y-3">
       <label className="block text-xs text-gray-500 dark:text-gray-400">Decision note<textarea aria-label="Decision note" value={note} maxLength={2000} onChange={event => setNote(event.target.value)} disabled={!available}
         className="mt-1 w-full rounded-md border border-gray-200 bg-transparent px-3 py-2 text-sm dark:border-gray-700" /></label>
-      <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} disabled={!available} />I reviewed these exact details and understand that approval does not send or execute.</label>
+      <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} disabled={!available} />{review.operationManaged === true ? "I reviewed these exact details and authorize this operation to be queued for fresh checks and execution. Approval is not delivery confirmation." : "I reviewed these exact details and understand that approval does not send or execute."}</label>
       <div className="flex flex-wrap gap-3">
         <button type="button" className="rounded-md bg-primary px-4 py-2 text-sm text-white transition-opacity disabled:opacity-40" disabled={!available || !confirmed} onClick={() => decide("approve")}>Record approval</button>
         <button type="button" className="rounded-md border border-gray-200 px-4 py-2 text-sm transition-colors hover:bg-primary/5 disabled:opacity-40 dark:border-gray-700" disabled={!available} onClick={() => setShowReject(!showReject)}>Reject transaction</button>

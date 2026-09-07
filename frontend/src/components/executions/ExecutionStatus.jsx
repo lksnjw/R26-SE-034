@@ -10,6 +10,7 @@ const icons = {
   AWAITING_APPROVAL: "mdi:account-check-outline",
   CANCELLED: "mdi:stop-circle-outline",
   RECOVERY_REQUIRED: "mdi:help-circle-outline",
+  RECONCILIATION_REQUIRED: "mdi:help-circle-outline",
   UNKNOWN: "mdi:help-circle-outline",
 };
 

@@ -1,15 +1,5 @@
 # Research Low-Code Workflow Engine
 
-Latest local milestone: [exact runtime approval records and scoped review](docs/EXACT_RUNTIME_APPROVAL_FOUNDATION_2026-10-06.md), with 1,576 backend / 443 frontend tests, typecheck/lint/build and 15 Hosting checks. Current independent-principal decisions bind exact published source, invocation, capability, arguments, authority, policy and expiry. Minimum review-only access and readable tool/argument fields do not grant full run/log access. Desktop/mobile browser and keyboard checks include saved image evidence. Approval records are a foundation: normal workers do not yet produce these waits, and approval does not resume an ERP action or send email. This builds on [structured canvas placement](docs/STRUCTURED_CANVAS_PLACEMENT_2026-10-06.md) and [saved history](docs/DRAFT_EDIT_HISTORY_AND_RECOVERY_2026-10-06.md); the full goal remains unfinished.
-
-Current implementation uses the TypeScript/Fastify backend. The owner-selected target is **Cloud Firestore + Firebase Hosting**, with existing authentication preserved. The opt-in `firestore-records` driver now passes [normal application chat/read/collection and ownership-fault emulator checks](docs/FIRESTORE_APPLICATION_RUNTIME_INTEGRATION_2026-10-06.md); default storage remains unchanged. [Current completion status](docs/PROJECT_COMPLETION_STATUS_2026-10-06.md), [local Hosting setup](docs/FIREBASE_HOSTING_LOCAL_QUALIFICATION_2026-10-06.md) and the [Firebase integration plan](docs/FIREBASE_STORAGE_AND_INTEGRATION_PLAN_2026-10-06.md) separate verified local milestones from unfinished features and release gates. No cloud deployment, database cutover/data migration, live ERP/email or full-project completion is claimed. The architecture/prototype material below includes historical Go/reference behavior; follow the linked current plans and [TypeScript runtime instructions](backend-ts/README.md) for the active implementation.
-
-[![Go Backend](https://img.shields.io/badge/Backend-Go%20%2B%20Fiber-00ADD8?logo=go&logoColor=white)](backend)
-[![React Frontend](https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB?logo=react&logoColor=0B1020)](frontend)
-[![Semantic Retrieval](https://img.shields.io/badge/Semantic%20Retrieval-FAISS%20%2B%20Ollama-111827)](backend/semantic_search_service)
-[![Governance](https://img.shields.io/badge/Governance-RBAC%20%7C%20Policy%20%7C%20Audit-0F766E)](docs/ROLE_NATURAL_LANGUAGE_TEST_GUIDE.md)
-[![Workflow Canvas](https://img.shields.io/badge/Workflow%20Canvas-React%20Flow-7C3AED)](frontend/src/components/canvas)
-
 ## Project Overview
 
 The **Enterprise Low-Code Workflow Engine** is a research-driven workflow automation platform that converts natural-language business requests into governed, validated, and visually inspectable enterprise workflows.
@@ -381,4 +371,3 @@ The multi-model study was not run because the dataset labels the workflow artifa
 ## Summary
 
 The **Research Low-Code Workflow Engine** demonstrates an AI-assisted workflow architecture in which generated plans pass through deterministic validation and a capability-bound dispatch boundary. The enforced and unenforced portions of that architecture are listed above and in `docs/INVARIANTS.md`.
-

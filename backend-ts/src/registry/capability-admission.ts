@@ -11,6 +11,7 @@ import { appendAudit, HandlerFailure, nextID, now, type CurrentUser } from "../h
 import type { FastifyRequest } from "fastify";
 import type { AppConfig } from "../config/config.js";
 import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
+import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 
 export const DEFAULT_BRIDGE_CONNECTION = "erpbridge-default";
 export function requireProductionAdmissionProfile(config: Pick<AppConfig, "mcpMode" | "mcpTransport">) {
@@ -21,11 +22,15 @@ const id = z.string().min(1).max(256), hash = z.string().regex(/^sha256:[a-f0-9]
 const observationSchema = z.object({ id, capabilityId: id, connectionId: id, connectionBinding: binding, toolId: id,
   contractHash: hash, definition: toolSchema, discoveredAt: z.string().datetime(), registryHash: hash,
   discoveryGeneration: z.number().int().nonnegative(), remoteMatches: z.boolean() }).strict();
-const reviewSchema = z.object({ observationId: id, contractHash: hash, decisionKey: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
-  effectClass: z.literal("read"), riskClass: z.literal("low"), dataClass: z.literal("internal"), retryPolicy: z.literal("never"), note: z.string().trim().min(1).max(2000) }).strict();
+const readPolicySchema = z.object({ effectClass: z.literal("read"), riskClass: z.literal("low"), dataClass: z.literal("internal"), retryPolicy: z.literal("never"), note: z.string().trim().min(1).max(2000) }).strict();
+const operationPolicySchema = z.object({ effectClass: z.enum(["write", "notification"]), riskClass: z.enum(["low", "medium"]), dataClass: z.enum(["internal", "confidential"]), retryPolicy: z.literal("never"),
+  requireIndependentApproval: z.literal(true), note: z.string().trim().min(1).max(2000) }).strict();
+const policySchema = z.union([readPolicySchema, operationPolicySchema]);
+const reviewIdentity = { observationId: id, contractHash: hash, decisionKey: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/) };
+const reviewSchema = z.union([readPolicySchema.extend(reviewIdentity).strict(), operationPolicySchema.extend(reviewIdentity).strict()]);
 const revisionSchema = z.object({ id, capabilityId: id, connectionId: id, connectionBinding: binding, toolId: id,
   contractHash: hash, definition: toolSchema, observationId: id, reviewedAt: z.string().datetime(), reviewedBy: z.object({ id, role: z.literal("Platform Admin") }).strict(),
-  decisionScope: hash, decisionHash: hash, policy: reviewSchema.omit({ observationId: true, contractHash: true, decisionKey: true }) }).strict();
+  decisionScope: hash, decisionHash: hash, policy: policySchema }).strict();
 const admissionSchema = z.object({ capabilityId: id, revisionId: id, state: z.enum(["AVAILABLE", "DISABLED", "BLOCKED"]), version: z.number().int().positive(), updatedAt: z.string().datetime(),
   reason: z.enum(["REMOTE_CONTRACT_DRIFT", "LOCAL_CONTRACT_CHANGED", "CONNECTION_CHANGED"]).optional() }).strict();
 export const disableAdmissionSchema = z.object({ revisionId: id, baseVersion: z.number().int().positive(), note: z.string().trim().min(1).max(2000) }).strict();
@@ -51,6 +56,18 @@ function supportedRead(tool: ToolDefinition) {
   if (!tool.tool_id.trim() || !tool.name.trim() || !tool.bridge_contract || !tool.allowed_roles.length ||
     !tool.is_read_only || tool.risk_level.toLowerCase() !== "low" || tool.side_effects.length || /^system\..*_test$/i.test(tool.name) || /^system\..*_test$/i.test(tool.mcp_tool_name))
     throw new HandlerFailure(422, "This contract requires unsupported effect/risk review; only explicit low-risk reads without side effects can be admitted yet", { code: "ADMISSION_REVIEW_UNSUPPORTED" });
+}
+export function supportedOperation(tool: ToolDefinition): void {
+  const contract = tool.operation_contract, output = tool.bridge_contract?.output_schema;
+  if (!tool.tool_id.trim() || !tool.name.trim() || !tool.bridge_contract || !tool.allowed_roles.length || tool.is_read_only || !tool.side_effects.length ||
+      !["low", "medium"].includes(tool.risk_level.toLowerCase()) || !contract || !output || output.type !== "object" ||
+      validateToolSchemaProfile(tool.input_schema).length || validateToolSchemaProfile(output).length || /^system\..*_test$/i.test(tool.name))
+    throw new HandlerFailure(422, "Operations require an explicit reviewed effect/result contract, supported schemas and low/medium risk; retry is never", { code: "ADMISSION_REVIEW_UNSUPPORTED" });
+  let schema: unknown = output;
+  for (const part of contract.confirmation.path) schema = (schema as { properties?: Record<string, unknown> } | undefined)?.properties?.[part];
+  const expectedType = typeof contract.confirmation.expected;
+  if (!schema || ![expectedType, expectedType === "number" ? "integer" : expectedType].includes(String((schema as { type?: unknown }).type)))
+    throw new HandlerFailure(422, "Operation confirmation must select a declared scalar output field", { code: "ADMISSION_REVIEW_UNSUPPORTED" });
 }
 function publicRevision(raw: unknown) {
   const revision = revisionSchema.parse(raw);
@@ -143,11 +160,17 @@ export async function reviewCapability(input: { repository: Repository; registri
       throw new HandlerFailure(409, "Observation is stale, mismatched or drifted; refresh and review before admission");
     const current = input.registries.snapshot().tools.filter(tool => tool.tool_id === observation.toolId);
     if (current.length !== 1 || capabilityContractHash(current[0]!) !== observation.contractHash) throw new HandlerFailure(409, "Local contract changed; refresh discovery and review");
-    supportedRead(current[0]!);
+    if (data.effectClass === "read") supportedRead(current[0]!);
+    else {
+      supportedOperation(current[0]!);
+      if (data.effectClass !== current[0]!.operation_contract!.effect_class || data.riskClass !== current[0]!.risk_level.toLowerCase())
+        throw new HandlerFailure(422, "Review must match the exact operation effect and risk contract");
+    }
     const revision = { id: nextID(state, "caprev"), capabilityId: observation.capabilityId, connectionId: observation.connectionId, connectionBinding: observation.connectionBinding,
       toolId: observation.toolId, contractHash: observation.contractHash, definition: structuredClone(current[0]!), observationId: observation.id,
       reviewedAt: now(), reviewedBy: { id: input.user.id, role: "Platform Admin" as const }, decisionScope, decisionHash,
-      policy: { effectClass: data.effectClass, riskClass: data.riskClass, dataClass: data.dataClass, retryPolicy: data.retryPolicy, note: data.note } };
+      policy: policySchema.parse({ effectClass: data.effectClass, riskClass: data.riskClass, dataClass: data.dataClass, retryPolicy: data.retryPolicy, note: data.note,
+        ...(data.effectClass === "read" ? {} : { requireIndependentApproval: true }) }) };
     const old = state.capabilityAdmissions[revision.capabilityId];
     const admission = { capabilityId: revision.capabilityId, revisionId: revision.id, state: "AVAILABLE", version: old ? admissionSchema.parse(old).version + 1 : 1, updatedAt: now() };
     state.capabilityRevisions[revision.id] = revision; state.capabilityAdmissions[revision.capabilityId] = admission;
@@ -181,7 +204,7 @@ export function admissionAuthorizer(repository: Repository, registries: Registry
   return async (definition: ToolDefinition, connectionBinding: string, expectedPin?: ReadAdmissionPin): Promise<void> => {
     requireAdmissionStorage(repository);
     return repository.readAuthoritative(state => {
-      captureReadAdmissionPin(state, registries, definition, connectionBinding, expectedPin, connectionId);
+      captureCapabilityAdmissionPin(state, registries, definition, connectionBinding, expectedPin, connectionId);
     });
   };
 }
@@ -190,13 +213,25 @@ export function admissionAuthorizer(repository: Repository, registries: Registry
  * Compile evidence is not authority: the final SDK gate calls this again. */
 export function captureReadAdmissionPin(state: Readonly<RepositoryState>, registries: RegistryService, definition: ToolDefinition, connectionBinding: string,
   expectedPin?: ReadAdmissionPin, connectionId = DEFAULT_BRIDGE_CONNECTION): ReadAdmissionPin {
+  supportedRead(definition);
+  return captureCapabilityAdmissionPin(state, registries, definition, connectionBinding, expectedPin, connectionId);
+}
+export function captureCapabilityAdmissionPin(state: Readonly<RepositoryState>, registries: RegistryService, definition: ToolDefinition, connectionBinding: string,
+  expectedPin?: ReadAdmissionPin, connectionId = DEFAULT_BRIDGE_CONNECTION): ReadAdmissionPin {
   const capabilityId = capabilityIdFor(connectionId, definition.tool_id), admission = admissionSchema.safeParse(state.capabilityAdmissions[capabilityId]);
   if (!admission.success || admission.data.state !== "AVAILABLE") throw new Error("Capability is unreviewed, disabled or blocked; no ERP dispatch is authorized");
   const revision = revisionSchema.safeParse(state.capabilityRevisions[admission.data.revisionId]), current = registries.snapshot().tools.filter(tool => tool.tool_id === definition.tool_id);
   if (!revision.success || revision.data.capabilityId !== capabilityId || revision.data.connectionId !== connectionId || revision.data.connectionBinding !== connectionBinding ||
       revision.data.contractHash !== capabilityContractHash(revision.data.definition) || revision.data.contractHash !== capabilityContractHash(definition) ||
       current.length !== 1 || capabilityContractHash(current[0]!) !== revision.data.contractHash) throw new Error("Capability review or connection binding changed; no ERP dispatch is authorized");
-  supportedRead(definition);
+  if (definition.is_read_only) {
+    supportedRead(definition);
+    if (revision.data.policy.effectClass !== "read") throw new Error("Capability policy does not authorize this read");
+  } else {
+    supportedOperation(definition);
+    if (revision.data.policy.effectClass !== definition.operation_contract!.effect_class || revision.data.policy.riskClass !== definition.risk_level.toLowerCase() ||
+        !("requireIndependentApproval" in revision.data.policy) || !revision.data.policy.requireIndependentApproval) throw new Error("Capability policy does not authorize this operation");
+  }
   const pin = { connectionId, capabilityId, revisionId: revision.data.id, admissionVersion: admission.data.version, contractHash: revision.data.contractHash };
   if (expectedPin && !canonicalJSONBytes(pin).equals(canonicalJSONBytes(expectedPin))) throw new Error("Compiled capability admission changed; explicit recompile/publication is required");
   return pin;
@@ -226,7 +261,7 @@ export async function capabilityAdmissionCatalog(repository: Repository, offset 
       const sameConnection = connection.discoveryAvailable && privateObservation?.connectionBinding === session?.admissionBinding;
       const fresh = observation && Date.now() - Date.parse(observation.discoveredAt) <= 600000 && Date.parse(observation.discoveredAt) <= Date.now();
       let reviewReason = !context ? "REVIEW_CONTEXT_UNAVAILABLE" : persistence === "unsupported-for-admission" ? "UNSUPPORTED_STORAGE" : !connection.discoveryAvailable ? "CONNECTION_UNAVAILABLE" : !observation ? "NO_OBSERVATION" : !observation.remoteMatches ? "REMOTE_CONTRACT_DRIFT" : !sameLocal ? "LOCAL_CONTRACT_CHANGED" : !sameConnection ? "CONNECTION_CHANGED" : !fresh || privateObservation?.discoveryGeneration !== (session?.discoveryGeneration ?? 0) ? "OBSERVATION_STALE" : null;
-      if (!reviewReason && current?.[0]) { try { supportedRead(current[0]); } catch { reviewReason = "UNSUPPORTED_EFFECT_OR_RISK"; } }
+      if (!reviewReason && current?.[0]) { try { current[0].is_read_only ? supportedRead(current[0]) : supportedOperation(current[0]); } catch { reviewReason = "UNSUPPORTED_EFFECT_OR_RISK"; } }
       // Current local/binding drift blocks the display even before a refresh
       // persists the BLOCKED transition. It never grants authority from a GET.
       const currentMatchesRevision = current?.length === 1 && rawRevision && capabilityContractHash(current[0]!) === rawRevision.contractHash && rawRevision.contractHash === capabilityContractHash(rawRevision.definition);

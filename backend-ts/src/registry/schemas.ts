@@ -23,6 +23,18 @@ export const toolSchema = z.object({
     remote_roles: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)).max(32).refine(roles => new Set(roles).size === roles.length),
     output_schema: jsonObjectSchema.optional(),
   }).strict().optional(),
+  // Explicit local reviewed outcome contract, never inferred from a tool name
+  // or MCP annotations. It does not promise upstream idempotency.
+  operation_contract: z.object({
+    profile: z.literal("operation-result/v1"),
+    effect_class: z.enum(["write", "notification"]),
+    retry_policy: z.literal("never"),
+    confirmation: z.object({
+      path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+      expected: z.union([z.string().min(1).max(256), z.number().finite(), z.boolean()]),
+      meaning: z.enum(["operation-accepted", "operation-confirmed"]),
+    }).strict(),
+  }).strict().optional(),
   required_parameters: z.array(z.string()).default([]),
   optional_parameters: z.array(z.string()).default([]),
   allowed_roles: z.array(z.string()).default([]),

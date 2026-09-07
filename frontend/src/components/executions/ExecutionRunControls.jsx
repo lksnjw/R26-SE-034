@@ -7,9 +7,10 @@ import { iterationPositionLabel } from "../../utils/iterationEvidence";
 export default function ExecutionRunControls({ execution, canControl = false, monitor, onChanged }) {
   const [requesting, setRequesting] = useState(false), [acknowledged, setAcknowledged] = useState(false), [error, setError] = useState("");
   if (!execution) return monitor?.error ? <div role="alert" className="text-xs text-amber-700">{monitor.error}{monitor.reconnecting && " Reconnecting updates automatically."}<button className="ml-2 text-primary" onClick={monitor.refresh}>Refresh run</button></div> : null;
-  const running = execution.status === "RUNNING" || execution.status === "PENDING";
+  const operation = execution.workflowSnapshot?.executionProfile === "sequential-operation-v1";
+  const running = execution.status === "RUNNING" || execution.status === "PENDING" || operation && execution.status === "AWAITING_APPROVAL";
   const pending = running && (acknowledged || Boolean(execution.readProgress?.cancellation));
-  const recovery = execution.status === "RECOVERY_REQUIRED";
+  const recovery = ["RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED"].includes(execution.status);
   const requestCancel = async () => {
     setRequesting(true); setError("");
     try {
@@ -25,9 +26,10 @@ export default function ExecutionRunControls({ execution, canControl = false, mo
       {monitor && <button onClick={monitor.refresh} className="ml-auto min-h-8 px-2 text-primary">Refresh run</button>}
       {canControl && running && execution.readProgress?.profile === "read-progress-v1" && <button disabled={requesting || pending || monitor?.denied} onClick={requestCancel} className="min-h-8 rounded-md border border-gray-300 px-3 disabled:opacity-50 dark:border-gray-700">{pending ? "Cancellation requested" : requesting ? "Requesting…" : "Request cancellation"}</button>}
     </div>
-    {pending && <p role="status" className="text-amber-700 dark:text-amber-300">Cancellation is pending. An in-flight read may finish; its saved answer is retained. Further calls stop when the request is observed.</p>}
+    {pending && <p role="status" className="text-amber-700 dark:text-amber-300">{operation ? "Cancellation is pending. An in-flight ERP operation may already have taken effect; reconcile an unconfirmed outcome before retrying." : "Cancellation is pending. An in-flight read may finish; its saved answer is retained. Further calls stop when the request is observed."}</p>}
+    {operation && execution.status === "AWAITING_APPROVAL" && <p className="text-gray-500">Waiting for an independent exact approval. An approved operation is queued automatically for fresh authorization; previous saved results are retained.</p>}
     {recovery && <p role="status" className="text-amber-700 dark:text-amber-300">Recovery review required. Saved answers are retained; an unconfirmed call may have reached ERP. No automatic retry or replay was performed.</p>}
-    {execution.status === "CANCELLED" && <p className="text-gray-500">No further reads will start. Confirmed saved answers remain available; remote processing is not confirmed stopped.</p>}
+    {execution.status === "CANCELLED" && <p className="text-gray-500">{operation ? "No further operations will start. Previously acknowledged results remain saved; cancellation does not roll back ERP effects." : "No further reads will start. Confirmed saved answers remain available; remote processing is not confirmed stopped."}</p>}
     {execution.readProgress?.persistence === "memory-only" && <p className="text-gray-500">Memory-only run · checkpoints will not survive server restart.</p>}
     {(error || monitor?.error) && <p role="alert" className="text-amber-700 dark:text-amber-300">{error || monitor.error}{!monitor?.denied && " Displayed answers are the last confirmed snapshot, not fresh status."}</p>}
     {monitor?.reconnecting && <p role="status" className="text-gray-500">Reconnecting run updates automatically. No business operation is being replayed.</p>}

@@ -50,10 +50,14 @@ const collection = stringify({ name: "Firestore collection", description: "Bound
 const tool = toolSchema.parse({ tool_id: "FIXTURE-READ", name: "read", mcp_tool_name: "read", is_read_only: true, allowed_roles: ["Platform Admin"], risk_level: "low", side_effects: [],
   input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
   bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: ["platform_admin"] } });
-const registries = { snapshot: () => ({ tools: [tool], rules: [], versions: { tools: "fixture-v1", rules: "fixture-v1" } }), hash: () => capabilityContractHash(tool),
-  findTool: name => name === tool.name ? tool : undefined, enabledRules: () => [], findRule: () => undefined };
+const operationTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-NOTIFICATION", name: "fixture.notification", mcp_tool_name: "fixture.notification", is_read_only: false, side_effects: ["Synthetic notification acknowledgement"],
+  operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
+  bridge_contract: { ...tool.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
+const fixtureTools = [tool, operationTool];
+const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions: { tools: "fixture-v1", rules: "fixture-v1" } }), hash: () => resolvedParameterHashBytes(canonicalJSONBytes(fixtureTools)),
+  findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
-const calls = [], models = [];
+const calls = [], models = [], operations = [];
 let sdkHook, modelHook;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
@@ -67,9 +71,12 @@ async function start(repositoryValue) {
   const validator = new RegistryValidator(registries, repository), executor = new Executor(new ToolRegistry(), validator);
   session = await createErpbridgeMcpSession({ baseURL: config.erpbridgeBaseURL, token: config.erpbridgeMcpToken, timeoutMs: 10_000, validator,
     admissionAuthorizer: admissionAuthorizer(repository, registries), sdkClient: { metadataComplete: true, connect: async () => {}, close: async () => {},
-      listTools: async () => [{ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), _meta: { "toolplane.resourceVersion": "1.0.0", "toolplane.resourceDigest": "a".repeat(64), "io.erpbridge/allowedRoles": ["platform_admin"] } }],
+      listTools: async () => fixtureTools.map(value => ({ name: exactBridgeName(value), inputSchema: bridgeTransportSchema(value), ...(value.bridge_contract.output_schema ? { outputSchema: value.bridge_contract.output_schema } : {}),
+        _meta: { "toolplane.resourceVersion": "1.0.0", "toolplane.resourceDigest": value.bridge_contract.resource_digest, "io.erpbridge/allowedRoles": ["platform_admin"] } })),
       callTool: async (name, args, meta) => {
-        assert.equal(name, exactBridgeName(tool)); assert.equal(args.role, "platform_admin"); assert.equal(meta["toolplane.resourceDigest"], "a".repeat(64));
+        assert.equal(args.role, "platform_admin");
+        if (name === exactBridgeName(operationTool)) { assert.equal(meta["toolplane.resourceDigest"], "b".repeat(64)); operations.push(args.id); return { content: [], structuredContent: { accepted: true, id: args.id } }; }
+        assert.equal(name, exactBridgeName(tool)); assert.equal(meta["toolplane.resourceDigest"], "a".repeat(64));
         calls.push(args.id); await sdkHook?.(args); return { content: [], structuredContent: { id: args.id.toUpperCase(), token: "synthetic-remote-secret" } };
       } } });
   const providerRuntime = new ProviderRuntime(repository, executor, async (url, init) => {
@@ -105,7 +112,8 @@ try {
   });
   const actor = await repository.effectiveUser("owner"), observations = (await observeCapabilities({ repository, registries, session, user: actor })).observations;
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
-    observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only" } });
+    observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: observation.toolId === operationTool.tool_id ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
+    ...(observation.toolId === operationTool.tool_id ? { requireIndependentApproval: true } : {}) } });
   for (const id of ["single", "collection"]) await request("POST", `/api/workflows/${id}/publish`, {}, 200);
   const ready = await request("GET", "/api/workflows/collection/readiness", undefined, 200); assert.equal(ready.data.can_attempt_run, true);
   const read = await request("POST", "/api/workflows/single/run", { input: { id: "single" } }, 200); assert.equal(read.data.status, "DONE"); assert.deepEqual(calls, ["single"]);
@@ -279,6 +287,50 @@ try {
   await assert.rejects(repository.mutateExecution(approvalRunId, state => consumeRuntimeApproval(state, approvalRunId, approvalBinding, { id: "approval-fixture" }, "second-intent")));
   assert.equal(calls.length, callsBeforeApproval); assert.equal(models.length, modelsBeforeApproval);
   log("actual Firestore exact approval review/decision POST-COMMIT ACK loss, authoritative reconciliation, original-key replay, fresh restart and once-only private consumption preserved immutable review; zero additional SDK/model calls and no effect resume");
+
+  const operationYAML = stringify({ name: "Synthetic approved notification", description: "Actual Firestore plus in-process synthetic operation only", trigger: { type: "manual" }, steps: [
+    { id: "lookup", action: "read", parameters: { id: "{{input.id}}" } }, { id: "send", action: operationTool.name, parameters: { id: "{{lookup.structuredContent.id}}" } },
+  ] });
+  await repository.mutate(state => { state.workflows.operation = { ...state.workflows.single, id: "operation", name: "Synthetic approved notification", yaml: operationYAML, steps: 2, publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions.operation = []; });
+  const operationPublication = (await request("POST", "/api/workflows/operation/publish", {}, 200)).data;
+  assert.equal(operationPublication.executionReadiness, "COMPILED_OPERATION");
+  assert.equal((await request("GET", "/api/workflows/operation/readiness", undefined, 200)).data.can_attempt_run, true);
+  const modelsBeforeOperation = models.length;
+  const operationRun = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-normal-0001", input: { id: "operation-fixture-one" } }, 202)).data.id;
+  await waitFor(async () => (await repository.snapshot()).executions[operationRun].status === "AWAITING_APPROVAL", "normal operation approval producer");
+  assert.equal(operations.length, 0); const waitingOperation = (await repository.snapshot()).executions[operationRun];
+  assert.equal(waitingOperation.operationSecret.state, "WAITING"); assert.equal(waitingOperation.operationSecret.lease, undefined);
+  await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[operationRun], waitingOperation); assert.equal(operations.length, 0);
+  const operationReview = (await request("GET", `/api/executions/${operationRun}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.deepEqual(operationReview.arguments, { id: "OPERATION-FIXTURE-ONE" }); assert.equal(operationReview.operationManaged, true);
+  const operationCommand = { approvalId: operationReview.id, baseVersion: operationReview.version, reviewHash: operationReview.reviewHash, decisionKey: "firestore-operation-decision-0001" };
+  assert.equal((await request("POST", `/api/executions/${operationRun}/approve`, operationCommand, 200, "reviewer")).data.resumeQueued, true);
+  await waitFor(async () => (await repository.snapshot()).executions[operationRun].status === "DONE", "approved operation result checkpoint");
+  assert.deepEqual(operations, ["OPERATION-FIXTURE-ONE"]); assert.equal(models.length, modelsBeforeOperation);
+  const completedOperation = (await repository.snapshot()).executions[operationRun]; assert.equal(completedOperation.operationSecret.intents.send.state, "ACKNOWLEDGED");
+  assert.equal(completedOperation.operationSecret.intents.send.evidenceMeaning, "operation-accepted"); assert.equal(completedOperation.runtimeApprovalSecret.records[operationReview.id].state, "CONSUMED");
+  assert.equal(JSON.stringify((await request("GET", `/api/executions/${operationRun}`, undefined, 200)).data).includes("operationSecret"), false);
+  assert.equal((await request("POST", `/api/executions/${operationRun}/approve`, operationCommand, 200, "reviewer")).data.replayed, true);
+  await stop(); await start(await openApplicationRepository(config)); assert.deepEqual((await repository.snapshot()).executions[operationRun], completedOperation); assert.equal(operations.length, 1);
+  log("actual Firestore normal operation publication/run produced a durable exact approval wait, survived restart without calls, then consumed independent approval and acknowledged one synthetic SDK result; zero model calls and no duplicate after decision replay/restart");
+
+  const lostOperation = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-lost-intent-0001", input: { id: "operation-lost-intent" } }, 202)).data.id;
+  await waitFor(async () => (await repository.snapshot()).executions[lostOperation].status === "AWAITING_APPROVAL", "lost-intent approval wait");
+  const lostReview = (await request("GET", `/api/executions/${lostOperation}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  const actualOperationCheckpoint = persistence.saveExecutionCheckpoint.bind(persistence); let lostOperationACK = false;
+  persistence.saveExecutionCheckpoint = async checkpoint => { await actualOperationCheckpoint(checkpoint);
+    if (!lostOperationACK && checkpoint.executionId === lostOperation && checkpoint.execution?.operationSecret?.intents.send?.state === "DISPATCH_INTENT") { lostOperationACK = true; throw new Error("Synthetic actual Firestore intent post-COMMIT acknowledgement lost"); }
+  };
+  await request("POST", `/api/executions/${lostOperation}/approve`, { approvalId: lostReview.id, baseVersion: lostReview.version, reviewHash: lostReview.reviewHash, decisionKey: "firestore-operation-lost-decision-0001" }, 200, "reviewer");
+  await waitFor(() => lostOperationACK, "operation intent post-COMMIT acknowledgement loss"); persistence.saveExecutionCheckpoint = actualOperationCheckpoint;
+  assert.equal(operations.length, 1); await repository.recoverPersistenceState();
+  assert.equal((await repository.snapshot()).executions[lostOperation].operationSecret.intents.send.state, "DISPATCH_INTENT");
+  await stop(); await start(await openApplicationRepository(config));
+  const reconciledOperation = (await repository.snapshot()).executions[lostOperation]; assert.equal(reconciledOperation.status, "RECONCILIATION_REQUIRED");
+  assert.equal(reconciledOperation.readProgress.attempts.send.status, "UNKNOWN"); assert.equal(reconciledOperation.stepOutputs.lookup.structuredContent.id, "OPERATION-LOST-INTENT");
+  assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
+  log("actual Firestore post-COMMIT operation intent ACK loss fenced SDK entry; authoritative reload/restart preserved the read answer and unknown intent for reconciliation, without operation replay");
 
   const entered = barrier(), release = barrier(); sdkHook = async args => { if (args.id === "cancel-a") { entered.release(); await release.promise; } };
   const cancelRun = (await request("POST", "/api/workflows/collection/run", { mode: "async-read", idempotencyKey: "firestore-runtime-cancel-fixture-0001", input: { rows: ["cancel-a", "must-not-call"] } }, 202)).data.id;

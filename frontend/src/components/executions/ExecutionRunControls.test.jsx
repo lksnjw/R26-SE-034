@@ -38,3 +38,21 @@ test("recovery and journal are readable, non-replaying and never raw JSON", () =
   expect(screen.getByText("Node outcome unknown")).toBeTruthy(); expect(container.querySelector("pre")).toBeNull();
   expect(screen.queryByRole("button", { name: /Request cancellation|Retry/ })).toBeNull();
 });
+
+test("an operation approval wait is cancellable without promising remote rollback", async () => {
+  const operation = { ...run, status: "AWAITING_APPROVAL", workflowSnapshot: { executionProfile: "sequential-operation-v1" } };
+  jest.spyOn(executionService, "cancel").mockResolvedValue({ ...operation, status: "CANCELLED" });
+  const refresh = jest.fn(); render(<ExecutionRunControls execution={operation} canControl monitor={{ refresh }} />);
+  expect(screen.getByText(/Waiting for an independent exact approval/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Request cancellation" }));
+  await screen.findByRole("button", { name: "Cancellation requested" });
+  expect(screen.getByRole("status").textContent).toMatch(/may already have taken effect/);
+  expect(executionService.cancel).toHaveBeenCalledTimes(1); expect(refresh).toHaveBeenCalledTimes(1);
+});
+
+test("uncertain operations show reconciliation and no retry or cancellation action", () => {
+  render(<ExecutionRunControls execution={{ ...run, status: "RECONCILIATION_REQUIRED", workflowSnapshot: { executionProfile: "sequential-operation-v1" } }} canControl />);
+  expect(screen.getByTestId("execution-status").textContent).toBe("ERP reconciliation required");
+  expect(screen.getByRole("status").textContent).toMatch(/No automatic retry or replay/);
+  expect(screen.queryByRole("button", { name: /Request cancellation|Retry/ })).toBeNull();
+});
