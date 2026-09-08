@@ -58,7 +58,7 @@ export type Execution = {
   operationSecret?: import("../runner/operation-state.js").OperationJournal;
   recoverySource?: { profile: "operation-recovery-source/v1"; sourceExecutionId: string; artifactId: string; artifactHash: string };
   emailDeliverySource?: { profile: "email-delivery-source/v1"; admissionId: string; sessionId: string; draftId: string; draftVersion: number; draftHash: string };
-  scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string };
+  scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string; reportWindow: ReportWindow };
 };
 
 export type EmailDeliveryAdmission = {
@@ -126,7 +126,7 @@ export type WorkflowSchedule = {
   revision: number;
   timezone: string;
   localTime: string;
-  reportingPeriod: string;
+  reportingPeriod: "previous-calendar-day";
   misfirePolicy: "SKIP" | "FIRE_ONCE";
   misfireGraceSeconds: number;
   servicePrincipalId: string;
@@ -139,6 +139,14 @@ export type WorkflowSchedule = {
   updatedAt: string;
   scheduleHash: string;
 };
+export type ReportWindow = {
+  profile: "workflow-report-window/v1";
+  reportingPeriod: "previous-calendar-day";
+  timezone: string;
+  localDate: string;
+  startAt: string;
+  endAt: string;
+};
 export type ScheduleOccurrence = {
   profile: "workflow-schedule-occurrence/v1";
   id: string;
@@ -150,6 +158,7 @@ export type ScheduleOccurrence = {
   scheduledFor: string;
   localDate: string;
   timezone: string;
+  reportWindow?: ReportWindow;
   servicePrincipalId: string;
   state: "ADMITTING" | "ADMITTED" | "SKIPPED" | "BLOCKED";
   idempotencyKey: string;

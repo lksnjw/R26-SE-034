@@ -11,14 +11,17 @@ function schedule(value, workflowId) {
   if (!object(value) || value.profile !== "workflow-daily-schedule/v1" || value.workflowId !== workflowId || !id(value.id) ||
       !Number.isSafeInteger(value.workflowVersion) || value.workflowVersion < 1 || !hash(value.workflowHash) || !["ACTIVE", "PAUSED", "BLOCKED"].includes(value.state) ||
       !Number.isSafeInteger(value.revision) || value.revision < 1 || !id(value.timezone) || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value.localTime) ||
-      !id(value.reportingPeriod) || !["SKIP", "FIRE_ONCE"].includes(value.misfirePolicy) || !Number.isSafeInteger(value.misfireGraceSeconds) ||
+      value.reportingPeriod !== "previous-calendar-day" || !["SKIP", "FIRE_ONCE"].includes(value.misfirePolicy) || !Number.isSafeInteger(value.misfireGraceSeconds) ||
       !id(value.servicePrincipalId) || !object(value.input) || value.nextRunAt !== null && !date(value.nextRunAt) || !date(value.createdAt) || !date(value.updatedAt) || !hash(value.scheduleHash)) deny();
   return value;
 }
 function occurrence(value, scheduleId) {
+  const window = value?.reportWindow;
   if (!object(value) || value.profile !== "workflow-schedule-occurrence/v1" || value.scheduleId !== scheduleId || !id(value.id) ||
       !["ADMITTING", "ADMITTED", "SKIPPED", "BLOCKED"].includes(value.state) || !date(value.scheduledFor) || !id(value.localDate) || !id(value.timezone) ||
-      !id(value.servicePrincipalId) || !date(value.createdAt) || value.executionId !== undefined && !id(value.executionId) || value.admittedAt !== undefined && !date(value.admittedAt)) deny();
+      !id(value.servicePrincipalId) || !date(value.createdAt) || value.executionId !== undefined && !id(value.executionId) || value.admittedAt !== undefined && !date(value.admittedAt) ||
+      window !== null && (!object(window) || window.profile !== "workflow-report-window/v1" || window.reportingPeriod !== "previous-calendar-day" || window.timezone !== value.timezone ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(window.localDate) || !date(window.startAt) || !date(window.endAt) || Date.parse(window.startAt) >= Date.parse(window.endAt))) deny();
   return value;
 }
 function view(value, workflowId) {

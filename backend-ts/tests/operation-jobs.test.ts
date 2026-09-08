@@ -20,7 +20,7 @@ import { splitFirestoreState, assembleFirestoreState } from "../src/storage/fire
 import { withoutSecretFields } from "../src/redact/secrets.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { operationReadbackQueue } from "../src/runner/operation-readback-jobs.js";
-import { workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
+import { reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { workflowContentHash } from "../src/parser/workflow.js";
 import { draftRequirements, emailDraftHash, type EmailDraft } from "../src/delivery/email-draft.js";
 
@@ -226,14 +226,25 @@ test("durable daily schedule admits one pinned service-principal occurrence and 
   const status = await s.request("GET", "/api/workflows/flow/schedule"); expect(status.statusCode, status.body).toBe(200);
   expect(status.json().data).toMatchObject({ schedule: { state: "ACTIVE", revision: 1 }, occurrences: [{ state: "ADMITTED", scheduledFor, servicePrincipalId: "requester" }] });
   const executionId = status.json().data.occurrences[0].executionId as string; await s.wait(executionId, "AWAITING_APPROVAL");
+  const reportWindow = reportWindowFor("UTC", scheduledFor, "previous-calendar-day");
+  expect(status.json().data.occurrences[0].reportWindow).toEqual(reportWindow);
   const before = (await s.repository.snapshot()).executions[executionId]!;
   expect(before.scheduleSource).toEqual({ profile: "workflow-schedule-source/v1", scheduleId: "schedule-flow", scheduleRevision: 1,
-    occurrenceId: status.json().data.occurrences[0].id, scheduledFor });
+    occurrenceId: status.json().data.occurrences[0].id, scheduledFor, reportWindow });
   expect(before.startedBy.id).toBe("requester"); expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read)]);
   const command = await s.command(executionId), approved = await s.request("POST", `/api/executions/${executionId}/approve`, command, "reviewer");
   expect(approved.statusCode, approved.body).toBe(200); await s.wait(executionId, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
   expect(await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor))).toEqual({ admitted: 0, skipped: 0, blocked: 0 });
   expect(Object.values((await s.repository.snapshot()).executions).filter(run => run.scheduleSource).map(run => run.id)).toEqual([executionId]);
+});
+
+test.each([
+  ["2026-03-09T13:00:00.000Z", "2026-03-08", "2026-03-08T05:00:00.000Z", "2026-03-09T04:00:00.000Z", 23],
+  ["2026-11-02T14:00:00.000Z", "2026-11-01", "2026-11-01T04:00:00.000Z", "2026-11-02T05:00:00.000Z", 25],
+])("previous local calendar day keeps exact DST boundaries for %s", (scheduledFor, localDate, startAt, endAt, hours) => {
+  const window = reportWindowFor("America/New_York", scheduledFor, "previous-calendar-day");
+  expect(window).toEqual({ profile: "workflow-report-window/v1", reportingPeriod: "previous-calendar-day", timezone: "America/New_York", localDate, startAt, endAt });
+  expect((Date.parse(window.endAt) - Date.parse(window.startAt)) / 3_600_000).toBe(hours);
 });
 
 test("daily schedule skips an expired occurrence and never calls the SDK", async () => {
@@ -253,6 +264,7 @@ test("schedule activation rejects invented timezones, stale publications and una
     workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
     reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {} };
   expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, timezone: "Invented/Nowhere" })).statusCode).toBe(422);
+  expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, reportingPeriod: "current-week" })).statusCode).toBe(422);
   expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, workflowHash: `sha256:${"0".repeat(64)}` })).statusCode).toBe(409);
   expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, servicePrincipalId: "reviewer" })).statusCode).toBe(403);
   expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, input: { apiToken: "must-not-be-stored" } })).statusCode).toBe(422);

@@ -14,6 +14,11 @@ const saved = { profile: "workflow-daily-schedule/v1", id: "schedule-flow", work
   timezone: "Asia/Colombo", localTime: "09:00", reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 900,
   servicePrincipalId: "owner", input: { report: "invoices" }, nextRunAt: "2026-10-07T03:30:00.000Z", createdBy: { id: "owner", name: "Owner" },
   createdAt: "2026-10-06T10:00:00.000Z", updatedAt: "2026-10-06T10:00:00.000Z", scheduleHash: h };
+const occurrence = { profile: "workflow-schedule-occurrence/v1", id: "occurrence-one", scheduleId: "schedule-flow", scheduleRevision: 1,
+  workflowId: "flow", workflowVersion: 2, workflowHash: h, scheduledFor: "2026-10-07T03:30:00.000Z", localDate: "2026-10-07", timezone: "Asia/Colombo",
+  reportWindow: { profile: "workflow-report-window/v1", reportingPeriod: "previous-calendar-day", timezone: "Asia/Colombo", localDate: "2026-10-06",
+    startAt: "2026-10-05T18:30:00.000Z", endAt: "2026-10-06T18:30:00.000Z" }, servicePrincipalId: "owner", state: "ADMITTED",
+  createdAt: "2026-10-07T03:30:00.000Z", executionId: "run-one", admittedAt: "2026-10-07T03:30:01.000Z" };
 beforeEach(() => { jest.spyOn(workflowScheduleService, "status").mockResolvedValue(empty); jest.spyOn(workflowScheduleService, "save").mockResolvedValue(saved);
   jest.spyOn(workflowService, "readiness").mockResolvedValue(readiness); });
 afterEach(() => { cleanup(); jest.restoreAllMocks(); });
@@ -44,4 +49,11 @@ test("does not offer activation for an unpublished or unsupported workflow", asy
   workflowService.readiness.mockResolvedValue({ ...readiness, published: false, executionProfile: "sequential-read-v1" });
   render(<WorkflowSchedulePanel workflow={{ id: "flow" }} actorId="owner" />); await screen.findByText(/Legacy trigger text is not an active schedule/);
   expect(screen.getByRole("button", { name: "Activate daily schedule" })).toBeDisabled(); expect(workflowScheduleService.save).not.toHaveBeenCalled();
+});
+
+test("shows the immutable local report day and exact UTC boundaries for an occurrence", async () => {
+  workflowScheduleService.status.mockResolvedValue({ ...empty, schedule: saved, occurrences: [occurrence], explanation: "Active and durable." });
+  render(<WorkflowSchedulePanel workflow={{ id: "flow" }} actorId="owner" />);
+  expect(await screen.findByText(/Report day 2026-10-06/)).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Open execution" }).getAttribute("href")).toBe("/executions/run-one");
 });

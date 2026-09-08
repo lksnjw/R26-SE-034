@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonical-json.js";
 import type { CurrentUser, HandlerServices } from "../http/handlers/common.js";
 import { HandlerFailure, validateWorkflow } from "../http/handlers/common.js";
-import type { Execution, Repository, RepositoryState } from "../repository/store.js";
+import type { Execution, ReportWindow, Repository, RepositoryState } from "../repository/store.js";
 import type { Workflow } from "../models/schemas.js";
 import { workflowContentHash } from "../parser/workflow.js";
 import { withoutSecretFields } from "../redact/secrets.js";
@@ -119,7 +119,7 @@ export class OperationJobQueue {
     if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt) throw new Error("Operation worker is fenced");
   }
   async admit(workflow: Workflow, rawInput: Record<string, unknown>, user: CurrentUser, key: string, traceId: string,
-    source?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string }) {
+    source?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string; reportWindow: ReportWindow }) {
     if (workflow.recoverySource) throw new HandlerFailure(409, "Linked recovery workflows can only be admitted once through their exact source artifact", { code: "RECOVERY_ARTIFACT_ADMISSION_REQUIRED" });
     if (workflow.emailDeliverySource) throw new HandlerFailure(409, "Linked email-delivery workflows can only be admitted once from their exact reviewed draft", { code: "EMAIL_DELIVERY_ADMISSION_REQUIRED" });
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new HandlerFailure(422, "Operation runs require a stable 16–128 character idempotency key", { code: "OPERATION_KEY_REQUIRED" });

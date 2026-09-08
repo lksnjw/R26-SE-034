@@ -24,7 +24,7 @@ import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { evaluateOperationReadback, resolveOperationReadbackArguments } from "../src/tools/operation-readback-contract.js";
 import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 import { requestRuntimeApproval, runtimeApprovalPolicyHash, consumeRuntimeApproval } from "../src/runner/runtime-approvals.js";
-import { workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
+import { reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.js";
 
@@ -427,7 +427,9 @@ try {
   assert.equal(operations.length, operationsBeforeSchedule); assert.equal(models.length, modelsBeforeSchedule);
   const scheduleStatus = (await request("GET", "/api/workflows/operation/schedule", undefined, 200)).data;
   assert.equal(scheduleStatus.occurrences.filter(value => value.scheduledFor === scheduledFor).length, 1);
-  assert.equal(scheduleStatus.occurrences.find(value => value.scheduledFor === scheduledFor).executionId, scheduledExecution.id);
+  const scheduledOccurrence = scheduleStatus.occurrences.find(value => value.scheduledFor === scheduledFor), expectedReportWindow = reportWindowFor("UTC", scheduledFor, "previous-calendar-day");
+  assert.equal(scheduledOccurrence.executionId, scheduledExecution.id); assert.deepEqual(scheduledOccurrence.reportWindow, expectedReportWindow);
+  assert.deepEqual(scheduledExecution.scheduleSource.reportWindow, expectedReportWindow);
   const scheduleReview = (await request("GET", `/api/executions/${scheduledExecution.id}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
   await request("POST", `/api/executions/${scheduledExecution.id}/approve`, { approvalId: scheduleReview.id, baseVersion: scheduleReview.version,
     reviewHash: scheduleReview.reviewHash, decisionKey: "firestore-scheduled-operation-approval-0001" }, 200, "reviewer");
@@ -438,7 +440,7 @@ try {
   assert.deepEqual((await repository.snapshot()).executions[scheduledExecution.id], completedScheduledExecution);
   assert.equal(Object.values((await repository.snapshot()).executions).filter(value => value.scheduleSource?.scheduledFor === scheduledFor).length, 1);
   assert.equal(operations.length, operationsBeforeSchedule + 1);
-  log("actual Firestore daily schedule claim survived post-COMMIT acknowledgement loss as one service-principal execution, required fresh independent approval, dispatched once and persisted across restart without a model call");
+  log("actual Firestore daily schedule claim retained its exact local-calendar report window, survived post-COMMIT acknowledgement loss as one service-principal execution, required fresh independent approval, dispatched once and persisted across restart without a model call");
 
   const lostOperation = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-lost-intent-0001", input: { id: "operation-lost-intent" } }, 202)).data.id;
   await waitFor(async () => (await repository.snapshot()).executions[lostOperation].status === "AWAITING_APPROVAL", "lost-intent approval wait");

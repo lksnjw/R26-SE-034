@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { HandlerFailure, type CurrentUser, type HandlerServices } from "../http/handlers/common.js";
-import type { Repository, RepositoryState, ScheduleOccurrence, WorkflowSchedule } from "../repository/store.js";
+import type { ReportWindow, Repository, RepositoryState, ScheduleOccurrence, WorkflowSchedule } from "../repository/store.js";
 import { workflowContentHash } from "../parser/workflow.js";
 import { isSecretField, withoutSecretFields } from "../redact/secrets.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
@@ -20,7 +20,7 @@ export const dailyScheduleCommandSchema = z.object({
   enabled: z.boolean(),
   timezone: z.string().trim().min(1).max(128),
   localTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
-  reportingPeriod: z.string().trim().min(1).max(128),
+  reportingPeriod: z.literal("previous-calendar-day"),
   misfirePolicy: z.enum(["SKIP", "FIRE_ONCE"]),
   misfireGraceSeconds: z.number().int().min(60).max(86_400),
   servicePrincipalId: z.string().min(1).max(256),
@@ -35,6 +35,29 @@ const formatter = (timezone: string) => {
 function localParts(timezone: string, instant: number, dateFormatter = formatter(timezone)) {
   const values = Object.fromEntries(dateFormatter.formatToParts(new Date(instant)).filter(part => part.type !== "literal").map(part => [part.type, part.value]));
   return { date: `${values.year}-${values.month}-${values.day}`, time: `${values.hour}:${values.minute}` };
+}
+function shiftDate(date: string, days: number): string {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(Date.UTC(year!, month! - 1, day! + days)).toISOString().slice(0, 10);
+}
+function startOfLocalDate(timezone: string, date: string): string {
+  const [year, month, day] = date.split("-").map(Number), center = Date.UTC(year!, month! - 1, day!);
+  let low = center - 48 * 60 * 60_000, high = center + 48 * 60 * 60_000;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 120_000) * 60_000;
+    if (localParts(timezone, middle).date < date) low = middle + 60_000; else high = middle;
+  }
+  if (localParts(timezone, low).date !== date) throw new HandlerFailure(422, "The requested local report day does not exist in this timezone", { code: "SCHEDULE_REPORT_WINDOW_UNRESOLVED" });
+  return new Date(low).toISOString();
+}
+export function reportWindowFor(timezone: string, scheduledFor: string, reportingPeriod: "previous-calendar-day"): ReportWindow {
+  if (reportingPeriod !== "previous-calendar-day") throw new HandlerFailure(422, "Reporting period is unsupported", { code: "SCHEDULE_REPORT_WINDOW_UNRESOLVED" });
+  formatter(timezone);
+  const instant = Date.parse(scheduledFor);
+  if (!Number.isFinite(instant)) throw new HandlerFailure(422, "Scheduled occurrence time is invalid", { code: "SCHEDULE_REPORT_WINDOW_UNRESOLVED" });
+  const occurrenceDate = localParts(timezone, instant).date, localDate = shiftDate(occurrenceDate, -1);
+  return { profile: "workflow-report-window/v1", reportingPeriod, timezone, localDate,
+    startAt: startOfLocalDate(timezone, localDate), endAt: startOfLocalDate(timezone, occurrenceDate) };
 }
 /** Finds the first real UTC minute that represents the requested local wall
  * time. A nonexistent DST wall time is skipped; an ambiguous time chooses the
@@ -59,7 +82,7 @@ function effectiveStateUser(state: Readonly<RepositoryState>, userId: string): C
 function publicSchedule(schedule: WorkflowSchedule | null) { return schedule ? withoutSecretFields(schedule) : null; }
 function publicOccurrence(value: ScheduleOccurrence) {
   const { idempotencyKey: _idempotencyKey, ...visible } = value;
-  return withoutSecretFields(visible);
+  return withoutSecretFields({ ...visible, reportWindow: value.reportWindow ?? null });
 }
 function containsSecretField(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsSecretField);
@@ -121,11 +144,13 @@ export async function saveWorkflowSchedule(services: HandlerServices, workflowId
       timezone: command.timezone, localTime: command.localTime, reportingPeriod: command.reportingPeriod, misfirePolicy: command.misfirePolicy,
       misfireGraceSeconds: command.misfireGraceSeconds, servicePrincipalId: command.servicePrincipalId, input: command.input });
     const unchanged = previous?.scheduleHash === scheduleHash && previous.state === "ACTIVE" && previous.nextRunAt && Date.parse(previous.nextRunAt) > Date.now();
+    const nextRunAt = unchanged ? previous.nextRunAt! : nextDailyOccurrence(command.timezone, command.localTime, Date.now());
+    reportWindowFor(command.timezone, nextRunAt, command.reportingPeriod);
     const schedule: WorkflowSchedule = { profile: "workflow-daily-schedule/v1", id: scheduleId, workflowId, workflowVersion: command.workflowVersion,
       workflowHash: command.workflowHash, state: command.enabled ? "ACTIVE" : "PAUSED", revision: (previous?.revision ?? 0) + 1,
       timezone: command.timezone, localTime: command.localTime, reportingPeriod: command.reportingPeriod, misfirePolicy: command.misfirePolicy,
       misfireGraceSeconds: command.misfireGraceSeconds, servicePrincipalId: command.servicePrincipalId, input: structuredClone(command.input),
-      nextRunAt: command.enabled ? unchanged ? previous.nextRunAt : nextDailyOccurrence(command.timezone, command.localTime, Date.now()) : null,
+      nextRunAt: command.enabled ? nextRunAt : null,
       ...(previous?.lastOccurrenceAt ? { lastOccurrenceAt: previous.lastOccurrenceAt } : {}), createdBy: previous?.createdBy ?? { id: currentActor.id, name: currentActor.name },
       createdAt: previous?.createdAt ?? now, updatedAt: now, scheduleHash };
     state.schedules[scheduleId] = schedule;
@@ -215,11 +240,23 @@ export class WorkflowScheduleRunner {
       const workflow = state.workflows[schedule.workflowId], publication = (state.versions[schedule.workflowId] ?? []).findLast(value => value.artifactState === "PUBLISHED" && value.version === schedule.workflowVersion);
       const scheduledFor = schedule.nextRunAt, occurrenceId = `occurrence-${digest([schedule.id, schedule.revision, scheduledFor]).slice(7, 39)}`;
       const existing = state.scheduleOccurrences[occurrenceId]; if (existing) return { schedule: structuredClone(schedule), occurrence: structuredClone(existing) };
+      let reportWindow: ReportWindow;
+      try { reportWindow = reportWindowFor(schedule.timezone, scheduledFor, schedule.reportingPeriod); }
+      catch {
+        const reason = "Reporting-period semantics are unsupported or the local report day cannot be resolved; save a new schedule revision";
+        const occurrence: ScheduleOccurrence = { profile: "workflow-schedule-occurrence/v1", id: occurrenceId, scheduleId: schedule.id,
+          scheduleRevision: schedule.revision, workflowId: schedule.workflowId, workflowVersion: schedule.workflowVersion, workflowHash: schedule.workflowHash,
+          scheduledFor, localDate: localParts(schedule.timezone, Date.parse(scheduledFor)).date, timezone: schedule.timezone,
+          servicePrincipalId: schedule.servicePrincipalId, state: "BLOCKED", idempotencyKey: `sched_${digest([schedule.id, schedule.revision, scheduledFor]).slice(7, 55)}`,
+          reason, createdAt: new Date(nowMs).toISOString() };
+        state.scheduleOccurrences[occurrenceId] = occurrence; schedule.state = "BLOCKED"; schedule.lastError = reason; schedule.nextRunAt = null; schedule.updatedAt = new Date(nowMs).toISOString();
+        return { schedule: structuredClone(schedule), occurrence: structuredClone(occurrence) };
+      }
       if (!workflow || workflow.archived || workflow.publishedVersion !== schedule.workflowVersion || workflowContentHash(workflow.yaml) !== schedule.workflowHash || publication?.yaml !== workflow.yaml) {
         const reason = "Pinned workflow publication changed or is unavailable";
         const occurrence: ScheduleOccurrence = { profile: "workflow-schedule-occurrence/v1", id: occurrenceId, scheduleId: schedule.id,
           scheduleRevision: schedule.revision, workflowId: schedule.workflowId, workflowVersion: schedule.workflowVersion, workflowHash: schedule.workflowHash,
-          scheduledFor, localDate: localParts(schedule.timezone, Date.parse(scheduledFor)).date, timezone: schedule.timezone,
+          scheduledFor, localDate: localParts(schedule.timezone, Date.parse(scheduledFor)).date, timezone: schedule.timezone, reportWindow,
           servicePrincipalId: schedule.servicePrincipalId, state: "BLOCKED", idempotencyKey: `sched_${digest([schedule.id, schedule.revision, scheduledFor]).slice(7, 55)}`,
           reason, createdAt: new Date(nowMs).toISOString() };
         state.scheduleOccurrences[occurrenceId] = occurrence;
@@ -229,7 +266,7 @@ export class WorkflowScheduleRunner {
       const lateMs = nowMs - Date.parse(scheduledFor), skipped = schedule.misfirePolicy === "SKIP" && lateMs > schedule.misfireGraceSeconds * 1000;
       const occurrence: ScheduleOccurrence = { profile: "workflow-schedule-occurrence/v1", id: occurrenceId, scheduleId: schedule.id, scheduleRevision: schedule.revision,
         workflowId: schedule.workflowId, workflowVersion: schedule.workflowVersion, workflowHash: schedule.workflowHash, scheduledFor,
-        localDate: localParts(schedule.timezone, Date.parse(scheduledFor)).date, timezone: schedule.timezone, servicePrincipalId: schedule.servicePrincipalId,
+        localDate: localParts(schedule.timezone, Date.parse(scheduledFor)).date, timezone: schedule.timezone, reportWindow, servicePrincipalId: schedule.servicePrincipalId,
         state: skipped ? "SKIPPED" : "ADMITTING", idempotencyKey: `sched_${digest([schedule.id, schedule.revision, scheduledFor]).slice(7, 55)}`,
         createdAt: new Date(nowMs).toISOString(), ...(skipped ? { reason: "Occurrence exceeded the configured misfire grace window; no execution was admitted" } : {}) };
       state.scheduleOccurrences[occurrenceId] = occurrence;
@@ -238,13 +275,14 @@ export class WorkflowScheduleRunner {
     });
   }
   private async admit(claim: Claim, nowMs: number): Promise<"ADMITTED" | "BLOCKED" | null> {
+    if (!claim.occurrence.reportWindow) return this.block(claim, "Occurrence has no immutable report window; save a new schedule revision");
     const principal = await this.services.repository.effectiveUser(claim.schedule.servicePrincipalId);
     if (!principal) return this.block(claim, "Named service principal is unavailable");
     const workflow = await this.services.repository.readAuthoritative(state => structuredClone(state.workflows[claim.schedule.workflowId]));
     if (!workflow) return this.block(claim, "Pinned workflow is unavailable");
     try {
       const source = { profile: "workflow-schedule-source/v1" as const, scheduleId: claim.schedule.id, scheduleRevision: claim.schedule.revision,
-        occurrenceId: claim.occurrence.id, scheduledFor: claim.occurrence.scheduledFor };
+        occurrenceId: claim.occurrence.id, scheduledFor: claim.occurrence.scheduledFor, reportWindow: structuredClone(claim.occurrence.reportWindow) };
       const result = await operationJobQueue(this.services).admit(workflow, claim.schedule.input, principal, claim.occurrence.idempotencyKey,
         `schedule:${claim.schedule.id}:${claim.occurrence.id}`, source);
       await this.services.repository.mutate(state => {
