@@ -35,7 +35,7 @@ class Records implements PersistenceBackend {
   async saveExecutionCheckpoint(checkpoint: ExecutionCheckpoint) { await this.save(Buffer.from(JSON.stringify(applyExecutionCheckpoint(JSON.parse(this.bytes!.toString()), checkpoint)))); }
   async probe() {} async close() {}
 }
-async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false) {
+async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false) {
   const repository = await Repository.open(storage), registries = await RegistryService.load(resolve("tests/fixtures/tools.json"), resolve("tests/fixtures/rules.json"));
   const base = registries.snapshot(), original = base.tools[0]!;
   const read = toolSchema.parse({ ...original, allowed_roles: ["Platform Admin"], bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [],
@@ -47,16 +47,20 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
     bridge_contract: { ...read.bridge_contract, resource_digest: "c".repeat(64), output_schema: { type: "object", properties: {
       value: { type: "string" }, state: { type: "string" }, settled: { type: "boolean" }, observedAt: { type: "string" } }, required: ["value", "state", "settled", "observedAt"], additionalProperties: false } } }) : undefined;
+  const email = withEmail ? toolSchema.parse({ ...write, tool_id: "email-fixture", name: "demo.email", mcp_tool_name: "demo.email",
+    input_schema: { type: "object", properties: { recipient: { type: "string" }, subject: { type: "string" }, body: { type: "string" } }, required: ["recipient", "subject", "body"], additionalProperties: false },
+    side_effects: ["Synthetic email acceptance"], email_delivery_contract: { profile: "email-delivery-input/v1", recipient_parameter: "recipient", subject_parameter: "subject", body_parameter: "body" },
+    bridge_contract: { ...write.bridge_contract!, resource_digest: "d".repeat(64) } }) : undefined;
   if (readback) {
     write.input_schema = { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false };
     write.operation_contract!.readback = { profile: "operation-readback-contract/v1", tool_id: readback.tool_id, contract_hash: capabilityContractHash(readback),
     arguments: [{ parameter: "value", source_path: ["value"] }], correlation: [{ source_path: ["value"], result_path: ["value"] }],
       outcome: { path: ["state"], applied: "APPLIED", not_applied: "ABSENT" }, settled_path: ["settled"], observed_at_path: ["observedAt"], max_age_seconds: 60, evidence_meaning: "operation-state" };
   }
-  const tools = [read, write, ...(readback ? [readback] : [])];
+  const tools = [read, write, ...(readback ? [readback] : []), ...(email ? [email] : [])];
   vi.spyOn(registries, "snapshot").mockImplementation(() => ({ ...base, tools }));
   vi.spyOn(registries, "findTool").mockImplementation(name => tools.find(tool => [tool.tool_id, tool.name, tool.mcp_tool_name].includes(name)));
-  vi.spyOn(registries, "hash").mockImplementation(() => capabilityContractHash(toolSchema.parse({ ...write, execution_notes: [read, ...(readback ? [readback] : [])].map(capabilityContractHash).join(":") })));
+  vi.spyOn(registries, "hash").mockImplementation(() => capabilityContractHash(toolSchema.parse({ ...write, execution_notes: [read, ...(readback ? [readback] : []), ...(email ? [email] : [])].map(capabilityContractHash).join(":") })));
   const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "operation-fixture-secret-at-least-32-characters", MCP_MODE: "mock", STORAGE_DRIVER: "memory", STORAGE_ENCRYPTION_KEY: "x".repeat(32) });
   const validator = new RegistryValidator(registries, repository);
   let dispatchAdmissionHook: (() => Promise<void>) | undefined;
@@ -71,7 +75,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   await repository.mutate(state => {
     const now = new Date().toISOString();
     state.roles.review = { id: "review", name: "Independent approver", description: "Review only", permissions: ["execution:approve"], createdAt: now };
-    for (const id of ["requester", "reviewer"]) state.users[id] = { id, name: id, email: `${id}@example.test`, roleId: id === "requester" ? "role_admin" : "review", permissionOverrides: [], status: "Active", initials: "F", departmentId: null, lastLoginAt: null, createdAt: now };
+    for (const id of ["requester", "reviewer", "observer"]) state.users[id] = { id, name: id, email: `${id}@example.test`, roleId: id === "reviewer" ? "review" : "role_admin", permissionOverrides: [], status: "Active", initials: "F", departmentId: null, lastLoginAt: null, createdAt: now };
     const yaml = stringify({ name: "Synthetic report dispatch", description: "Read then independently approve a synthetic notification", trigger: { type: "manual" }, steps: [
       ...(withRead ? [{ id: "lookup", action: read.name, parameters: { value: "fixture report" } }] : []), { id: "send", action: write.name, parameters: { value: withRead ? "{{lookup.structuredContent.value}}" : "fixture report" } },
     ] });
@@ -83,11 +87,11 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   await repository.mutate(state => updateRuntimeApprovalPolicy(state, actor, { profile: "runtime-approval-policy/v1", baseRevision: 0, enabled: true, approverRoleIds: ["review"], ttlSeconds: 300, separationOfDuties: true }));
   const observations = (await observeCapabilities({ repository, registries, session, user: actor })).observations;
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: { observationId: observation.id, contractHash: observation.contractHash,
-    decisionKey: `fixture-review-${observation.toolId}`, effectClass: observation.toolId === write.tool_id ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Explicit synthetic contract review",
-    ...(observation.toolId === write.tool_id ? { requireIndependentApproval: true } : {}) } });
+    decisionKey: `fixture-review-${observation.toolId}`, effectClass: observation.toolId === write.tool_id || observation.toolId === email?.tool_id ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Explicit synthetic contract review",
+    ...(observation.toolId === write.tool_id || observation.toolId === email?.tool_id ? { requireIndependentApproval: true } : {}) } });
   const services = { repository, registries, config, validator, erpbridgeSession: session, executor: new Executor(new ToolRegistry(), validator) };
   const app = await buildApp(services); closers.push(app);
-  const request = (method: "GET" | "POST" | "PUT" | "PATCH", url: string, payload?: object, userId = "requester") => app.inject({ method, url, headers: { authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: userId, expiresIn: 3600 })}` }, ...(payload ? { payload } : {}) });
+  const request = (method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", url: string, payload?: object, userId = "requester") => app.inject({ method, url, headers: { authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: userId, expiresIn: 3600 })}` }, ...(payload ? { payload } : {}) });
   const publish = () => request("POST", "/api/workflows/flow/publish", {});
   const run = (key = "fixture-operation-run-0001", input: Record<string, unknown> = {}) => request("POST", "/api/workflows/flow/run", { mode: "async-operation", idempotencyKey: key, input });
   const review = async (id: string) => { const response = await request("GET", `/api/executions/${id}?view=approval`, undefined, "reviewer"); expect(response.statusCode, response.body).toBe(200); return response.json().data.runtimeApproval; };
@@ -97,7 +101,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     const run = (await repository.snapshot()).executions[id]!; expect(run.status, JSON.stringify({ failure: run.failure, progress: run.readProgress, summary: run.agentSummary, sdkCalls: sdk.callTool.mock.calls })).toBe(status);
   };
   const admit = async () => { const pub = await publish(); expect(pub.statusCode, pub.body).toBe(200); const response = await run(); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id; await wait(id, "AWAITING_APPROVAL"); return id as string; };
-  return { repository, services, app, actor, read, write, readback, sdk, session, request, publish, run, review, command, wait, admit,
+  return { repository, services, app, actor, read, write, readback, email, sdk, session, request, publish, run, review, command, wait, admit,
     setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; } };
 }
 
@@ -124,6 +128,80 @@ test("normal publish/readiness/run/approve worker executes exact sequential oper
   expect((await s.run()).json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
   expect((await s.request("POST", `/api/executions/${id}/approve`, command, "reviewer")).json().data.replayed).toBe(true);
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("an exact chat email draft requests independent approval and dispatches only server-derived fields after approval", async () => {
+  const s = await setup(null, true, false, true);
+  const created = await s.request("POST", "/api/chat/sessions", { title: "Email review" }); expect(created.statusCode, created.body).toBe(201);
+  const sessionId = created.json().data.id as string;
+  const prepared = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { content: "Email manager@example.test" });
+  expect(prepared.statusCode, prepared.body).toBe(200);
+  const draft = prepared.json().data.assistantMessage.artifacts.emailDraft;
+  const edit = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDraftCommand: { draftId: draft.id, baseVersion: draft.version,
+    baseHash: draft.contentHash, commandId: "email-edit-command-0001", patch: { to: "manager@example.test", subject: "Daily invoice review", body: "Reviewed invoice summary." } } });
+  expect(edit.statusCode, edit.body).toBe(200); const saved = edit.json().data.assistantMessage.artifacts.emailDraft;
+  const deliveryCommand = { profile: "email-delivery-admission-command/v1", draftId: saved.id, baseVersion: saved.version, baseHash: saved.contentHash,
+    idempotencyKey: "email-admission-key-0001", sharingConfirmed: true };
+  const admitted = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDeliveryCommand: deliveryCommand });
+  expect(admitted.statusCode, admitted.body).toBe(202);
+  expect(admitted.json().data.emailDelivery).toMatchObject({ profile: "email-delivery-admission/v1", draftId: saved.id, draftVersion: 2,
+    reviewRequested: true, freshIndependentApprovalRequired: true, bridgeDispatched: false, deliveryVerified: false, status: "PENDING" });
+  expect(admitted.body).not.toContain("email-admission-key-0001"); expect(admitted.body).not.toContain("recipient_parameter");
+  const executionId = admitted.json().data.emailDelivery.executionId as string; await s.wait(executionId, "AWAITING_APPROVAL");
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+  expect(await s.review(executionId)).toMatchObject({ state: "PENDING", canDecide: true,
+    arguments: { recipient: "manager@example.test", subject: "Daily invoice review", body: "Reviewed invoice summary." } });
+  const approved = await s.request("POST", `/api/executions/${executionId}/approve`, await s.command(executionId), "reviewer");
+  expect(approved.statusCode, approved.body).toBe(200); await s.wait(executionId, "DONE");
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(s.sdk.callTool.mock.calls[0]![0]).toBe(exactBridgeName(s.email!));
+  expect(s.sdk.callTool.mock.calls[0]![1]).toEqual({ recipient: "manager@example.test", subject: "Daily invoice review", body: "Reviewed invoice summary." });
+  const state = await s.repository.snapshot(), execution = state.executions[executionId]!;
+  expect(execution.emailDeliverySource).toMatchObject({ profile: "email-delivery-source/v1", sessionId, draftId: saved.id, draftVersion: 2, draftHash: saved.contentHash });
+  expect(Object.values(state.emailDeliveryAdmissions)).toHaveLength(1); expect(execution.finalOutput).toMatchObject({ structuredContent: { accepted: true } });
+  expect(execution.agentSummary).not.toMatch(/delivered/i);
+  const replay = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDeliveryCommand: deliveryCommand });
+  expect(replay.statusCode, replay.body).toBe(202); expect(replay.json().data.emailDelivery).toMatchObject({ executionId, replayed: true });
+  expect(Object.values((await s.repository.snapshot()).emailDeliveryAdmissions)).toHaveLength(1); expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+  expect((await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDeliveryCommand: { ...deliveryCommand, idempotencyKey: "email-admission-key-0002" } })).statusCode).toBe(409);
+  expect((await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDraftCommand: { draftId: saved.id, baseVersion: saved.version, baseHash: saved.contentHash,
+    commandId: "email-edit-command-0002", patch: { to: saved.to, subject: saved.subject, body: "Changed after request" } } })).statusCode).toBe(409);
+  expect((await s.request("POST", `/api/workflows/${execution.workflowId}/run`, { mode: "async-operation", idempotencyKey: "direct-email-rerun-0001", input: {} })).statusCode).toBe(409);
+  expect((await s.request("GET", `/api/workflows/${execution.workflowId}`, undefined, "observer")).statusCode).toBe(404);
+  expect((await s.request("GET", `/api/workflows/${execution.workflowId}/yaml`, undefined, "observer")).statusCode).toBe(404);
+  expect((await s.request("GET", `/api/executions/${executionId}`, undefined, "observer")).statusCode).toBe(404);
+  expect((await s.request("PATCH", `/api/workflows/${execution.workflowId}`, { name: "Mutated email" })).statusCode).toBe(409);
+  expect((await s.request("POST", `/api/workflows/${execution.workflowId}/duplicate`, {})).statusCode).toBe(409);
+  expect((await s.request("DELETE", `/api/workflows/${execution.workflowId}`)).statusCode).toBe(409);
+  expect((await s.request("DELETE", `/api/chat/sessions/${sessionId}`)).statusCode).toBe(409);
+  expect((await s.request("PUT", `/api/workflows/${execution.workflowId}/schedule`, { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: 1, workflowHash: execution.workflowSnapshot!.contentHash, enabled: true, timezone: "UTC", localTime: "09:00", reportingPeriod: "previous-calendar-day",
+    misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {} })).statusCode).toBe(409);
+  await s.repository.mutate(state => {
+    const admission = Object.values(state.emailDeliveryAdmissions)[0]!;
+    admission.requestFingerprint = `sha256:${"0".repeat(64)}`;
+  });
+  const corruptReplay = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDeliveryCommand: deliveryCommand });
+  expect(corruptReplay.statusCode, corruptReplay.body).toBe(503);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+});
+
+test.each(["missing-sharing", "recurring", "browser-tool", "ambiguous-connector"])("email admission denies %s before SDK dispatch", async scenario => {
+  const s = await setup(null, true, false, true), created = await s.request("POST", "/api/chat/sessions", {}), sessionId = created.json().data.id as string;
+  const prepared = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { content: scenario === "recurring" ? "Email manager@example.test every day" : "Email manager@example.test" });
+  const draft = prepared.json().data.assistantMessage.artifacts.emailDraft;
+  const edit = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDraftCommand: { draftId: draft.id, baseVersion: draft.version, baseHash: draft.contentHash,
+    commandId: `email-edit-${scenario}-0001`, patch: { to: "manager@example.test", subject: "Review", body: "Exact body" } } });
+  const saved = edit.json().data.assistantMessage.artifacts.emailDraft, command: Record<string, unknown> = { profile: "email-delivery-admission-command/v1", draftId: saved.id,
+    baseVersion: saved.version, baseHash: saved.contentHash, idempotencyKey: `email-key-${scenario}-00000001`, sharingConfirmed: true };
+  if (scenario === "missing-sharing") delete command.sharingConfirmed;
+  if (scenario === "browser-tool") command.tool = "attacker.override";
+  if (scenario === "ambiguous-connector") {
+    const original = s.services.registries.snapshot(), email = s.email!;
+    vi.mocked(s.services.registries.snapshot).mockImplementation(() => ({ ...original, tools: [...original.tools, { ...email, tool_id: "email-fixture-two", name: "demo.email.two", mcp_tool_name: "demo.email.two" }] }));
+  }
+  const response = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDeliveryCommand: command });
+  expect(response.statusCode).toBeGreaterThanOrEqual(400); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  expect(Object.values((await s.repository.snapshot()).emailDeliveryAdmissions)).toHaveLength(0);
 });
 
 test("durable daily schedule admits one pinned service-principal occurrence and requires fresh independent approval", async () => {

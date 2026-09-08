@@ -35,6 +35,8 @@ export async function editEmailDraft(services: HandlerServices, user: CurrentUse
     const latest = [...chat.messages].reverse().find((message) => isRecord(message.artifacts) && isRecord(message.artifacts.emailDraft) && message.artifacts.emailDraft.id === command.draftId);
     const original = latest && isRecord(latest.artifacts) ? latest.artifacts.emailDraft as EmailDraft : undefined;
     if (!original || original.profile !== "email-draft-v1" || original.ownerId !== user.id || original.sessionId !== sessionId) throw new HandlerFailure(404, "Email draft not found");
+    if (Object.values(state.emailDeliveryAdmissions).some(item => item.sessionId === sessionId && item.draftId === original.id))
+      throw new HandlerFailure(409, "This exact draft already has an approval request and is immutable");
     if (original.version !== command.baseVersion || original.contentHash !== command.baseHash) throw new HandlerFailure(409, "The email draft changed. Reload the conversation before editing");
     const draft: EmailDraft = { ...structuredClone(original), ...command.patch, version: original.version + 1, updatedAt: now(), state: "DRAFT_NOT_SENT", reportStatus: "USER_EDITED" };
     draft.requirements = draftRequirements(draft); draft.contentHash = emailDraftHash(draft);

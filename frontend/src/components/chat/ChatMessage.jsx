@@ -531,7 +531,7 @@ function ChatMessage({ message, onChatChanged }) {
       <div className="max-w-[92%]">
         <MessageMarkdown text={message.text} />
 
-        {intent === "EMAIL_DELIVERY" && artifacts?.emailDraft && <EmailDraftPreview draft={artifacts.emailDraft} reportReason={artifacts.reportReason} superseded={artifacts.emailDraftSuperseded} onSaved={onChatChanged} />}
+        {intent === "EMAIL_DELIVERY" && artifacts?.emailDraft && <EmailDraftPreview draft={artifacts.emailDraft} emailDelivery={artifacts.emailDelivery} reportReason={artifacts.reportReason} superseded={artifacts.emailDraftSuperseded} onSaved={onChatChanged} />}
 
         {intent === "NODE_PATCH_PROPOSAL" && artifacts?.proposal && <p className="mt-2 text-xs text-gray-500">
           {artifacts.proposal.status === "APPLIED" ? `Applied to draft v${artifacts.proposal.appliedVersion} · not published or executed by this decision.` : artifacts.proposal.status === "DISCARDED" ? "Proposal discarded · workflow unchanged by this decision." : `Pending node proposal · ${artifacts.proposal.nodeId}. Review it in the workflow canvas.`}

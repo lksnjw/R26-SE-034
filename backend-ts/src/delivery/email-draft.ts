@@ -44,8 +44,8 @@ export function draftRequirements(draft: Pick<EmailDraft, "to" | "subject" | "bo
     ...(draft.channel === "unspecified" ? ["Confirm the delivery channel; email has not been assumed."] : []),
     ...(draft.to ? [] : ["Resolve and confirm the recipient's exact address; do not guess a person's email."]),
     ...(draft.subject.trim() ? [] : ["Provide a subject."]), ...(draft.body.trim() ? [] : ["Provide the message or retrieve the requested report before review."]),
-    "An admitted email connector and safe delivery executor are not implemented; nothing can be sent from this draft.",
-    "Recipient data-sharing permission and approval of this exact message must be checked before sending.",
+    "A currently reviewed ERPBridge email connector and fresh independent approval are required; this draft itself cannot send.",
+    "Recipient data-sharing permission must be explicitly confirmed for this exact message before approval is requested.",
     ...(draft.recurring ? ["Confirm recurrence, reporting period, delivery time and timezone. No schedule has been activated."] : []),
   ];
 }

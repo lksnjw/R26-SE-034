@@ -64,11 +64,17 @@ const operationTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-NOTIFICATION
     outcome: { path: ["state"], applied: "APPLIED", not_applied: "ABSENT" }, evidence_meaning: "operation-state",
   } },
   bridge_contract: { ...tool.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
-const fixtureTools = [tool, operationTool, readbackTool];
+const emailTool = toolSchema.parse({ ...operationTool, tool_id: "FIXTURE-EMAIL", name: "fixture.email", mcp_tool_name: "fixture.email", side_effects: ["Synthetic email acceptance"],
+  input_schema: { type: "object", properties: { recipient: { type: "string" }, subject: { type: "string" }, body: { type: "string" } }, required: ["recipient", "subject", "body"], additionalProperties: false },
+  email_delivery_contract: { profile: "email-delivery-input/v1", recipient_parameter: "recipient", subject_parameter: "subject", body_parameter: "body" },
+  operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never",
+    confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
+  bridge_contract: { ...operationTool.bridge_contract, resource_digest: "d".repeat(64) } });
+const fixtureTools = [tool, operationTool, readbackTool, emailTool];
 const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions: { tools: "fixture-v1", rules: "fixture-v1" } }), hash: () => resolvedParameterHashBytes(canonicalJSONBytes(fixtureTools)),
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
-const calls = [], models = [], operations = [], readbacks = [];
+const calls = [], models = [], operations = [], readbacks = [], emails = [];
 let sdkHook, modelHook;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
@@ -86,6 +92,8 @@ async function start(repositoryValue) {
         _meta: { "toolplane.resourceVersion": "1.0.0", "toolplane.resourceDigest": value.bridge_contract.resource_digest, "io.erpbridge/allowedRoles": ["platform_admin"] } })),
       callTool: async (name, args, meta) => {
         assert.equal(args.role, "platform_admin");
+        if (name === exactBridgeName(emailTool)) { assert.equal(meta["toolplane.resourceDigest"], "d".repeat(64));
+          emails.push({ recipient: args.recipient, subject: args.subject, body: args.body }); return { content: [], structuredContent: { accepted: true, id: "synthetic-email-acceptance" } }; }
         if (name === exactBridgeName(operationTool)) { assert.equal(meta["toolplane.resourceDigest"], "b".repeat(64)); operations.push(args.id); return { content: [], structuredContent: { accepted: true, id: args.id } }; }
         if (name === exactBridgeName(readbackTool)) {
           assert.equal(meta["toolplane.resourceDigest"], "c".repeat(64)); readbacks.push(args.id);
@@ -127,8 +135,8 @@ try {
   });
   const actor = await repository.effectiveUser("owner"), observations = (await observeCapabilities({ repository, registries, session, user: actor })).observations;
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
-    observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: observation.toolId === operationTool.tool_id ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
-    ...(observation.toolId === operationTool.tool_id ? { requireIndependentApproval: true } : {}) } });
+    observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: [operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
+    ...([operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? { requireIndependentApproval: true } : {}) } });
   for (const id of ["single", "collection"]) await request("POST", `/api/workflows/${id}/publish`, {}, 200);
   const ready = await request("GET", "/api/workflows/collection/readiness", undefined, 200); assert.equal(ready.data.can_attempt_run, true);
   const read = await request("POST", "/api/workflows/single/run", { input: { id: "single" } }, 200); assert.equal(read.data.status, "DONE"); assert.deepEqual(calls, ["single"]);
@@ -345,6 +353,49 @@ try {
   const historicalApproval = (await request("GET", `/api/executions/${operationRun}?view=approval&approvalId=${encodeURIComponent(savedReviewEntry.reviewId)}`, undefined, 200, "reviewer")).data.runtimeApproval;
   assert.equal(historicalApproval.id, operationReview.id); assert.equal(historicalApproval.state, "CONSUMED"); assert.equal(historicalApproval.canDecide, false);
   log("actual Firestore normal operation publication/run produced a durable exact approval wait, survived restart without calls, then consumed independent approval and acknowledged one synthetic SDK result; zero model calls and no duplicate after decision replay/restart");
+
+  const modelsBeforeEmail = models.length, operationsBeforeEmail = operations.length, emailChat = await request("POST", "/api/chat/sessions", { title: "Exact email review" }, 201);
+  const emailPrepared = (await request("POST", `/api/chat/sessions/${emailChat.data.id}/messages`, { content: "Email manager@example.test" }, 200)).data.assistantMessage.artifacts.emailDraft;
+  const emailSaved = (await request("POST", `/api/chat/sessions/${emailChat.data.id}/messages`, { emailDraftCommand: { draftId: emailPrepared.id, baseVersion: emailPrepared.version,
+    baseHash: emailPrepared.contentHash, commandId: "firestore-email-edit-0001", patch: { to: "manager@example.test", subject: "Reviewed invoice summary", body: "Exact reviewed Firestore fixture body." } } }, 200)).data.assistantMessage.artifacts.emailDraft;
+  const emailAdmissionCommand = { profile: "email-delivery-admission-command/v1", draftId: emailSaved.id, baseVersion: emailSaved.version,
+    baseHash: emailSaved.contentHash, idempotencyKey: "firestore-email-admission-0001", sharingConfirmed: true };
+  const actualEmailAdmissionSave = persistence.save.bind(persistence); let lostEmailAdmissionACK = false;
+  persistence.save = async payload => { await actualEmailAdmissionSave(payload); if (!lostEmailAdmissionACK) {
+    lostEmailAdmissionACK = true; throw new Error("Synthetic actual Firestore email-admission post-COMMIT acknowledgement loss");
+  } };
+  await request("POST", `/api/chat/sessions/${emailChat.data.id}/messages`, { emailDeliveryCommand: emailAdmissionCommand }, 503); assert.equal(lostEmailAdmissionACK, true);
+  persistence.save = actualEmailAdmissionSave; await stop(); await start(await openApplicationRepository(config));
+  const emailAdmission = Object.values((await repository.snapshot()).emailDeliveryAdmissions)[0]; assert(emailAdmission);
+  await waitFor(async () => (await repository.snapshot()).executions[emailAdmission.executionId].status === "AWAITING_APPROVAL", "email draft independent approval wait");
+  assert.deepEqual(emails, []); assert.equal(operations.length, operationsBeforeEmail); assert.equal(models.length, modelsBeforeEmail);
+  const emailReview = (await request("GET", `/api/executions/${emailAdmission.executionId}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.deepEqual(emailReview.arguments, { recipient: "manager@example.test", subject: "Reviewed invoice summary", body: "Exact reviewed Firestore fixture body." });
+  await request("POST", `/api/executions/${emailAdmission.executionId}/approve`, { approvalId: emailReview.id, baseVersion: emailReview.version,
+    reviewHash: emailReview.reviewHash, decisionKey: "firestore-email-approval-0001" }, 200, "reviewer");
+  await waitFor(async () => (await repository.snapshot()).executions[emailAdmission.executionId].status === "DONE", "approved exact email notification acceptance");
+  assert.deepEqual(emails, [{ recipient: "manager@example.test", subject: "Reviewed invoice summary", body: "Exact reviewed Firestore fixture body." }]);
+  const replayedEmail = (await request("POST", `/api/chat/sessions/${emailChat.data.id}/messages`, { emailDeliveryCommand: emailAdmissionCommand }, 202)).data.emailDelivery;
+  assert.equal(replayedEmail.executionId, emailAdmission.executionId); assert.equal(replayedEmail.replayed, true); assert.equal(replayedEmail.bridgeDispatched, true); assert.equal(replayedEmail.deliveryVerified, false);
+  const reloadedEmailChat = (await request("GET", `/api/chat/sessions/${emailChat.data.id}`, undefined, 200)).data;
+  const latestEmailArtifact = reloadedEmailChat.messages.findLast(message => message.artifacts?.emailDelivery)?.artifacts.emailDelivery;
+  assert.equal(latestEmailArtifact.status, "DONE"); assert.equal(latestEmailArtifact.bridgeDispatched, true); assert.equal(latestEmailArtifact.deliveryVerified, false);
+  await request("POST", `/api/workflows/${emailAdmission.workflowId}/run`, { mode: "async-operation", idempotencyKey: "firestore-email-direct-rerun-0001", input: {} }, 409);
+  await request("GET", `/api/workflows/${emailAdmission.workflowId}`, undefined, 404, "other");
+  await request("GET", `/api/workflows/${emailAdmission.workflowId}/yaml`, undefined, 404, "other");
+  await request("GET", `/api/executions/${emailAdmission.executionId}`, undefined, 404, "other");
+  await request("PATCH", `/api/workflows/${emailAdmission.workflowId}`, { name: "Forbidden mutation" }, 409);
+  await request("POST", `/api/workflows/${emailAdmission.workflowId}/duplicate`, {}, 409);
+  await request("DELETE", `/api/workflows/${emailAdmission.workflowId}`, undefined, 409);
+  await request("DELETE", `/api/chat/sessions/${emailChat.data.id}`, undefined, 409);
+  const linkedEmailWorkflow = (await repository.snapshot()).workflows[emailAdmission.workflowId];
+  await request("PUT", `/api/workflows/${emailAdmission.workflowId}/schedule`, { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: linkedEmailWorkflow.publishedVersion, workflowHash: workflowContentHash(linkedEmailWorkflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "owner", input: {} }, 409);
+  await stop(); await start(await openApplicationRepository(config)); assert.equal(Object.values((await repository.snapshot()).emailDeliveryAdmissions).length, 1);
+  assert.equal(Object.values((await repository.snapshot()).executions).filter(value => value.emailDeliverySource?.admissionId === emailAdmission.id).length, 1);
+  assert.equal(emails.length, 1); assert.equal(operations.length, operationsBeforeEmail); assert.equal(models.length, modelsBeforeEmail);
+  log("actual Firestore exact email-draft admission survived post-COMMIT acknowledgement loss as one immutable linked execution, required fresh independent approval, dispatched only server-derived fields once, and retained acceptance-not-delivery truth on replay/restart");
 
   const scheduleWorkflow = (await repository.snapshot()).workflows.operation;
   const scheduleLocalTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);

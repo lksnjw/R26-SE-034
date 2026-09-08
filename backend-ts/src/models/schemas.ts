@@ -86,6 +86,7 @@ export type Workflow = z.infer<typeof workflowSchema> & {
   chatMessageId?: string;
   traceId?: string;
   recoverySource?: { profile: "operation-recovery-source/v1"; sourceExecutionId: string; artifactId: string; artifactHash: string };
+  emailDeliverySource?: { profile: "email-delivery-source/v1"; admissionId: string; sessionId: string; draftId: string; draftVersion: number; draftHash: string };
   // Set when the generated workflow contains one or more `kind: approval`
   // steps that have not yet been resolved in chat. While this is set the
   // workflow cannot be run — see the generation-time approval flow in

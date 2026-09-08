@@ -47,15 +47,24 @@ export function selectedNodePatchVersion(node: { kind?: string | undefined }) { 
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
   return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : "updateNode", nodeId: node.id, patch });
 }
+export function canViewWorkflow(workflow: Workflow, user: Pick<CurrentUser, "id" | "permissions">): boolean {
+  if (workflow.emailDeliverySource && workflow.owner.id !== user.id) return false;
+  return user.permissions.includes("workflow:read") || workflow.owner.id === user.id || (workflow.assignedUserIds ?? []).includes(user.id);
+}
 export function permittedWorkflow(workflow: Workflow, user: CurrentUser, editing: boolean): boolean {
-  return !workflow.archived && (!editing || user.permissions.includes("workflow:write")) &&
-    (user.permissions.includes("workflow:read") || workflow.owner.id === user.id || (workflow.assignedUserIds ?? []).includes(user.id));
+  return !workflow.archived && (!editing || user.permissions.includes("workflow:write") && !workflow.emailDeliverySource && !workflow.recoverySource) &&
+    canViewWorkflow(workflow, user);
+}
+export function assertWorkflowMutable(workflow: Workflow): void {
+  if (workflow.emailDeliverySource) throw new HandlerFailure(409, "Chat email-delivery publications are immutable and managed only through their linked execution", { code: "EMAIL_DELIVERY_WORKFLOW_IMMUTABLE" });
+  if (workflow.recoverySource) throw new HandlerFailure(409, "Linked recovery publications are immutable and managed only through their linked execution", { code: "RECOVERY_WORKFLOW_IMMUTABLE" });
 }
 export function requireWorkflowBase(workflow: Workflow, version: number, hash: string): void {
   if (workflow.draftVersion !== version || workflowContentHash(workflow.yaml) !== hash)
     throw new HandlerFailure(409, "This draft changed. Reload before applying the edit", { code: "DRAFT_REVISION_CONFLICT" });
 }
 export function assertCurrentWorkflowEditor(state: Readonly<RepositoryState>, workflow: Workflow, user: CurrentUser): CurrentUser {
+  assertWorkflowMutable(workflow);
   const account = state.users[user.id], role = account && state.roles[account.roleId];
   if (!account || account.status.toLowerCase() !== "active") throw new HandlerFailure(403, "Editing authority was revoked");
   const current = { ...account, role: role?.name ?? "", permissions: [...new Set([...(role?.permissions ?? []), ...account.permissionOverrides])] };

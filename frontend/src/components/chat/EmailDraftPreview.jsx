@@ -7,7 +7,7 @@ const reasonLabels = { ERPBRIDGE_NOT_CONNECTED: "ERPBridge is not connected. No 
 
 // This is a draft editor, not a send/approval control. Server revisions and
 // ownership remain authoritative; uncertain saves require a conversation reload.
-export default function EmailDraftPreview({ draft: initialDraft, reportReason, superseded = false, onSaved }) {
+export default function EmailDraftPreview({ draft: initialDraft, emailDelivery: initialDelivery, reportReason, superseded = false, onSaved }) {
   const { user } = useAuth();
   const id = useId();
   const savingRef = useRef(false);
@@ -15,10 +15,15 @@ export default function EmailDraftPreview({ draft: initialDraft, reportReason, s
   const [fields, setFields] = useState({ to: initialDraft.to, subject: initialDraft.subject, body: initialDraft.body });
   const [status, setStatus] = useState("idle");
   const [notice, setNotice] = useState("");
+  const [sharingConfirmed, setSharingConfirmed] = useState(false);
+  const [delivery, setDelivery] = useState(initialDelivery ?? null);
   const shownDraft = superseded ? initialDraft : draft;
   const shownFields = superseded ? initialDraft : fields;
-  const canEdit = !superseded && user?.id === draft.ownerId && draft.profile === "email-draft-v1" && draft.state === "DRAFT_NOT_SENT";
+  const canEdit = !superseded && !delivery && user?.id === draft.ownerId && draft.profile === "email-draft-v1" && draft.state === "DRAFT_NOT_SENT";
   const locked = !canEdit || status === "saving" || status === "uncertain" || status === "conflict";
+  const exactSavedDraft = fields.to === draft.to && fields.subject === draft.subject && fields.body === draft.body;
+  const canRequest = canEdit && !draft.recurring && exactSavedDraft && Boolean(draft.to && draft.subject.trim() && draft.body.trim()) && sharingConfirmed &&
+    !["saving", "requesting", "uncertain", "conflict"].includes(status);
   const save = async (event) => {
     event.preventDefault();
     if (locked || savingRef.current) return;
@@ -39,10 +44,31 @@ export default function EmailDraftPreview({ draft: initialDraft, reportReason, s
       else { setStatus("error"); setNotice("Changes were not accepted. Check your recipient and access, then try saving again."); }
     } finally { savingRef.current = false; }
   };
+  const requestApproval = async () => {
+    if (!canRequest) return;
+    setStatus("requesting"); setNotice("");
+    try {
+      const result = await chatService.sendMessage(draft.sessionId, "Request independent approval for this exact email draft", { emailDeliveryCommand: {
+        profile: "email-delivery-admission-command/v1", draftId: draft.id, baseVersion: draft.version, baseHash: draft.contentHash,
+        idempotencyKey: crypto.randomUUID(), sharingConfirmed: true,
+      } });
+      const receipt = result?.emailDelivery ?? result?.assistantMessage?.artifacts?.emailDelivery;
+      if (!receipt || receipt.profile !== "email-delivery-admission/v1" || receipt.draftId !== draft.id || receipt.draftVersion !== draft.version ||
+          receipt.draftHash !== draft.contentHash || !receipt.workflowId || !receipt.executionId || receipt.reviewRequested !== true || receipt.deliveryVerified !== false) {
+        setStatus("uncertain"); setNotice("Approval-request confirmation is uncertain. Reload the conversation before taking another action."); return;
+      }
+      setDelivery(receipt); setStatus("requested"); setNotice("Independent approval requested for this exact draft. Nothing has been sent.");
+      try { await onSaved?.(); } catch { setNotice("Approval was requested, but conversation refresh failed. Nothing is labeled as sent; reload to inspect the execution."); }
+    } catch (error) {
+      if (error?.response?.status === 409) { setStatus("conflict"); setNotice("This draft or its approval request changed. Reload the conversation before taking another action."); }
+      else if (!error?.response || error.response.status >= 500) { setStatus("uncertain"); setNotice("Approval-request confirmation is uncertain. Reload the conversation; do not create a new request."); }
+      else { setStatus("error"); setNotice(error?.response?.data?.message ?? "Approval was not requested. Check connector readiness, access and the exact saved draft."); }
+    }
+  };
   return <section aria-label="Email draft" className="mt-4 min-w-0 border-t border-gray-200 pt-3 dark:border-gray-700">
     <div className="flex flex-wrap items-baseline justify-between gap-2">
       <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Email draft</h3>
-      <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">Not sent · revision {shownDraft.version}</span>
+      <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">{delivery ? "Approval requested · not sent" : "Not sent"} · revision {shownDraft.version}</span>
     </div>
     <p className="mt-1 text-xs text-gray-500">{reportLabels[shownDraft.reportStatus] ?? "Review required"}{shownDraft.recurring ? " · no schedule active" : ""}</p>
     {shownDraft.reportStatus === "NOT_PREPARED" && reasonLabels[reportReason] && <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">{reasonLabels[reportReason]}</p>}
@@ -58,8 +84,22 @@ export default function EmailDraftPreview({ draft: initialDraft, reportReason, s
           onChange={(e) => setFields({ ...fields, body: e.target.value })} className="mt-1 w-full resize-y rounded-md border border-gray-200 bg-transparent px-3 py-2 text-sm leading-6 dark:border-gray-700" />
         <span className="text-xs text-gray-400">{shownFields.body.length.toLocaleString()} / 32,000 characters</span></div>
       {canEdit && <button type="submit" disabled={locked} className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary/90 disabled:opacity-50">{status === "saving" ? "Saving draft…" : "Save draft changes"}</button>}
-      {!canEdit && <p className="text-xs text-gray-500">{superseded ? "Historical draft. Edit the newest version below, or reload the conversation." : "Only this conversation’s owner can edit the draft."}</p>}
-      {notice && <p role={status === "saved" ? "status" : "alert"} className="text-xs text-gray-600 dark:text-gray-300">{notice}</p>}
+      {canEdit && !shownDraft.recurring && <div className="rounded-md border border-gray-200 p-3 dark:border-gray-700">
+        <label className="flex items-start gap-2 text-xs text-gray-700 dark:text-gray-200"><input type="checkbox" checked={sharingConfirmed} onChange={(event) => setSharingConfirmed(event.target.checked)} />
+          <span>I confirm this exact recipient and message may be shared through the reviewed ERPBridge email connector.</span></label>
+        {!exactSavedDraft && <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">Save these edits before requesting approval.</p>}
+        <button type="button" disabled={!canRequest} onClick={requestApproval} className="mt-3 rounded-md border border-primary px-3 py-2 text-xs font-semibold text-primary disabled:opacity-50">
+          {status === "requesting" ? "Requesting approval…" : "Request independent approval"}</button>
+        <p className="mt-2 text-xs text-gray-500">This queues review only. A separate authorized reviewer must approve the exact operation before SDK dispatch.</p>
+      </div>}
+      {canEdit && shownDraft.recurring && <p className="text-xs text-amber-700 dark:text-amber-300">Recurring delivery must be created and reviewed as a scheduled workflow. This chat draft cannot activate a schedule.</p>}
+      {!canEdit && !delivery && <p className="text-xs text-gray-500">{superseded ? "Historical draft. Edit the newest version below, or reload the conversation." : "Only this conversation’s owner can edit the draft."}</p>}
+      {delivery && <div className="rounded-md border border-gray-200 p-3 text-xs dark:border-gray-700">
+        <p className="font-semibold text-gray-800 dark:text-gray-100">Independent review requested. No delivery is verified.</p>
+        <p className="mt-1 text-gray-600 dark:text-gray-300">Current saved state: {delivery.status}. ERPBridge acceptance, if it later occurs, is not an email delivery receipt.</p>
+        <a className="mt-2 inline-block font-semibold text-primary hover:underline" href={`/executions/${encodeURIComponent(delivery.executionId)}`}>Open governed execution</a>
+      </div>}
+      {notice && <p role={["saved", "requested"].includes(status) ? "status" : "alert"} className="text-xs text-gray-600 dark:text-gray-300">{notice}</p>}
     </form>
     <details className="mt-3 text-xs text-gray-600 dark:text-gray-300">
       <summary className="cursor-pointer py-1">Before sending · {shownDraft.sourceEvidence?.length ?? 0} confirmed reads</summary>

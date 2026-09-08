@@ -57,7 +57,25 @@ export type Execution = {
   runtimeApprovalSecret?: import("../runner/runtime-approvals.js").RuntimeApprovalLedger;
   operationSecret?: import("../runner/operation-state.js").OperationJournal;
   recoverySource?: { profile: "operation-recovery-source/v1"; sourceExecutionId: string; artifactId: string; artifactHash: string };
+  emailDeliverySource?: { profile: "email-delivery-source/v1"; admissionId: string; sessionId: string; draftId: string; draftVersion: number; draftHash: string };
   scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string };
+};
+
+export type EmailDeliveryAdmission = {
+  profile: "email-delivery-admission-private/v1";
+  id: string;
+  sessionId: string;
+  draftId: string;
+  draftVersion: number;
+  draftHash: string;
+  actorId: string;
+  toolId: string;
+  contractHash: string;
+  keyHash: string;
+  requestFingerprint: string;
+  workflowId: string;
+  executionId: string;
+  createdAt: string;
 };
 
 export type ReadRunAttempt = { id: string; nodeId: string; stepIndex: number; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN" | "CANCELLED" | "SKIPPED";
@@ -192,6 +210,7 @@ export type RepositoryState = {
   chatOperationEvents: Record<string, ChatOperationEvent[]>;
   schedules: Record<string, WorkflowSchedule>;
   scheduleOccurrences: Record<string, ScheduleOccurrence>;
+  emailDeliveryAdmissions: Record<string, EmailDeliveryAdmission>;
   timelines: Record<string, StoredRecord[]>;
   healing: Record<string, StoredRecord>;
   chats: Record<string, ChatSessionRecord>;
@@ -486,7 +505,7 @@ export function restoreState(payload: Uint8Array): RepositoryState {
   if (source.version !== 1) throw new Error(`unsupported stored repository version ${String(source.version)}`);
   const defaults = initialState();
   const restored: RepositoryState = { ...defaults, ...source } as RepositoryState;
-  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "readJobs", "chatOperations", "chatOperationEvents", "schedules", "scheduleOccurrences", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
+  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "readJobs", "chatOperations", "chatOperationEvents", "schedules", "scheduleOccurrences", "emailDeliveryAdmissions", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) restored[key] = defaults[key] as never;
   }
   if (restored.governancePolicy !== null && (typeof restored.governancePolicy !== "object" || Array.isArray(restored.governancePolicy))) restored.governancePolicy = null;
@@ -528,6 +547,7 @@ export function initialState(): RepositoryState {
     chatOperationEvents: {},
     schedules: {},
     scheduleOccurrences: {},
+    emailDeliveryAdmissions: {},
     timelines: {},
     healing: {},
     chats: {},

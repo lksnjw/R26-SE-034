@@ -37,6 +37,16 @@ export const toolSchema = z.object({
     }).strict(),
     readback: operationReadbackSchema.optional(),
   }).strict().optional(),
+  // Optional, explicitly reviewed binding for turning an immutable chat email
+  // draft into one notification operation. Parameter names are never inferred
+  // from tool names, descriptions, model output or browser input.
+  email_delivery_contract: z.object({
+    profile: z.literal("email-delivery-input/v1"),
+    recipient_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+    subject_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+    body_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+  }).strict().refine(value => new Set([value.recipient_parameter, value.subject_parameter, value.body_parameter]).size === 3,
+    "Email delivery parameters must be distinct").optional(),
   required_parameters: z.array(z.string()).default([]),
   optional_parameters: z.array(z.string()).default([]),
   allowed_roles: z.array(z.string()).default([]),

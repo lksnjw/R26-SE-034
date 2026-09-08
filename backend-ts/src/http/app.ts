@@ -57,6 +57,7 @@ import { runVerifiedRead } from "./handlers/read-execution.js";
 import { boundedReadFixtureRequest, handleReadFixtureSimulation } from "./handlers/read-simulation.js";
 import { readJobQueue, supportsReadJobs } from "../runner/read-jobs.js";
 import { operationJobQueue, supportsOperationJobs } from "../runner/operation-jobs.js";
+import { canViewWorkflow } from "../workflows/commands.js";
 import { operationReadbackQueue } from "../runner/operation-readback-jobs.js";
 import { chatJobQueue, supportsChatJobs } from "../agent/chat-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
@@ -965,13 +966,7 @@ async function listWorkflows(
 ): Promise<unknown> {
   const state = await services.repository.snapshot();
   const all = Object.values(state.workflows).filter((item) => !item.archived);
-  const visible = user.permissions.includes("workflow:read")
-    ? all
-    : all.filter(
-        (item) =>
-          item.owner.id === user.id ||
-          (item.assignedUserIds ?? []).includes(user.id),
-      );
+  const visible = all.filter(item => canViewWorkflow(item, user));
   return reply.send(
     ok(visible.map(publicWorkflow), "OK", {
       page: 1,
@@ -1169,9 +1164,7 @@ async function getWorkflow(
   );
   if (
     item === null ||
-    (!user.permissions.includes("workflow:read") &&
-      item.owner.id !== user.id &&
-      !(item.assignedUserIds ?? []).includes(user.id))
+    !canViewWorkflow(item, user)
   )
     return reply.status(404).send(fail("Workflow not found", null));
   return reply.send(ok(publicWorkflow(item), "OK", null));

@@ -12,7 +12,7 @@ import { prepareReadPublication, assertReadPublicationCurrent } from "../../work
 import { prepareOperationPublication, assertOperationPublicationCurrent } from "../../workflows/operation-compilation-lifecycle.js";
 import { canonicalJSONBytes } from "../../core/canonical-json.js";
 import { z } from "zod";
-import { requireWorkflowBase, workflowRevisionSchema, permittedWorkflow } from "../../workflows/commands.js";
+import { assertWorkflowMutable, requireWorkflowBase, workflowRevisionSchema, permittedWorkflow } from "../../workflows/commands.js";
 import { historyPage, historyVersion, saveDraftRevision, savedDraftHistory } from "../../workflows/draft-history.js";
 import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 import { assertActorAuthority } from "./model-selection.js";
@@ -125,6 +125,7 @@ async function updateWorkflow(request: FastifyRequest, reply: FastifyReply, user
   const id = requestParam(request, "id");
   const current = await services.repository.read((state) => state.workflows[id] ?? null);
   if (current === null) throw new HandlerFailure(404, "Workflow not found");
+  assertWorkflowMutable(current);
   const contentHash = workflowContentHash(current.yaml);
   const traceId = requestTraceId(request, current.traceId);
   const gate = await validateWorkflow(services, "UpdateWorkflow", current.yaml, user, { traceId, workflowId: current.id });
@@ -132,6 +133,7 @@ async function updateWorkflow(request: FastifyRequest, reply: FastifyReply, user
   const updated = await services.repository.mutate((state) => {
     const item = state.workflows[id];
     if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
+    assertWorkflowMutable(item);
     if (workflowContentHash(item.yaml) !== contentHash) throw new HandlerFailure(409, "Workflow content changed during validation");
     const before = publicWorkflow(item);
     if (typeof body.name === "string") item.name = body.name;
@@ -155,6 +157,7 @@ async function deleteWorkflow(request: FastifyRequest, reply: FastifyReply, serv
   const id = requestParam(request, "id");
   const deleted = await services.repository.mutate((state) => {
     if (state.workflows[id] === undefined) return false;
+    assertWorkflowMutable(state.workflows[id]!);
     const scheduleId = `schedule-${id}`;
     delete state.schedules[scheduleId];
     for (const [occurrenceId, occurrence] of Object.entries(state.scheduleOccurrences)) if (occurrence.scheduleId === scheduleId) delete state.scheduleOccurrences[occurrenceId];
@@ -177,6 +180,7 @@ async function duplicateWorkflow(request: FastifyRequest, reply: FastifyReply, u
   const copy = await services.repository.mutate((state) => {
     const source = state.workflows[sourceID];
     if (source === undefined) throw new HandlerFailure(404, "Workflow not found");
+    assertWorkflowMutable(source);
     const id = nextID(state, "wf");
     const createdAt = now();
     const providedName = stringValue(body.name).trim();
@@ -200,6 +204,7 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
   const id = requestParam(request, "id");
   const current = await services.repository.read((state) => state.workflows[id] ?? null);
   if (current === null) throw new HandlerFailure(404, "Workflow not found");
+  assertWorkflowMutable(current);
   if (body.baseVersion !== undefined || body.baseHash !== undefined) {
     if (!Number.isInteger(body.baseVersion) || typeof body.baseHash !== "string" || !/^sha256:[a-f0-9]{64}$/.test(body.baseHash)) throw new HandlerFailure(400, "Invalid publication revision");
     if (body.baseVersion !== current.draftVersion || body.baseHash !== workflowContentHash(current.yaml)) throw new HandlerFailure(409, "Reviewed draft changed; reload before publishing");
@@ -248,7 +253,7 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
  ******************************************************************************/
 async function archiveWorkflow(request: FastifyRequest, reply: FastifyReply, services: HandlerServices): Promise<unknown> {
   const id = requestParam(request, "id");
-  const found = await services.repository.mutate((state) => { const item = state.workflows[id]; if (item === undefined) return false; item.archived = true; item.status = "DONE"; item.updatedAt = now(); return true; });
+  const found = await services.repository.mutate((state) => { const item = state.workflows[id]; if (item === undefined) return false; assertWorkflowMutable(item); item.archived = true; item.status = "DONE"; item.updatedAt = now(); return true; });
   if (!found) throw new HandlerFailure(404, "Workflow not found");
   return reply.send(ok({ archived: true }, "Workflow archived", null));
 }
@@ -265,6 +270,7 @@ async function assignWorkflow(request: FastifyRequest, reply: FastifyReply, user
   const targetID = stringValue(body.userId);
   const workflow = await services.repository.mutate((state) => {
     const item = state.workflows[workflowID]; if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
+    assertWorkflowMutable(item);
     if (state.users[targetID] === undefined) throw new HandlerFailure(404, "User not found");
     const assigned = item.assignedUserIds ?? [];
     if (!assigned.includes(targetID)) assigned.push(targetID);
@@ -284,6 +290,7 @@ async function unassignWorkflow(request: FastifyRequest, reply: FastifyReply, us
   const workflowID = requestParam(request, "id"); const targetID = requestParam(request, "userId");
   const workflow = await services.repository.mutate((state) => {
     const item = state.workflows[workflowID]; if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
+    assertWorkflowMutable(item);
     item.assignedUserIds = (item.assignedUserIds ?? []).filter((id) => id.toLowerCase() !== targetID.toLowerCase()); item.updatedAt = now();
     appendAudit(state, user, "workflow.user_unassigned", "workflow", workflowID, { userId: targetID }, null, request);
     return structuredClone(item);
@@ -350,6 +357,7 @@ async function approveWorkflowGeneration(request: FastifyRequest, reply: Fastify
 
   const current = await services.repository.read((state) => state.workflows[id] ?? null);
   if (current === null) throw new HandlerFailure(404, "Workflow not found");
+  assertWorkflowMutable(current);
   const pending = current.pendingGenerationApproval;
   if (pending === undefined || pending === null || pending.steps.length === 0)
     throw new HandlerFailure(409, "This workflow has no pending generation approval");
@@ -416,6 +424,7 @@ async function rejectWorkflowGeneration(request: FastifyRequest, reply: FastifyR
 
   const current = await services.repository.read((state) => state.workflows[id] ?? null);
   if (current === null) throw new HandlerFailure(404, "Workflow not found");
+  assertWorkflowMutable(current);
   const pending = current.pendingGenerationApproval;
   if (pending === undefined || pending === null || pending.steps.length === 0)
     throw new HandlerFailure(409, "This workflow has no pending generation approval");
@@ -466,7 +475,7 @@ async function putWorkflowCanvas(request: FastifyRequest, reply: FastifyReply, s
   if (await services.repository.read((state) => state.workflows[id] === undefined)) throw new HandlerFailure(404, "Workflow not found");
   const parsed = workflowCanvasSchema.safeParse(request.body); if (!parsed.success) throw new HandlerFailure(400, "Invalid request body");
   const canvas = { ...parsed.data, workflowId: id };
-  await services.repository.mutate((state) => { const item = state.workflows[id]; if (item === undefined) throw new HandlerFailure(404, "Workflow not found"); const old = item.canvas; item.canvas = canvas as unknown as Record<string, unknown>; if (old !== undefined && executionShape(old) !== executionShape(canvas as unknown as Record<string, unknown>)) item.status = "draft-unvalidated"; item.updatedAt = now(); });
+  await services.repository.mutate((state) => { const item = state.workflows[id]; if (item === undefined) throw new HandlerFailure(404, "Workflow not found"); assertWorkflowMutable(item); const old = item.canvas; item.canvas = canvas as unknown as Record<string, unknown>; if (old !== undefined && executionShape(old) !== executionShape(canvas as unknown as Record<string, unknown>)) item.status = "draft-unvalidated"; item.updatedAt = now(); });
   return reply.send(ok(canvas, "Workflow canvas updated", null));
 }
 
@@ -577,7 +586,7 @@ function publicWorkflow(workflow: Workflow): Record<string, unknown> { const { y
  *
  * Loads a workflow and enforces the current user's visibility rules.
  ******************************************************************************/
-async function visibleWorkflow(id: string, user: CurrentUser, services: HandlerServices): Promise<Workflow | null> { return services.repository.read((state) => { const item = state.workflows[id]; if (item === undefined) return null; if (user.permissions.includes("workflow:read") || item.owner.id === user.id || (item.assignedUserIds ?? []).includes(user.id)) return structuredClone(item); return null; }); }
+async function visibleWorkflow(id: string, user: CurrentUser, services: HandlerServices): Promise<Workflow | null> { return services.repository.read((state) => { const item = state.workflows[id]; return item !== undefined && permittedWorkflow(item, user, false) ? structuredClone(item) : null; }); }
 /*******************************************************************************
  * Function: executionShape
  *

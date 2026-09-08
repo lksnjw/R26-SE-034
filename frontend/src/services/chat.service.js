@@ -89,6 +89,7 @@ export const chatService = {
     if (options.workflowContext) payload.workflowContext = options.workflowContext;
     if (options.nodeContext) payload.nodeContext = options.nodeContext;
     if (options.emailDraftCommand) payload.emailDraftCommand = options.emailDraftCommand;
+    if (options.emailDeliveryCommand) payload.emailDeliveryCommand = options.emailDeliveryCommand;
     // Read loops can use multiple provider turns. Draft edits themselves do
     // not invoke a provider or dispatch an ERP/email operation.
     const response = await apiClient.post(`/chat/sessions/${sessionId}/messages`, payload, { timeout: options.delivery === "async-chat" ? 30000 : 300000 });

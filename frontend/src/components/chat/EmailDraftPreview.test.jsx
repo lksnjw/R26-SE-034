@@ -63,8 +63,33 @@ test("confirmed save followed by failed refresh is not mislabeled as failed pers
   await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Conversation refresh failed"));
   expect(screen.getByText("Not sent · revision 2")).toBeTruthy();
 });
+test("exact saved draft requests independent approval without claiming dispatch or delivery", async () => {
+  const receipt = { profile: "email-delivery-admission/v1", admissionId: "admission-1", workflowId: "workflow-1", executionId: "execution-1",
+    draftId: draft.id, draftVersion: draft.version, draftHash: draft.contentHash, status: "PENDING", reviewRequested: true,
+    freshIndependentApprovalRequired: true, bridgeDispatched: false, deliveryVerified: false };
+  sendMessage.mockResolvedValue({ emailDelivery: receipt });
+  render(<EmailDraftPreview draft={draft} />);
+  const request = screen.getByRole("button", { name: "Request independent approval" }); expect(request.disabled).toBe(true);
+  fireEvent.click(screen.getByLabelText(/I confirm this exact recipient/)); expect(request.disabled).toBe(false); fireEvent.click(request);
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Nothing has been sent"));
+  expect(screen.getByText(/Approval requested · not sent/)).toBeTruthy(); expect(screen.getByText("Independent review requested. No delivery is verified.")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Open governed execution" }).getAttribute("href")).toBe("/executions/execution-1");
+  expect(screen.queryByRole("button", { name: "Save draft changes" })).toBeNull();
+  expect(sendMessage.mock.calls[0][2].emailDeliveryCommand).toMatchObject({ profile: "email-delivery-admission-command/v1", draftId: draft.id,
+    baseVersion: draft.version, baseHash: draft.contentHash, sharingConfirmed: true });
+  expect(sendMessage.mock.calls[0][2].emailDeliveryCommand).not.toHaveProperty("tool");
+  expect(sendMessage.mock.calls[0][2].emailDeliveryCommand).not.toHaveProperty("arguments");
+});
+test("uncertain approval acknowledgement locks resubmission until reload", async () => {
+  sendMessage.mockRejectedValue(new Error("network")); render(<EmailDraftPreview draft={draft} />);
+  fireEvent.click(screen.getByLabelText(/I confirm this exact recipient/)); fireEvent.click(screen.getByRole("button", { name: "Request independent approval" }));
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/uncertain/i));
+  expect(screen.getByRole("button", { name: "Request independent approval" }).disabled).toBe(true);
+});
 test("offline recurring draft explains missing reads and never implies an active schedule", () => {
   render(<EmailDraftPreview draft={{ ...draft, reportStatus: "NOT_PREPARED", body: "", recurring: true, sourceEvidence: [] }} reportReason="ERPBRIDGE_NOT_CONNECTED" />);
   expect(screen.getByText("ERPBridge is not connected. No report was retrieved.")).toBeTruthy();
   expect(screen.getByText("Report not prepared · no schedule active")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Request independent approval" })).toBeNull();
+  expect(screen.getByText(/must be created and reviewed as a scheduled workflow/)).toBeTruthy();
 });

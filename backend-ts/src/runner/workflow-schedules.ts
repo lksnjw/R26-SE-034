@@ -8,6 +8,7 @@ import { isSecretField, withoutSecretFields } from "../redact/secrets.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { operationJobQueue, supportsOperationJobs } from "./operation-jobs.js";
+import { canViewWorkflow } from "../workflows/commands.js";
 
 const digest = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJSONBytes(value)).digest("hex")}`;
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -68,7 +69,7 @@ function containsSecretField(value: unknown): boolean {
 
 export function workflowScheduleView(state: Readonly<RepositoryState>, workflowId: string, actor: CurrentUser) {
   const workflow = state.workflows[workflowId];
-  if (!workflow || !(actor.permissions.includes("workflow:read") || workflow.owner.id === actor.id || (workflow.assignedUserIds ?? []).includes(actor.id)))
+  if (!workflow || !canViewWorkflow(workflow, actor))
     throw new HandlerFailure(404, "Workflow not found");
   const schedule = state.schedules[`schedule-${workflowId}`] ?? null;
   const occurrences = schedule ? Object.values(state.scheduleOccurrences).filter(item => item.scheduleId === schedule.id)
@@ -92,6 +93,7 @@ export async function saveWorkflowSchedule(services: HandlerServices, workflowId
   const saved = await services.repository.mutate(state => {
     const workflow = state.workflows[workflowId], previous = state.schedules[scheduleId];
     if (!workflow || workflow.archived) throw new HandlerFailure(404, "Workflow not found");
+    if (workflow.emailDeliverySource || workflow.recoverySource) throw new HandlerFailure(409, "One-time linked operation publications cannot be scheduled", { code: "LINKED_OPERATION_SCHEDULE_DENIED" });
     const currentActor = effectiveStateUser(state, actor.id);
     if (!currentActor?.permissions.includes("workflow:write")) throw new HandlerFailure(403, "Current workflow write authority is required");
     if ((previous?.revision ?? 0) !== command.baseRevision) throw new HandlerFailure(409, "Schedule changed; reload before saving", { code: "SCHEDULE_REVISION_CONFLICT" });

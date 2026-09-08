@@ -14,6 +14,7 @@ export function canReadExecution(
   user: ExecutionReader,
   execution: Execution,
 ): boolean {
+  if (execution.emailDeliverySource) return execution.startedBy.id === user.id;
   return (
     user.permissions.includes("workflow:read") ||
     execution.startedBy.id === user.id

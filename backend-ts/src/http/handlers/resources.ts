@@ -11,6 +11,7 @@ import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, numberValue, paginate, queryRecord, requestParam, stringValue } from "./common.js";
 import { classifyIntent } from "../../agent/intent-classifier.js";
 import { editEmailDraft, prepareEmailDraft } from "../../delivery/email-chat.js";
+import { admitEmailDelivery } from "../../delivery/email-operation.js";
 import { runQueryLoop, type ToolStep } from "../../agent/query-loop.js";
 import { runActionLoop } from "../../agent/action-loop.js";
 import { discoverTools } from "../../agent/tool-discovery.js";
@@ -405,7 +406,19 @@ async function createChat(request: FastifyRequest, reply: FastifyReply, user: Cu
  * to page further back in history.
  ******************************************************************************/
 async function getChat(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
-  const chat = await services.repository.read((state) => { const value = state.chats[requestParam(request, "id")]; return value !== undefined && (user.permissions.includes("workflow:read") || value.ownerId === user.id) ? structuredClone(value) : null; });
+  const chat = await services.repository.read((state) => {
+    const value = state.chats[requestParam(request, "id")];
+    if (value === undefined || (!user.permissions.includes("workflow:read") && value.ownerId !== user.id)) return null;
+    const copy = structuredClone(value);
+    for (const message of copy.messages) {
+      if (!isRecord(message.artifacts) || !isRecord(message.artifacts.emailDelivery)) continue;
+      const executionId = stringValue(message.artifacts.emailDelivery.executionId), execution = state.executions[executionId];
+      if (execution) message.artifacts.emailDelivery = { ...message.artifacts.emailDelivery, status: execution.status,
+        bridgeDispatched: Object.values(execution.operationSecret?.intents ?? {}).some(intent => ["DISPATCH_INTENT", "ACKNOWLEDGED", "UNKNOWN"].includes(intent.state)),
+        deliveryVerified: false };
+    }
+    return copy;
+  });
   if (chat === null) throw new HandlerFailure(404, "Chat session not found");
 
   const latestEmailDraftMessages = new Map<string, unknown>();
@@ -458,6 +471,7 @@ async function updateChat(request: FastifyRequest, reply: FastifyReply, user: Cu
  ******************************************************************************/
 async function deleteChat(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { await services.repository.mutate((state) => { const value = state.chats[requestParam(request, "id")]; if (value === undefined || (!user.permissions.includes("workflow:write") && value.ownerId !== user.id)) throw new HandlerFailure(404, "Chat session not found");
   if (Object.values(state.chatOperations).some(op => op.sessionId === value.id && activeChatStatus(op.status))) throw new HandlerFailure(409, "Cancel or wait for the active chat operation before deleting this conversation", { code: "CHAT_OPERATION_ACTIVE" });
+  if (Object.values(state.emailDeliveryAdmissions).some(admission => admission.sessionId === value.id)) throw new HandlerFailure(409, "A conversation linked to an immutable email approval execution cannot be deleted", { code: "EMAIL_DELIVERY_CHAT_IMMUTABLE" });
   delete state.chats[value.id]; }); return reply.send(ok({ deleted: true }, "Chat session deleted", null)); }
 /*******************************************************************************
  * Function: sendChatMessage
@@ -468,6 +482,9 @@ async function deleteChat(request: FastifyRequest, reply: FastifyReply, user: Cu
 async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const body = bodyRecord(request);
   if (body === null) throw new HandlerFailure(400, "Invalid request body");
+  if (Object.hasOwn(body, "emailDeliveryCommand")) return reply.status(202).send(ok(
+    await admitEmailDelivery(services, user, requestParam(request, "id"), body.emailDeliveryCommand, requestTraceId(request), request),
+    "Independent approval requested for the exact draft; nothing has been sent", null));
   if (Object.hasOwn(body, "emailDraftCommand")) return reply.send(ok(await editEmailDraft(services, user, requestParam(request, "id"), body.emailDraftCommand, request), "Email draft saved; nothing sent", null));
   if (body.delivery === "async-chat") return reply.status(202).send(ok(
     await chatJobQueue(services).admit(requestParam(request, "id"), user, body, requestTraceId(request)), "Chat operation acknowledged; no business completion is implied", null));
