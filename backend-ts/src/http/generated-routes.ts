@@ -791,6 +791,14 @@ export const routeTable = [
   {
     "method": "POST",
     "path": "/api/executions/:id/recovery-artifacts/:artifactId/admit"
+  },
+  {
+    "method": "GET",
+    "path": "/api/workflows/:id/schedule"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/workflows/:id/schedule"
   }
 ] as const;
 export type RouteDefinition = (typeof routeTable)[number];

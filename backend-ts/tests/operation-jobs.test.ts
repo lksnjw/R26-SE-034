@@ -20,6 +20,8 @@ import { splitFirestoreState, assembleFirestoreState } from "../src/storage/fire
 import { withoutSecretFields } from "../src/redact/secrets.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { operationReadbackQueue } from "../src/runner/operation-readback-jobs.js";
+import { workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
+import { workflowContentHash } from "../src/parser/workflow.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -85,7 +87,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     ...(observation.toolId === write.tool_id ? { requireIndependentApproval: true } : {}) } });
   const services = { repository, registries, config, validator, erpbridgeSession: session, executor: new Executor(new ToolRegistry(), validator) };
   const app = await buildApp(services); closers.push(app);
-  const request = (method: "GET" | "POST", url: string, payload?: object, userId = "requester") => app.inject({ method, url, headers: { authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: userId, expiresIn: 3600 })}` }, ...(payload ? { payload } : {}) });
+  const request = (method: "GET" | "POST" | "PUT" | "PATCH", url: string, payload?: object, userId = "requester") => app.inject({ method, url, headers: { authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: userId, expiresIn: 3600 })}` }, ...(payload ? { payload } : {}) });
   const publish = () => request("POST", "/api/workflows/flow/publish", {});
   const run = (key = "fixture-operation-run-0001", input: Record<string, unknown> = {}) => request("POST", "/api/workflows/flow/run", { mode: "async-operation", idempotencyKey: key, input });
   const review = async (id: string) => { const response = await request("GET", `/api/executions/${id}?view=approval`, undefined, "reviewer"); expect(response.statusCode, response.body).toBe(200); return response.json().data.runtimeApproval; };
@@ -122,6 +124,93 @@ test("normal publish/readiness/run/approve worker executes exact sequential oper
   expect((await s.run()).json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
   expect((await s.request("POST", `/api/executions/${id}/approve`, command, "reviewer")).json().data.replayed).toBe(true);
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("durable daily schedule admits one pinned service-principal occurrence and requires fresh independent approval", async () => {
+  const s = await setup(), published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const snapshot = await s.repository.snapshot(), workflow = snapshot.workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {} });
+  expect(saved.statusCode, saved.body).toBe(200); expect(saved.json().data).toMatchObject({ state: "ACTIVE", revision: 1, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", servicePrincipalId: "requester", workflowVersion: workflow.publishedVersion });
+  const scheduledFor = saved.json().data.nextRunAt as string;
+  const result = await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor)); expect(result).toEqual({ admitted: 1, skipped: 0, blocked: 0 });
+  const status = await s.request("GET", "/api/workflows/flow/schedule"); expect(status.statusCode, status.body).toBe(200);
+  expect(status.json().data).toMatchObject({ schedule: { state: "ACTIVE", revision: 1 }, occurrences: [{ state: "ADMITTED", scheduledFor, servicePrincipalId: "requester" }] });
+  const executionId = status.json().data.occurrences[0].executionId as string; await s.wait(executionId, "AWAITING_APPROVAL");
+  const before = (await s.repository.snapshot()).executions[executionId]!;
+  expect(before.scheduleSource).toEqual({ profile: "workflow-schedule-source/v1", scheduleId: "schedule-flow", scheduleRevision: 1,
+    occurrenceId: status.json().data.occurrences[0].id, scheduledFor });
+  expect(before.startedBy.id).toBe("requester"); expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read)]);
+  const command = await s.command(executionId), approved = await s.request("POST", `/api/executions/${executionId}/approve`, command, "reviewer");
+  expect(approved.statusCode, approved.body).toBe(200); await s.wait(executionId, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+  expect(await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor))).toEqual({ admitted: 0, skipped: 0, blocked: 0 });
+  expect(Object.values((await s.repository.snapshot()).executions).filter(run => run.scheduleSource).map(run => run.id)).toEqual([executionId]);
+});
+
+test("daily schedule skips an expired occurrence and never calls the SDK", async () => {
+  const s = await setup(), published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 60, servicePrincipalId: "requester", input: {} });
+  const scheduledFor = saved.json().data.nextRunAt as string, result = await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor) + 61_000);
+  expect(result).toEqual({ admitted: 0, skipped: 1, blocked: 0 }); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  expect((await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0]).toMatchObject({ state: "SKIPPED", scheduledFor });
+});
+
+test("schedule activation rejects invented timezones, stale publications and unauthorized principals", async () => {
+  const s = await setup(), published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, base = { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {} };
+  expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, timezone: "Invented/Nowhere" })).statusCode).toBe(422);
+  expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, workflowHash: `sha256:${"0".repeat(64)}` })).statusCode).toBe(409);
+  expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, servicePrincipalId: "reviewer" })).statusCode).toBe(403);
+  expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, input: { apiToken: "must-not-be-stored" } })).statusCode).toBe(422);
+  const legacy = await s.request("PATCH", "/api/workflows/flow", { trigger: { type: "schedule", config: { cron: "0 9 * * *" } } });
+  expect(legacy.statusCode, legacy.body).toBe(422); expect(legacy.body).toContain("LEGACY_SCHEDULE_TRIGGER_REJECTED");
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(Object.keys((await s.repository.snapshot()).schedules)).toHaveLength(0);
+});
+
+test("an exact-revision pause remains available after publication and service-principal drift", async () => {
+  const s = await setup(), published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, command = { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {} };
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", command); expect(saved.statusCode, saved.body).toBe(200);
+  await s.repository.mutate(state => { state.workflows.flow!.yaml = state.workflows.flow!.yaml.replace("Synthetic report dispatch", "Changed report dispatch");
+    state.users.requester!.status = "Disabled"; state.users.other = { ...state.users.requester!, id: "other", name: "other", email: "other@example.test", status: "Active" }; });
+  const currentActorPause = await s.request("PUT", "/api/workflows/flow/schedule", { ...command, baseRevision: 1, enabled: false }, "other");
+  expect(currentActorPause.statusCode, currentActorPause.body).toBe(200); expect(currentActorPause.json().data).toMatchObject({ state: "PAUSED", revision: 2, nextRunAt: null });
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test("schedule occurrence claim acknowledgement loss resumes after restart as one execution without effect dispatch", async () => {
+  const storage = new Records(), s = await setup(storage), published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {} });
+  const scheduledFor = saved.json().data.nextRunAt as string;
+  storage.loseWhen = state => Object.values(state.scheduleOccurrences).some(value => value.state === "ADMITTING");
+  await expect(workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor))).rejects.toThrow(/acknowledgement loss/);
+  expect(() => s.repository.assertAuthority()).toThrow(); const committed = JSON.parse(storage.bytes!.toString()) as RepositoryState;
+  expect(Object.values(committed.scheduleOccurrences)).toHaveLength(1); expect(Object.values(committed.scheduleOccurrences)[0]!.state).toBe("ADMITTING");
+  expect(Object.values(committed.executions).filter(run => run.scheduleSource)).toHaveLength(0); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  await s.app.close(); const repository = await Repository.open(storage), validator = new RegistryValidator(s.services.registries, repository), authorize = admissionAuthorizer(repository, s.services.registries);
+  const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: s.sdk,
+    admissionAuthorizer: authorize });
+  const services = { ...s.services, repository, validator, erpbridgeSession: session, executor: new Executor(new ToolRegistry(), validator) };
+  const operations = operationJobQueue(services), schedules = workflowScheduleRunner(services);
+  closers.push({ close: () => schedules.stop() }, { close: () => operations.stop() }, session, repository); await operations.start(); await schedules.start();
+  await vi.waitFor(async () => { const state = await repository.snapshot(), occurrence = Object.values(state.scheduleOccurrences)[0];
+    expect(occurrence?.state).toBe("ADMITTED"); expect(Object.values(state.executions).filter(run => run.scheduleSource)).toHaveLength(1); }, { timeout: 4000 });
+  const state = await repository.snapshot(), execution = Object.values(state.executions).find(run => run.scheduleSource)!;
+  await vi.waitFor(async () => expect((await repository.snapshot()).executions[execution.id]?.status).toBe("AWAITING_APPROVAL"), { timeout: 4000 });
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read)]);
+  expect(Object.values((await repository.snapshot()).executions).filter(run => run.scheduleSource)).toHaveLength(1);
 });
 
 test("normal operation publication/readiness binds its separately reviewed read-back target without calling it", async () => {

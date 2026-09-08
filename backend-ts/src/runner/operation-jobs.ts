@@ -118,7 +118,8 @@ export class OperationJobQueue {
     this.services.repository.assertAuthority();
     if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt) throw new Error("Operation worker is fenced");
   }
-  async admit(workflow: Workflow, rawInput: Record<string, unknown>, user: CurrentUser, key: string, traceId: string) {
+  async admit(workflow: Workflow, rawInput: Record<string, unknown>, user: CurrentUser, key: string, traceId: string,
+    source?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string }) {
     if (workflow.recoverySource) throw new HandlerFailure(409, "Linked recovery workflows can only be admitted once through their exact source artifact", { code: "RECOVERY_ARTIFACT_ADMISSION_REQUIRED" });
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new HandlerFailure(422, "Operation runs require a stable 16–128 character idempotency key", { code: "OPERATION_KEY_REQUIRED" });
     const input = structuredClone(rawInput);
@@ -126,7 +127,7 @@ export class OperationJobQueue {
     // Stable through credential/key rotation. The private scope is an identity,
     // not dispatch authority or an upstream idempotency promise.
     const scope = digest(["operation/v1", user.id, workflow.id, key]);
-    const fingerprint = digest({ sourceHash: workflowContentHash(workflow.yaml), version: workflow.publishedVersion, input });
+    const fingerprint = digest({ sourceHash: workflowContentHash(workflow.yaml), version: workflow.publishedVersion, input, source: source ?? null });
     const result = await this.services.repository.mutate(state => {
       const existing = Object.values(state.executions).find(run => run.operationSecret?.idempotencyScope === scope);
       if (existing) {
@@ -145,6 +146,7 @@ export class OperationJobQueue {
         workflowSnapshot: { yaml: workflow.yaml, version: workflow.publishedVersion, contentHash: compiled.plan.sourceHash, registryHash: compiled.receipt.registryHash, input,
           executionProfile: "sequential-operation-v1", operationCompilation: compiled.receipt }, readProgress: newReadProgress(this.services.repository), stepOutputs: {},
         operationSecret: { profile: "operation-job/v1", actorId: user.id, roleId: state.users[user.id]!.roleId, admittedRole: user.role, state: "QUEUED", idempotencyScope: scope, requestFingerprint: fingerprint, createdAt: now, intents: {} },
+        ...(source ? { scheduleSource: structuredClone(source) } : {}),
         agentSummary: "Operation queued. Each write requires an independent exact approval; nothing is confirmed by queue admission." };
       assertCurrentRunController(state, run, user.id, user.role);
       state.executions[id] = run; state.timelines[id] = []; state.executionEvents[id] = []; state.executionLogs[id] = [];

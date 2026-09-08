@@ -57,6 +57,7 @@ export type Execution = {
   runtimeApprovalSecret?: import("../runner/runtime-approvals.js").RuntimeApprovalLedger;
   operationSecret?: import("../runner/operation-state.js").OperationJournal;
   recoverySource?: { profile: "operation-recovery-source/v1"; sourceExecutionId: string; artifactId: string; artifactHash: string };
+  scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string };
 };
 
 export type ReadRunAttempt = { id: string; nodeId: string; stepIndex: number; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN" | "CANCELLED" | "SKIPPED";
@@ -95,6 +96,49 @@ export type ChatSessionRecord = {
   messageCount: number;
   selectedModel?: string;
   messages: StoredRecord[];
+};
+
+export type WorkflowSchedule = {
+  profile: "workflow-daily-schedule/v1";
+  id: string;
+  workflowId: string;
+  workflowVersion: number;
+  workflowHash: string;
+  state: "ACTIVE" | "PAUSED" | "BLOCKED";
+  revision: number;
+  timezone: string;
+  localTime: string;
+  reportingPeriod: string;
+  misfirePolicy: "SKIP" | "FIRE_ONCE";
+  misfireGraceSeconds: number;
+  servicePrincipalId: string;
+  input: Record<string, unknown>;
+  nextRunAt: string | null;
+  lastOccurrenceAt?: string;
+  lastError?: string;
+  createdBy: Principal;
+  createdAt: string;
+  updatedAt: string;
+  scheduleHash: string;
+};
+export type ScheduleOccurrence = {
+  profile: "workflow-schedule-occurrence/v1";
+  id: string;
+  scheduleId: string;
+  scheduleRevision: number;
+  workflowId: string;
+  workflowVersion: number;
+  workflowHash: string;
+  scheduledFor: string;
+  localDate: string;
+  timezone: string;
+  servicePrincipalId: string;
+  state: "ADMITTING" | "ADMITTED" | "SKIPPED" | "BLOCKED";
+  idempotencyKey: string;
+  createdAt: string;
+  executionId?: string;
+  admittedAt?: string;
+  reason?: string;
 };
 
 export type InvocationProvenanceRecord = {
@@ -146,6 +190,8 @@ export type RepositoryState = {
   readContinuations: Record<string, ReadContinuation>;
   chatOperations: Record<string, ChatOperation>;
   chatOperationEvents: Record<string, ChatOperationEvent[]>;
+  schedules: Record<string, WorkflowSchedule>;
+  scheduleOccurrences: Record<string, ScheduleOccurrence>;
   timelines: Record<string, StoredRecord[]>;
   healing: Record<string, StoredRecord>;
   chats: Record<string, ChatSessionRecord>;
@@ -440,7 +486,7 @@ export function restoreState(payload: Uint8Array): RepositoryState {
   if (source.version !== 1) throw new Error(`unsupported stored repository version ${String(source.version)}`);
   const defaults = initialState();
   const restored: RepositoryState = { ...defaults, ...source } as RepositoryState;
-  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "readJobs", "chatOperations", "chatOperationEvents", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
+  for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "readJobs", "chatOperations", "chatOperationEvents", "schedules", "scheduleOccurrences", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) restored[key] = defaults[key] as never;
   }
   if (restored.governancePolicy !== null && (typeof restored.governancePolicy !== "object" || Array.isArray(restored.governancePolicy))) restored.governancePolicy = null;
@@ -480,6 +526,8 @@ export function initialState(): RepositoryState {
     readContinuations: {},
     chatOperations: {},
     chatOperationEvents: {},
+    schedules: {},
+    scheduleOccurrences: {},
     timelines: {},
     healing: {},
     chats: {},

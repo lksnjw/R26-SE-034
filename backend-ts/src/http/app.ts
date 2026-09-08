@@ -60,6 +60,8 @@ import { operationJobQueue, supportsOperationJobs } from "../runner/operation-jo
 import { operationReadbackQueue } from "../runner/operation-readback-jobs.js";
 import { chatJobQueue, supportsChatJobs } from "../agent/chat-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
+import { handleWorkflowScheduleRoute, WORKFLOW_SCHEDULE_UNHANDLED } from "./handlers/workflow-schedules.js";
+import { workflowScheduleRunner } from "../runner/workflow-schedules.js";
 import { runtimeApprovalAdministration, runtimeApprovalView } from "../runner/runtime-approvals.js";
 import { operationReconciliationView, hasOperationReconciliation } from "../runner/operation-reconciliation.js";
 import {
@@ -198,6 +200,9 @@ export async function buildApp(
     const readbacks = operationReadbackQueue(services);
     app.addHook("onReady", () => readbacks.start());
     app.addHook("onClose", () => readbacks.stop());
+    const schedules = workflowScheduleRunner(services);
+    app.addHook("onReady", () => schedules.start());
+    app.addHook("onClose", () => schedules.stop());
   }
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
@@ -308,9 +313,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 198)
+  if (routeTable.length !== 200)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 198`,
+      `route table has ${routeTable.length} routes, expected 200`,
     );
   return app;
 }
@@ -552,6 +557,8 @@ async function handleRoute(
     return getExecution(request, reply, current!, services);
   const executionControl = await handleExecutionControlRoute(route, request, reply, current!, services);
   if (executionControl !== EXECUTION_CONTROL_UNHANDLED) return executionControl;
+  const workflowSchedule = await handleWorkflowScheduleRoute(route, request, reply, current!, services);
+  if (workflowSchedule !== WORKFLOW_SCHEDULE_UNHANDLED) return workflowSchedule;
   if (
     route.path === `${services.config.apiBasePath}/notifications/read-all` &&
     route.method === "PATCH"

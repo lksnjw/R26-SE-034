@@ -120,6 +120,8 @@ async function useTemplate(request: FastifyRequest, reply: FastifyReply, user: C
 async function updateWorkflow(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const body = bodyRecord(request);
   if (body === null) throw new HandlerFailure(400, "Invalid request body");
+  if (isRecord(body.trigger) && body.trigger.type === "schedule")
+    throw new HandlerFailure(422, "Scheduled execution must be configured through the authoritative workflow schedule endpoint", { code: "LEGACY_SCHEDULE_TRIGGER_REJECTED" });
   const id = requestParam(request, "id");
   const current = await services.repository.read((state) => state.workflows[id] ?? null);
   if (current === null) throw new HandlerFailure(404, "Workflow not found");
@@ -153,6 +155,9 @@ async function deleteWorkflow(request: FastifyRequest, reply: FastifyReply, serv
   const id = requestParam(request, "id");
   const deleted = await services.repository.mutate((state) => {
     if (state.workflows[id] === undefined) return false;
+    const scheduleId = `schedule-${id}`;
+    delete state.schedules[scheduleId];
+    for (const [occurrenceId, occurrence] of Object.entries(state.scheduleOccurrences)) if (occurrence.scheduleId === scheduleId) delete state.scheduleOccurrences[occurrenceId];
     delete state.workflows[id];
     return true;
   });

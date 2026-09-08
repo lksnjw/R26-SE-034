@@ -12,9 +12,8 @@ import PendingApprovalCard from "../../components/executions/PendingApprovalCard
 import PendingGenerationApprovalCard from "../../components/workflows/PendingGenerationApprovalCard";
 import Button from "../../components/shared/ui/Button";
 import { executionService } from "../../services/execution.service";
-import { workflowService } from "../../services/workflow.service";
 import { Icon } from "@iconify/react";
-import { cronToFriendly, friendlyToCron, describeFriendlySchedule, WEEKDAY_LABELS } from "../../utils/cron.utils";
+import WorkflowSchedulePanel from "../../components/workflows/WorkflowSchedulePanel";
 
 /*******************************************************************************
  * Function: WorkflowDetailPage
@@ -23,7 +22,7 @@ import { cronToFriendly, friendlyToCron, describeFriendlySchedule, WEEKDAY_LABEL
  ******************************************************************************/
 function WorkflowDetailPage() {
   const { selectedWorkflowId, navigateTo } = useRoute();
-  const { has } = usePermissions();
+  const { has, actorId } = usePermissions();
 	const canWrite = has("workflow:write");
   const canRun = has("workflow:run") || canWrite;
   const { data: workflow, isLoading, error, refetch } = useWorkflow(selectedWorkflowId);
@@ -143,7 +142,7 @@ function WorkflowDetailPage() {
 
       {/* Schedule section — keyed by workflow id so its local edit state resets to
           the freshly-loaded trigger whenever the user switches or reloads a workflow. */}
-      {canWrite ? <ScheduleSection key={workflow.id} workflow={workflow} onSaved={refetch} /> : null}
+      {canWrite ? <WorkflowSchedulePanel key={workflow.id} workflow={workflow} actorId={actorId} /> : null}
 
       {canWrite ? <WorkflowAssignments workflow={workflow} onChanged={refetch} /> : null}
       {!canWrite ? (
@@ -153,169 +152,6 @@ function WorkflowDetailPage() {
         </section>
       ) : null}
     </div>
-  );
-}
-
-/*******************************************************************************
- * Function: ScheduleSection
- *
- * Cron scheduling controls for a workflow. Keyed by workflow.id from the parent
- * so its local edit state initializes fresh from the loaded trigger on every
- * workflow switch or reload, instead of drifting from stale defaults.
- ******************************************************************************/
-function ScheduleSection({ workflow, onSaved }) {
-  const raw = workflow.triggerRaw;
-  const [scheduleEnabled, setScheduleEnabled] = useState(raw?.type === "schedule");
-  const [friendly, setFriendly] = useState(() => cronToFriendly(raw?.config?.cron));
-  const [scheduleState, setScheduleState] = useState({ saving: false, saved: false });
-
-  const updateFriendly = (patch) => { setFriendly((f) => ({ ...f, ...patch })); setScheduleState({ saving: false, saved: false }); };
-  const toggleDay = (day) => {
-    updateFriendly({
-      daysOfWeek: friendly.daysOfWeek.includes(day)
-        ? friendly.daysOfWeek.filter((d) => d !== day)
-        : [...friendly.daysOfWeek, day],
-    });
-  };
-
-  const cronExpr = friendlyToCron(friendly);
-  const canSave = !scheduleEnabled || (cronExpr.trim() !== "" && (friendly.frequency !== "weekly" || friendly.daysOfWeek.length > 0));
-
-  const handleSaveSchedule = async () => {
-    setScheduleState({ saving: true, saved: false });
-    try {
-      const trigger = scheduleEnabled && cronExpr.trim()
-        ? { type: "schedule", displayName: `Schedule: ${describeFriendlySchedule(friendly)}`, config: { cron: cronExpr.trim() } }
-        : { type: "manual", displayName: "Manual" };
-      await workflowService.update(workflow.id, { trigger });
-      setScheduleState({ saving: false, saved: true });
-      onSaved?.();
-    } catch {
-      setScheduleState({ saving: false, saved: false });
-    }
-  };
-
-  return (
-    <Card>
-      <div className="mb-4 flex items-center gap-2">
-        <Icon icon="mdi:clock-outline" className="h-5 w-5 text-primary" />
-        <h2 className="section-title">Schedule</h2>
-      </div>
-      <div className="space-y-4">
-        <label className="flex cursor-pointer items-center gap-3">
-          <input
-            type="checkbox"
-            checked={scheduleEnabled}
-            onChange={(e) => { setScheduleEnabled(e.target.checked); setScheduleState({ saving: false, saved: false }); }}
-            className="h-4 w-4 rounded border-gray-300 text-primary"
-          />
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Enable automatic scheduling</span>
-        </label>
-
-        {scheduleEnabled && (
-          <div className="space-y-4 rounded-xl border border-gray-100 p-4 dark:border-gray-800">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block text-xs">
-                <span className="font-bold uppercase tracking-wide text-gray-500">Repeats</span>
-                <select
-                  value={friendly.frequency}
-                  onChange={(e) => updateFriendly({ frequency: e.target.value })}
-                  className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-primary dark:border-gray-700 dark:bg-darkBackground dark:text-white"
-                >
-                  <option value="daily">Every day</option>
-                  <option value="weekly">Every week</option>
-                  <option value="monthly">Every month</option>
-                  <option value="custom">Custom (advanced)</option>
-                </select>
-              </label>
-
-              {friendly.frequency !== "custom" && (
-                <label className="block text-xs">
-                  <span className="font-bold uppercase tracking-wide text-gray-500">Time (UTC)</span>
-                  <input
-                    type="time"
-                    value={friendly.time}
-                    onChange={(e) => updateFriendly({ time: e.target.value })}
-                    className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-primary dark:border-gray-700 dark:bg-darkBackground dark:text-white"
-                  />
-                </label>
-              )}
-
-              {friendly.frequency === "monthly" && (
-                <label className="block text-xs">
-                  <span className="font-bold uppercase tracking-wide text-gray-500">Day of month</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={31}
-                    value={friendly.dayOfMonth}
-                    onChange={(e) => updateFriendly({ dayOfMonth: Number(e.target.value) })}
-                    className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-primary dark:border-gray-700 dark:bg-darkBackground dark:text-white"
-                  />
-                </label>
-              )}
-            </div>
-
-            {friendly.frequency === "weekly" && (
-              <div>
-                <span className="text-xs font-bold uppercase tracking-wide text-gray-500">Days of week</span>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {WEEKDAY_LABELS.map((label, day) => (
-                    <button
-                      key={label}
-                      type="button"
-                      onClick={() => toggleDay(day)}
-                      className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-                        friendly.daysOfWeek.includes(day)
-                          ? "bg-primary text-white"
-                          : "border border-gray-300 text-gray-600 hover:border-primary hover:text-primary dark:border-gray-700 dark:text-gray-300"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {friendly.frequency === "custom" && (
-              <label className="block text-xs">
-                <span className="font-bold uppercase tracking-wide text-gray-500">
-                  Cron expression <span className="font-normal normal-case text-gray-400">(5-field, UTC — e.g. 0 9 * * 1 = every Monday at 9 AM)</span>
-                </span>
-                <input
-                  type="text"
-                  value={friendly.raw}
-                  onChange={(e) => updateFriendly({ raw: e.target.value })}
-                  placeholder="0 9 * * 1"
-                  className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 outline-none focus:border-primary dark:border-gray-700 dark:bg-darkBackground dark:text-white"
-                />
-              </label>
-            )}
-
-            <p className="flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
-              <Icon icon="mdi:information-outline" className="h-3.5 w-3.5 shrink-0" />
-              {describeFriendlySchedule(friendly)}
-            </p>
-          </div>
-        )}
-
-        <div className="flex items-center gap-3">
-          <Button variant="secondary" onClick={handleSaveSchedule} disabled={scheduleState.saving || !canSave}>
-            {scheduleState.saving ? "Saving…" : "Save Schedule"}
-          </Button>
-          {scheduleState.saved && (
-            <span className="flex items-center gap-1 text-xs text-emerald-600">
-              <Icon icon="mdi:check-circle" className="h-4 w-4" />
-              Schedule saved
-            </span>
-          )}
-        </div>
-        <p className="text-xs text-gray-400">
-          Current trigger: <span className="font-semibold">{workflow.trigger}</span>
-        </p>
-      </div>
-    </Card>
   );
 }
 

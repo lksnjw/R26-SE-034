@@ -24,6 +24,7 @@ import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { evaluateOperationReadback, resolveOperationReadbackArguments } from "../src/tools/operation-readback-contract.js";
 import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 import { requestRuntimeApproval, runtimeApprovalPolicyHash, consumeRuntimeApproval } from "../src/runner/runtime-approvals.js";
+import { workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.js";
 
@@ -345,6 +346,37 @@ try {
   assert.equal(historicalApproval.id, operationReview.id); assert.equal(historicalApproval.state, "CONSUMED"); assert.equal(historicalApproval.canDecide, false);
   log("actual Firestore normal operation publication/run produced a durable exact approval wait, survived restart without calls, then consumed independent approval and acknowledged one synthetic SDK result; zero model calls and no duplicate after decision replay/restart");
 
+  const scheduleWorkflow = (await repository.snapshot()).workflows.operation;
+  const scheduleLocalTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const schedule = (await request("PUT", "/api/workflows/operation/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: scheduleWorkflow.publishedVersion, workflowHash: workflowContentHash(scheduleWorkflow.yaml), enabled: true, timezone: "UTC",
+    localTime: scheduleLocalTime, reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300,
+    servicePrincipalId: "owner", input: { id: "scheduled-operation" } }, 200)).data;
+  const scheduledFor = schedule.nextRunAt, operationsBeforeSchedule = operations.length, modelsBeforeSchedule = models.length;
+  const actualScheduleClaimSave = persistence.save.bind(persistence); let lostScheduleClaimACK = false;
+  persistence.save = async payload => { await actualScheduleClaimSave(payload); if (!lostScheduleClaimACK) {
+    lostScheduleClaimACK = true; throw new Error("Synthetic actual Firestore schedule-claim post-COMMIT acknowledgement loss");
+  } };
+  await assert.rejects(workflowScheduleRunner(services).runDue(Date.parse(scheduledFor)), /schedule-claim post-COMMIT/);
+  assert.equal(lostScheduleClaimACK, true); persistence.save = actualScheduleClaimSave;
+  await stop(); await start(await openApplicationRepository(config));
+  const scheduledExecution = await waitFor(async () => Object.values((await repository.snapshot()).executions).find(value => value.scheduleSource?.scheduledFor === scheduledFor && value.status === "AWAITING_APPROVAL"), "scheduled operation approval wait");
+  assert.equal(operations.length, operationsBeforeSchedule); assert.equal(models.length, modelsBeforeSchedule);
+  const scheduleStatus = (await request("GET", "/api/workflows/operation/schedule", undefined, 200)).data;
+  assert.equal(scheduleStatus.occurrences.filter(value => value.scheduledFor === scheduledFor).length, 1);
+  assert.equal(scheduleStatus.occurrences.find(value => value.scheduledFor === scheduledFor).executionId, scheduledExecution.id);
+  const scheduleReview = (await request("GET", `/api/executions/${scheduledExecution.id}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  await request("POST", `/api/executions/${scheduledExecution.id}/approve`, { approvalId: scheduleReview.id, baseVersion: scheduleReview.version,
+    reviewHash: scheduleReview.reviewHash, decisionKey: "firestore-scheduled-operation-approval-0001" }, 200, "reviewer");
+  await waitFor(async () => (await repository.snapshot()).executions[scheduledExecution.id].status === "DONE", "scheduled operation completion");
+  assert.equal(operations.length, operationsBeforeSchedule + 1); assert.equal(models.length, modelsBeforeSchedule);
+  const completedScheduledExecution = structuredClone((await repository.snapshot()).executions[scheduledExecution.id]);
+  await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[scheduledExecution.id], completedScheduledExecution);
+  assert.equal(Object.values((await repository.snapshot()).executions).filter(value => value.scheduleSource?.scheduledFor === scheduledFor).length, 1);
+  assert.equal(operations.length, operationsBeforeSchedule + 1);
+  log("actual Firestore daily schedule claim survived post-COMMIT acknowledgement loss as one service-principal execution, required fresh independent approval, dispatched once and persisted across restart without a model call");
+
   const lostOperation = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-lost-intent-0001", input: { id: "operation-lost-intent" } }, 202)).data.id;
   await waitFor(async () => (await repository.snapshot()).executions[lostOperation].status === "AWAITING_APPROVAL", "lost-intent approval wait");
   const lostReview = (await request("GET", `/api/executions/${lostOperation}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
@@ -354,12 +386,12 @@ try {
   };
   await request("POST", `/api/executions/${lostOperation}/approve`, { approvalId: lostReview.id, baseVersion: lostReview.version, reviewHash: lostReview.reviewHash, decisionKey: "firestore-operation-lost-decision-0001" }, 200, "reviewer");
   await waitFor(() => lostOperationACK, "operation intent post-COMMIT acknowledgement loss"); persistence.saveExecutionCheckpoint = actualOperationCheckpoint;
-  assert.equal(operations.length, 1); await repository.recoverPersistenceState();
+  assert.equal(operations.length, operationsBeforeSchedule + 1); await repository.recoverPersistenceState();
   assert.equal((await repository.snapshot()).executions[lostOperation].operationSecret.intents.send.state, "DISPATCH_INTENT");
   await stop(); await start(await openApplicationRepository(config));
   const reconciledOperation = (await repository.snapshot()).executions[lostOperation]; assert.equal(reconciledOperation.status, "RECONCILIATION_REQUIRED");
   assert.equal(reconciledOperation.readProgress.attempts.send.status, "UNKNOWN"); assert.equal(reconciledOperation.stepOutputs.lookup.structuredContent.id, "OPERATION-LOST-INTENT");
-  assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
+  assert.equal(operations.length, operationsBeforeSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
   log("actual Firestore post-COMMIT operation intent ACK loss fenced SDK entry; authoritative reload/restart preserved the read answer and unknown intent for reconciliation, without operation replay");
 
   // Explicit broker/helper qualification only, not a durable read-back job,
@@ -377,7 +409,7 @@ try {
   const evaluation = evaluateOperationReadback(operationTool, readbackTool, readbackCase.arguments, readbackResult, readbackCase.preparedAt);
   assert.equal(evaluation.outcome, "NOT_APPLIED"); assert.equal(evaluation.settled, true);
   assert.equal(evaluation.canResume, false); assert.equal(evaluation.noReplay, true); assert.equal(evaluation.deliveryVerified, false);
-  assert.deepEqual(readbacks, ["OPERATION-LOST-INTENT"]); assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
+  assert.deepEqual(readbacks, ["OPERATION-LOST-INTENT"]); assert.equal(operations.length, operationsBeforeSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
   const afterReadback = await repository.snapshot();
   assert(beforeReadback.equals(canonicalJSONBytes([afterReadback.executions[lostOperation], afterReadback.timelines[lostOperation], afterReadback.executionEvents[lostOperation]])));
   assert.equal(afterReadback.executions[lostOperation].status, "RECONCILIATION_REQUIRED");
@@ -400,7 +432,7 @@ try {
     assert.deepEqual(execution.stepOutputs, reconciledOperation.stepOutputs); assert.equal(execution.finalOutput, undefined);
     assert.equal(execution.readProgress.epoch, reconciledOperation.readProgress.epoch); assert.equal(execution.readProgress.nextStepIndex, reconciledOperation.readProgress.nextStepIndex);
     assert.deepEqual(saved.timelines[lostOperation], readbackSnapshot.timelines[lostOperation]);
-    assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
+    assert.equal(operations.length, operationsBeforeSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
   };
   await checkOriginalOperation(); assert.equal(readbacks.length, 2);
   const savedQuery = (await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[normalQuery.id];
@@ -534,7 +566,7 @@ try {
   assert.deepEqual((await repository.snapshot()).executions[lostOperation], savedRecoveryPlan);
   await stop(); await start(await openApplicationRepository(config)); assert.deepEqual((await repository.snapshot()).executions[recoveryExecution], completedRecovery);
   assert.deepEqual((await repository.snapshot()).executions[lostOperation], savedRecoveryPlan); assert.equal(operations.length, beforeRecoveryPlanCalls + 1);
-  await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, 2); assert.equal(models.length, modelsBeforeOperation);
+  await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, beforeRecoveryPlanCalls + 1); assert.equal(models.length, modelsBeforeOperation);
   log("actual Firestore recovery admission survived post-COMMIT acknowledgement loss as one new execution, required fresh independent approval, dispatched one separately journaled synthetic action and never mutated or resumed the source run");
   log("actual Firestore immutable linked recovery survived post-COMMIT acknowledgement loss, same-key replay and fresh restart without dispatch, source-run mutation or model use");
   log("actual Firestore independent query-backed resolution survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; the server derived one private decision from the saved observation with no new SDK/model call, fabricated answer or resume");
