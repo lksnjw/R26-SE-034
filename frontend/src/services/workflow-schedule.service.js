@@ -6,13 +6,15 @@ const date = value => typeof value === "string" && Number.isFinite(Date.parse(va
 const hash = value => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
 const object = value => value && typeof value === "object" && !Array.isArray(value);
 const deny = () => { throw new Error("The server returned an invalid workflow schedule contract"); };
+const reportWindowBinding = value => object(value) && value.profile === "workflow-report-window-input-binding/v1" && id(value.startAtInput) && id(value.endAtInput) && value.startAtInput !== value.endAtInput;
 function schedule(value, workflowId) {
   if (value === null) return null;
   if (!object(value) || value.profile !== "workflow-daily-schedule/v1" || value.workflowId !== workflowId || !id(value.id) ||
       !Number.isSafeInteger(value.workflowVersion) || value.workflowVersion < 1 || !hash(value.workflowHash) || !["ACTIVE", "PAUSED", "BLOCKED"].includes(value.state) ||
       !Number.isSafeInteger(value.revision) || value.revision < 1 || !id(value.timezone) || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value.localTime) ||
       value.reportingPeriod !== "previous-calendar-day" || !["SKIP", "FIRE_ONCE"].includes(value.misfirePolicy) || !Number.isSafeInteger(value.misfireGraceSeconds) ||
-      !id(value.servicePrincipalId) || !object(value.input) || value.nextRunAt !== null && !date(value.nextRunAt) || !date(value.createdAt) || !date(value.updatedAt) || !hash(value.scheduleHash)) deny();
+      !id(value.servicePrincipalId) || !object(value.input) || value.nextRunAt !== null && !date(value.nextRunAt) || !date(value.createdAt) || !date(value.updatedAt) || !hash(value.scheduleHash) ||
+      value.reportWindowBinding !== null && !reportWindowBinding(value.reportWindowBinding)) deny();
   return value;
 }
 function occurrence(value, scheduleId) {
@@ -35,7 +37,7 @@ function view(value, workflowId) {
 export const workflowScheduleService = {
   async status(workflowId) { return view(unwrap(await apiClient.get(`/workflows/${encodeURIComponent(workflowId)}/schedule`)), workflowId); },
   async save(workflowId, command) {
-    if (!object(command) || command.profile !== "workflow-daily-schedule-command/v1" || command.workflowHash === undefined) deny();
+    if (!object(command) || command.profile !== "workflow-daily-schedule-command/v1" || command.workflowHash === undefined || command.enabled && !reportWindowBinding(command.reportWindowBinding)) deny();
     return schedule(unwrap(await apiClient.put(`/workflows/${encodeURIComponent(workflowId)}/schedule`, command)), workflowId);
   },
 };

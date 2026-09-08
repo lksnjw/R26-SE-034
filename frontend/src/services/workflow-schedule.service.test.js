@@ -3,9 +3,10 @@ import { apiClient } from "../config/axios";
 import { workflowScheduleService } from "./workflow-schedule.service";
 
 const h = `sha256:${"a".repeat(64)}`, envelope = data => ({ data: { success: true, data } });
+const binding = { profile: "workflow-report-window-input-binding/v1", startAtInput: "reportStartAt", endAtInput: "reportEndAt" };
 const saved = () => ({ profile: "workflow-daily-schedule/v1", id: "schedule-flow/one", workflowId: "flow/one", workflowVersion: 2, workflowHash: h,
   state: "ACTIVE", revision: 1, timezone: "Asia/Colombo", localTime: "09:00", reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP",
-  misfireGraceSeconds: 900, servicePrincipalId: "service-user", input: {}, nextRunAt: "2026-10-07T03:30:00.000Z", createdBy: { id: "owner", name: "Owner" },
+  misfireGraceSeconds: 900, servicePrincipalId: "service-user", input: {}, reportWindowBinding: binding, nextRunAt: "2026-10-07T03:30:00.000Z", createdBy: { id: "owner", name: "Owner" },
   createdAt: "2026-10-06T10:00:00.000Z", updatedAt: "2026-10-06T10:00:00.000Z", scheduleHash: h });
 const view = () => ({ profile: "workflow-schedule-view/v1", workflowId: "flow/one", schedule: saved(), occurrences: [{ profile: "workflow-schedule-occurrence/v1",
   id: "occurrence-one", scheduleId: "schedule-flow/one", scheduleRevision: 1, workflowId: "flow/one", workflowVersion: 2, workflowHash: h,
@@ -21,6 +22,8 @@ test("loads encoded authoritative schedule and validates readable occurrence ide
   expect(await workflowScheduleService.status("flow/one")).toEqual(view()); expect(get).toHaveBeenCalledWith("/workflows/flow%2Fone/schedule");
   const legacy = { ...view(), occurrences: [{ ...view().occurrences[0], reportWindow: null }] };
   get.mockResolvedValue(envelope(legacy)); expect(await workflowScheduleService.status("flow/one")).toEqual(legacy);
+  const legacySchedule = { ...view(), schedule: { ...saved(), reportWindowBinding: null } };
+  get.mockResolvedValue(envelope(legacySchedule)); expect(await workflowScheduleService.status("flow/one")).toEqual(legacySchedule);
   get.mockResolvedValue(envelope({ ...view(), occurrences: [{ ...view().occurrences[0], scheduleId: "other" }] }));
   await expect(workflowScheduleService.status("flow/one")).rejects.toThrow(/invalid workflow schedule/);
   get.mockResolvedValue(envelope({ ...view(), occurrences: [{ ...view().occurrences[0], reportWindow: { ...view().occurrences[0].reportWindow, timezone: "UTC" } }] }));
@@ -30,8 +33,9 @@ test("loads encoded authoritative schedule and validates readable occurrence ide
 test("saves only the explicit schedule command and rejects malformed server state", async () => {
   const command = { profile: "workflow-daily-schedule-command/v1", baseRevision: 0, workflowVersion: 2, workflowHash: h, enabled: true,
     timezone: "Asia/Colombo", localTime: "09:00", reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 900,
-    servicePrincipalId: "service-user", input: {} };
+    servicePrincipalId: "service-user", input: {}, reportWindowBinding: binding };
   const put = jest.spyOn(apiClient, "put").mockResolvedValue(envelope(saved())); expect(await workflowScheduleService.save("flow/one", command)).toEqual(saved());
   expect(put).toHaveBeenCalledWith("/workflows/flow%2Fone/schedule", command);
   put.mockResolvedValue(envelope({ ...saved(), nextRunAt: "not-a-date" })); await expect(workflowScheduleService.save("flow/one", command)).rejects.toThrow();
+  await expect(workflowScheduleService.save("flow/one", { ...command, reportWindowBinding: { ...binding, endAtInput: "reportStartAt" } })).rejects.toThrow();
 });

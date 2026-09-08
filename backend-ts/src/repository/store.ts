@@ -58,7 +58,8 @@ export type Execution = {
   operationSecret?: import("../runner/operation-state.js").OperationJournal;
   recoverySource?: { profile: "operation-recovery-source/v1"; sourceExecutionId: string; artifactId: string; artifactHash: string };
   emailDeliverySource?: { profile: "email-delivery-source/v1"; admissionId: string; sessionId: string; draftId: string; draftVersion: number; draftHash: string };
-  scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string; reportWindow: ReportWindow };
+  scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string;
+    scheduleHash: string; reportWindow: ReportWindow; reportWindowBinding: ReportWindowInputBinding; inputHash: string };
 };
 
 export type EmailDeliveryAdmission = {
@@ -131,6 +132,8 @@ export type WorkflowSchedule = {
   misfireGraceSeconds: number;
   servicePrincipalId: string;
   input: Record<string, unknown>;
+  /** Missing only on legacy records. Such a record cannot admit a new run. */
+  reportWindowBinding?: ReportWindowInputBinding;
   nextRunAt: string | null;
   lastOccurrenceAt?: string;
   lastError?: string;
@@ -146,6 +149,11 @@ export type ReportWindow = {
   localDate: string;
   startAt: string;
   endAt: string;
+};
+export type ReportWindowInputBinding = {
+  profile: "workflow-report-window-input-binding/v1";
+  startAtInput: string;
+  endAtInput: string;
 };
 export type ScheduleOccurrence = {
   profile: "workflow-schedule-occurrence/v1";

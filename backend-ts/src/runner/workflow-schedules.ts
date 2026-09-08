@@ -2,16 +2,23 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { HandlerFailure, type CurrentUser, type HandlerServices } from "../http/handlers/common.js";
-import type { ReportWindow, Repository, RepositoryState, ScheduleOccurrence, WorkflowSchedule } from "../repository/store.js";
+import type { ReportWindow, ReportWindowInputBinding, Repository, RepositoryState, ScheduleOccurrence, WorkflowSchedule } from "../repository/store.js";
 import { workflowContentHash } from "../parser/workflow.js";
 import { isSecretField, withoutSecretFields } from "../redact/secrets.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { operationJobQueue, supportsOperationJobs } from "./operation-jobs.js";
 import { canViewWorkflow } from "../workflows/commands.js";
+import type { CompiledOperationPlan, ReadBinding } from "../workflows/compiled-read.js";
 
 const digest = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJSONBytes(value)).digest("hex")}`;
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const inputName = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
+const reportWindowInputBindingSchema = z.object({
+  profile: z.literal("workflow-report-window-input-binding/v1"),
+  startAtInput: inputName,
+  endAtInput: inputName,
+}).strict();
 export const dailyScheduleCommandSchema = z.object({
   profile: z.literal("workflow-daily-schedule-command/v1"),
   baseRevision: z.number().int().min(0),
@@ -25,7 +32,12 @@ export const dailyScheduleCommandSchema = z.object({
   misfireGraceSeconds: z.number().int().min(60).max(86_400),
   servicePrincipalId: z.string().min(1).max(256),
   input: z.record(z.string(), z.unknown()),
-}).strict();
+  reportWindowBinding: reportWindowInputBindingSchema.nullable().optional(),
+}).strict().superRefine((value, context) => {
+  if (value.enabled && !value.reportWindowBinding) context.addIssue({ code: "custom", path: ["reportWindowBinding"], message: "Active schedules require an exact report-window input binding" });
+  if (value.reportWindowBinding?.startAtInput === value.reportWindowBinding?.endAtInput)
+    context.addIssue({ code: "custom", path: ["reportWindowBinding"], message: "Report-window inputs must be distinct" });
+});
 export type DailyScheduleCommand = z.infer<typeof dailyScheduleCommandSchema>;
 
 const formatter = (timezone: string) => {
@@ -79,7 +91,9 @@ function effectiveStateUser(state: Readonly<RepositoryState>, userId: string): C
   if (!user || !role || user.status.toLowerCase() !== "active") return null;
   return { ...structuredClone(user), role: role.name, permissions: [...new Set([...role.permissions, ...user.permissionOverrides].filter(Boolean))] };
 }
-function publicSchedule(schedule: WorkflowSchedule | null) { return schedule ? withoutSecretFields(schedule) : null; }
+function publicSchedule(schedule: WorkflowSchedule | null) {
+  return schedule ? withoutSecretFields({ ...schedule, reportWindowBinding: schedule.reportWindowBinding ?? null }) : null;
+}
 function publicOccurrence(value: ScheduleOccurrence) {
   const { idempotencyKey: _idempotencyKey, ...visible } = value;
   return withoutSecretFields({ ...visible, reportWindow: value.reportWindow ?? null });
@@ -88,6 +102,33 @@ function containsSecretField(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsSecretField);
   if (!value || typeof value !== "object") return false;
   return Object.entries(value).some(([key, child]) => isSecretField(key) || containsSecretField(child));
+}
+function referencesWorkflowInput(binding: ReadBinding, name: string): boolean {
+  if (binding.kind === "ref") return binding.source === "workflowInput" && binding.path[0] === name;
+  if (binding.kind === "template") return binding.parts.some(part => typeof part !== "string" && referencesWorkflowInput(part, name));
+  if (binding.kind === "object") return Object.values(binding.fields).some(child => referencesWorkflowInput(child, name));
+  if (binding.kind === "array") return binding.items.some(child => referencesWorkflowInput(child, name));
+  return false;
+}
+function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<string, unknown>, binding: ReportWindowInputBinding, window: ReportWindow) {
+  if (!reportWindowInputBindingSchema.safeParse(binding).success)
+    throw new HandlerFailure(422, "Report-window input binding is malformed", { code: "SCHEDULE_REPORT_WINDOW_BINDING_INVALID" });
+  const names = [binding.startAtInput, binding.endAtInput];
+  if (new Set(names).size !== names.length) throw new HandlerFailure(422, "Report-window inputs must be distinct", { code: "SCHEDULE_REPORT_WINDOW_BINDING_INVALID" });
+  if (names.some(name => Object.hasOwn(staticInput, name)))
+    throw new HandlerFailure(422, "Server-derived report-window inputs cannot be supplied as static schedule values", { code: "SCHEDULE_REPORT_WINDOW_OVERRIDE_DENIED" });
+  const schema = plan.ir.inputSchema, properties = schema?.properties as Record<string, Record<string, unknown>> | undefined;
+  const values: Record<string, string> = { [binding.startAtInput]: window.startAt, [binding.endAtInput]: window.endAt };
+  for (const name of names) {
+    if (!properties?.[name] || properties[name]!.writeOnly || validateToolInput(properties[name], values[name]).length)
+      throw new HandlerFailure(422, `Report-window input ${name} must be a declared non-sensitive string field`, { code: "SCHEDULE_REPORT_WINDOW_BINDING_INVALID" });
+    if (!plan.ir.root.nodes.some(node => node.effectClass === "read" && referencesWorkflowInput(node.inputs, name)))
+      throw new HandlerFailure(422, `Report-window input ${name} must be referenced by a reviewed ERP read step`, { code: "SCHEDULE_REPORT_WINDOW_BINDING_UNUSED" });
+  }
+  const effective = { ...structuredClone(staticInput), ...values };
+  if (!schema || validateToolInput(schema, effective).length)
+    throw new HandlerFailure(422, "Schedule values plus the server-derived report window do not match the published workflow input schema", { code: "SCHEDULE_INPUT_INVALID" });
+  return effective;
 }
 
 export function workflowScheduleView(state: Readonly<RepositoryState>, workflowId: string, actor: CurrentUser) {
@@ -138,18 +179,19 @@ export async function saveWorkflowSchedule(services: HandlerServices, workflowId
     const publication = (state.versions[workflowId] ?? []).findLast(value => value.artifactState === "PUBLISHED" && value.version === command.workflowVersion && value.yaml === workflow.yaml);
     if (!publication?.compiledOperation) throw new HandlerFailure(422, "Daily scheduling currently requires a reviewed sequential operation publication");
     const compiled = prepareOperationExecution(state, services, publication, workflow.yaml, principal.role);
-    if (compiled.plan.ir.inputSchema && validateToolInput(compiled.plan.ir.inputSchema, command.input).length)
-      throw new HandlerFailure(422, "Schedule input does not match the published workflow input schema");
+    const reportWindowBinding = command.reportWindowBinding!;
     const scheduleHash = digest({ profile: command.profile, workflowId, workflowVersion: command.workflowVersion, workflowHash: command.workflowHash,
       timezone: command.timezone, localTime: command.localTime, reportingPeriod: command.reportingPeriod, misfirePolicy: command.misfirePolicy,
-      misfireGraceSeconds: command.misfireGraceSeconds, servicePrincipalId: command.servicePrincipalId, input: command.input });
+      misfireGraceSeconds: command.misfireGraceSeconds, servicePrincipalId: command.servicePrincipalId, input: command.input, reportWindowBinding });
     const unchanged = previous?.scheduleHash === scheduleHash && previous.state === "ACTIVE" && previous.nextRunAt && Date.parse(previous.nextRunAt) > Date.now();
     const nextRunAt = unchanged ? previous.nextRunAt! : nextDailyOccurrence(command.timezone, command.localTime, Date.now());
-    reportWindowFor(command.timezone, nextRunAt, command.reportingPeriod);
+    const nextReportWindow = reportWindowFor(command.timezone, nextRunAt, command.reportingPeriod);
+    bindReportWindowInput(compiled.plan, command.input, reportWindowBinding, nextReportWindow);
     const schedule: WorkflowSchedule = { profile: "workflow-daily-schedule/v1", id: scheduleId, workflowId, workflowVersion: command.workflowVersion,
       workflowHash: command.workflowHash, state: command.enabled ? "ACTIVE" : "PAUSED", revision: (previous?.revision ?? 0) + 1,
       timezone: command.timezone, localTime: command.localTime, reportingPeriod: command.reportingPeriod, misfirePolicy: command.misfirePolicy,
       misfireGraceSeconds: command.misfireGraceSeconds, servicePrincipalId: command.servicePrincipalId, input: structuredClone(command.input),
+      reportWindowBinding: structuredClone(reportWindowBinding),
       nextRunAt: command.enabled ? nextRunAt : null,
       ...(previous?.lastOccurrenceAt ? { lastOccurrenceAt: previous.lastOccurrenceAt } : {}), createdBy: previous?.createdBy ?? { id: currentActor.id, name: currentActor.name },
       createdAt: previous?.createdAt ?? now, updatedAt: now, scheduleHash };
@@ -276,14 +318,26 @@ export class WorkflowScheduleRunner {
   }
   private async admit(claim: Claim, nowMs: number): Promise<"ADMITTED" | "BLOCKED" | null> {
     if (!claim.occurrence.reportWindow) return this.block(claim, "Occurrence has no immutable report window; save a new schedule revision");
+    if (claim.occurrence.scheduleRevision !== claim.schedule.revision)
+      return this.block(claim, "Occurrence belongs to an older schedule revision and cannot use newer inputs");
+    if (!claim.schedule.reportWindowBinding)
+      return this.block(claim, "Schedule has no reviewed report-window input binding; save a new schedule revision");
     const principal = await this.services.repository.effectiveUser(claim.schedule.servicePrincipalId);
     if (!principal) return this.block(claim, "Named service principal is unavailable");
-    const workflow = await this.services.repository.readAuthoritative(state => structuredClone(state.workflows[claim.schedule.workflowId]));
-    if (!workflow) return this.block(claim, "Pinned workflow is unavailable");
     try {
+      const prepared = await this.services.repository.readAuthoritative(state => {
+        const workflow = state.workflows[claim.schedule.workflowId], publication = (state.versions[claim.schedule.workflowId] ?? [])
+          .findLast(value => value.artifactState === "PUBLISHED" && value.version === claim.schedule.workflowVersion && value.yaml === workflow?.yaml);
+        if (!workflow || !publication) throw new HandlerFailure(409, "Pinned workflow publication is unavailable");
+        const compiled = prepareOperationExecution(state, this.services, publication, workflow.yaml, principal.role);
+        const input = bindReportWindowInput(compiled.plan, claim.schedule.input, claim.schedule.reportWindowBinding!, claim.occurrence.reportWindow!);
+        return { workflow: structuredClone(workflow), input };
+      });
       const source = { profile: "workflow-schedule-source/v1" as const, scheduleId: claim.schedule.id, scheduleRevision: claim.schedule.revision,
-        occurrenceId: claim.occurrence.id, scheduledFor: claim.occurrence.scheduledFor, reportWindow: structuredClone(claim.occurrence.reportWindow) };
-      const result = await operationJobQueue(this.services).admit(workflow, claim.schedule.input, principal, claim.occurrence.idempotencyKey,
+        occurrenceId: claim.occurrence.id, scheduledFor: claim.occurrence.scheduledFor, scheduleHash: claim.schedule.scheduleHash,
+        reportWindow: structuredClone(claim.occurrence.reportWindow),
+        reportWindowBinding: structuredClone(claim.schedule.reportWindowBinding), inputHash: digest(prepared.input) };
+      const result = await operationJobQueue(this.services).admit(prepared.workflow, prepared.input, principal, claim.occurrence.idempotencyKey,
         `schedule:${claim.schedule.id}:${claim.occurrence.id}`, source);
       await this.services.repository.mutate(state => {
         const occurrence = state.scheduleOccurrences[claim.occurrence.id], schedule = state.schedules[claim.schedule.id];
@@ -304,7 +358,9 @@ export class WorkflowScheduleRunner {
     await this.services.repository.mutate(state => {
       const occurrence = state.scheduleOccurrences[claim.occurrence.id], schedule = state.schedules[claim.schedule.id];
       if (occurrence?.state === "ADMITTING") { occurrence.state = "BLOCKED"; occurrence.reason = reason; }
-      if (schedule?.revision === claim.schedule.revision) { schedule.state = "BLOCKED"; schedule.nextRunAt = null; schedule.lastError = reason; schedule.updatedAt = new Date().toISOString(); }
+      if (schedule?.revision === claim.schedule.revision && claim.occurrence.scheduleRevision === claim.schedule.revision) {
+        schedule.state = "BLOCKED"; schedule.nextRunAt = null; schedule.lastError = reason; schedule.updatedAt = new Date().toISOString();
+      }
     });
     return "BLOCKED";
   }

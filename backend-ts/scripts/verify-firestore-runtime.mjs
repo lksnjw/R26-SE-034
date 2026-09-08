@@ -403,18 +403,30 @@ try {
   const linkedEmailWorkflow = (await repository.snapshot()).workflows[emailAdmission.workflowId];
   await request("PUT", `/api/workflows/${emailAdmission.workflowId}/schedule`, { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
     workflowVersion: linkedEmailWorkflow.publishedVersion, workflowHash: workflowContentHash(linkedEmailWorkflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
-    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "owner", input: {} }, 409);
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "owner", input: {},
+    reportWindowBinding: { profile: "workflow-report-window-input-binding/v1", startAtInput: "reportStartAt", endAtInput: "reportEndAt" } }, 409);
   await stop(); await start(await openApplicationRepository(config)); assert.equal(Object.values((await repository.snapshot()).emailDeliveryAdmissions).length, 1);
   assert.equal(Object.values((await repository.snapshot()).executions).filter(value => value.emailDeliverySource?.admissionId === emailAdmission.id).length, 1);
   assert.equal(emails.length, 1); assert.equal(operations.length, operationsBeforeEmail); assert.equal(models.length, modelsBeforeEmail);
   log("actual Firestore exact email-draft admission survived post-COMMIT acknowledgement loss as one immutable linked execution, required fresh independent approval, dispatched only server-derived fields once, and retained acceptance-not-delivery truth on replay/restart");
 
-  const scheduleWorkflow = (await repository.snapshot()).workflows.operation;
+  const scheduledOperationYAML = stringify({ name: "Scheduled synthetic report", description: "Server-bound report window fixture", trigger: { type: "manual", config: { inputSchema: {
+    type: "object", properties: { id: { type: "string" }, reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
+    required: ["id", "reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
+    { id: "lookupStart", action: "read", parameters: { id: "{{input.reportStartAt}}" } },
+    { id: "lookupEnd", action: "read", parameters: { id: "{{input.reportEndAt}}" } },
+    { id: "send", action: operationTool.name, parameters: { id: "{{lookupEnd.structuredContent.id}}" } },
+  ] });
+  await repository.mutate(state => { state.workflows.scheduledOperation = { ...state.workflows.operation, id: "scheduledOperation", name: "Scheduled synthetic report",
+    yaml: scheduledOperationYAML, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions.scheduledOperation = []; });
+  await request("POST", "/api/workflows/scheduledOperation/publish", {}, 200);
+  const scheduleWorkflow = (await repository.snapshot()).workflows.scheduledOperation;
   const scheduleLocalTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
-  const schedule = (await request("PUT", "/api/workflows/operation/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+  const reportWindowBinding = { profile: "workflow-report-window-input-binding/v1", startAtInput: "reportStartAt", endAtInput: "reportEndAt" };
+  const schedule = (await request("PUT", "/api/workflows/scheduledOperation/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
     workflowVersion: scheduleWorkflow.publishedVersion, workflowHash: workflowContentHash(scheduleWorkflow.yaml), enabled: true, timezone: "UTC",
     localTime: scheduleLocalTime, reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300,
-    servicePrincipalId: "owner", input: { id: "scheduled-operation" } }, 200)).data;
+    servicePrincipalId: "owner", input: { id: "scheduled-operation" }, reportWindowBinding }, 200)).data;
   const scheduledFor = schedule.nextRunAt, operationsBeforeSchedule = operations.length, modelsBeforeSchedule = models.length;
   const actualScheduleClaimSave = persistence.save.bind(persistence); let lostScheduleClaimACK = false;
   persistence.save = async payload => { await actualScheduleClaimSave(payload); if (!lostScheduleClaimACK) {
@@ -425,11 +437,13 @@ try {
   await stop(); await start(await openApplicationRepository(config));
   const scheduledExecution = await waitFor(async () => Object.values((await repository.snapshot()).executions).find(value => value.scheduleSource?.scheduledFor === scheduledFor && value.status === "AWAITING_APPROVAL"), "scheduled operation approval wait");
   assert.equal(operations.length, operationsBeforeSchedule); assert.equal(models.length, modelsBeforeSchedule);
-  const scheduleStatus = (await request("GET", "/api/workflows/operation/schedule", undefined, 200)).data;
+  const scheduleStatus = (await request("GET", "/api/workflows/scheduledOperation/schedule", undefined, 200)).data;
   assert.equal(scheduleStatus.occurrences.filter(value => value.scheduledFor === scheduledFor).length, 1);
   const scheduledOccurrence = scheduleStatus.occurrences.find(value => value.scheduledFor === scheduledFor), expectedReportWindow = reportWindowFor("UTC", scheduledFor, "previous-calendar-day");
   assert.equal(scheduledOccurrence.executionId, scheduledExecution.id); assert.deepEqual(scheduledOccurrence.reportWindow, expectedReportWindow);
-  assert.deepEqual(scheduledExecution.scheduleSource.reportWindow, expectedReportWindow);
+  assert.deepEqual(scheduledExecution.scheduleSource.reportWindow, expectedReportWindow); assert.deepEqual(scheduledExecution.scheduleSource.reportWindowBinding, reportWindowBinding);
+  assert.match(scheduledExecution.scheduleSource.inputHash, /^sha256:[a-f0-9]{64}$/); assert.deepEqual(scheduledExecution.workflowSnapshot.input,
+    { id: "scheduled-operation", reportStartAt: expectedReportWindow.startAt, reportEndAt: expectedReportWindow.endAt });
   const scheduleReview = (await request("GET", `/api/executions/${scheduledExecution.id}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
   await request("POST", `/api/executions/${scheduledExecution.id}/approve`, { approvalId: scheduleReview.id, baseVersion: scheduleReview.version,
     reviewHash: scheduleReview.reviewHash, decisionKey: "firestore-scheduled-operation-approval-0001" }, 200, "reviewer");
@@ -440,7 +454,7 @@ try {
   assert.deepEqual((await repository.snapshot()).executions[scheduledExecution.id], completedScheduledExecution);
   assert.equal(Object.values((await repository.snapshot()).executions).filter(value => value.scheduleSource?.scheduledFor === scheduledFor).length, 1);
   assert.equal(operations.length, operationsBeforeSchedule + 1);
-  log("actual Firestore daily schedule claim retained its exact local-calendar report window, survived post-COMMIT acknowledgement loss as one service-principal execution, required fresh independent approval, dispatched once and persisted across restart without a model call");
+  log("actual Firestore daily schedule claim injected its exact local-calendar window into reviewed ERP read inputs, survived post-COMMIT acknowledgement loss as one service-principal execution, required fresh independent approval, dispatched once and persisted across restart without a model call");
 
   const lostOperation = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-lost-intent-0001", input: { id: "operation-lost-intent" } }, 202)).data.id;
   await waitFor(async () => (await repository.snapshot()).executions[lostOperation].status === "AWAITING_APPROVAL", "lost-intent approval wait");

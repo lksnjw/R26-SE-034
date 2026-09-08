@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonical-json.js";
 import type { CurrentUser, HandlerServices } from "../http/handlers/common.js";
 import { HandlerFailure, validateWorkflow } from "../http/handlers/common.js";
-import type { Execution, ReportWindow, Repository, RepositoryState } from "../repository/store.js";
+import type { Execution, ReportWindow, ReportWindowInputBinding, Repository, RepositoryState } from "../repository/store.js";
 import type { Workflow } from "../models/schemas.js";
 import { workflowContentHash } from "../parser/workflow.js";
 import { withoutSecretFields } from "../redact/secrets.js";
@@ -119,7 +119,8 @@ export class OperationJobQueue {
     if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt) throw new Error("Operation worker is fenced");
   }
   async admit(workflow: Workflow, rawInput: Record<string, unknown>, user: CurrentUser, key: string, traceId: string,
-    source?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string; reportWindow: ReportWindow }) {
+    source?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string;
+      scheduleHash: string; reportWindow: ReportWindow; reportWindowBinding: ReportWindowInputBinding; inputHash: string }) {
     if (workflow.recoverySource) throw new HandlerFailure(409, "Linked recovery workflows can only be admitted once through their exact source artifact", { code: "RECOVERY_ARTIFACT_ADMISSION_REQUIRED" });
     if (workflow.emailDeliverySource) throw new HandlerFailure(409, "Linked email-delivery workflows can only be admitted once from their exact reviewed draft", { code: "EMAIL_DELIVERY_ADMISSION_REQUIRED" });
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new HandlerFailure(422, "Operation runs require a stable 16–128 character idempotency key", { code: "OPERATION_KEY_REQUIRED" });
@@ -138,6 +139,15 @@ export class OperationJobQueue {
       }
       const current = state.workflows[workflow.id], publication = state.versions[workflow.id]?.findLast(item => item.version === workflow.publishedVersion && item.artifactState === "PUBLISHED");
       if (!current || current.archived || current.yaml !== workflow.yaml || current.publishedVersion !== workflow.publishedVersion || !publication || publication.yaml !== workflow.yaml || current.pendingGenerationApproval?.steps.length) throw new HandlerFailure(409, "A current accepted immutable operation publication is required");
+      if (source) {
+        const schedule = state.schedules[source.scheduleId], occurrence = state.scheduleOccurrences[source.occurrenceId];
+        if (!schedule || schedule.state !== "ACTIVE" || schedule.revision !== source.scheduleRevision || schedule.scheduleHash !== source.scheduleHash ||
+          schedule.workflowId !== workflow.id || schedule.workflowVersion !== workflow.publishedVersion || schedule.servicePrincipalId !== user.id ||
+          !occurrence || occurrence.state !== "ADMITTING" || occurrence.scheduleId !== source.scheduleId || occurrence.scheduleRevision !== source.scheduleRevision ||
+          occurrence.scheduledFor !== source.scheduledFor || canonicalJSONBytes(occurrence.reportWindow).compare(canonicalJSONBytes(source.reportWindow)) !== 0 ||
+          canonicalJSONBytes(schedule.reportWindowBinding).compare(canonicalJSONBytes(source.reportWindowBinding)) !== 0 || digest(input) !== source.inputHash)
+          throw new HandlerFailure(409, "Schedule or occurrence changed before final admission", { code: "SCHEDULE_ADMISSION_CHANGED" });
+      }
       const compiled = prepareOperationExecution(state, this.services, publication, workflow.yaml, user.role);
       if (compiled.plan.ir.inputSchema && validateToolInput(compiled.plan.ir.inputSchema, input).length) throw new HandlerFailure(422, "Operation input does not match its schema");
       runtimeApprovalPolicyHash(state);
