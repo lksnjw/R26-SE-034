@@ -22,6 +22,7 @@ import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { operationReadbackQueue } from "../src/runner/operation-readback-jobs.js";
 import { workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { workflowContentHash } from "../src/parser/workflow.js";
+import { draftRequirements, emailDraftHash, type EmailDraft } from "../src/delivery/email-draft.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -187,8 +188,16 @@ test("an exact chat email draft requests independent approval and dispatches onl
 
 test.each(["missing-sharing", "recurring", "browser-tool", "ambiguous-connector"])("email admission denies %s before SDK dispatch", async scenario => {
   const s = await setup(null, true, false, true), created = await s.request("POST", "/api/chat/sessions", {}), sessionId = created.json().data.id as string;
-  const prepared = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { content: scenario === "recurring" ? "Email manager@example.test every day" : "Email manager@example.test" });
-  const draft = prepared.json().data.assistantMessage.artifacts.emailDraft;
+  const prepared = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { content: "Email manager@example.test" });
+  let draft = prepared.json().data.assistantMessage.artifacts.emailDraft as EmailDraft;
+  if (scenario === "recurring") {
+    await s.repository.mutate(state => {
+      const message = state.chats[sessionId]!.messages.find(item => (item.artifacts as { emailDraft?: EmailDraft } | undefined)?.emailDraft?.id === draft.id)!;
+      const value = (message.artifacts as { emailDraft: EmailDraft }).emailDraft;
+      value.recurring = true; value.requirements = draftRequirements(value); value.contentHash = emailDraftHash(value);
+    });
+    draft = await s.repository.read(state => structuredClone((state.chats[sessionId]!.messages.find(item => (item.artifacts as { emailDraft?: EmailDraft } | undefined)?.emailDraft?.id === draft.id)!.artifacts as { emailDraft: EmailDraft }).emailDraft));
+  }
   const edit = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDraftCommand: { draftId: draft.id, baseVersion: draft.version, baseHash: draft.contentHash,
     commandId: `email-edit-${scenario}-0001`, patch: { to: "manager@example.test", subject: "Review", body: "Exact body" } } });
   const saved = edit.json().data.assistantMessage.artifacts.emailDraft, command: Record<string, unknown> = { profile: "email-delivery-admission-command/v1", draftId: saved.id,

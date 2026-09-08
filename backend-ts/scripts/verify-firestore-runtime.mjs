@@ -190,10 +190,22 @@ try {
   assert.equal((await repository.snapshot()).chats[chatId].messages.at(-1).artifacts.proposal.status, "APPLIED"); assert.equal(calls.length, callsBeforeNode);
   log("collection-owner saved chat used its dedicated tools-free patch contract and selected model; exact explicit once-only draft apply preserved body/actions and never published or dispatched");
 
+  const callsBeforeAutomation = calls.length, modelsBeforeAutomation = models.length;
+  const automation = (await request("POST", `/api/chat/sessions/${chatId}/messages`, { content: "Send daily invoice details to manager@example.test" }, 200)).data.assistantMessage.artifacts;
+  assert.equal(automation.intent, "WORKFLOW"); assert.equal(automation.automationRequest.profile, "recurring-delivery-request/v1");
+  assert.equal(automation.automationRequest.cadence, "daily"); assert.equal(automation.automationRequest.scheduleActive, false); assert(automation.workflowId);
+  const automationWorkflow = (await repository.snapshot()).workflows[automation.workflowId];
+  assert.equal(automationWorkflow.publishedVersion, 0); assert.equal(automationWorkflow.canRun, false); assert.deepEqual(automationWorkflow.trigger, { type: "manual" });
+  assert.match(automationWorkflow.yaml, /unresolved_requirements/); assert.equal((await repository.snapshot()).schedules[`schedule-${automation.workflowId}`], undefined);
+  assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation);
+  log("recurring delivery wording created one durable incomplete manual workflow shell with readable requirements, zero model/SDK calls and no active schedule or one-off email draft");
+
   const saved = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).chats, saved.chats); assert.deepEqual((await repository.snapshot()).executions, saved.executions);
   assert.deepEqual((await repository.snapshot()).versions, saved.versions); assert.equal((await request("GET", `/api/chat/operations/${operationId}`, undefined, 200)).data.operation.status, "ANSWERED");
-  assert.deepEqual((await repository.snapshot()).workflows.collection_edit, saved.workflows.collection_edit); assert.equal((await repository.snapshot()).chats[chatId].messages.at(-1).artifacts.proposal.status, "APPLIED");
+  assert.deepEqual((await repository.snapshot()).workflows.collection_edit, saved.workflows.collection_edit);
+  assert.equal((await repository.snapshot()).chats[chatId].messages.findLast(message => message.artifacts?.proposal)?.artifacts.proposal.status, "APPLIED");
+  assert.deepEqual((await repository.snapshot()).workflows[automation.workflowId], automationWorkflow); assert.equal((await repository.snapshot()).schedules[`schedule-${automation.workflowId}`], undefined);
   assert.equal(calls.length, callsBeforeNode); log("fresh application repository/HTTP worker startup preserved chats, proposals, versions and confirmed runs without replay");
 
   const historyReady = (await request("GET", "/api/workflows/collection_edit/readiness", undefined, 200)).data;
@@ -212,7 +224,7 @@ try {
   const history = (await request("GET", `/api/workflows/collection_edit/versions?${historyQuery}`, undefined, 200)).data;
   assert.equal(history.total, 4); assert.equal(history.entries[0].change.type, "redoDraft"); assert(!JSON.stringify(history).includes('"yaml"'));
   assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsBeforeOwner + 1);
-  assert.equal((await repository.snapshot()).chats[chatId].messages.at(-1).artifacts.proposal.appliedVersion, 2);
+  assert.equal((await repository.snapshot()).chats[chatId].messages.findLast(message => message.artifacts?.proposal)?.artifacts.proposal.appliedVersion, 2);
   log("normal Firestore saved-history HTTP undo/restart/redo preserved exact collection content, immutable revisions and historical proposal provenance without publication, SDK dispatch or model calls");
 
   // Losing an edit's COMMIT acknowledgement must not be reported as "nothing

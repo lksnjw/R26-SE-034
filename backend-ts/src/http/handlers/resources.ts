@@ -12,6 +12,7 @@ import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type Handler
 import { classifyIntent } from "../../agent/intent-classifier.js";
 import { editEmailDraft, prepareEmailDraft } from "../../delivery/email-chat.js";
 import { admitEmailDelivery } from "../../delivery/email-operation.js";
+import { recurringAutomationShell, recurringDeliveryRequest } from "../../delivery/recurring-automation.js";
 import { runQueryLoop, type ToolStep } from "../../agent/query-loop.js";
 import { runActionLoop } from "../../agent/action-loop.js";
 import { discoverTools } from "../../agent/tool-discovery.js";
@@ -532,6 +533,7 @@ export async function processStoredChat(input: {
   }
   const provider = services.providerRuntime;
   const intent = classifyIntent(content);
+  const automationRequest = recurringDeliveryRequest(content);
   const bodyWorkflowCtx = isRecord(body.workflowContext) ? body.workflowContext : null;
   const workflowContextYaml = typeof bodyWorkflowCtx?.yaml === "string" && bodyWorkflowCtx.yaml.trim() ? bodyWorkflowCtx.yaml.trim() : null;
   const workflowContextName = typeof bodyWorkflowCtx?.name === "string" && bodyWorkflowCtx.name ? bodyWorkflowCtx.name : "Workflow";
@@ -571,6 +573,33 @@ export async function processStoredChat(input: {
   if (intent === "EMAIL_DELIVERY") {
     const result = await prepareEmailDraft(services, user, sessionId, content, request, { ...(signal ? { signal } : {}), traceId, ...(hooks ? { hooks } : {}) });
     return ok({ session: stored.session, userMessage: stored.userMessage, ...result }, "Email draft prepared; nothing sent", null);
+  }
+  if (intent === "ACTION" && automationRequest) {
+    await hooks?.stage("GENERATING");
+    const yaml = recurringAutomationShell(content, automationRequest), timestamp = now();
+    const savedAutomation = await chatMutation((state) => {
+      const chat = assertChatAuthority(state, user, sessionId);
+      let workflowId: string | null = null;
+      if (user.permissions.includes("workflow:write")) {
+        workflowId = nextID(state, "wf");
+        state.workflows[workflowId] = { id: workflowId, name: `${automationRequest.cadence === "custom" ? "Recurring" : automationRequest.cadence} delivery automation`,
+          description: "Incomplete recurring delivery workflow preserved from chat", owner: { id: user.id, name: user.name }, assignedUserIds: [], status: "PENDING",
+          trigger: { type: "manual" }, steps: 0, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [],
+          canRun: false, createdAt: timestamp, updatedAt: timestamp, yaml, archived: false, chatSessionId: sessionId,
+          chatMessageId: stringValue(stored.userMessage.id), prompt: content, traceId } as unknown as import("../../models/schemas.js").Workflow;
+        hooks?.artifact(state, { type: "workflow-draft", id: workflowId });
+      }
+      const text = workflowId ? "Recurring automation draft saved in the canvas. It is incomplete, has not been published or executed, and no schedule is active. Resolve the listed requirements before publication and activate recurrence only through the scheduler." :
+        "Recurring automation requirements were preserved, but your current role cannot save a workflow. Nothing was sent and no schedule is active.";
+      const artifacts = { intent: "WORKFLOW", yaml, selected_workflow_yaml: yaml, ...(workflowId ? { workflowId } : {}), automationRequest,
+        can_execute: false, validation_passed: false, validation: { passed: false, failed_rules: ["SCHEMA_INVALID", "UNRESOLVED_REQUIREMENTS"], warnings: [] },
+        blocking_errors: automationRequest.requirements, next_action: "REVIEW_DRAFT" };
+      const assistantMessage = { id: nextID(state, "msg"), role: "assistant", text, artifacts, createdAt: timestamp, traceId };
+      chat.messages.push(assistantMessage); chat.messageCount = chat.messages.length; chat.updatedAt = timestamp; hooks?.saved(state, assistantMessage);
+      return { workflowId, assistantMessage, text, artifacts };
+    });
+    return ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage: savedAutomation.assistantMessage, answer: savedAutomation.text,
+      intent: "ACTION", workflowDraft: { yaml }, validation: savedAutomation.artifacts.validation }, "Recurring workflow draft preserved; no schedule or delivery occurred", null);
   }
   if (["QUERY", "AUDIT", "TOOL_CALL"].includes(intent) &&
       (services.erpbridgeSession === undefined || services.providerRuntime?.configured !== true)) {

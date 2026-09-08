@@ -133,7 +133,11 @@ export function classifyIntent(message: string): Intent {
   // patterns above never see as a substring.
   if (GENERATION_VERB_PATTERN.test(normalized) && mentionsWorkflowFuzzy(normalized)) return "ACTION";
 
-  if (deliveryIntent(message)) return "EMAIL_DELIVERY";
+  const delivery = deliveryIntent(message);
+  // Recurrence describes an automation to design and review. It must never
+  // fall into the one-off email-draft path and accidentally lose the cadence.
+  if (delivery?.recurring) return "ACTION";
+  if (delivery) return "EMAIL_DELIVERY";
 
   for (const pattern of TOOL_CALL_PATTERNS) {
     if (normalized.includes(pattern)) return "TOOL_CALL";

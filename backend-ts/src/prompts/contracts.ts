@@ -82,6 +82,24 @@ An optional merge is {schema:explicit supported JSON schema,then:binding,else:bi
 Bindings are explicit references, {kind:"literal",value:finite scalar or null}, {kind:"object",fields:{field:binding}}, {kind:"array",items:[binding]}, or {kind:"template",parts:[string or reference]}. Text templates require actual strings, not implicit object/number conversion. Schemas use object/array/string/number/integer/boolean/null and supported constraints. No code, transforms or fallback/default facts. Unknown output types remain unresolved; runtime guards do not create missing facts.
 Preserve the FULL requested goal, constraints and relevant rules. Loops, subflows, retries, model/HTTP/code nodes, approved effects and recurring execution are still unsupported. Record these, missing capabilities/required values, policy, recipients, analysis, approvals and time details in metadata.unresolved_requirements as concise nonempty strings. Never flatten requested unsupported logic into unconditional reads or silently drop an email, write, recipient or schedule to get a passing draft. Retain required human approval immediately before a proposed effect; never infer approval or remove a checkpoint. Live writes and scheduling are not currently executable. Preserve explicit cron/timezone/reporting period; never silently assume UTC. Never guess recipients or record identities. If no supported step can be proposed, return steps: [] with unresolved requirements and accept schema rejection; no unrelated echo/fake gate. Supplied live capabilities bound availability. This is an unapplied draft proposal, not a publication, approval, schedule or execution receipt.`;
 
+// Historical v3-v5 prompts remain immutable provenance. This version reflects
+// the implemented reviewed sequential-operation and daily scheduler profiles
+// without granting the model execution authority.
+export const GOVERNED_OPERATION_CANDIDATE_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
+
+TASK: WORKFLOW DRAFT SYNTHESIS (prompt/candidate/v6)
+Return exactly one strict YAML workflow and no Markdown fence or commentary. Allowed top-level keys are name, description, trigger, steps and metadata. Use trigger.type: manual. trigger.config may contain only a known object inputSchema. A generated draft never activates a run or schedule.
+
+Use only exact local tool names from TOOL_REGISTRY_JSON and fields from each exact input_schema. Supplied live capabilities bound availability. Every step needs a unique reference-safe ID and readable description. Never invent a tool, schema field, recipient, record, amount, date range, timezone, approval or output. Parameters may use literal JSON values or explicit '{{input.path}}' / '{{earlierStep.path}}' references backed by declared schemas. Missing requirements belong in metadata.unresolved_requirements as concise nonempty strings. Never flatten requested unsupported logic or drop a requested read, analysis, recipient, delivery or recurrence merely to obtain validation success.
+
+Choose one supported execution shape:
+1. A deterministic read workflow may optionally declare metadata.controlFlow with schemaVersion read-control-flow/v3 and a root {kind:"sequence",nodes:[...]}. A node is {kind:"action",nodeId:"declared step ID"}, an explicit boolean if with then/else sequences, a typed return, or a bounded foreach with typed array items, maxItems, body sequence and typed collect. Every declared action appears exactly once in depth-first source order. References can use only workflowInput, preceding in-scope nodeOutput, or the current foreach item/index. Branch values leave their branch only through an explicit typed merge; collection values leave only through collect. Unknown comparisons, transforms, model decisions, HTTP/code, subflows and retries remain unresolved.
+2. A reviewed sequential operation is a flat manual list of exact tool steps with no metadata.controlFlow. It may contain reads followed by low/medium-risk effect tools only when each offered effect has an explicit operation_contract. Do not add kind: approval: the backend creates an exact fresh independent runtime approval for every effect from its immutable compiled tool and arguments. High-risk/destructive effects, unsupported schemas and absent operation contracts remain unresolved.
+
+For recurring requests, keep the workflow trigger manual. Preserve cadence, recipient/channel, reporting period, local delivery time and IANA timezone under metadata.automation_request when known. Unknown values remain unresolved and UTC must never be assumed. Recurrence is activated separately only after exact publication through the authoritative scheduler; never emit a legacy schedule trigger or claim the schedule is active. The current scheduler supports daily recurrence only. A recurring report must retain complete bounded retrieval and delivery; if model-based analysis, named-person resolution, attachment semantics or delivery proof is requested but unsupported, keep that outcome unresolved.
+
+The result is only an editable draft. Validation, capability review, publication, schedule activation, service-principal admission and every runtime approval are separate backend decisions.`;
+
 export const MODIFIER_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 
 TASK: WORKFLOW MODIFICATION PROPOSAL (prompt/workflow-modifier/v2)
@@ -109,6 +127,7 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/candidate/v3": return CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v4": return STRUCTURED_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v5": return VALUE_CANDIDATE_SYSTEM_PROMPT;
+    case "prompt/candidate/v6": return GOVERNED_OPERATION_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/node-patch/v2": return NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/condition-patch/v1": return CONDITION_PATCH_SYSTEM_PROMPT;
     case "prompt/return-patch/v1": return RETURN_PATCH_SYSTEM_PROMPT;

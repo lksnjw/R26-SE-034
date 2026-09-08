@@ -7,7 +7,7 @@ import type { QueryMessage, QueryOptions, QueryToolDefinition, QueryTurnResult }
 import { generationPromptHash } from "../prompts/contracts.js";
 
 export const ANALYSIS_PROMPT_VERSION = "prompt/analysis/v2";
-export const CANDIDATE_PROMPT_VERSION = "prompt/candidate/v5";
+export const CANDIDATE_PROMPT_VERSION = "prompt/candidate/v6";
 
 export type RuntimeProviderConfiguration = {
   id: string;

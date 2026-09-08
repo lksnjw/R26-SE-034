@@ -49,8 +49,9 @@ async function setup(options: { bridge?: boolean; calls?: boolean; final?: strin
 function command(draft: EmailDraft, commandId = "edit-command-00000001") { return { draftId: draft.id, baseVersion: draft.version, baseHash: draft.contentHash, commandId, patch: { to: "confirmed@example.test", subject: "Invoice review", body: "Reviewed report draft." } }; }
 
 test.each([
-  "Send an email to manager@example.test", requestText, "Send invoice details to my manager every day", "Please mail this to my manager",
+  "Send an email to manager@example.test", requestText, "Please mail this to my manager",
 ])("direct delivery request remains explicit: %s", (text) => { expect(classifyIntent(text)).toBe("EMAIL_DELIVERY"); });
+test.each(["Send invoice details to my manager every day", "Email the weekly report to manager@example.test"])("recurring delivery becomes workflow design, never a one-off send: %s", (text) => { expect(classifyIntent(text)).toBe("ACTION"); });
 test.each(["How would you email the manager?", "What happened to the email?", "Do not send email; list invoices", "Check if the email was sent"])("informational or negated request is not delivery authority: %s", (text) => { expect(classifyIntent(text)).not.toBe("EMAIL_DELIVERY"); });
 test("explicit canvas generation stays a workflow proposal, not a delivery attempt", () => { expect(classifyIntent("Create a workflow to get invoices and email the manager daily")).toBe("ACTION"); });
 test("person or multiple-address request never guesses or silently picks a recipient", () => {
@@ -59,16 +60,19 @@ test("person or multiple-address request never guesses or silently picks a recip
     expect(createEmailDraft("draft", "chat", "owner", text, intent).to).toBe("");
   }
 });
-test("offline request saves the original recipient/report/recurrence without model or SDK dispatch", async () => {
+test("offline recurring request saves an incomplete workflow in the canvas without model, SDK dispatch or active schedule", async () => {
   const s = await setup(); const result = await s.send(requestText + " every day");
   expect(result.statusCode, result.body).toBe(200);
-  expect(result.json().data.operation).toEqual({ success: false, code: "EMAIL_NOT_SENT" });
-  expect(result.json().data.assistantMessage.artifacts).toMatchObject({ reportReason: "ERPBRIDGE_NOT_CONNECTED", can_execute: false, emailDraft: { originalRequest: requestText + " every day", to: "manager@example.test", recurring: true, body: "", reportStatus: "NOT_PREPARED", state: "DRAFT_NOT_SENT" } });
-  expect(result.json().data.answer).toContain("No schedule is active");
+  expect(result.json().data.assistantMessage.artifacts).toMatchObject({ intent: "WORKFLOW", can_execute: false,
+    automationRequest: { profile: "recurring-delivery-request/v1", cadence: "daily", channel: "email", requestedAddresses: ["manager@example.test"], reportRequested: true, scheduleActive: false } });
+  expect(result.json().data.assistantMessage.artifacts).not.toHaveProperty("emailDraft");
+  expect(result.json().data.answer).toContain("no schedule is active");
   expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
-  expect((await s.repository.snapshot()).workflows).toEqual({});
+  const workflows = Object.values((await s.repository.snapshot()).workflows); expect(workflows).toHaveLength(1);
+  expect(workflows[0]).toMatchObject({ publishedVersion: 0, draftVersion: 1, canRun: false, trigger: { type: "manual" } });
+  expect(workflows[0]!.yaml).toContain("unresolved_requirements"); expect((await s.repository.snapshot()).schedules).toEqual({});
   const restored = await s.app.inject({ method: "GET", url: `/api/chat/sessions/${s.sessionId}`, headers: s.headers });
-  expect(restored.json().data.messages[1].artifacts.emailDraft.to).toBe("manager@example.test");
+  expect(restored.json().data.messages[1].artifacts.automationRequest.scheduleActive).toBe(false);
 });
 test("zero-tool model 'sent' claim cannot become a report or delivery result", async () => {
   const s = await setup({ bridge: true, final: "Email sent successfully." }); const result = await s.send();

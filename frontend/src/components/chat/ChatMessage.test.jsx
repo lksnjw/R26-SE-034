@@ -15,6 +15,13 @@ test("validated saved workflow is explicitly a draft, not invalid or ready to ex
   expect(screen.getByText("Saved draft · Validation passed")).toBeTruthy();
   expect(screen.queryByText(/ready to execute/)).toBeNull();
 });
+test("recurring workflow shows readable missing requirements and never claims an active schedule", () => {
+  render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Recurring automation draft saved.", artifacts: { intent: "WORKFLOW", yaml: "name: Daily\ntrigger:\n  type: manual\nsteps: []", can_execute: false,
+    automationRequest: { profile: "recurring-delivery-request/v1", cadence: "daily", channel: "email", requestedAddresses: ["manager@example.test"], scheduleActive: false,
+      requirements: ["Confirm the delivery time and IANA timezone."] } } }} /></MemoryRouter>);
+  expect(screen.getByRole("region", { name: "Recurring automation requirements" }).textContent).toContain("Daily automation · no schedule active");
+  expect(screen.getByText(/Confirm the delivery time and IANA timezone/)).toBeTruthy();
+});
 test("incomplete read preparation is not mislabeled as a successful result or a known timeout", () => {
   render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Preparation stopped.", artifacts: { intent: "QUERY", sources: [{ name: "read", arguments: {} }], boundHit: true } }} /></MemoryRouter>);
   expect(screen.getByText("1 tool call · preparation incomplete")).toBeTruthy();

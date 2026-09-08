@@ -454,6 +454,16 @@ function OpenWorkflowButton({ workflowId }) {
   );
 }
 
+function AutomationRequestBanner({ request }) {
+  if (!request || request.profile !== "recurring-delivery-request/v1") return null;
+  const recipient = request.requestedAddresses?.length === 1 ? request.requestedAddresses[0] : "Recipient unresolved";
+  return <section aria-label="Recurring automation requirements" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-100">
+    <p className="font-semibold">{request.cadence === "custom" ? "Recurring" : `${request.cadence[0]?.toUpperCase()}${request.cadence?.slice(1)}`} automation · no schedule active</p>
+    <p className="mt-1">Channel: {request.channel} · Recipient: {recipient}</p>
+    {Array.isArray(request.requirements) && request.requirements.length > 0 && <><p className="mt-2 font-semibold">Resolve before publication</p><ul className="mt-1 list-disc space-y-1 pl-5">{request.requirements.map((item) => <li key={item}>{item}</li>)}</ul></>}
+  </section>;
+}
+
 // ── Main ChatMessage ────────────────────────────────────────────────────────
 /*******************************************************************************
  * Function: ChatMessage
@@ -554,6 +564,7 @@ function ChatMessage({ message, onChatChanged }) {
         {/* ── Workflow: inline validation + YAML preview + save-after-edit ── */}
         {isWorkflow && (
           <>
+            <AutomationRequestBanner request={artifacts?.automationRequest} />
             {Array.isArray(artifacts?.missing_tools) && artifacts.missing_tools.length > 0 && (
               <div className="mt-2 flex flex-col gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs dark:border-amber-800/40 dark:bg-amber-900/20">
                 <div className="flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-300">

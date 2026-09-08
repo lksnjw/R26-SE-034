@@ -61,7 +61,7 @@ test("unknown actions remain in the original blocked proposal, never silently re
 test("an explicitly incomplete requested outcome remains in a blocked saved draft and cannot publish or run", async () => {
   const proposed = yaml + "metadata:\n  unresolved_requirements:\n   - Manager delivery connector is unavailable\n";
   const s = await setup(proposed);
-  const response = await s.send("Create a workflow to read and deliver daily invoices to the manager");
+  const response = await s.send("Create a workflow to read and deliver invoices to the manager");
   expect(response.statusCode, response.body).toBe(200);
   expect(response.json().data.validation.failed_rules).toContain("UNRESOLVED_REQUIREMENTS");
   expect(response.json().data.assistantMessage.artifacts.can_execute).toBe(false);
