@@ -11,7 +11,8 @@ const artifact = () => ({ profile: "operation-recovery-artifact/v1", id: "recove
   createdBy: { id: "owner", role: "Platform Admin" }, createdAt: "2026-10-06T10:01:00.000Z",
   requirements: ["current-capability-validation", "fresh-independent-approval", "new-execution-and-intent", "new-idempotency-boundary"], dispatchAuthority: false, sourceRunUnchanged: true, artifactHash: h });
 const history = (withArtifact = false) => ({ profile: "operation-recovery-artifact-history/v1", sourceExecutionId: "run/one", intentId: "intent", sourceVersion: 2, factsHash: h,
-  state: "CLOSED_NOT_APPLIED", reconciliationId: "resolution", queryId: "query", canCreate: !withArtifact, dispatchAuthority: false, artifacts: withArtifact ? [artifact()] : [], explanation: "Plan only." });
+  state: "CLOSED_NOT_APPLIED", reconciliationId: "resolution", queryId: "query", canCreate: !withArtifact, canAdmit: withArtifact, linkedExecution: null,
+  dispatchAuthority: false, artifacts: withArtifact ? [artifact()] : [], explanation: "Plan only." });
 const envelope = data => ({ data: { success: true, data } });
 afterEach(() => jest.restoreAllMocks());
 
@@ -34,8 +35,18 @@ test("create sends source pins only and rejects browser-authored action or unbou
   await expect(operationRecoveryService.create(source, command)).rejects.toThrow();
 });
 
+test("admission sends only artifact identity and a new key, then requires a new execution and fresh approval receipt", async () => {
+  const source = history(true), command = { artifactHash: artifact().artifactHash, idempotencyKey: "recovery-admission-0001" };
+  const receipt = { sourceExecutionId: "run/one", artifactId: "recovery-one", workflowId: "recovery-flow", executionId: "recovery-run", status: "PENDING",
+    replayed: false, freshApprovalRequired: true, sourceRunUnchanged: true };
+  const post = jest.spyOn(apiClient, "post").mockResolvedValue(envelope(receipt)); expect(await operationRecoveryService.admit(source, artifact(), command)).toEqual(receipt);
+  expect(post).toHaveBeenCalledWith("/executions/run%2Fone/recovery-artifacts/recovery-one/admit", command);
+  await expect(operationRecoveryService.admit(source, artifact(), { ...command, arguments: {} })).rejects.toThrow();
+  post.mockResolvedValue(envelope({ ...receipt, freshApprovalRequired: false })); await expect(operationRecoveryService.admit(source, artifact(), command)).rejects.toThrow();
+});
+
 test.each(["CASE_OPEN", "EFFECT_OBSERVED", "EVIDENCE_NOT_QUALIFIED"])("%s remains readable but cannot manufacture recovery authority", async state => {
   const value = { profile: "operation-recovery-artifact-history/v1", sourceExecutionId: "run/one", intentId: "intent", sourceVersion: 2, factsHash: h,
-    state, canCreate: false, dispatchAuthority: false, artifacts: [], explanation: "Unavailable." };
+    state, canCreate: false, canAdmit: false, linkedExecution: null, dispatchAuthority: false, artifacts: [], explanation: "Unavailable." };
   jest.spyOn(apiClient, "get").mockResolvedValue(envelope(value)); expect(await operationRecoveryService.history("run/one")).toEqual(value);
 });

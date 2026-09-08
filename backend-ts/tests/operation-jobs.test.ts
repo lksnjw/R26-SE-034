@@ -265,6 +265,14 @@ async function resolvedNotAppliedQueryOperation(storage: PersistenceBackend | nu
   return { ...s, queryId, reconciliationId: decision.json().data.recordId as string };
 }
 
+async function savedRecoveryPlan(storage: PersistenceBackend | null = null) {
+  const s = await resolvedNotAppliedQueryOperation(storage), history = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
+  const command = { intentId: history.intentId, sourceVersion: history.sourceVersion, factsHash: history.factsHash, reconciliationId: s.reconciliationId,
+    queryId: s.queryId, idempotencyKey: "linked-recovery-plan-helper-01" };
+  const response = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, command); expect(response.statusCode, response.body).toBe(201);
+  return { ...s, artifact: response.json().data.artifact as { id: string; artifactHash: string; action: { capabilityId: string } } };
+}
+
 test("the source requester can save one immutable linked recovery plan without dispatching or changing the closed run", async () => {
   const s = await resolvedNotAppliedQueryOperation(), before = await s.repository.snapshot(), calls = s.sdk.callTool.mock.calls.length;
   const ownerHistory = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
@@ -329,6 +337,52 @@ test("linked recovery post-commit acknowledgement loss requires authoritative re
   await s.repository.recoverPersistenceState(); const recovered = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
   expect(recovered.artifacts).toHaveLength(1); expect(recovered.canCreate).toBe(false);
   const replay = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, command); expect(replay.statusCode).toBe(200); expect(replay.json().data.replayed).toBe(true);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("a saved plan admits a separate operation with new identity and fresh approval before one SDK dispatch", async () => {
+  const s = await savedRecoveryPlan(), before = await s.repository.snapshot(), sourceBefore = structuredClone(before.executions[s.id]!);
+  const originalApprovalId = sourceBefore.runtimeApprovalSecret!.activeId, command = { artifactHash: s.artifact.artifactHash, idempotencyKey: "recovery-execution-admit-01" };
+  const admitted = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts/${s.artifact.id}/admit`, command); expect(admitted.statusCode, admitted.body).toBe(202);
+  const receipt = admitted.json().data; expect(receipt).toMatchObject({ sourceExecutionId: s.id, artifactId: s.artifact.id, replayed: false, freshApprovalRequired: true, sourceRunUnchanged: true });
+  expect(receipt.executionId).not.toBe(s.id); expect(receipt.workflowId).not.toBe("flow"); await s.wait(receipt.executionId, "AWAITING_APPROVAL");
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+  const approval = await s.review(receipt.executionId); expect(approval).toMatchObject({ state: "PENDING", canDecide: true, arguments: { value: "fixture report" } });
+  expect(approval.id).not.toBe(originalApprovalId);
+  const approved = await s.request("POST", `/api/executions/${receipt.executionId}/approve`, { approvalId: approval.id, baseVersion: approval.version, reviewHash: approval.reviewHash,
+    decisionKey: "recovery-fresh-approval-01" }, "reviewer"); expect(approved.statusCode, approved.body).toBe(200);
+  await s.wait(receipt.executionId, "DONE"); const after = await s.repository.snapshot(), recovery = after.executions[receipt.executionId]!;
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(3); expect(s.sdk.callTool.mock.calls[2]![1]).toEqual({ value: "fixture report" });
+  expect(recovery.recoverySource).toEqual({ profile: "operation-recovery-source/v1", sourceExecutionId: s.id, artifactId: s.artifact.id, artifactHash: s.artifact.artifactHash });
+  expect(recovery.operationSecret!.intents.recover_action!.id).not.toBe(sourceBefore.operationSecret!.intents.send!.id); expect(recovery.finalOutput).toMatchObject({ structuredContent: { accepted: true } });
+  expect(after.executions[s.id]).toEqual(sourceBefore);
+  const history = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
+  expect(history).toMatchObject({ canAdmit: false, linkedExecution: { executionId: receipt.executionId, workflowId: receipt.workflowId, status: "DONE" } });
+  const replay = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts/${s.artifact.id}/admit`, command); expect(replay.statusCode).toBe(202); expect(replay.json().data.replayed).toBe(true);
+  expect((await s.request("POST", `/api/executions/${s.id}/recovery-artifacts/${s.artifact.id}/admit`, { ...command, idempotencyKey: "recovery-execution-admit-02" })).statusCode).toBe(409);
+  expect((await s.request("POST", `/api/workflows/${receipt.workflowId}/run`, { mode: "async-operation", idempotencyKey: "forbidden-second-recovery-01", input: {} })).statusCode).toBe(409);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(3);
+});
+
+test("recovery admission rejects reviewer/client authority, browser-authored action and changed current capability before dispatch", async () => {
+  const s = await savedRecoveryPlan(), command = { artifactHash: s.artifact.artifactHash, idempotencyKey: "recovery-admission-denied-01" };
+  expect((await s.request("POST", `/api/executions/${s.id}/recovery-artifacts/${s.artifact.id}/admit`, command, "reviewer")).statusCode).toBe(403);
+  expect((await s.request("POST", `/api/executions/${s.id}/recovery-artifacts/${s.artifact.id}/admit`, { ...command, arguments: { value: "changed" }, outcome: "NOT_APPLIED" })).statusCode).toBe(422);
+  await s.repository.mutate(state => { state.capabilityAdmissions[s.artifact.action.capabilityId]!.state = "DISABLED"; });
+  const denied = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts/${s.artifact.id}/admit`, command); expect([409, 422]).toContain(denied.statusCode);
+  expect(Object.values((await s.repository.snapshot()).executions).filter(item => item.recoverySource)).toHaveLength(0); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("recovery admission post-commit acknowledgement loss reveals one new pending execution and same-key replay only", async () => {
+  const storage = new Records(), s = await savedRecoveryPlan(storage), command = { artifactHash: s.artifact.artifactHash, idempotencyKey: "recovery-admission-ack-loss-01" };
+  storage.loseWhen = state => Object.values(state.executions).some(item => item.recoverySource?.artifactId === s.artifact.id);
+  const unknown = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts/${s.artifact.id}/admit`, command); expect(unknown.statusCode, unknown.body).toBe(503);
+  expect(unknown.json().message).toMatch(/unconfirmed|reload/i); expect(() => s.repository.assertAuthority()).toThrow(); await s.repository.recoverPersistenceState();
+  const state = await s.repository.snapshot(), linked = Object.values(state.executions).filter(item => item.recoverySource?.artifactId === s.artifact.id);
+  expect(linked).toHaveLength(1); expect(linked[0]!.status).toBe("PENDING"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+  const history = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data; expect(history.linkedExecution.executionId).toBe(linked[0]!.id);
+  const replay = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts/${s.artifact.id}/admit`, command); expect(replay.statusCode).toBe(202); expect(replay.json().data.replayed).toBe(true);
+  expect((await s.request("POST", `/api/executions/${s.id}/recovery-artifacts/${s.artifact.id}/admit`, { ...command, idempotencyKey: "recovery-admission-ack-loss-02" })).statusCode).toBe(409);
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
 });
 

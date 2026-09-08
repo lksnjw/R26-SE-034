@@ -23,13 +23,14 @@ function artifact(value, executionId) {
   return value;
 }
 function history(value, executionId) {
-  const eligible = value?.state === "CLOSED_NOT_APPLIED", keys = ["profile", "sourceExecutionId", "intentId", "sourceVersion", "factsHash", "state", "canCreate", "dispatchAuthority", "artifacts", "explanation", ...(eligible ? ["reconciliationId", "queryId"] : [])];
+  const eligible = value?.state === "CLOSED_NOT_APPLIED", keys = ["profile", "sourceExecutionId", "intentId", "sourceVersion", "factsHash", "state", "canCreate", "canAdmit", "linkedExecution", "dispatchAuthority", "artifacts", "explanation", ...(eligible ? ["reconciliationId", "queryId"] : [])];
   if (!exact(value, keys) ||
       value.profile !== "operation-recovery-artifact-history/v1" || value.sourceExecutionId !== executionId || !id(value.intentId) || !Number.isSafeInteger(value.sourceVersion) || value.sourceVersion < 1 || !hash(value.factsHash) ||
-      !["CASE_OPEN", "EFFECT_OBSERVED", "EVIDENCE_NOT_QUALIFIED", "CLOSED_NOT_APPLIED"].includes(value.state) || typeof value.canCreate !== "boolean" || value.dispatchAuthority !== false || !Array.isArray(value.artifacts) || value.artifacts.length > 1 || typeof value.explanation !== "string" || !value.explanation ||
-      value.canCreate && !eligible || !eligible && value.artifacts.length || eligible && ![value.reconciliationId, value.queryId].every(id)) deny();
+      !["CASE_OPEN", "EFFECT_OBSERVED", "EVIDENCE_NOT_QUALIFIED", "CLOSED_NOT_APPLIED"].includes(value.state) || typeof value.canCreate !== "boolean" || typeof value.canAdmit !== "boolean" || value.dispatchAuthority !== false || !Array.isArray(value.artifacts) || value.artifacts.length > 1 || typeof value.explanation !== "string" || !value.explanation ||
+      value.canCreate && !eligible || !eligible && (value.artifacts.length || value.canAdmit || value.linkedExecution !== null) || eligible && ![value.reconciliationId, value.queryId].every(id)) deny();
   const artifacts = value.artifacts.map(item => artifact(item, executionId));
-  if (eligible && value.canCreate !== (artifacts.length === 0)) deny();
+  if (eligible && (value.canCreate && artifacts.length !== 0 || value.canAdmit && (artifacts.length !== 1 || value.linkedExecution !== null) || value.canCreate && value.canAdmit)) deny();
+  if (value.linkedExecution !== null && (!exact(value.linkedExecution, ["executionId", "workflowId", "status", "startedAt"]) || !id(value.linkedExecution.executionId) || !id(value.linkedExecution.workflowId) || !text(value.linkedExecution.status, 100) || !date(value.linkedExecution.startedAt) || artifacts.length !== 1 || value.canAdmit)) deny();
   return { ...value, artifacts };
 }
 
@@ -41,5 +42,15 @@ export const operationRecoveryService = {
     const value = unwrap(await apiClient.post(`/executions/${encodeURIComponent(source.sourceExecutionId)}/recovery-artifacts`, command));
     if (!exact(value, ["artifact", "replayed"]) || typeof value.replayed !== "boolean") deny();
     return { artifact: artifact(value.artifact, source.sourceExecutionId), replayed: value.replayed };
+  },
+  async admit(source, artifactValue, command) {
+    const saved = artifact(artifactValue, source?.sourceExecutionId);
+    if (!source || !source.canAdmit || !exact(command, ["artifactHash", "idempotencyKey"]) || command.artifactHash !== saved.artifactHash ||
+        typeof command.idempotencyKey !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(command.idempotencyKey)) deny();
+    const value = unwrap(await apiClient.post(`/executions/${encodeURIComponent(source.sourceExecutionId)}/recovery-artifacts/${encodeURIComponent(saved.id)}/admit`, command));
+    if (!exact(value, ["sourceExecutionId", "artifactId", "workflowId", "executionId", "status", "replayed", "freshApprovalRequired", "sourceRunUnchanged"]) ||
+        value.sourceExecutionId !== source.sourceExecutionId || value.artifactId !== saved.id || !id(value.workflowId) || !id(value.executionId) || !text(value.status, 100) || typeof value.replayed !== "boolean" ||
+        value.freshApprovalRequired !== true || value.sourceRunUnchanged !== true) deny();
+    return value;
   },
 };

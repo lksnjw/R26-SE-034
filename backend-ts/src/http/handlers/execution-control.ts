@@ -7,12 +7,17 @@ import { ok } from "../../models/schemas.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
 import { recordOperationReconciliation } from "../../runner/operation-reconciliation.js";
 import { operationReadbackHistory, operationReadbackQueue } from "../../runner/operation-readback-jobs.js";
-import { createOperationRecoveryArtifact, operationRecoveryArtifactView } from "../../runner/operation-recovery-artifacts.js";
+import { admitOperationRecovery, createOperationRecoveryArtifact, operationRecoveryArtifactView } from "../../runner/operation-recovery-artifacts.js";
+import { requestTraceId } from "../../trace/request-trace.js";
 
 export const EXECUTION_CONTROL_UNHANDLED = Symbol("execution-control-unhandled");
 
 export async function handleExecutionControlRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const path = `${services.config.apiBasePath}/executions/:id`;
+  if (route.path === `${path}/recovery-artifacts/:artifactId/admit` && route.method === "POST") {
+    const receipt = await admitOperationRecovery(services, requestParam(request, "id"), requestParam(request, "artifactId"), user, request.body, requestTraceId(request));
+    return reply.status(202).send(ok(receipt, receipt.replayed ? "Existing separate recovery execution found; no additional run admitted" : "Separate recovery execution queued; fresh independent approval is required", null));
+  }
   if (route.path === `${path}/recovery-artifacts` && route.method === "GET") {
     if (Object.keys(request.query as Record<string, unknown>).length) throw new HandlerFailure(400, "Recovery artifact history accepts no query overrides");
     let history;

@@ -56,6 +56,7 @@ export type Execution = {
   // projection. Only the minimal, current-authority review endpoint exposes it.
   runtimeApprovalSecret?: import("../runner/runtime-approvals.js").RuntimeApprovalLedger;
   operationSecret?: import("../runner/operation-state.js").OperationJournal;
+  recoverySource?: { profile: "operation-recovery-source/v1"; sourceExecutionId: string; artifactId: string; artifactHash: string };
 };
 
 export type ReadRunAttempt = { id: string; nodeId: string; stepIndex: number; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN" | "CANCELLED" | "SKIPPED";

@@ -127,6 +127,7 @@ describe("complete HTTP route graph", () => {
       "POST /api/executions/:id/approve", "POST /api/executions/:id/reject", "POST /api/executions/:id/reconcile",
       "GET /api/executions/:id/readbacks", "POST /api/executions/:id/readbacks", "POST /api/executions/:id/readbacks/:queryId/cancel",
       "GET /api/executions/:id/recovery-artifacts", "POST /api/executions/:id/recovery-artifacts",
+      "POST /api/executions/:id/recovery-artifacts/:artifactId/admit",
       "POST /api/workflows/:id/approve-generation", "POST /api/workflows/:id/reject-generation",
       "POST /api/workflows/:id/commands", "POST /api/workflows/:id/node-proposals", "GET /api/workflows/:id/readiness",
       "GET /api/executions/:id/events",
