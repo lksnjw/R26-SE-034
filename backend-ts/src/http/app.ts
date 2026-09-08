@@ -308,9 +308,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 195)
+  if (routeTable.length !== 197)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 195`,
+      `route table has ${routeTable.length} routes, expected 197`,
     );
   return app;
 }
@@ -1486,6 +1486,10 @@ function routePolicy(
     return { required: ["execution:approve", "execution:reconcile"], any: true };
   if (path.startsWith("/api/executions"))
     if (path === "/api/executions/:id/readbacks" && route.method === "GET") return { required: ["workflow:read", "execution:read_own", "execution:reconcile"], any: true };
+  if (path.startsWith("/api/executions"))
+    if (path === "/api/executions/:id/recovery-artifacts") return route.method === "GET"
+      ? { required: ["workflow:read", "execution:read_own", "workflow:run", "workflow:run_own", "execution:reconcile"], any: true }
+      : { required: ["workflow:run", "workflow:run_own"], any: true };
   if (path.startsWith("/api/executions"))
     if (path === "/api/executions/:id/reconcile" && route.method === "POST") return { required: ["execution:reconcile"], any: false };
   if (path.startsWith("/api/executions"))

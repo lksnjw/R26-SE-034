@@ -23,6 +23,7 @@ routes.push(...[
 ].map((path) => ({ method: /\/(readiness|events|models|operations|capabilities|mcp-connections)$/.test(path) || path === "/api/chat/operations/:id" || path === "/api/execution-reviews" || path === "/api/settings/runtime-approval-policy" ? "GET" : "POST", path })));
 routes.push({ method: "GET", path: "/api/executions/:id/readbacks" }, { method: "POST", path: "/api/executions/:id/readbacks" },
   { method: "POST", path: "/api/executions/:id/readbacks/:queryId/cancel" });
+routes.push({ method: "GET", path: "/api/executions/:id/recovery-artifacts" }, { method: "POST", path: "/api/executions/:id/recovery-artifacts" });
 const content = `// Generated from frozen Go routes plus named product extensions. Do not hand-edit.\n` +
   `export const routeTable = ${JSON.stringify(routes, null, 2)} as const;\n` +
   `export type RouteDefinition = (typeof routeTable)[number];\n`;

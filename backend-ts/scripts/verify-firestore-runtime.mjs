@@ -490,7 +490,28 @@ try {
   assert.equal(closedQueryHistory.canQuery, false); assert.equal(closedQueryHistory.jobs.length, 4);
   assert(closedQueryHistory.jobs.every(job => job.executionId === lostOperation && job.intentId === closedQueryHistory.intentId && job.nodeId === closedQueryHistory.nodeId && job.canCancel === false));
   assert.equal(closedQueryHistory.jobs.find(job => job.id === normalQuery.id).observation.outcome, "NOT_APPLIED");
+  const recoveryPlanHistory = (await request("GET", `/api/executions/${lostOperation}/recovery-artifacts`, undefined, 200, "owner")).data;
+  assert.equal(recoveryPlanHistory.state, "CLOSED_NOT_APPLIED"); assert.equal(recoveryPlanHistory.canCreate, true); assert.equal(recoveryPlanHistory.artifacts.length, 0);
+  const recoveryPlanCommand = { intentId: recoveryPlanHistory.intentId, sourceVersion: recoveryPlanHistory.sourceVersion, factsHash: recoveryPlanHistory.factsHash,
+    reconciliationId: recoveryPlanHistory.reconciliationId, queryId: recoveryPlanHistory.queryId, idempotencyKey: "firestore-linked-recovery-plan-0001" };
+  const beforeRecoveryPlanCalls = operations.length, beforeRecoveryPlanModels = models.length;
+  const actualRecoveryPlanCheckpoint = persistence.saveExecutionCheckpoint.bind(persistence); let lostRecoveryPlanACK = false;
+  persistence.saveExecutionCheckpoint = async checkpoint => { await actualRecoveryPlanCheckpoint(checkpoint);
+    if (!lostRecoveryPlanACK && checkpoint.executionId === lostOperation && Object.keys(checkpoint.execution?.operationSecret?.recoveries ?? {}).length === 1) {
+      lostRecoveryPlanACK = true; throw new Error("Synthetic actual Firestore linked-recovery post-COMMIT acknowledgement loss");
+    }
+  };
+  await request("POST", `/api/executions/${lostOperation}/recovery-artifacts`, recoveryPlanCommand, 503, "owner"); assert.equal(lostRecoveryPlanACK, true);
+  persistence.saveExecutionCheckpoint = actualRecoveryPlanCheckpoint; await repository.recoverPersistenceState();
+  const recoveredPlanHistory = (await request("GET", `/api/executions/${lostOperation}/recovery-artifacts`, undefined, 200, "owner")).data;
+  assert.equal(recoveredPlanHistory.canCreate, false); assert.equal(recoveredPlanHistory.artifacts.length, 1); assert.equal(recoveredPlanHistory.artifacts[0].dispatchAuthority, false);
+  assert.equal(recoveredPlanHistory.artifacts[0].source.executionId, lostOperation); assert.equal(recoveredPlanHistory.artifacts[0].source.queryId, normalQuery.id);
+  assert.equal((await request("POST", `/api/executions/${lostOperation}/recovery-artifacts`, recoveryPlanCommand, 200, "owner")).data.replayed, true);
+  const savedRecoveryPlan = structuredClone((await repository.snapshot()).executions[lostOperation]);
+  await stop(); await start(await openApplicationRepository(config)); assert.deepEqual((await repository.snapshot()).executions[lostOperation], savedRecoveryPlan);
+  assert.equal(operations.length, beforeRecoveryPlanCalls); assert.equal(models.length, beforeRecoveryPlanModels);
   await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
+  log("actual Firestore immutable linked recovery survived post-COMMIT acknowledgement loss, same-key replay and fresh restart without dispatch, source-run mutation or model use");
   log("actual Firestore independent query-backed resolution survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; the server derived one private decision from the saved observation with no new SDK/model call, fabricated answer or resume");
   log("actual Firestore review inbox discovered independent normal waits and uncertain effects after restart, then preserved truthful approval/query-backed decision history without arguments, self-review or new SDK/model calls");
 

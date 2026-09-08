@@ -14,6 +14,7 @@ import { useExecution } from "../../hooks/useExecution";
 import TraceIdentifier from "../../components/shared/TraceIdentifier";
 import ExecutionRunControls from "../../components/executions/ExecutionRunControls";
 import OperationStatusQueries from "../../components/executions/OperationStatusQueries";
+import OperationRecoveryArtifacts from "../../components/executions/OperationRecoveryArtifacts";
 import usePermissions from "../../hooks/usePermissions";
 import { projectExecutionIterationEvidence } from "../../utils/iterationEvidence";
 
@@ -57,6 +58,7 @@ function ExecutionRunDetail({ executionId }) {
       </section>
       <ExecutionRunControls key={execution.id} execution={execution} monitor={monitor} canControl={hasAny(["workflow:run", "workflow:run_own"])} onChanged={reload} />
       {execution.hasOperationReconciliation === true && <OperationStatusQueries executionId={execution.id} onHistoryChanged={monitor.refresh} />}
+      {execution.hasOperationReconciliation === true && execution.status === "RECONCILED" && <OperationRecoveryArtifacts executionId={execution.id} />}
       {execution.status === "AWAITING_APPROVAL" || execution.hasRuntimeApproval ? (
         <PendingApprovalCard execution={execution} onChanged={reload} />
       ) : null}

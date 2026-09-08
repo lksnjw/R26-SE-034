@@ -7,11 +7,27 @@ import { ok } from "../../models/schemas.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
 import { recordOperationReconciliation } from "../../runner/operation-reconciliation.js";
 import { operationReadbackHistory, operationReadbackQueue } from "../../runner/operation-readback-jobs.js";
+import { createOperationRecoveryArtifact, operationRecoveryArtifactView } from "../../runner/operation-recovery-artifacts.js";
 
 export const EXECUTION_CONTROL_UNHANDLED = Symbol("execution-control-unhandled");
 
 export async function handleExecutionControlRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const path = `${services.config.apiBasePath}/executions/:id`;
+  if (route.path === `${path}/recovery-artifacts` && route.method === "GET") {
+    if (Object.keys(request.query as Record<string, unknown>).length) throw new HandlerFailure(400, "Recovery artifact history accepts no query overrides");
+    let history;
+    try { history = await services.repository.readAuthoritative(state => operationRecoveryArtifactView(state, requestParam(request, "id"), user.id)); }
+    catch (error) {
+      try { services.repository.assertAuthority(); }
+      catch { throw new HandlerFailure(503, "Recovery artifact history is unavailable until authoritative storage is recovered"); }
+      throw error;
+    }
+    return reply.send(ok(history, "Immutable linked recovery plans; no dispatch authority", null));
+  }
+  if (route.path === `${path}/recovery-artifacts` && route.method === "POST") {
+    const receipt = await createOperationRecoveryArtifact(services.repository, requestParam(request, "id"), user, request.body);
+    return reply.status(receipt.replayed ? 200 : 201).send(ok(receipt, "Recovery plan saved; no execution, resume or replay", null));
+  }
   if (route.path === `${path}/readbacks` && route.method === "GET") {
     if (Object.keys(request.query as Record<string, unknown>).length) throw new HandlerFailure(400, "Status query history accepts no query overrides");
     let history;

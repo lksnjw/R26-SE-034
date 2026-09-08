@@ -4,4 +4,5 @@ export type OperationJournal = { profile: "operation-job/v1"; actorId: string; r
   state: "QUEUED" | "CLAIMED" | "WAITING" | "FINISHED" | "RECOVERY_REQUIRED"; idempotencyScope: string; requestFingerprint: string;
   createdAt: string; lease?: { id: string; workerId: string; expiresAt: number }; intents: Record<string, OperationIntent>;
   reconciliations?: Record<string, import("./operation-reconciliation.js").OperationReconciliationRecord>;
-  readbacks?: Record<string, import("./operation-readback-state.js").OperationReadbackJob> };
+  readbacks?: Record<string, import("./operation-readback-state.js").OperationReadbackJob>;
+  recoveries?: Record<string, import("./operation-recovery-artifacts.js").OperationRecoveryArtifact> };

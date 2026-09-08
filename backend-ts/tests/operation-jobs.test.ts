@@ -250,6 +250,88 @@ test.each([["APPLIED", "APPLIED"], ["ABSENT", "NOT_APPLIED"]] as const)("an inde
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
 });
 
+async function resolvedNotAppliedQueryOperation(storage: PersistenceBackend | null = null) {
+  const s = await uncertainReadbackOperation(storage);
+  await s.repository.mutate(state => {
+    state.roles.recovery_only = { id: "recovery_only", name: "Recovery only", description: "Independent resolution", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
+    state.users.operator = { ...state.users.reviewer!, id: "operator", name: "Operator", email: "operator@example.test", roleId: "recovery_only" };
+  });
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand()), queryId = admitted.json().data.id;
+  await s.waitQuery(queryId, "ANSWERED");
+  const view = (await s.request("GET", `/api/executions/${s.id}?view=reconciliation`, undefined, "operator")).json().data.operationReconciliation;
+  const decision = await s.request("POST", `/api/executions/${s.id}/reconcile`, { intentId: view.intentId, baseVersion: view.version, factsHash: view.factsHash,
+    decisionKey: "query-recovery-source-0001", queryId }, "operator");
+  expect(decision.statusCode, decision.body).toBe(200); expect(decision.json().data.outcome).toBe("NOT_APPLIED");
+  return { ...s, queryId, reconciliationId: decision.json().data.recordId as string };
+}
+
+test("the source requester can save one immutable linked recovery plan without dispatching or changing the closed run", async () => {
+  const s = await resolvedNotAppliedQueryOperation(), before = await s.repository.snapshot(), calls = s.sdk.callTool.mock.calls.length;
+  const ownerHistory = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
+  expect(ownerHistory).toMatchObject({ profile: "operation-recovery-artifact-history/v1", sourceExecutionId: s.id, state: "CLOSED_NOT_APPLIED", canCreate: true,
+    dispatchAuthority: false, artifacts: [] });
+  expect((await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`, undefined, "operator")).json().data.canCreate).toBe(false);
+  const command = { intentId: ownerHistory.intentId, sourceVersion: ownerHistory.sourceVersion, factsHash: ownerHistory.factsHash,
+    reconciliationId: s.reconciliationId, queryId: s.queryId, idempotencyKey: "linked-recovery-plan-0001" };
+  const created = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, command); expect(created.statusCode, created.body).toBe(201);
+  expect(created.json().data).toMatchObject({ replayed: false, artifact: { profile: "operation-recovery-artifact/v1", state: "REVIEW_REQUIRED", dispatchAuthority: false,
+    sourceRunUnchanged: true, source: { executionId: s.id, intentId: command.intentId, reconciliationId: s.reconciliationId, queryId: s.queryId, outcome: "NOT_APPLIED" },
+    action: { toolId: s.write.tool_id, arguments: { value: "fixture report" } },
+    requirements: ["current-capability-validation", "fresh-independent-approval", "new-execution-and-intent", "new-idempotency-boundary"] } });
+  expect(created.body).not.toMatch(/keyHash|requestFingerprint|roleId|operationSecret|runtimeApprovalSecret/);
+  const after = await s.repository.snapshot(), source = after.executions[s.id]!;
+  expect(source.status).toBe("RECONCILED"); expect(source.operationSecret!.intents.send!.state).toBe("UNKNOWN"); expect(source.stepOutputs).toEqual(before.executions[s.id]!.stepOutputs);
+  expect(source.finalOutput).toBeUndefined(); expect(source.readProgress!.nextStepIndex).toBe(before.executions[s.id]!.readProgress!.nextStepIndex);
+  expect(source.readProgress!.lastSequence).toBe(before.executions[s.id]!.readProgress!.lastSequence + 1); expect(s.sdk.callTool).toHaveBeenCalledTimes(calls);
+  const history = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
+  expect(history.canCreate).toBe(false); expect(history.artifacts).toHaveLength(1); expect(history.artifacts[0].id).toBe(created.json().data.artifact.id);
+  const replay = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, command); expect(replay.statusCode).toBe(200); expect(replay.json().data.replayed).toBe(true);
+  expect((await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, { ...command, idempotencyKey: "linked-recovery-plan-0002" })).statusCode).toBe(409);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(calls);
+});
+
+test("linked recovery cannot be created by a reviewer, from APPLIED/operator evidence, or with browser-authored action fields", async () => {
+  const s = await resolvedNotAppliedQueryOperation(), history = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
+  const command = { intentId: history.intentId, sourceVersion: history.sourceVersion, factsHash: history.factsHash, reconciliationId: s.reconciliationId,
+    queryId: s.queryId, idempotencyKey: "linked-recovery-denial-01" };
+  expect((await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, command, "operator")).statusCode).toBe(403);
+  expect((await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, { ...command, outcome: "NOT_APPLIED", arguments: { value: "changed" } })).statusCode).toBe(422);
+  const applied = await uncertainReadbackOperation();
+  await applied.repository.mutate(state => { state.roles.review!.permissions.push("execution:reconcile"); });
+  applied.sdk.callTool.mockImplementationOnce(async (_name, args) => ({ content: [], structuredContent: { value: args.value, state: "APPLIED", settled: true, observedAt: new Date().toISOString() } }));
+  const admitted = await applied.request("POST", `/api/executions/${applied.id}/readbacks`, await applied.queryCommand()), queryId = admitted.json().data.id; await applied.waitQuery(queryId, "ANSWERED");
+  const review = (await applied.request("GET", `/api/executions/${applied.id}?view=reconciliation`, undefined, "reviewer")).json().data.operationReconciliation;
+  await applied.request("POST", `/api/executions/${applied.id}/reconcile`, { intentId: review.intentId, baseVersion: review.version, factsHash: review.factsHash, decisionKey: "applied-query-close-0001", queryId }, "reviewer");
+  expect((await applied.request("GET", `/api/executions/${applied.id}/recovery-artifacts`)).json().data).toMatchObject({ state: "EFFECT_OBSERVED", canCreate: false, artifacts: [] });
+  const attested = await uncertainOperation(); await attested.request("POST", `/api/executions/${attested.id}/reconcile`, await attested.evidenceCommand("NOT_APPLIED"), "operator");
+  expect((await attested.request("GET", `/api/executions/${attested.id}/recovery-artifacts`)).json().data).toMatchObject({ state: "EVIDENCE_NOT_QUALIFIED", canCreate: false, artifacts: [] });
+});
+
+test("tampered linked recovery evidence fails closed and normalized storage preserves the exact record", async () => {
+  const s = await resolvedNotAppliedQueryOperation(), history = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
+  const command = { intentId: history.intentId, sourceVersion: history.sourceVersion, factsHash: history.factsHash, reconciliationId: s.reconciliationId,
+    queryId: s.queryId, idempotencyKey: "linked-recovery-tamper-01" };
+  const created = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, command), artifactId = created.json().data.artifact.id;
+  const snapshot = await s.repository.snapshot(), layout = splitFirestoreState(snapshot), leaf = layout.find(record => record.path[0] === "operation-recoveries" && record.path[2] === artifactId);
+  expect(leaf).toBeDefined(); expect((layout.find(record => record.path[0] === "executions" && record.path[1] === s.id)!.value as any).operationSecret.recoveries).toEqual({});
+  expect(assembleFirestoreState(layout).executions[s.id]!.operationSecret!.recoveries![artifactId]).toEqual(snapshot.executions[s.id]!.operationSecret!.recoveries![artifactId]);
+  await s.repository.mutateExecution(s.id, state => { state.executions[s.id]!.operationSecret!.recoveries![artifactId]!.action.arguments.value = "tampered"; });
+  expect((await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).statusCode).toBe(409); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("linked recovery post-commit acknowledgement loss requires authoritative reload and same-key replay", async () => {
+  const storage = new Records(), s = await resolvedNotAppliedQueryOperation(storage), history = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
+  const command = { intentId: history.intentId, sourceVersion: history.sourceVersion, factsHash: history.factsHash, reconciliationId: s.reconciliationId,
+    queryId: s.queryId, idempotencyKey: "linked-recovery-ack-loss-01" };
+  storage.loseWhen = state => Object.keys(state.executions[s.id]?.operationSecret?.recoveries ?? {}).length === 1;
+  const unknown = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, command); expect(unknown.statusCode, unknown.body).toBe(503);
+  expect(unknown.json().message).toMatch(/unconfirmed|reload/i); expect(() => s.repository.assertAuthority()).toThrow();
+  await s.repository.recoverPersistenceState(); const recovered = (await s.request("GET", `/api/executions/${s.id}/recovery-artifacts`)).json().data;
+  expect(recovered.artifacts).toHaveLength(1); expect(recovered.canCreate).toBe(false);
+  const replay = await s.request("POST", `/api/executions/${s.id}/recovery-artifacts`, command); expect(replay.statusCode).toBe(200); expect(replay.json().data.replayed).toBe(true);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
 test("query-backed resolution rejects browser-supplied outcomes, unresolved observations and the original requester", async () => {
   const s = await uncertainReadbackOperation();
   await s.repository.mutate(state => {
