@@ -221,6 +221,67 @@ test.each([['APPLIED', true, 'APPLIED'], ['ABSENT', true, 'NOT_APPLIED'], ['PEND
   expect(queryEvents.every(event => event.attemptId === queryId && event.nodeId === "send")).toBe(true);
 });
 
+test.each([["APPLIED", "APPLIED"], ["ABSENT", "NOT_APPLIED"]] as const)("an independent reviewer may close the exact case from a settled %s query without replay or resume", async (remoteState, outcome) => {
+  const s = await uncertainReadbackOperation();
+  await s.repository.mutate(state => {
+    state.roles.recovery_only = { id: "recovery_only", name: "Recovery only", description: "Independent resolution", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
+    state.users.operator = { ...state.users.reviewer!, id: "operator", name: "Operator", email: "operator@example.test", roleId: "recovery_only" };
+  });
+  s.sdk.callTool.mockImplementationOnce(async (_name, args) => ({ content: [], structuredContent: { value: args.value, state: remoteState, settled: true, observedAt: new Date().toISOString() } }));
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand());
+  const queryId = admitted.json().data.id; await s.waitQuery(queryId, "ANSWERED");
+  expect((await s.history()).jobs[0]).toMatchObject({ id: queryId, canResolve: false });
+  expect((await s.history("operator")).jobs[0]).toMatchObject({ id: queryId, canResolve: true, observation: { outcome } });
+  const before = await s.repository.snapshot();
+  const viewResponse = await s.request("GET", `/api/executions/${s.id}?view=reconciliation`, undefined, "operator");
+  const view = viewResponse.json().data.operationReconciliation;
+  const command = { intentId: view.intentId, baseVersion: view.version, factsHash: view.factsHash, decisionKey: `query-resolution-${remoteState.toLowerCase()}-0001`, queryId };
+  const response = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator"); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ outcome, state: "RESOLVED", basis: "queried-operation-state", toolWasCalled: false, canResume: false, noReplay: true, replayed: false });
+  const after = await s.repository.snapshot(), run = after.executions[s.id]!;
+  expect(run.status).toBe("RECONCILED"); expect(run.operationSecret!.intents.send!.state).toBe("UNKNOWN");
+  expect(run.stepOutputs).toEqual(before.executions[s.id]!.stepOutputs); expect(run.finalOutput).toBeUndefined();
+  expect(Object.values(run.operationSecret!.reconciliations!)[0]).toMatchObject({ basis: "queried-operation-state", queryId, outcome, observation: { outcome, settled: true } });
+  expect(after.timelines[s.id]!.find(item => item.nodeId === "send")?.reconciliation).toMatchObject({ basis: "queried-operation-state", queryId, outcome });
+  expect((await s.request("GET", "/api/execution-reviews?state=closed", undefined, "operator")).json().data.items).toMatchObject([
+    { executionId: s.id, statusLabel: "Closed by reviewed ERP status", actionable: false }]);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+  const replay = await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator"); expect(replay.statusCode, replay.body).toBe(200); expect(replay.json().data.replayed).toBe(true);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("query-backed resolution rejects browser-supplied outcomes, unresolved observations and the original requester", async () => {
+  const s = await uncertainReadbackOperation();
+  await s.repository.mutate(state => {
+    state.roles.recovery_only = { id: "recovery_only", name: "Recovery only", description: "Independent resolution", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
+    state.users.operator = { ...state.users.reviewer!, id: "operator", roleId: "recovery_only" };
+  });
+  s.sdk.callTool.mockImplementationOnce(async (_name, args) => ({ content: [], structuredContent: { value: args.value, state: "PENDING", settled: true, observedAt: new Date().toISOString() } }));
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand());
+  const queryId = admitted.json().data.id; await s.waitQuery(queryId, "ANSWERED");
+  const view = (await s.request("GET", `/api/executions/${s.id}?view=reconciliation`, undefined, "operator")).json().data.operationReconciliation;
+  const command = { intentId: view.intentId, baseVersion: view.version, factsHash: view.factsHash, decisionKey: "query-resolution-denied-0001", queryId };
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, { ...command, outcome: "NOT_APPLIED" }, "operator")).statusCode).toBe(422);
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator")).statusCode).toBe(409);
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "requester")).statusCode).toBe(403);
+  expect((await s.repository.snapshot()).executions[s.id]!.status).toBe("RECONCILIATION_REQUIRED"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("tampering with a query result after reviewed resolution invalidates the evidence chain instead of preserving a false closure", async () => {
+  const s = await uncertainReadbackOperation();
+  await s.repository.mutate(state => {
+    state.roles.recovery_only = { id: "recovery_only", name: "Recovery only", description: "Independent resolution", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
+    state.users.operator = { ...state.users.reviewer!, id: "operator", roleId: "recovery_only" };
+  });
+  const admitted = await s.request("POST", `/api/executions/${s.id}/readbacks`, await s.queryCommand()), queryId = admitted.json().data.id; await s.waitQuery(queryId, "ANSWERED");
+  const view = (await s.request("GET", `/api/executions/${s.id}?view=reconciliation`, undefined, "operator")).json().data.operationReconciliation;
+  const command = { intentId: view.intentId, baseVersion: view.version, factsHash: view.factsHash, decisionKey: "query-resolution-tamper-0001", queryId };
+  expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, command, "operator")).statusCode).toBe(200);
+  await s.repository.mutate(state => { state.executions[s.id]!.operationSecret!.readbacks![queryId]!.result!.structuredContent.state = "APPLIED"; });
+  const denied = await s.request("GET", `/api/executions/${s.id}?view=reconciliation`, undefined, "operator"); expect(denied.statusCode, denied.body).toBe(409);
+  expect(denied.json().message).toMatch(/evidence|classification/i); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
 test("status history is minimum/scoped and review or reconciliation authority alone never grants query dispatch", async () => {
   const s = await uncertainReadbackOperation();
   await s.repository.mutate(state => {
@@ -856,7 +917,8 @@ test("altered saved attestation or corrupt event cursor cannot be repaired by an
   const s = await uncertainOperation(), first = await s.evidenceCommand("UNRESOLVED");
   expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, first, "operator")).statusCode).toBe(200);
   const second = { ...await s.evidenceCommand(), decisionKey: "reconciliation-next-key-0001" };
-  await s.repository.mutate(state => { Object.values(state.executions[s.id]!.operationSecret!.reconciliations!)[0]!.evidence.note = "Altered after record"; });
+  await s.repository.mutate(state => { const record = Object.values(state.executions[s.id]!.operationSecret!.reconciliations!)[0]!;
+    if (record.basis !== "operator-attestation") throw new Error("Expected operator evidence"); record.evidence.note = "Altered after record"; });
   expect((await s.request("POST", `/api/executions/${s.id}/reconcile`, second, "operator")).statusCode).toBe(409);
   const other = await uncertainOperation(), command = await other.evidenceCommand();
   await other.repository.mutate(state => { state.executions[other.id]!.readProgress!.lastSequence += 10; });

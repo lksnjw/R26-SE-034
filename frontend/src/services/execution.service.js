@@ -1,6 +1,33 @@
 import { apiClient } from "../config/axios";
 import { formatDuration, formatTokens, unwrap } from "./api";
 
+const reconciliationId = value => typeof value === "string" && value.length > 0 && value.length <= 256;
+const reconciliationDate = value => typeof value === "string" && Number.isFinite(Date.parse(value));
+const reconciliationExact = (value, keys) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && Object.keys(value).every(key => keys.includes(key));
+const reconciliationOutcomes = ["APPLIED", "NOT_APPLIED", "UNRESOLVED"];
+function validReconciliationHistory(records, state) {
+  if (!Array.isArray(records) || records.length > 100) return false;
+  const ids = new Set();
+  for (const record of records) {
+    const common = reconciliationId(record?.id) && reconciliationOutcomes.includes(record?.outcome) && reconciliationId(record?.actorId) && reconciliationDate(record?.recordedAt);
+    if (!common || ids.has(record.id)) return false;
+    ids.add(record.id);
+    if (record.basis === "operator-attestation") {
+      if (!reconciliationExact(record, ["id", "outcome", "evidence", "actorId", "recordedAt", "basis"]) ||
+          !reconciliationExact(record.evidence, ["kind", "reference", "note", "observedAt"]) || !["erp-record", "delivery-audit", "external-support"].includes(record.evidence.kind) ||
+          typeof record.evidence.reference !== "string" || !record.evidence.reference || typeof record.evidence.note !== "string" || !record.evidence.note || !reconciliationDate(record.evidence.observedAt)) return false;
+    } else if (record.basis === "queried-operation-state") {
+      const observation = record.observation;
+      if (!reconciliationExact(record, ["id", "outcome", "queryId", "observation", "actorId", "recordedAt", "basis"]) || !reconciliationId(record.queryId) ||
+          !reconciliationExact(observation, ["profile", "outcome", "observedAt", "settled", "evidenceMeaning", "canResume", "noReplay", "deliveryVerified"]) ||
+          observation.profile !== "operation-readback-evaluation/v1" || observation.outcome !== record.outcome || !["APPLIED", "NOT_APPLIED"].includes(observation.outcome) ||
+          !reconciliationDate(observation.observedAt) || observation.settled !== true || observation.evidenceMeaning !== "operation-state" || observation.canResume !== false || observation.noReplay !== true || observation.deliveryVerified !== false) return false;
+    } else return false;
+  }
+  const resolved = records.length > 0 && records.at(-1).outcome !== "UNRESOLVED";
+  return resolved === (state === "RESOLVED") && records.slice(0, -1).every(record => record.outcome === "UNRESOLVED");
+}
+
 /*******************************************************************************
  * Function: normalizeExecution
  *
@@ -56,8 +83,9 @@ export const executionService = {
     const review = value?.operationReconciliation;
     if (value?.id !== id || review?.profile !== "operation-reconciliation/v1" || !["OPEN", "RESOLVED"].includes(review.state) ||
         !Number.isSafeInteger(review.version) || review.version < 1 || !/^sha256:[a-f0-9]{64}$/.test(review.factsHash) ||
-        typeof review.canRecord !== "boolean" || review.canResume !== false || review.noReplay !== true || review.basis !== "operator-attestation" ||
-        typeof review.intentId !== "string" || !review.intentId || !Array.isArray(review.history) || review.history.length > 100 ||
+        typeof review.canRecord !== "boolean" || review.state === "RESOLVED" && review.canRecord || review.canResume !== false || review.noReplay !== true || review.basis !== "operator-attestation" ||
+        typeof review.intentId !== "string" || !review.intentId || !validReconciliationHistory(review.history, review.state) ||
+        review.version !== review.history.length + 1 ||
         !review.arguments || typeof review.arguments !== "object" || Array.isArray(review.arguments))
       throw new Error("Exact uncertain-operation evidence is unavailable. Reload before recording a decision.");
     return value;

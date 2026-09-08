@@ -55,3 +55,10 @@ test("strict admission sends no role/argument/result and validates source-bound 
   expect(post).toHaveBeenLastCalledWith("/executions/run%2Fone/readbacks/query%2Fone/cancel", {});
   await expect(operationReadbackService.cancel(statusSource, "other-query")).rejects.toThrow();
 });
+
+test("resolution authority is accepted only for a saved settled definitive observation", () => {
+  const value = statusHistory(); value.jobs[0].canResolve = true;
+  expect(validateStatusHistory(value, statusSource.executionId).jobs[0].canResolve).toBe(true);
+  value.jobs[0].observation = { ...value.jobs[0].observation, outcome: "UNRESOLVED", settled: false };
+  expect(() => validateStatusHistory(value, statusSource.executionId)).toThrow(/Exact status-query evidence/);
+});

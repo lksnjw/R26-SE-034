@@ -8,13 +8,15 @@ const date = value => typeof value === "string" && Number.isFinite(Date.parse(va
 const hash = value => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
 const exact = (value, keys) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).every(key => keys.includes(key));
 const deny = () => { const error = new Error("Exact status-query evidence is unavailable. Reload saved history; do not assume the original action succeeded."); error.code = "STATUS_QUERY_EVIDENCE_UNAVAILABLE"; throw error; };
-const jobKeys = ["id", "executionId", "intentId", "nodeId", "state", "createdAt", "startedAt", "completedAt", "actorId", "basis", "dispatchIntentRecorded", "queryOutcome", "observation", "failure", "cancellationRequested", "canResume", "noReplay", "deliveryVerified"];
+const jobKeys = ["id", "executionId", "intentId", "nodeId", "state", "createdAt", "startedAt", "completedAt", "actorId", "basis", "dispatchIntentRecorded", "queryOutcome", "observation", "failure", "cancellationRequested", "canResolve", "canResume", "noReplay", "deliveryVerified"];
 
 export function validateStatusQuery(value, source, { receipt = false, history = false } = {}) {
   if (!exact(value, [...jobKeys, ...(receipt ? ["replayed"] : []), ...(history ? ["canCancel"] : [])]) || !id(value.id) || value.executionId !== source.executionId ||
       value.intentId !== source.intentId || value.nodeId !== source.nodeId || !id(value.actorId) || !states.includes(value.state) || !date(value.createdAt) ||
       value.startedAt !== null && !date(value.startedAt) || value.completedAt !== null && !date(value.completedAt) || value.basis !== "queried-operation-state" ||
-      typeof value.dispatchIntentRecorded !== "boolean" || typeof value.cancellationRequested !== "boolean" || value.canResume !== false || value.noReplay !== true || value.deliveryVerified !== false ||
+      typeof value.dispatchIntentRecorded !== "boolean" || typeof value.cancellationRequested !== "boolean" || typeof value.canResolve !== "boolean" ||
+      value.canResolve && (value.state !== "ANSWERED" || !value.observation?.settled || value.observation.outcome === "UNRESOLVED") ||
+      value.canResume !== false || value.noReplay !== true || value.deliveryVerified !== false ||
       history && (typeof value.canCancel !== "boolean" || value.canCancel && !["QUEUED", "RUNNING"].includes(value.state)) || receipt && typeof value.replayed !== "boolean") deny();
   const terminal = !["QUEUED", "RUNNING"].includes(value.state);
   if (terminal !== !!value.completedAt || value.state === "RUNNING" && !value.startedAt || value.dispatchIntentRecorded && !value.startedAt ||

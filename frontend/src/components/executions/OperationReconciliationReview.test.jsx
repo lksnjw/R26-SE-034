@@ -58,6 +58,15 @@ test("historical attestation remains visibly distinct from a tool answer, and cl
   expect(screen.getByText("Effect observed · operator attestation")).toBeTruthy(); expect(screen.getByText(/Not a saved tool answer/)).toBeTruthy(); expect(screen.getByText(/original SDK outcome remains unacknowledged/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Record external evidence" })).toBeNull(); expect(screen.queryByRole("checkbox")).toBeNull();
 });
+test("a query-backed closure names the saved observation without claiming an original SDK answer or delivery", () => {
+  const record = { id: "record", outcome: "NOT_APPLIED", basis: "queried-operation-state", queryId: "query-one", actorId: "operator", recordedAt: "2026-10-06T10:31:00Z",
+    observation: { profile: "operation-readback-evaluation/v1", outcome: "NOT_APPLIED", observedAt: "2026-10-06T10:30:00Z", settled: true, evidenceMeaning: "operation-state", canResume: false, noReplay: true, deliveryVerified: false } };
+  render(<OperationReconciliationReview execution={{ ...execution, status: "RECONCILED", operationReconciliation: { ...review, version: 2, state: "RESOLVED", canRecord: false, history: [record] } }} onReload={jest.fn()} />);
+  expect(screen.getByRole("region", { name: "Reviewed ERP status observation" })).toBeTruthy();
+  expect(screen.getByText("No effect observed · reviewed ERP status observation")).toBeTruthy(); expect(screen.getByText(/Saved query query-one/)).toBeTruthy();
+  expect(screen.getByText(/Closed by an independently reviewed ERP status observation/)).toBeTruthy();
+  expect(screen.getByText(/Not confirmation of the original SDK answer/)).toBeTruthy(); expect(screen.queryByText(/operator attestation/)).toBeNull();
+});
 test("a forged resumable receipt stays unconfirmed instead of displaying success", async () => {
   jest.spyOn(executionService, "reconcile").mockResolvedValue({ ...result, canResume: true });
   render(<OperationReconciliationReview execution={execution} onReload={jest.fn()} />); fill(); fireEvent.click(screen.getByRole("button", { name: "Record external evidence" }));

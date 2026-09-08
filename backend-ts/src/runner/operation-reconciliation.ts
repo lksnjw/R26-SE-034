@@ -11,6 +11,8 @@ import { withoutSecretFields } from "../redact/secrets.js";
 import { exactBridgeName } from "../tools/erpbridge-contract.js";
 import { resolveReadBinding } from "../workflows/compiled-read.js";
 import type { StoredOperationCompilation } from "../workflows/operation-compilation-lifecycle.js";
+import { validateHistoricalOperationReadback } from "./operation-readback-evidence.js";
+import { readbackEvaluationSchema } from "./operation-readback-state.js";
 import { appendExecutionEvent } from "./read-checkpoints.js";
 import { runtimeApprovalEvidence } from "./runtime-approvals.js";
 
@@ -18,10 +20,16 @@ const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes
 const id = z.string().min(1).max(256), hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const evidenceSchema = z.object({ kind: z.enum(["erp-record", "delivery-audit", "external-support"]),
   reference: z.string().trim().min(1).max(500), note: z.string().trim().min(1).max(2000), observedAt: z.string().datetime() }).strict();
-export const reconciliationCommandSchema = z.object({ intentId: id, baseVersion: z.number().int().positive(), factsHash: hash,
-  decisionKey: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/), outcome: z.enum(["APPLIED", "NOT_APPLIED", "UNRESOLVED"]), evidence: evidenceSchema }).strict();
-const recordSchema = reconciliationCommandSchema.omit({ decisionKey: true }).extend({ id, profile: z.literal("operation-reconciliation/v1"),
-  basis: z.literal("operator-attestation"), keyHash: hash, fingerprint: hash, actorId: id, roleId: id, recordedAt: z.string().datetime() }).strict();
+const commandBase = z.object({ intentId: id, baseVersion: z.number().int().positive(), factsHash: hash,
+  decisionKey: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/) });
+const operatorCommandSchema = commandBase.extend({ outcome: z.enum(["APPLIED", "NOT_APPLIED", "UNRESOLVED"]), evidence: evidenceSchema }).strict();
+const queryCommandSchema = commandBase.extend({ queryId: id }).strict();
+export const reconciliationCommandSchema = z.union([operatorCommandSchema, queryCommandSchema]);
+const recordBase = z.object({ id, profile: z.literal("operation-reconciliation/v1"), intentId: id, baseVersion: z.number().int().positive(), factsHash: hash,
+  outcome: z.enum(["APPLIED", "NOT_APPLIED", "UNRESOLVED"]), keyHash: hash, fingerprint: hash, actorId: id, roleId: id, recordedAt: z.string().datetime() });
+const operatorRecordSchema = recordBase.extend({ basis: z.literal("operator-attestation"), evidence: evidenceSchema }).strict();
+const queryRecordSchema = recordBase.extend({ basis: z.literal("queried-operation-state"), queryId: id, observation: readbackEvaluationSchema }).strict();
+const recordSchema = z.union([operatorRecordSchema, queryRecordSchema]);
 export type OperationReconciliationRecord = z.infer<typeof recordSchema>;
 function deny(message: string, status = 409): never { throw new HandlerFailure(status, message, { code: "OPERATION_RECONCILIATION_DENIED" }); }
 function currentActor(state: Readonly<RepositoryState>, actorId: string) {
@@ -88,9 +96,22 @@ export function operationCaseEvidence(state: Readonly<RepositoryState>, executio
   const historyHash = (prior: OperationReconciliationRecord[]) => digest({ facts, history: prior.map(item => ({ id: item.id, fingerprint: item.fingerprint })) });
   for (const [index, item] of history.entries()) {
     const { id: _id, profile: _profile, basis: _basis, fingerprint, actorId, roleId: _role, recordedAt: _at, ...command } = item;
+    let evidenceTime = item.basis === "operator-attestation" ? item.evidence.observedAt : item.observation.observedAt;
+    if (item.basis === "queried-operation-state") {
+      const rawQuery = job.readbacks?.[item.queryId];
+      let checked;
+      try { checked = validateHistoricalOperationReadback(state, rawQuery, { execution, intent, node, connectionBinding: binding.connectionBinding, tool: tool.data, args,
+        history: history.slice(0, index), resolved: false, version: index + 1, factsHash: item.factsHash,
+        factsHashes: [...history.slice(0, index).map(record => record.factsHash), item.factsHash] }); }
+      catch { deny("Query-backed reconciliation evidence changed"); }
+      if (checked.job.state !== "ANSWERED" || !checked.job.completedAt || !checked.job.evaluation?.settled || checked.job.evaluation.outcome === "UNRESOLVED" ||
+          checked.job.intentId !== item.intentId || checked.job.evaluation.outcome !== item.outcome ||
+          !canonicalJSONBytes(checked.job.evaluation).equals(canonicalJSONBytes(item.observation)) || Date.parse(checked.job.completedAt) > Date.parse(item.recordedAt))
+        deny("Query-backed reconciliation evidence is inconsistent");
+    }
     if (item.baseVersion !== index + 1 || item.factsHash !== historyHash(history.slice(0, index)) || fingerprint !== digest({ ...command, actorId }) ||
         item.actorId === execution.startedBy.id || index < history.length - 1 && item.outcome !== "UNRESOLVED" ||
-        Date.parse(item.evidence.observedAt) < Date.parse(intent.preparedAt) || Date.parse(item.evidence.observedAt) > Date.parse(item.recordedAt) + 30000)
+        Date.parse(evidenceTime) < Date.parse(intent.preparedAt) || Date.parse(evidenceTime) > Date.parse(item.recordedAt) + 30000)
       deny("Reconciliation evidence chain is inconsistent");
   }
   const resolved = history.at(-1)?.outcome !== undefined && history.at(-1)!.outcome !== "UNRESOLVED";
@@ -99,7 +120,9 @@ export function operationCaseEvidence(state: Readonly<RepositoryState>, executio
   return { execution, intent, node, connectionBinding: binding.connectionBinding, tool: tool.data, args, history, resolved, version: history.length + 1, factsHash: currentFactsHash,
     factsHashes: [...history.map(item => item.factsHash), currentFactsHash] };
 }
-const publicRecord = ({ id, outcome, evidence, actorId, recordedAt, basis }: OperationReconciliationRecord) => ({ id, outcome, evidence, actorId, recordedAt, basis });
+const publicRecord = (record: OperationReconciliationRecord) => record.basis === "operator-attestation" ?
+  ({ id: record.id, outcome: record.outcome, evidence: record.evidence, actorId: record.actorId, recordedAt: record.recordedAt, basis: record.basis }) :
+  ({ id: record.id, outcome: record.outcome, queryId: record.queryId, observation: record.observation, actorId: record.actorId, recordedAt: record.recordedAt, basis: record.basis });
 export const hasOperationReconciliation = (execution: Execution) => execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" &&
   Object.values(execution.operationSecret?.intents ?? {}).some(intent => intent.state === "UNKNOWN" && !!intent.approvalId);
 export function operationReconciliationView(state: Readonly<RepositoryState>, executionId: string, actorId: string) {
@@ -122,33 +145,51 @@ function receipt(execution: Execution, record: OperationReconciliationRecord, ve
 }
 export async function recordOperationReconciliation(repository: Repository, executionId: string, user: CurrentUser, raw: unknown) {
   requireStorage(repository);
-  const parsed = reconciliationCommandSchema.safeParse(raw); if (!parsed.success) deny("Reconciliation requires exact intent, revision, facts hash and external evidence", 422);
+  const parsed = reconciliationCommandSchema.safeParse(raw); if (!parsed.success) deny("Reconciliation requires one exact case revision and either external evidence or one saved status query", 422);
   const command = parsed.data, keyHash = digest([executionId, user.id, command.intentId, command.decisionKey]);
-  const { decisionKey: _key, ...businessCommand } = command;
-  const fingerprint = digest({ ...businessCommand, keyHash, actorId: user.id }), recordId = `reconciliation-${randomBytes(16).toString("hex")}`;
+  const recordId = `reconciliation-${randomBytes(16).toString("hex")}`;
   try { return await repository.mutateExecution(executionId, state => {
     const execution = state.executions[executionId], current = currentActor(state, user.id);
     if (!execution || !canRecord(state, execution, user.id) || current.role.name !== user.role || !user.permissions.includes("execution:reconcile")) deny("Current independent execution:reconcile authority is required", 403);
-    const value = operationCaseEvidence(state, executionId), previous = value.history.find(item => item.keyHash === keyHash);
+    const value = operationCaseEvidence(state, executionId);
+    let basis: OperationReconciliationRecord["basis"], outcome: OperationReconciliationRecord["outcome"], details: Record<string, unknown>;
+    if ("queryId" in command) {
+      const rawQuery = execution.operationSecret?.readbacks?.[command.queryId];
+      let checked;
+      try { checked = validateHistoricalOperationReadback(state, rawQuery, value); }
+      catch { deny("The saved status query no longer matches this exact operation case"); }
+      if (checked.job.state !== "ANSWERED" || !checked.job.completedAt || !checked.job.evaluation?.settled || checked.job.evaluation.outcome === "UNRESOLVED")
+        deny("Only a saved, settled APPLIED or NOT_APPLIED status observation can resolve this case");
+      basis = "queried-operation-state"; outcome = checked.job.evaluation.outcome;
+      details = { queryId: checked.job.id, observation: checked.job.evaluation };
+    } else {
+      basis = "operator-attestation"; outcome = command.outcome; details = { evidence: command.evidence };
+    }
+    const businessCommand = { intentId: command.intentId, baseVersion: command.baseVersion, factsHash: command.factsHash, outcome, ...details, keyHash };
+    const fingerprint = digest({ ...businessCommand, actorId: user.id }), previous = value.history.find(item => item.keyHash === keyHash);
     if (previous) { if (previous.fingerprint !== fingerprint) deny("Reconciliation key already belongs to different evidence"); return receipt(execution, previous, previous.baseVersion + 1, true); }
     if (command.intentId !== value.intent.id || command.baseVersion !== value.version || command.factsHash !== value.factsHash || value.resolved || value.history.length >= 100)
       deny("Reconciliation case changed or is closed; reload exact evidence before recording");
     const now = new Date().toISOString();
-    if (Date.parse(command.evidence.observedAt) < Date.parse(value.intent.preparedAt) || Date.parse(command.evidence.observedAt) > Date.parse(now) + 30000)
+    const observedAt = "evidence" in command ? command.evidence.observedAt : (details.observation as z.infer<typeof readbackEvaluationSchema>).observedAt;
+    if (Date.parse(observedAt) < Date.parse(value.intent.preparedAt) || Date.parse(observedAt) > Date.parse(now) + 30000)
       deny("Evidence must have been observed after this intent and not in the future", 422);
-    const record = recordSchema.parse({ ...businessCommand, id: recordId, profile: "operation-reconciliation/v1", basis: "operator-attestation", keyHash, fingerprint,
+    const record = recordSchema.parse({ ...businessCommand, id: recordId, profile: "operation-reconciliation/v1", basis, fingerprint,
       actorId: user.id, roleId: current.role.id, recordedAt: now });
     (execution.operationSecret!.reconciliations ??= {})[record.id] = record;
-    if (command.outcome !== "UNRESOLVED") {
+    if (record.outcome !== "UNRESOLVED") {
       value.intent.reconciliationId = record.id;
       execution.status = "RECONCILED"; execution.operationSecret!.state = "FINISHED";
-      execution.agentSummary = "An independent operator recorded external outcome evidence. This run is closed, not successfully completed or resumed. The original SDK outcome remains unacknowledged; no action was replayed.";
+      execution.agentSummary = record.basis === "queried-operation-state" ?
+        "An independent reviewer accepted a saved, qualified ERP status observation. This run is closed, not successfully completed or resumed. The original SDK outcome remains unacknowledged; no action was replayed." :
+        "An independent operator recorded external outcome evidence. This run is closed, not successfully completed or resumed. The original SDK outcome remains unacknowledged; no action was replayed.";
       const entry = state.timelines[executionId]?.find(item => item.attemptId === value.intent.invocationId);
       if (entry) entry.reconciliation = publicRecord(record);
     }
     appendExecutionEvent(state, execution, "operation.reconciliation_recorded", { recordId, outcome: record.outcome, basis: record.basis, noReplay: true }, value.intent.nodeId, value.intent.invocationId);
     state.auditLogs.push({ id: `reconciliation-audit-${randomBytes(12).toString("hex")}`, actor: { id: current.actor.id, name: current.actor.name }, action: "operation.reconciliation_recorded",
-      resource: { type: "execution", id: executionId }, after: { recordId, intentId: value.intent.id, factsHash: command.factsHash, outcome: command.outcome, basis: record.basis }, createdAt: now });
+      resource: { type: "execution", id: executionId }, after: { recordId, intentId: value.intent.id, factsHash: command.factsHash, outcome: record.outcome, basis: record.basis,
+        ...(record.basis === "queried-operation-state" ? { queryId: record.queryId } : {}) }, createdAt: now });
     // Check the resulting history/state before its durable acknowledgement.
     operationCaseEvidence(state, executionId);
     return receipt(execution, record, value.version + 1, false);

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import OperationStatusQueries from "./OperationStatusQueries";
 import { operationReadbackService } from "../../services/operation-readback.service";
+import { executionService } from "../../services/execution.service";
 import { statusHistory, statusJob, queuedStatusJob, statusReceipt, statusSource } from "../../services/operation-readback.fixture";
 beforeEach(() => {
   jest.spyOn(operationReadbackService, "history").mockResolvedValue(statusHistory());
@@ -117,4 +118,51 @@ test("changed qualified history refreshes the containing run once; unchanged rel
   operationReadbackService.history.mockRejectedValue({ response: { status: 403 } });
   fireEvent.click(screen.getByRole("button", { name: "Reload status history" })); await screen.findByRole("alert");
   expect(onHistoryChanged).toHaveBeenCalledTimes(2); expect(operationReadbackService.admit).not.toHaveBeenCalled(); expect(operationReadbackService.cancel).not.toHaveBeenCalled();
+});
+
+test("an independent reviewer explicitly closes from one saved definitive query without sending an outcome or ERP action", async () => {
+  const job = { ...statusJob(), canResolve: true }, history = { ...statusHistory(), canQuery: false, jobs: [job] };
+  operationReadbackService.history.mockResolvedValue(history);
+  const onCaseChanged = jest.fn().mockResolvedValue();
+  const reconcile = jest.spyOn(executionService, "reconcile").mockResolvedValue({ executionId: statusSource.executionId, intentId: statusSource.intentId,
+    recordId: "resolution-one", version: 2, outcome: "NOT_APPLIED", state: "RESOLVED", basis: "queried-operation-state", replayed: false, canResume: false, noReplay: true, toolWasCalled: false });
+  render(<OperationStatusQueries {...statusSource} onCaseChanged={onCaseChanged} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Review this observation" }));
+  expect(screen.getByRole("button", { name: "Close case from this observation" }).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("checkbox")); fireEvent.click(screen.getByRole("button", { name: "Close case from this observation" }));
+  await waitFor(() => expect(onCaseChanged).toHaveBeenCalledTimes(1));
+  expect(reconcile).toHaveBeenCalledWith(statusSource.executionId, { intentId: statusSource.intentId, baseVersion: history.baseVersion, factsHash: history.factsHash,
+    decisionKey: expect.stringMatching(/^[a-f0-9-]{36}$/), queryId: job.id });
+  expect(reconcile.mock.calls[0][1]).not.toHaveProperty("outcome"); expect(reconcile.mock.calls[0][1]).not.toHaveProperty("evidence");
+  expect(operationReadbackService.admit).not.toHaveBeenCalled();
+});
+
+test("an unconfirmed query-backed resolution locks decisions until an authoritative case reload succeeds", async () => {
+  const job = { ...statusJob(), canResolve: true };
+  operationReadbackService.history.mockResolvedValue({ ...statusHistory(), canQuery: false, jobs: [job] });
+  jest.spyOn(executionService, "reconcile").mockRejectedValue(new Error("Lost ACK"));
+  const onCaseChanged = jest.fn().mockResolvedValue();
+  render(<OperationStatusQueries {...statusSource} onCaseChanged={onCaseChanged} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Review this observation" })); fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Close case from this observation" }));
+  const reload = await screen.findByRole("button", { name: "Reload exact case before another decision" });
+  expect(screen.queryByRole("button", { name: "Review this observation" })).toBeNull();
+  expect(screen.getByText(/No ERP action was sent or replayed/)).toBeTruthy();
+  fireEvent.click(reload); await waitFor(() => expect(onCaseChanged).toHaveBeenCalledTimes(1));
+  await screen.findByText(/Review them again before any decision/);
+  expect(executionService.reconcile).toHaveBeenCalledTimes(1);
+});
+
+test("an acknowledged resolution with a failed refresh says not to resubmit and requires exact-case reload", async () => {
+  const job = { ...statusJob(), canResolve: true };
+  operationReadbackService.history.mockResolvedValue({ ...statusHistory(), canQuery: false, jobs: [job] });
+  jest.spyOn(executionService, "reconcile").mockResolvedValue({ executionId: statusSource.executionId, intentId: statusSource.intentId, recordId: "resolution-one", version: 2,
+    outcome: "NOT_APPLIED", state: "RESOLVED", basis: "queried-operation-state", replayed: false, canResume: false, noReplay: true, toolWasCalled: false });
+  const onCaseChanged = jest.fn().mockRejectedValueOnce(new Error("Refresh failed")).mockResolvedValueOnce();
+  render(<OperationStatusQueries {...statusSource} onCaseChanged={onCaseChanged} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Review this observation" })); fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Close case from this observation" }));
+  await screen.findByText(/Resolution was acknowledged, but refreshing/); expect(screen.getByText(/do not submit it again/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Reload exact case before another decision" }));
+  await waitFor(() => expect(onCaseChanged).toHaveBeenCalledTimes(2)); expect(executionService.reconcile).toHaveBeenCalledTimes(1);
 });

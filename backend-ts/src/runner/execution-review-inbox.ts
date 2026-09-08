@@ -83,9 +83,11 @@ export function executionReviewInbox(state: Readonly<RepositoryState>, user: Cur
             ? "Open the exact action and arguments before deciding." : "Approval is a decision, not proof that the tool succeeded or the recipient received it.") };
       }
       const review = operationReconciliationView(state, execution.id, user.id).operationReconciliation;
+      const queryBacked = review.history.at(-1)?.basis === "queried-operation-state";
       return { ...common, nodeId: review.nodeId, toolName: text(review.toolName, "Uncertain operation"), expiresAt: null,
-        statusLabel: review.state === "OPEN" ? "Outcome uncertain" : "Closed by operator evidence", reviewAvailable: true, actionable: review.canRecord,
-        detail: review.state === "OPEN" ? "Check external evidence. Do not resend an uncertain action." : "Operator attestation is not a tool-confirmed result or delivery proof." };
+        statusLabel: review.state === "OPEN" ? "Outcome uncertain" : queryBacked ? "Closed by reviewed ERP status" : "Closed by operator evidence", reviewAvailable: true, actionable: review.canRecord,
+        detail: review.state === "OPEN" ? "Check external evidence. Do not resend an uncertain action." : queryBacked ?
+          "A reviewer accepted a saved ERP-state observation. It is not the original SDK answer or delivery proof." : "Operator attestation is not a tool-confirmed result or delivery proof." };
     } catch (error) {
       if (!(error instanceof HandlerFailure)) throw error;
       return { ...common, nodeId: null, toolName: "Exact evidence unavailable", expiresAt: null, statusLabel: "Review unavailable", reviewAvailable: false,

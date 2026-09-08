@@ -17,7 +17,7 @@ export default function ExecutionReconciliationPage({ executionId }) {
   const review = query.data.operationReconciliation;
   return <div className="max-w-3xl space-y-5"><Link className="text-sm font-semibold text-primary dark:text-violet-300" to={canUseInbox ? "/executions/reviews" : canUseWorkspace ? "/chat" : "/company"}>{canUseInbox ? "← Review inbox" : canUseWorkspace ? "← Workspace" : "← Company"}</Link>
     <OperationReconciliationReview key={`${executionId}:${review.intentId}:${review.version}:${review.factsHash}`} execution={query.data} onReload={reload}
-      statusQueries={<OperationStatusQueries executionId={executionId} intentId={review.intentId} nodeId={review.nodeId} />} />
+      statusQueries={<OperationStatusQueries executionId={executionId} intentId={review.intentId} nodeId={review.nodeId} onCaseChanged={reload} />} />
     {canUseInbox && canUseWorkspace ? <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-primary dark:text-violet-300" to="/chat">← Workspace</Link> : null}
   </div>;
 }

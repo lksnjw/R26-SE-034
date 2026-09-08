@@ -6,12 +6,12 @@ import { canReadExecution } from "../http/execution-scope.js";
 import { HandlerFailure, validateWorkflow, type CurrentUser, type HandlerServices } from "../http/handlers/common.js";
 import type { Repository, RepositoryState } from "../repository/store.js";
 import { capabilityContractHash, captureReadAdmissionPin } from "../registry/capability-admission.js";
-import { toolSchema } from "../registry/schemas.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { dispatchReadTool } from "../tools/read-tool-broker.js";
 import { evaluateOperationReadback, resolveOperationReadbackArguments } from "../tools/operation-readback-contract.js";
 import { appendExecutionEvent } from "./read-checkpoints.js";
 import { operationCaseEvidence, operationReconciliationView } from "./operation-reconciliation.js";
+import { validateHistoricalOperationReadback } from "./operation-readback-evidence.js";
 import { operationReadbackCommandSchema, operationReadbackJobSchema, readbackEvaluationSchema, type OperationReadbackJob } from "./operation-readback-state.js";
 import { supportsOperationJobs } from "./operation-jobs.js";
 
@@ -45,21 +45,9 @@ function journal(state: Readonly<RepositoryState>, executionId: string): Operati
 /** Historical result proof does not require a currently connected or admitted
  * endpoint. It still requires exact immutable original and target revisions. */
 function historicalQuery(state: Readonly<RepositoryState>, job: OperationReadbackJob) {
-  const source = operationCaseEvidence(state, job.executionId), binding = source.node.readback;
-  const revision = state.capabilityRevisions[job.admission.revisionId], parsed = toolSchema.safeParse(revision?.definition);
-  const fingerprint = digest({ intentId: job.intentId, baseVersion: job.baseVersion, factsHash: job.factsHash, executionId: job.executionId, actorId: job.actorId, keyHash: job.keyHash });
-  if (job.requestFingerprint !== fingerprint || Date.parse(job.createdAt) < Date.parse(source.execution.completedAt!) ||
-      job.intentId !== source.intent.id || job.nodeId !== source.intent.nodeId || job.argumentHash !== source.intent.argumentHash ||
-      source.factsHashes[job.baseVersion - 1] !== job.factsHash || !binding || binding.toolId !== job.targetId || binding.contractHash !== job.targetHash ||
-      !same(binding.admission, job.admission) || source.connectionBinding !== job.connectionBinding || revision?.connectionBinding !== job.connectionBinding ||
-      revision.capabilityId !== job.admission.capabilityId || revision.connectionId !== job.admission.connectionId || revision.contractHash !== job.targetHash ||
-      !parsed.success || !parsed.data.allowed_roles.includes(job.admittedRole) || capabilityContractHash(parsed.data) !== job.targetHash || !same(job.arguments, resolveOperationReadbackArguments(source.tool, parsed.data, source.args)))
-    deny("Original operation or reviewed query evidence changed");
-  if (job.state === "ANSWERED") {
-    try { if (!same(readbackEvaluationSchema.parse(evaluateOperationReadback(source.tool, parsed.data, source.args, job.result, source.intent.preparedAt, job.completedAt!)), job.evaluation)) throw new Error("Classification changed"); }
-    catch { deny("Stored status classification disagrees with its exact result"); }
-  }
-  return { source, target: parsed.data };
+  const source = operationCaseEvidence(state, job.executionId);
+  try { return { source, target: validateHistoricalOperationReadback(state, job, source).target }; }
+  catch (error) { deny(error instanceof Error ? error.message : "Original operation or reviewed query evidence changed"); }
 }
 function currentQuery(state: Readonly<RepositoryState>, services: HandlerServices, job: OperationReadbackJob) {
   const { source, target } = historicalQuery(state, job), actor = queryActor(state, job.executionId, job.actorId), session = services.erpbridgeSession;
@@ -78,7 +66,7 @@ function publicJob(job: OperationReadbackJob) {
     basis: "queried-operation-state", dispatchIntentRecorded: !!job.dispatchIntentAt,
     queryOutcome: job.state === "ANSWERED" ? "ANSWER_CONFIRMED" : job.failure === "READBACK_RESULT_UNQUALIFIED" ? "UNQUALIFIED_RESULT" : job.dispatchIntentAt ? "UNKNOWN" : "NOT_DISPATCHED",
     observation: job.evaluation ?? null, failure: job.failure ?? null, cancellationRequested: !!job.cancellation,
-    canResume: false, noReplay: true, deliveryVerified: false };
+    canResolve: false, canResume: false, noReplay: true, deliveryVerified: false };
 }
 function event(state: RepositoryState, job: OperationReadbackJob, type: string) {
   const execution = state.executions[job.executionId]!;
@@ -99,7 +87,7 @@ function immutable(job: OperationReadbackJob) {
 export function operationReadbackHistory(state: Readonly<RepositoryState>, services: HandlerServices, executionId: string, actorId: string) {
   // The existing minimum case view establishes fresh source access; this does
   // not grant full run access or expose private query arguments/results.
-  operationReconciliationView(state, executionId, actorId);
+  const review = operationReconciliationView(state, executionId, actorId);
   const source = operationCaseEvidence(state, executionId), jobs = journal(state, executionId);
   for (const job of jobs) historicalQuery(state, job);
   let controller: CurrentUser | undefined;
@@ -117,7 +105,8 @@ export function operationReadbackHistory(state: Readonly<RepositoryState>, servi
   } catch { /* Historical evidence remains inspectable; no query authority. */ }
   return { profile: "operation-readback-history/v1", executionId, intentId: source.intent.id, nodeId: source.intent.nodeId, baseVersion: source.version, factsHash: source.factsHash,
     canQuery, memoryOnly: services.repository.persistence === null, jobs: jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).map(job => ({ ...publicJob(job),
-      canCancel: !!controller && pending(job) && (job.actorId === controller.id || controller.permissions.includes("workflow:run")) })),
+      canCancel: !!controller && pending(job) && (job.actorId === controller.id || controller.permissions.includes("workflow:run")),
+      canResolve: review.operationReconciliation.canRecord === true && job.state === "ANSWERED" && job.evaluation?.settled === true && job.evaluation.outcome !== "UNRESOLVED" })),
     canResume: false, noReplay: true, deliveryVerified: false,
     explanation: "A status query checks the reviewed operation-state condition. It does not prove unique send attribution or recipient delivery, close this case, resend the original action or resume later nodes." };
 }

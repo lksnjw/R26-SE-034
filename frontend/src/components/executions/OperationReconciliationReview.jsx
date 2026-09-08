@@ -6,6 +6,7 @@ import { executionService } from "../../services/execution.service";
 
 export default function OperationReconciliationReview({ execution, onReload, statusQueries }) {
   const review = execution.operationReconciliation;
+  const resolutionBasis = review.history.at(-1)?.basis;
   const [outcome, setOutcome] = useState("UNRESOLVED"), [kind, setKind] = useState("erp-record");
   const [reference, setReference] = useState(""), [note, setNote] = useState(""), [observedAt, setObservedAt] = useState("");
   const [confirmed, setConfirmed] = useState(false), [busy, setBusy] = useState(false), [uncertain, setUncertain] = useState(false), [receipt, setReceipt] = useState(null), [notice, setNotice] = useState("");
@@ -63,7 +64,7 @@ export default function OperationReconciliationReview({ execution, onReload, sta
       <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} disabled={!available} />I independently checked this evidence. This is an operator attestation, not a tool-confirmed result, delivery guarantee or permission to resume or resend.</label>
       <button type="button" className="rounded-md bg-primary px-4 py-2 text-sm text-white transition-opacity disabled:opacity-40" disabled={!ready} onClick={recordEvidence}>Record external evidence</button>
     </div>}
-    {review.state === "RESOLVED" && <p className="text-sm text-gray-500 dark:text-gray-400">Closed by operator evidence. The original SDK outcome remains unacknowledged; later nodes were not run. Any recovery needs a separately reviewed artifact.</p>}
+    {review.state === "RESOLVED" && <p className="text-sm text-gray-500 dark:text-gray-400">{resolutionBasis === "queried-operation-state" ? "Closed by an independently reviewed ERP status observation." : "Closed by operator evidence."} The original SDK outcome remains unacknowledged; later nodes were not run. Any recovery needs a separately reviewed artifact.</p>}
     <button type="button" className="text-sm font-semibold text-primary disabled:opacity-40 dark:text-violet-300" disabled={busy} onClick={reload}>{busy ? "Waiting for acknowledgement…" : "Reload exact case"}</button>
   </section>;
 }

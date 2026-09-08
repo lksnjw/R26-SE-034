@@ -446,9 +446,9 @@ try {
     log(`actual Firestore normal read-back ${phase} post-COMMIT ACK loss returned unavailable history, recovered one original-key record across fresh restart, and never replayed an entered query or the original effect`);
   }
 
-  // Independent operator evidence is an attestation, never an SDK ACK. Exercise
-  // real scoped Firestore commits, unknown decision ACK and restart, not merely
-  // a private schema or a synthetic pre-resolved record.
+  // A qualified status answer is still not an SDK ACK. Exercise independent
+  // acceptance of the immutable saved query, real scoped Firestore commits,
+  // unknown decision ACK and restart—not a browser-supplied outcome.
   await repository.mutate(state => {
     state.roles.recovery_operator = { id: "recovery_operator", name: "Independent recovery operator", description: "Synthetic recovery only", permissions: ["execution:reconcile"], createdAt: new Date().toISOString() };
     state.users.operator = { ...state.users.reviewer, id: "operator", name: "Recovery operator", email: "operator@example.test", roleId: "recovery_operator" };
@@ -460,12 +460,14 @@ try {
   assert(!JSON.stringify(recoveryInbox).includes('"arguments":')); assert(!JSON.stringify(recoveryInbox).includes("OPERATION-LOST-INTENT"));
   assert.equal(recoveryView.canRecord, true); assert.deepEqual(recoveryView.arguments, { id: "OPERATION-LOST-INTENT" });
   await request("GET", `/api/executions/${lostOperation}`, undefined, 404, "operator"); await request("GET", `/api/executions/${lostOperation}/logs`, undefined, 403, "operator");
-  const recoveryCommand = { intentId: recoveryView.intentId, baseVersion: recoveryView.version, factsHash: recoveryView.factsHash, decisionKey: "firestore-external-evidence-0001", outcome: "NOT_APPLIED",
-    evidence: { kind: "external-support", reference: "SYNTHETIC-INTENT-ACK-LOSS-CHECK", note: "Independent local fixture observed no SDK entry. This is recorded operator evidence, not a live ERP or delivery audit.", observedAt: new Date().toISOString() } };
+  const operatorQueryHistory = (await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 200, "operator")).data;
+  assert.equal(operatorQueryHistory.jobs.find(job => job.id === normalQuery.id).canResolve, true);
+  const recoveryCommand = { intentId: recoveryView.intentId, baseVersion: recoveryView.version, factsHash: recoveryView.factsHash,
+    decisionKey: "firestore-query-resolution-0001", queryId: normalQuery.id };
   await request("POST", `/api/executions/${lostOperation}/reconcile`, recoveryCommand, 403, "owner");
   const actualRecoveryCheckpoint = persistence.saveExecutionCheckpoint.bind(persistence); let lostRecoveryACK = false;
   persistence.saveExecutionCheckpoint = async checkpoint => { await actualRecoveryCheckpoint(checkpoint);
-    if (!lostRecoveryACK && checkpoint.executionId === lostOperation && checkpoint.execution?.status === "RECONCILED") { lostRecoveryACK = true; throw new Error("Synthetic actual Firestore external-evidence decision post-COMMIT acknowledgement loss"); }
+    if (!lostRecoveryACK && checkpoint.executionId === lostOperation && checkpoint.execution?.status === "RECONCILED") { lostRecoveryACK = true; throw new Error("Synthetic actual Firestore query-backed decision post-COMMIT acknowledgement loss"); }
   };
   await request("POST", `/api/executions/${lostOperation}/reconcile`, recoveryCommand, 503, "operator"); assert.equal(lostRecoveryACK, true);
   persistence.saveExecutionCheckpoint = actualRecoveryCheckpoint; await repository.recoverPersistenceState();
@@ -480,16 +482,17 @@ try {
   const recoveryHistory = (await request("GET", `/api/executions/${lostOperation}?view=reconciliation`, undefined, 200, "operator")).data.operationReconciliation;
   assert(!(await request("GET", "/api/execution-reviews", undefined, 200, "operator")).data.items.some(item => item.executionId === lostOperation));
   const recoveryHistoryInbox = (await request("GET", "/api/execution-reviews?state=closed", undefined, 200, "operator")).data;
-  assert(recoveryHistoryInbox.items.some(item => item.executionId === lostOperation && !item.actionable && item.statusLabel === "Closed by operator evidence"));
+  assert(recoveryHistoryInbox.items.some(item => item.executionId === lostOperation && !item.actionable && item.statusLabel === "Closed by reviewed ERP status"));
   assert.equal(recoveryHistory.state, "RESOLVED"); assert.equal(recoveryHistory.canRecord, false); assert.equal(recoveryHistory.history.length, 1);
-  assert.equal(recoveryHistory.history[0].basis, "operator-attestation"); assert.equal(recoveryHistory.canResume, false);
+  assert.equal(recoveryHistory.history[0].basis, "queried-operation-state"); assert.equal(recoveryHistory.history[0].queryId, normalQuery.id);
+  assert.equal(recoveryHistory.history[0].observation.outcome, "NOT_APPLIED"); assert.equal(recoveryHistory.canResume, false);
   const closedQueryHistory = (await request("GET", `/api/executions/${lostOperation}/readbacks`, undefined, 200, "operator")).data;
   assert.equal(closedQueryHistory.canQuery, false); assert.equal(closedQueryHistory.jobs.length, 4);
   assert(closedQueryHistory.jobs.every(job => job.executionId === lostOperation && job.intentId === closedQueryHistory.intentId && job.nodeId === closedQueryHistory.nodeId && job.canCancel === false));
   assert.equal(closedQueryHistory.jobs.find(job => job.id === normalQuery.id).observation.outcome, "NOT_APPLIED");
   await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, 1); assert.equal(models.length, modelsBeforeOperation);
-  log("actual Firestore normal independent external-evidence recovery survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; one private attestation, no new SDK/model calls, no fabricated answer or resume");
-  log("actual Firestore review inbox discovered independent normal waits and uncertain effects after restart, then preserved truthful approval/operator decision history without arguments, self-review or new SDK/model calls");
+  log("actual Firestore independent query-backed resolution survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; the server derived one private decision from the saved observation with no new SDK/model call, fabricated answer or resume");
+  log("actual Firestore review inbox discovered independent normal waits and uncertain effects after restart, then preserved truthful approval/query-backed decision history without arguments, self-review or new SDK/model calls");
 
   const historicalYAML = stringify({ name: "Two independent synthetic reviews", description: "Verify separate exact decisions and historical review after a durable restart using synthetic operations only.", trigger: { type: "manual" }, steps: [
     { id: "first", action: operationTool.name, parameters: { id: "history-first" } },
