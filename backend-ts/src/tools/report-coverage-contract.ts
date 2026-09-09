@@ -16,12 +16,12 @@ export type ReportCoverageReceipt = {
   endAt: string;
   itemCount: number;
   confirmedAt: string;
-  pagination?: { profile: "report-page-evidence/v1"; firstPage: number; lastPage: number; pageCount: number; snapshotHash: string;
-    pages: Array<{ page: number; argumentHash: string; outputHash: string; snapshotHash: string; itemCount: number; hasMore: boolean; confirmedAt: string }> };
+  pagination?: { profile: "report-page-evidence/v1"; firstPage: number; lastPage: number; pageCount: number; totalCount: number; snapshotHash: string;
+    pages: Array<{ page: number; argumentHash: string; outputHash: string; snapshotHash: string; itemCount: number; totalCount: number; hasMore: boolean; confirmedAt: string }> };
 };
 export type ReportPageEvidence = NonNullable<ReportCoverageReceipt["pagination"]>["pages"][number];
 export type ReportPageProgress = { profile: "schedule-report-pages/v1"; nodeId: string; toolId: string; contractHash: string; startAt: string; endAt: string;
-  firstPage: number; nextPage: number; maxPages: number; items: unknown[]; pages: ReportPageEvidence[]; snapshotValue?: string; lastOutput?: Record<string, unknown> };
+  firstPage: number; nextPage: number; maxPages: number; items: unknown[]; pages: ReportPageEvidence[]; snapshotValue?: string; totalCount?: number; lastOutput?: Record<string, unknown> };
 
 function schemaAt(root: unknown, path: readonly string[]): JsonSchema | undefined {
   let value = root as JsonSchema | undefined;
@@ -67,9 +67,10 @@ export function assertReportCoverageContract(tool: ToolDefinition): void {
   if (contract.pagination && (!optionalIntegerParameter(tool, contract.pagination.page_parameter) || contract.pagination.page_path.some(isSecretField) ||
       contract.pagination.snapshot_path.some(isSecretField) || schemaAt(output, contract.pagination.page_path)?.type !== "integer" ||
       schemaAt(output, contract.pagination.snapshot_path)?.type !== "string" || schemaAt(output, contract.pagination.snapshot_path)?.writeOnly === true ||
+      contract.pagination.total_count_path.some(isSecretField) || schemaAt(output, contract.pagination.total_count_path)?.type !== "integer" ||
       !Number.isInteger(schemaAt(output, contract.items_path)?.maxItems) ||
       Number(schemaAt(output, contract.items_path)?.maxItems) < contract.pagination.max_items))
-    throw new Error("Report pagination requires an optional integer input plus declared page and stable-snapshot output selectors");
+    throw new Error("Report pagination requires an optional integer input plus declared page, stable-snapshot and total-count output selectors");
 }
 
 export function reportCoverageParameters(tool: ToolDefinition): { start: string; end: string } | null {
@@ -106,10 +107,11 @@ export function confirmScheduledReportCoverage(input: { tool: ToolDefinition; no
     if (!configured || input.pagination.profile !== "report-page-evidence/v1" || pages.length < 1 || pages.length > configured.max_pages ||
         !/^sha256:[a-f0-9]{64}$/.test(input.pagination.snapshotHash) ||
         valueAt(input.output.structuredContent, configured.snapshot_path) !== input.pagination.snapshotHash ||
+        input.pagination.totalCount !== result.itemCount || valueAt(input.output.structuredContent, configured.total_count_path) !== input.pagination.totalCount ||
         input.pagination.pageCount !== pages.length || input.pagination.firstPage !== configured.first_page ||
         input.pagination.lastPage !== configured.first_page + pages.length - 1 ||
         pages.some((page, index) => page.page !== configured.first_page + index || page.itemCount < 0 || page.hasMore !== (index < pages.length - 1) ||
-          page.snapshotHash !== input.pagination!.snapshotHash ||
+          page.snapshotHash !== input.pagination!.snapshotHash || page.totalCount !== input.pagination!.totalCount ||
           !/^sha256:[a-f0-9]{64}$/.test(page.argumentHash) || !/^sha256:[a-f0-9]{64}$/.test(page.outputHash) || !Number.isFinite(Date.parse(page.confirmedAt))) ||
         pages.reduce((sum, page) => sum + page.itemCount, 0) !== result.itemCount)
       throw new Error("Paginated report evidence is incomplete or inconsistent");
@@ -141,15 +143,18 @@ export function assertReportPageProgress(tool: ToolDefinition, progress: ReportP
       progress.items.length > pagination.max_items || canonicalJSONBytes(progress.items).length > 2_000_000 ||
       pages.some((page, index) => page.page !== pagination.first_page + index || page.hasMore !== true || page.itemCount < 0 ||
         page.snapshotHash !== (progress.snapshotValue === undefined ? "" : resolvedParameterHashBytes(canonicalJSONBytes(progress.snapshotValue))) ||
+        page.totalCount !== progress.totalCount ||
         !/^sha256:[a-f0-9]{64}$/.test(page.argumentHash) || !/^sha256:[a-f0-9]{64}$/.test(page.outputHash) || !Number.isFinite(Date.parse(page.confirmedAt))) ||
       pages.reduce((sum, page) => sum + page.itemCount, 0) !== progress.items.length || Boolean(progress.lastOutput) !== Boolean(pages.length) ||
-      Boolean(progress.snapshotValue) !== Boolean(pages.length) || (progress.snapshotValue !== undefined && Buffer.byteLength(progress.snapshotValue) > 2_048) ||
+      Boolean(progress.snapshotValue) !== Boolean(pages.length) || Boolean(progress.totalCount !== undefined) !== Boolean(pages.length) ||
+      (progress.totalCount !== undefined && (!Number.isSafeInteger(progress.totalCount) || progress.totalCount < progress.items.length || progress.totalCount > pagination.max_items)) ||
+      (progress.snapshotValue !== undefined && Buffer.byteLength(progress.snapshotValue) > 2_048) ||
       progress.lastOutput && resolvedParameterHashBytes(canonicalJSONBytes(progress.lastOutput)) !== pages.at(-1)!.outputHash)
     throw new Error("Stored report page progress is inconsistent");
 }
 
 export function confirmScheduledReportPage(input: { tool: ToolDefinition; args: Record<string, unknown>; output: Record<string, unknown>; startAt: string;
-  endAt: string; page: number; confirmedAt?: string }): { items: unknown[]; hasMore: boolean; snapshotValue: string; evidence: ReportPageEvidence } {
+  endAt: string; page: number; confirmedAt?: string }): { items: unknown[]; hasMore: boolean; snapshotValue: string; totalCount: number; evidence: ReportPageEvidence } {
   assertReportCoverageContract(input.tool);
   const contract = input.tool.report_coverage_contract!, pagination = contract.pagination;
   if (!pagination || input.args[pagination.page_parameter] !== input.page) throw new Error("The report page did not use the server-owned page number");
@@ -157,14 +162,16 @@ export function confirmScheduledReportPage(input: { tool: ToolDefinition; args: 
   const body = input.output.structuredContent, coveredStart = valueAt(body, contract.covered_start_path), coveredEnd = valueAt(body, contract.covered_end_path);
   const complete = valueAt(body, contract.complete_path), hasMore = valueAt(body, contract.has_more_path), pageValue = valueAt(body, pagination.page_path);
   const items = valueAt(body, contract.items_path), count = valueAt(body, contract.item_count_path), snapshotValue = valueAt(body, pagination.snapshot_path);
+  const totalCount = valueAt(body, pagination.total_count_path);
   if (coveredStart !== input.startAt || coveredEnd !== input.endAt || pageValue !== input.page || typeof hasMore !== "boolean" || complete !== !hasMore ||
       !Array.isArray(items) || !Number.isSafeInteger(count) || count !== items.length || items.length > pagination.max_items ||
+      !Number.isSafeInteger(totalCount) || (totalCount as number) < items.length || (totalCount as number) > pagination.max_items ||
       typeof snapshotValue !== "string" || snapshotValue.length === 0 || Buffer.byteLength(snapshotValue) > 2_048)
-    throw new Error("The ERP report page did not attest its exact page, interval, stable snapshot, completeness and item count");
+    throw new Error("The ERP report page did not attest its exact page, interval, stable snapshot, total count, completeness and item count");
   const snapshotHash = resolvedParameterHashBytes(canonicalJSONBytes(snapshotValue));
-  return { items: structuredClone(items), hasMore, snapshotValue, evidence: { page: input.page,
+  return { items: structuredClone(items), hasMore, snapshotValue, totalCount: totalCount as number, evidence: { page: input.page,
     argumentHash: resolvedParameterHashBytes(canonicalJSONBytes(input.args)), outputHash: resolvedParameterHashBytes(canonicalJSONBytes(input.output)),
-    snapshotHash, itemCount: count as number, hasMore, confirmedAt: input.confirmedAt ?? new Date().toISOString() } };
+    snapshotHash, itemCount: count as number, totalCount: totalCount as number, hasMore, confirmedAt: input.confirmedAt ?? new Date().toISOString() } };
 }
 
 function setAt(root: unknown, path: readonly string[], value: unknown): void {
@@ -186,14 +193,16 @@ export function protectedReportPageOutput(tool: ToolDefinition, output: Record<s
 
 export function completePaginatedReport(tool: ToolDefinition, progress: ReportPageProgress): { output: Record<string, unknown>; receiptPagination: NonNullable<ReportCoverageReceipt["pagination"]> } {
   const contract = tool.report_coverage_contract!, pagination = reportPagination(tool);
-  if (!pagination || !progress.lastOutput || !progress.pages.length || progress.pages.at(-1)!.hasMore || progress.nextPage !== progress.pages.at(-1)!.page + 1)
+  if (!pagination || !progress.lastOutput || !progress.pages.length || progress.pages.at(-1)!.hasMore || progress.nextPage !== progress.pages.at(-1)!.page + 1 ||
+      progress.totalCount === undefined || progress.items.length !== progress.totalCount)
     throw new Error("Paginated report is not complete");
   const output = structuredClone(progress.lastOutput);
   setAt(output.structuredContent, contract.items_path, structuredClone(progress.items)); setAt(output.structuredContent, contract.item_count_path, progress.items.length);
+  setAt(output.structuredContent, pagination.total_count_path, progress.totalCount);
   setAt(output.structuredContent, contract.complete_path, true); setAt(output.structuredContent, contract.has_more_path, false);
   const lastPage = progress.pages.at(-1)!.page; setAt(output.structuredContent, pagination.page_path, lastPage);
   if (!progress.snapshotValue) throw new Error("Paginated report has no stable snapshot evidence");
   const snapshotHash = resolvedParameterHashBytes(canonicalJSONBytes(progress.snapshotValue)); setAt(output.structuredContent, pagination.snapshot_path, snapshotHash);
-  return { output, receiptPagination: { profile: "report-page-evidence/v1", firstPage: progress.firstPage, lastPage, snapshotHash,
+  return { output, receiptPagination: { profile: "report-page-evidence/v1", firstPage: progress.firstPage, lastPage, totalCount: progress.totalCount, snapshotHash,
     pageCount: progress.pages.length, pages: structuredClone(progress.pages) } };
 }

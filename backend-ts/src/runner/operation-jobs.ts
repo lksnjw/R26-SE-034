@@ -292,7 +292,7 @@ export class OperationJobQueue {
                 throw new Error("Report pagination evidence is inconsistent or exhausted");
               assertReportPageProgress(tool, progress);
               (run.reportPageSecret ??= {})[node.id] = progress;
-              return { page: progress.nextPage, items: structuredClone(progress.items), pages: structuredClone(progress.pages), snapshotValue: progress.snapshotValue };
+              return { page: progress.nextPage, items: structuredClone(progress.items), pages: structuredClone(progress.pages), snapshotValue: progress.snapshotValue, totalCount: progress.totalCount };
             });
             const page = pageState.page, pageArgs = { ...structuredClone(args), [pagination.page_parameter]: page };
             if (validateToolInput(tool.input_schema, pageArgs).length) throw new Error("Server-derived report page arguments are invalid");
@@ -320,6 +320,10 @@ export class OperationJobQueue {
               const candidateItems = [...pageState.items, ...confirmed.items];
               if (pageState.snapshotValue !== undefined && confirmed.snapshotValue !== pageState.snapshotValue)
                 throw new Error("Paginated report changed its stable snapshot between pages");
+              if (pageState.totalCount !== undefined && confirmed.totalCount !== pageState.totalCount)
+                throw new Error("Paginated report changed its total record count between pages");
+              if (confirmed.hasMore ? candidateItems.length >= confirmed.totalCount : candidateItems.length !== confirmed.totalCount)
+                throw new Error("Paginated report exhaustion does not match its declared total record count");
               if (candidateItems.length > pagination.max_items || canonicalJSONBytes(candidateItems).length > 2_000_000 || confirmed.hasMore && pageState.pages.length + 1 >= pagination.max_pages)
                 throw new Error("Paginated report exceeded its reviewed page, item or byte bound before completeness");
             } catch (error) {
@@ -331,8 +335,10 @@ export class OperationJobQueue {
               if (attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== pageIntentId || intent.state !== "DISPATCH_INTENT" || !progress || progress.nextPage !== page)
                 throw new Error("Report page result does not own the current intent");
               if (progress.snapshotValue !== undefined && progress.snapshotValue !== confirmed.snapshotValue) throw new Error("Report snapshot changed before checkpoint");
+              if (progress.totalCount !== undefined && progress.totalCount !== confirmed.totalCount) throw new Error("Report total count changed before checkpoint");
               const now = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = now; progress.pages.push(confirmed.evidence);
-              progress.snapshotValue ??= confirmed.snapshotValue; progress.items.push(...structuredClone(confirmed.items)); progress.lastOutput = structuredClone(pageOutput); progress.nextPage++;
+              progress.snapshotValue ??= confirmed.snapshotValue; progress.totalCount ??= confirmed.totalCount;
+              progress.items.push(...structuredClone(confirmed.items)); progress.lastOutput = structuredClone(pageOutput); progress.nextPage++;
               const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
               appendExecutionEvent(state, run, "node.report_page_completed", { intentId: pageIntentId, page, itemCount: confirmed.items.length, hasMore: confirmed.hasMore }, node.id, attempt.id);
               if (confirmed.hasMore) {
