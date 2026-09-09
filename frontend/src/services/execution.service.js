@@ -5,6 +5,7 @@ const reconciliationId = value => typeof value === "string" && value.length > 0 
 const reconciliationDate = value => typeof value === "string" && Number.isFinite(Date.parse(value));
 const reconciliationExact = (value, keys) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && Object.keys(value).every(key => keys.includes(key));
 const reconciliationOutcomes = ["APPLIED", "NOT_APPLIED", "UNRESOLVED"];
+const hash = value => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
 function validReconciliationHistory(records, state) {
   if (!Array.isArray(records) || records.length > 100) return false;
   const ids = new Set();
@@ -92,6 +93,28 @@ export const executionService = {
   },
   async reconcile(id, command) {
     return unwrap(await apiClient.post(`/executions/${encodeURIComponent(id)}/reconcile`, command));
+  },
+  async getReportPageResolution(id) {
+    const value = unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}/report-page-resolutions`));
+    const review = value?.reportPageResolution;
+    const cursor = review?.continuationProfile === "opaque-cursor/v1";
+    if (value?.id !== id || review?.profile !== "report-page-resolution-case/v1" || !["OPEN", "RESOLVED"].includes(review.state) ||
+        !["page-number/v1", "opaque-cursor/v1"].includes(review.continuationProfile) || !Number.isSafeInteger(review.pointer) || review.pointer < 1 ||
+        cursor !== hash(review.cursorHash) || !Number.isSafeInteger(review.confirmedPages) || review.confirmedPages < 0 ||
+        !Number.isSafeInteger(review.confirmedItems) || review.confirmedItems < 0 || ![1, 2].includes(review.version) || !hash(review.factsHash) ||
+        typeof review.canRecord !== "boolean" || typeof review.canResume !== "boolean" || review.noReplay !== true ||
+        review.state === "OPEN" !== (review.version === 1) || review.state === "OPEN" && (!review.outputSchema || typeof review.outputSchema !== "object" || Array.isArray(review.outputSchema)) ||
+        review.state === "RESOLVED" && (review.canRecord || review.outputSchema !== null) || !review.arguments || typeof review.arguments !== "object" || Array.isArray(review.arguments) ||
+        !Array.isArray(review.history) || review.history.length > 100 || review.history.some(record => !reconciliationId(record?.id) || !reconciliationId(record.intentId) ||
+          record.nodeId !== review.nodeId || !["PAGE_CONFIRMED", "ABANDONED"].includes(record.outcome) || !reconciliationId(record.actorId) ||
+          !reconciliationDate(record.recordedAt) || !record.evidence || typeof record.evidence.reference !== "string" || !record.evidence.reference ||
+          typeof record.evidence.note !== "string" || !record.evidence.note || !reconciliationDate(record.evidence.observedAt) ||
+          record.outputHash !== null && !hash(record.outputHash)))
+      throw new Error("Exact uncertain report-page evidence is unavailable. Reload before resolving it.");
+    return value;
+  },
+  async resolveReportPage(id, command) {
+    return unwrap(await apiClient.post(`/executions/${encodeURIComponent(id)}/report-page-resolutions`, command));
   },
 /*******************************************************************************
  * Function: getLogs

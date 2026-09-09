@@ -444,6 +444,88 @@ test("an uncertain opaque report cursor page is never automatically replayed", a
   expect((await s.request("POST", `/api/executions/${executionId}/retry`, { input: {} })).statusCode).toBe(409); expect(s.sdk.callTool).toHaveBeenCalledTimes(before);
 });
 
+test("independent captured cursor-page evidence resumes at the next cursor without replay", async () => {
+  const s = await setup(null, true, false, false, "cursor"); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const original = s.sdk.callTool.getMockImplementation()!;
+  s.sdk.callTool.mockImplementation(async (name, args, meta) => {
+    if (name === exactBridgeName(s.reportRead) && args.cursor === "cursor-2") throw new Error("Synthetic cursor-page transport outcome unknown");
+    return original(name, args, meta);
+  });
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string, window = reportWindowFor("UTC", scheduledFor, "previous-calendar-day");
+  await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string;
+  await s.wait(executionId, "RECONCILIATION_REQUIRED");
+  await s.repository.mutate(state => { state.roles.review!.permissions.push("execution:reconcile"); });
+  const inbox = await s.request("GET", "/api/execution-reviews?kind=reconciliation&state=open", undefined, "reviewer");
+  expect(inbox.statusCode, inbox.body).toBe(200); expect(inbox.json().data.items).toContainEqual(expect.objectContaining({ executionId, kind: "reconciliation",
+    reviewView: "report-page", statusLabel: "Report page outcome uncertain", actionable: true }));
+  const reviewResponse = await s.request("GET", `/api/executions/${executionId}/report-page-resolutions`, undefined, "reviewer");
+  expect(reviewResponse.statusCode, reviewResponse.body).toBe(200); expect(reviewResponse.body).not.toContain("cursor-2");
+  const review = reviewResponse.json().data.reportPageResolution;
+  expect(review).toMatchObject({ profile: "report-page-resolution-case/v1", state: "OPEN", continuationProfile: "opaque-cursor/v1", pointer: 2,
+    confirmedPages: 1, confirmedItems: 1, canRecord: true, canResume: true, noReplay: true, arguments: { cursor: "[protected cursor]" } });
+  const command = { profile: "report-page-resolution-command/v1", intentId: review.intentId, baseVersion: review.version, factsHash: review.factsHash,
+    decisionKey: "captured-cursor-page-0001", outcome: "PAGE_CONFIRMED", evidence: { reference: "erpbridge-support-case-42",
+      note: "Matched the exact protected continuation and captured its complete response.", observedAt: new Date().toISOString() },
+    output: { content: [], structuredContent: { coveredStartAt: window.startAt, coveredEndAt: window.endAt, complete: false, hasMore: true,
+      items: [{ id: "invoice-2" }], itemCount: 1, summary: "2 invoice page", cursor: "cursor-2", nextCursor: "cursor-3",
+      snapshotId: "snapshot-daily-invoices", totalAvailable: 3 } } };
+  expect((await s.request("POST", `/api/executions/${executionId}/report-page-resolutions`, command)).statusCode).toBe(403);
+  const resolved = await s.request("POST", `/api/executions/${executionId}/report-page-resolutions`, command, "reviewer");
+  expect(resolved.statusCode, resolved.body).toBe(202); expect(resolved.json().data).toMatchObject({ outcome: "PAGE_CONFIRMED", state: "RESUMED",
+    resumeQueued: true, pageAccepted: true, replayed: false, noReplay: true, toolWasCalled: false });
+  await s.wait(executionId, "AWAITING_APPROVAL");
+  expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead)).map(call => call[1].cursor)).toEqual(["", "cursor-2", "cursor-3"]);
+  const run = (await s.repository.snapshot()).executions[executionId]!;
+  expect(run.reportCoverage).toMatchObject({ itemCount: 3, pagination: { profile: "report-cursor-evidence/v1", pageCount: 3,
+    pages: [{ ordinal: 1 }, { ordinal: 2, resolution: { profile: "report-page-operator-evidence/v1", actorId: "reviewer" } }, { ordinal: 3 }] } });
+  expect(Object.values(run.operationSecret!.reportPageResolutions!)[0]).toMatchObject({ outcome: "PAGE_CONFIRMED", pointer: 2, actorId: "reviewer" });
+  expect(splitFirestoreState(await s.repository.snapshot())).toContainEqual(expect.objectContaining({ path: ["report-page-resolutions", executionId, expect.any(String)] }));
+  expect(JSON.stringify(withoutSecretFields(run))).not.toMatch(/cursor-2|cursor-3|snapshot-daily-invoices/);
+  const publicRun = await s.request("GET", `/api/executions/${executionId}`); expect(publicRun.json().data.hasReportPageResolution).toBe(true);
+  expect(publicRun.body).not.toMatch(/reportPageResolutions|cursor-2|cursor-3/);
+  const replay = await s.request("POST", `/api/executions/${executionId}/report-page-resolutions`, command, "reviewer");
+  expect(replay.statusCode, replay.body).toBe(202); expect(replay.json().data.replayed).toBe(true);
+  expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead))).toHaveLength(3);
+  const history = await s.request("GET", "/api/execution-reviews?kind=reconciliation&state=closed", undefined, "reviewer");
+  expect(history.statusCode, history.body).toBe(200); expect(history.json().data.items).toContainEqual(expect.objectContaining({ executionId, reviewView: "report-page",
+    statusLabel: "Captured page accepted without replay", actionable: false }));
+});
+
+test("independent abandonment closes an uncertain report page without continuation or effect", async () => {
+  const s = await setup(null, true, false, false, "cursor"); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const original = s.sdk.callTool.getMockImplementation()!;
+  s.sdk.callTool.mockImplementation(async (name, args, meta) => {
+    if (name === exactBridgeName(s.reportRead) && args.cursor === "cursor-2") throw new Error("Synthetic cursor-page transport outcome unknown");
+    return original(name, args, meta);
+  });
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+  await workflowScheduleRunner(s.services).runDue(Date.parse(saved.json().data.nextRunAt));
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string;
+  await s.wait(executionId, "RECONCILIATION_REQUIRED"); const before = s.sdk.callTool.mock.calls.length;
+  await s.repository.mutate(state => { state.roles.review!.permissions.push("execution:reconcile"); });
+  const review = (await s.request("GET", `/api/executions/${executionId}/report-page-resolutions`, undefined, "reviewer")).json().data.reportPageResolution;
+  const command = { profile: "report-page-resolution-command/v1", intentId: review.intentId, baseVersion: review.version, factsHash: review.factsHash,
+    decisionKey: "abandon-cursor-page-0001", outcome: "ABANDONED", evidence: { reference: "erpbridge-support-case-43",
+      note: "No trustworthy captured response is available; close this occurrence.", observedAt: new Date().toISOString() } };
+  const response = await s.request("POST", `/api/executions/${executionId}/report-page-resolutions`, command, "reviewer");
+  expect(response.statusCode, response.body).toBe(200); expect(response.json().data).toMatchObject({ state: "FAILED", resumeQueued: false, pageAccepted: false, toolWasCalled: false });
+  const run = (await s.repository.snapshot()).executions[executionId]!;
+  expect(run).toMatchObject({ status: "FAILED", failure: { failureCategory: "REPORT_PAGE_ABANDONED", failedStepId: "lookupReport" } });
+  expect(run.reportPageSecret).toBeUndefined(); expect(run.runtimeApprovalSecret).toBeUndefined(); expect(s.sdk.callTool).toHaveBeenCalledTimes(before);
+  const closed = await s.request("GET", `/api/executions/${executionId}/report-page-resolutions`, undefined, "reviewer");
+  expect(closed.statusCode, closed.body).toBe(200); expect(closed.json().data.reportPageResolution).toMatchObject({ state: "RESOLVED", canRecord: false,
+    canResume: false, noReplay: true, history: [{ outcome: "ABANDONED" }] });
+  expect((await s.request("POST", `/api/executions/${executionId}/retry`, { input: {} })).statusCode).toBe(409); expect(s.sdk.callTool).toHaveBeenCalledTimes(before);
+});
+
 test("a changed ERP snapshot marker between report pages fails before approval or effect", async () => {
   const s = await setup(null, true, false, false, true); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
   const original = s.sdk.callTool.getMockImplementation()!;
@@ -516,6 +598,35 @@ test("an uncertain report page is never automatically replayed", async () => {
   const before = s.sdk.callTool.mock.calls.length, run = (await s.repository.snapshot()).executions[executionId]!;
   expect(run.operationSecret!.intents["lookupReport:page:2"]).toMatchObject({ state: "UNKNOWN" }); expect(run.reportCoverage).toBeUndefined();
   expect((await s.request("POST", `/api/executions/${executionId}/retry`, { input: {} })).statusCode).toBe(409); expect(s.sdk.callTool).toHaveBeenCalledTimes(before);
+});
+
+test("independent captured numeric page evidence resumes at the next page without replay", async () => {
+  const s = await setup(null, true, false, false, true); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const original = s.sdk.callTool.getMockImplementation()!;
+  s.sdk.callTool.mockImplementation(async (name, args, meta) => {
+    if (name === exactBridgeName(s.reportRead) && args.page === 2) throw new Error("Synthetic page-two transport outcome unknown");
+    return original(name, args, meta);
+  });
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string, window = reportWindowFor("UTC", scheduledFor, "previous-calendar-day");
+  await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string;
+  await s.wait(executionId, "RECONCILIATION_REQUIRED"); await s.repository.mutate(state => { state.roles.review!.permissions.push("execution:reconcile"); });
+  const review = (await s.request("GET", `/api/executions/${executionId}/report-page-resolutions`, undefined, "reviewer")).json().data.reportPageResolution;
+  expect(review).toMatchObject({ state: "OPEN", continuationProfile: "page-number/v1", pointer: 2, arguments: { page: 2 } });
+  const response = await s.request("POST", `/api/executions/${executionId}/report-page-resolutions`, { profile: "report-page-resolution-command/v1",
+    intentId: review.intentId, baseVersion: review.version, factsHash: review.factsHash, decisionKey: "captured-numeric-page-0001", outcome: "PAGE_CONFIRMED",
+    evidence: { reference: "erpbridge-support-case-44", note: "Captured the exact numeric page response independently.", observedAt: new Date().toISOString() },
+    output: { content: [], structuredContent: { coveredStartAt: window.startAt, coveredEndAt: window.endAt, complete: false, hasMore: true,
+      items: [{ id: "invoice-2" }], itemCount: 1, summary: "2 invoice page", page: 2, snapshotId: "snapshot-daily-invoices", totalAvailable: 3 } } }, "reviewer");
+  expect(response.statusCode, response.body).toBe(202); expect(response.json().data).toMatchObject({ toolWasCalled: false, noReplay: true, resumeQueued: true });
+  await s.wait(executionId, "AWAITING_APPROVAL");
+  expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead)).map(call => call[1].page)).toEqual([1, 2, 3]);
+  expect((await s.repository.snapshot()).executions[executionId]!.reportCoverage).toMatchObject({ pagination: { profile: "report-page-evidence/v1",
+    pages: [{ page: 1 }, { page: 2, resolution: { profile: "report-page-operator-evidence/v1", actorId: "reviewer" } }, { page: 3 }] } });
 });
 
 test.each([

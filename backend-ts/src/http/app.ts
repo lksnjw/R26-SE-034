@@ -65,6 +65,7 @@ import { handleWorkflowScheduleRoute, WORKFLOW_SCHEDULE_UNHANDLED } from "./hand
 import { workflowScheduleRunner } from "../runner/workflow-schedules.js";
 import { runtimeApprovalAdministration, runtimeApprovalView } from "../runner/runtime-approvals.js";
 import { operationReconciliationView, hasOperationReconciliation } from "../runner/operation-reconciliation.js";
+import { hasReportPageResolution } from "../runner/report-page-resolution.js";
 import {
   REGISTRY_UNHANDLED,
   handleRegistryRoute,
@@ -314,9 +315,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 200)
+  if (routeTable.length !== 202)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 200`,
+      `route table has ${routeTable.length} routes, expected 202`,
     );
   return app;
 }
@@ -1410,7 +1411,8 @@ async function getExecution(
     !canReadExecution(user, item)
   )
     return reply.status(404).send(fail("Execution not found", null));
-  return reply.send(ok(withoutSecretFields({ ...item, ...(item.runtimeApprovalSecret ? { hasRuntimeApproval: true } : {}), ...(hasOperationReconciliation(item) ? { hasOperationReconciliation: true } : {}) }), "OK", null));
+  return reply.send(ok(withoutSecretFields({ ...item, ...(item.runtimeApprovalSecret ? { hasRuntimeApproval: true } : {}), ...(hasOperationReconciliation(item) ? { hasOperationReconciliation: true } : {}),
+    ...(hasReportPageResolution(item) ? { hasReportPageResolution: true } : {}) }), "OK", null));
 }
 
 /*******************************************************************************
@@ -1484,6 +1486,10 @@ function routePolicy(
     return { required: ["provider:manage"], any: false };
   if (path === "/api/execution-reviews" && route.method === "GET")
     return { required: ["execution:approve", "execution:reconcile"], any: true };
+  if (path.startsWith("/api/executions"))
+    if (path === "/api/executions/:id/report-page-resolutions") return route.method === "GET"
+      ? { required: ["workflow:read", "execution:read_own", "execution:reconcile"], any: true }
+      : { required: ["execution:reconcile"], any: false };
   if (path.startsWith("/api/executions"))
     if (path === "/api/executions/:id/readbacks" && route.method === "GET") return { required: ["workflow:read", "execution:read_own", "execution:reconcile"], any: true };
   if (path.startsWith("/api/executions"))

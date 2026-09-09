@@ -3,7 +3,7 @@ import { apiClient } from "../config/axios";
 import { getReviewInbox, validateReviewInbox } from "./execution-review.service";
 import { executionService } from "./execution.service";
 afterEach(() => jest.restoreAllMocks());
-const row = { executionId: "run/one", reviewId: "review-one", kind: "approval", requestedAt: "2026-10-06T10:00:00.000Z", state: "open", workflowName: "Manager report",
+const row = { executionId: "run/one", reviewId: "review-one", kind: "approval", reviewView: "approval", requestedAt: "2026-10-06T10:00:00.000Z", state: "open", workflowName: "Manager report",
   requesterName: "Requester", executionStatus: "AWAITING_APPROVAL", canResume: false, noReplay: true, nodeId: "send", toolName: "Send report",
   expiresAt: "2026-10-06T11:00:00.000Z", statusLabel: "Awaiting decision", reviewAvailable: true, actionable: true, detail: "Open the exact review." };
 const page = () => ({ profile: "execution-review-inbox/v1", kind: "all", state: "open", scopes: { approval: true, reconciliation: false },

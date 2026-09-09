@@ -9,11 +9,29 @@ import { recordOperationReconciliation } from "../../runner/operation-reconcilia
 import { operationReadbackHistory, operationReadbackQueue } from "../../runner/operation-readback-jobs.js";
 import { admitOperationRecovery, createOperationRecoveryArtifact, operationRecoveryArtifactView } from "../../runner/operation-recovery-artifacts.js";
 import { requestTraceId } from "../../trace/request-trace.js";
+import { reportPageResolutionView, resolveReportPage } from "../../runner/report-page-resolution.js";
 
 export const EXECUTION_CONTROL_UNHANDLED = Symbol("execution-control-unhandled");
 
 export async function handleExecutionControlRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const path = `${services.config.apiBasePath}/executions/:id`;
+  if (route.path === `${path}/report-page-resolutions` && route.method === "GET") {
+    if (Object.keys(request.query as Record<string, unknown>).length) throw new HandlerFailure(400, "Report-page resolution accepts no query overrides");
+    let view;
+    try { view = await services.repository.readAuthoritative(state => reportPageResolutionView(state, requestParam(request, "id"), user.id)); }
+    catch (error) {
+      try { services.repository.assertAuthority(); }
+      catch { throw new HandlerFailure(503, "Report-page resolution is unavailable until authoritative storage is recovered. No page evidence is confirmed."); }
+      throw error;
+    }
+    return reply.send(ok(view, "Exact uncertain report-page evidence; no page replay or effect authority", null));
+  }
+  if (route.path === `${path}/report-page-resolutions` && route.method === "POST") {
+    const result = await resolveReportPage(services.repository, requestParam(request, "id"), user, request.body);
+    return reply.status(result.resumeQueued ? 202 : 200).send(ok(result, result.resumeQueued ?
+      "Captured page validated; continuation queued without replaying the uncertain page" :
+      "Uncertain report occurrence abandoned; no page replay or effect dispatch", null));
+  }
   if (route.path === `${path}/recovery-artifacts/:artifactId/admit` && route.method === "POST") {
     const receipt = await admitOperationRecovery(services, requestParam(request, "id"), requestParam(request, "artifactId"), user, request.body, requestTraceId(request));
     return reply.status(202).send(ok(receipt, receipt.replayed ? "Existing separate recovery execution found; no additional run admitted" : "Separate recovery execution queued; fresh independent approval is required", null));

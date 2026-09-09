@@ -16,6 +16,7 @@ export function validateReviewInbox(value, params = {}) {
   for (const item of value.items) {
     const key = `${item.kind}:${item.executionId}:${item.reviewId}`;
     if (!bounded(item.executionId) || !bounded(item.reviewId) || !kinds.includes(item.kind) || kind !== "all" && item.kind !== kind || item.state !== state ||
+        !["approval", "reconciliation", "report-page"].includes(item.reviewView) || item.kind === "approval" !== (item.reviewView === "approval") ||
         !value.scopes[item.kind] || !bounded(item.workflowName, 200) || !bounded(item.requesterName, 200) || !bounded(item.toolName, 200) ||
         !bounded(item.executionStatus) || !bounded(item.statusLabel, 200) || !bounded(item.detail, 2000) || !validDate(item.requestedAt) ||
         item.expiresAt !== null && !validDate(item.expiresAt) || item.nodeId !== null && !bounded(item.nodeId) ||

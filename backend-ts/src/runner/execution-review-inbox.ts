@@ -5,6 +5,7 @@ import { HandlerFailure, type CurrentUser } from "../http/handlers/common.js";
 import type { RepositoryState } from "../repository/store.js";
 import { runtimeApprovalInboxAuthority, runtimeApprovalView } from "./runtime-approvals.js";
 import { hasOperationReconciliation, operationReconciliationView } from "./operation-reconciliation.js";
+import { hasReportPageResolution, reportPageResolutionView } from "./report-page-resolution.js";
 
 const kindSchema = z.enum(["approval", "reconciliation"]);
 const querySchema = z.object({ kind: kindSchema.or(z.literal("all")).default("all"), state: z.enum(["open", "closed"]).default("open"),
@@ -12,7 +13,7 @@ const querySchema = z.object({ kind: kindSchema.or(z.literal("all")).default("al
 const keySchema = z.object({ executionId: z.string().min(1).max(256), reviewId: z.string().min(1).max(256), kind: kindSchema, requestedAt: z.string().datetime() }).strict();
 const cursorSchema = z.object({ profile: z.literal("execution-review-cursor/v1"), scope: z.string().regex(/^sha256:[a-f0-9]{64}$/), after: keySchema }).strict();
 type Key = z.infer<typeof keySchema>;
-type Candidate = Key & { state: "open" | "closed" };
+type Candidate = Key & { state: "open" | "closed"; reviewView: "approval" | "reconciliation" | "report-page" };
 const compare = (a: Key, b: Key) => a.requestedAt !== b.requestedAt ? (a.requestedAt > b.requestedAt ? -1 : 1)
   : a.executionId !== b.executionId ? (a.executionId > b.executionId ? -1 : 1) : a.kind !== b.kind ? a.kind.localeCompare(b.kind)
     : a.reviewId === b.reviewId ? 0 : a.reviewId > b.reviewId ? -1 : 1;
@@ -57,14 +58,29 @@ export function executionReviewInbox(state: Readonly<RepositoryState>, user: Cur
       if (entries.length > 1000 || entries.length === 0) deny("The review index contains an unsupported approval journal; exact records need repair", 409);
       for (const [reviewId, record] of entries) {
         if (!keySchema.shape.reviewId.safeParse(reviewId).success) deny("The review index contains an invalid record identity", 409);
-        candidates.push({ executionId: execution.id, reviewId, kind: "approval", requestedAt: date(record?.requestedAt, fallback),
+        candidates.push({ executionId: execution.id, reviewId, kind: "approval", reviewView: "approval", requestedAt: date(record?.requestedAt, fallback),
           state: reviewId === ledger.activeId && record?.state === "PENDING" && execution.status === "AWAITING_APPROVAL" && execution.completedAt === null ? "open" : "closed" });
       }
     }
     if (scopes.reconciliation && query.kind !== "approval" && ["RECONCILIATION_REQUIRED", "RECONCILED"].includes(execution.status) && hasOperationReconciliation(execution)) {
       const intent = Object.values(execution.operationSecret!.intents).find(item => item.state === "UNKNOWN" && item.approvalId);
-      candidates.push({ executionId: execution.id, reviewId: intent!.id, kind: "reconciliation", requestedAt: date(intent?.preparedAt, fallback),
+      candidates.push({ executionId: execution.id, reviewId: intent!.id, kind: "reconciliation", reviewView: "reconciliation", requestedAt: date(intent?.preparedAt, fallback),
         state: execution.status === "RECONCILED" ? "closed" : "open" });
+    }
+    if (scopes.reconciliation && query.kind !== "approval" && hasReportPageResolution(execution)) {
+      const open = execution.status === "RECONCILIATION_REQUIRED" ? Object.values(execution.operationSecret?.intents ?? {})
+        .find(item => item.state === "UNKNOWN" && !item.approvalId && /:(?:page|cursor):\d+$/.test(item.operationKey)) : undefined;
+      if (open) candidates.push({ executionId: execution.id, reviewId: open.id, kind: "reconciliation", reviewView: "report-page",
+        requestedAt: date(open.preparedAt, fallback), state: "open" });
+      for (const raw of Object.values(execution.operationSecret?.reportPageResolutions ?? {})) {
+        const record = raw as { intentId?: unknown; recordedAt?: unknown };
+        if (typeof record.intentId !== "string" || !keySchema.shape.reviewId.safeParse(record.intentId).success ||
+            !z.string().datetime().safeParse(record.recordedAt).success) {
+          deny("The review index contains an unsupported report-page resolution journal; exact records need repair", 409);
+        }
+        candidates.push({ executionId: execution.id, reviewId: record.intentId, kind: "reconciliation", reviewView: "report-page",
+          requestedAt: record.recordedAt as string, state: "closed" });
+      }
     }
   }
   const matching = candidates.filter(item => item.state === query.state && (!after || compare(item, after) > 0)).sort(compare);
@@ -81,6 +97,13 @@ export function executionReviewInbox(state: Readonly<RepositoryState>, user: Cur
             : review.state === "REJECTED" ? "Rejected" : "Approved — not delivery confirmation",
           reviewAvailable: true, actionable: review.canDecide, detail: review.unavailable ? "Exact authorization or evidence changed. Open the current case before any decision." : (review.state === "PENDING"
             ? "Open the exact action and arguments before deciding." : "Approval is a decision, not proof that the tool succeeded or the recipient received it.") };
+      }
+      if (candidate.reviewView === "report-page") {
+        const review = reportPageResolutionView(state, execution.id, user.id, candidate.state === "closed" ? candidate.reviewId : undefined).reportPageResolution;
+        return { ...common, nodeId: review.nodeId, toolName: text(review.toolName, "Uncertain report page"), expiresAt: null,
+          statusLabel: review.state === "OPEN" ? "Report page outcome uncertain" : review.history.at(-1)?.outcome === "PAGE_CONFIRMED" ?
+            "Captured page accepted without replay" : "Occurrence abandoned without replay", reviewAvailable: true, actionable: review.canRecord,
+          detail: review.state === "OPEN" ? "Supply independently captured output for this exact page, or abandon the occurrence. The uncertain page cannot be resent." : review.explanation };
       }
       const review = operationReconciliationView(state, execution.id, user.id).operationReconciliation;
       const queryBacked = review.history.at(-1)?.basis === "queried-operation-state";

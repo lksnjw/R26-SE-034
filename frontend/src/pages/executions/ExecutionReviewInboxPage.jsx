@@ -48,7 +48,7 @@ function InboxContent({ user, authority, kind, state, onFilter }) {
       {data.items.length === 0 ? <section className="py-8"><h2 className="text-base font-semibold">{state === "open" ? "No review tasks on this page" : "No decision records on this page"}</h2>
         <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">Only exact runtime reviews available to your current role are included. Legacy waits and unsupported recovery profiles are not shown.</p></section> :
         <ul aria-label="Review tasks" className="divide-y divide-gray-200 dark:divide-gray-800">{data.items.map(item => <li key={`${item.kind}:${item.executionId}:${item.reviewId}`} className="grid gap-3 py-5 md:grid-cols-[minmax(0,1fr)_minmax(180px,260px)]">
-          <div className="min-w-0"><p className="text-xs font-medium text-gray-500 dark:text-gray-400">{item.kind === "approval" ? "Action approval" : "Uncertain outcome"}</p>
+          <div className="min-w-0"><p className="text-xs font-medium text-gray-500 dark:text-gray-400">{item.reviewView === "approval" ? "Action approval" : item.reviewView === "report-page" ? "Uncertain report page" : "Uncertain outcome"}</p>
             <h2 className="mt-1 break-words text-base font-semibold text-gray-950 dark:text-white">{item.workflowName}</h2>
             <p className="mt-1 break-words text-sm">{item.toolName}{item.nodeId ? <span className="text-gray-500 dark:text-gray-400"> · Node {item.nodeId}</span> : null}</p>
             <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">Requested by {item.requesterName} · <time dateTime={item.requestedAt}>{new Date(item.requestedAt).toLocaleString()}</time></p>
@@ -56,7 +56,7 @@ function InboxContent({ user, authority, kind, state, onFilter }) {
           </div>
           <div className="min-w-0"><p className="text-sm font-semibold">{item.statusLabel}</p><p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{item.detail}</p>
             <Link className="mt-3 inline-flex min-h-10 items-center text-sm font-semibold text-primary transition-colors hover:underline focus-visible:outline focus-visible:outline-2 dark:text-violet-300"
-              to={`/executions/${encodeURIComponent(item.executionId)}?view=${item.kind === "approval" ? `approval&approvalId=${encodeURIComponent(item.reviewId)}` : "reconciliation"}`}>{item.reviewAvailable ? state === "closed" ? "Inspect decision" : "Open exact review" : "Inspect review issue"}<span className="sr-only"> for {item.workflowName}</span></Link>
+              to={`/executions/${encodeURIComponent(item.executionId)}?view=${item.reviewView === "approval" ? `approval&approvalId=${encodeURIComponent(item.reviewId)}` : item.reviewView}`}>{item.reviewAvailable ? state === "closed" ? "Inspect decision" : "Open exact review" : "Inspect review issue"}<span className="sr-only"> for {item.workflowName}</span></Link>
           </div></li>)}</ul>}
       <nav aria-label="Review inbox pages" className="flex flex-wrap gap-3 border-t border-gray-200 pt-4 dark:border-gray-800">
         {previous.length ? <Button variant="secondary" disabled={query.isFetching} onClick={() => { setCursor(previous.at(-1)); setPrevious(previous.slice(0, -1)); }}>Previous page</Button> : null}

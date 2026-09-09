@@ -93,6 +93,16 @@ test("server-owned opaque cursor evidence advances without exposing raw continua
   expect(confirmScheduledReportCoverage({ tool, nodeId: "report", contractHash: capabilityContractHash(tool), args: { startAt: progress.startAt, endAt: progress.endAt },
     output: completed.output, startAt: progress.startAt, endAt: progress.endAt, pagination: completed.receiptPagination })).toMatchObject({ itemCount: 2,
       pagination: { profile: "report-cursor-evidence/v1", pageCount: 2, totalCount: 2, initialCursorHash: expect.stringMatching(/^sha256:/) } });
+  const resolved = structuredClone(completed.receiptPagination);
+  resolved.pages[1]!.resolution = { profile: "report-page-operator-evidence/v1", recordId: "resolution-1", actorId: "reviewer",
+    referenceHash: `sha256:${"b".repeat(64)}`, observedAt: "2026-10-07T00:00:00.000Z", recordedAt: "2026-10-07T00:00:01.000Z" };
+  expect(() => confirmScheduledReportCoverage({ tool, nodeId: "report", contractHash: capabilityContractHash(tool),
+    args: { startAt: progress.startAt, endAt: progress.endAt }, output: completed.output, startAt: progress.startAt, endAt: progress.endAt,
+    pagination: resolved })).not.toThrow();
+  resolved.pages[1]!.resolution!.actorId = "";
+  expect(() => confirmScheduledReportCoverage({ tool, nodeId: "report", contractHash: capabilityContractHash(tool),
+    args: { startAt: progress.startAt, endAt: progress.endAt }, output: completed.output, startAt: progress.startAt, endAt: progress.endAt,
+    pagination: resolved })).toThrow(/incomplete or inconsistent/i);
   const repeated = { structuredContent: { coveredStartAt: progress.startAt, coveredEndAt: progress.endAt, complete: false, hasMore: true,
     items: [{ id: "bad" }], itemCount: 1, cursor: "repeat", nextCursor: "repeat", snapshotId: "snapshot-report", totalAvailable: 2 } };
   expect(() => confirmScheduledReportCursor({ tool, args: { startAt: progress.startAt, endAt: progress.endAt, cursor: "repeat" }, output: repeated,

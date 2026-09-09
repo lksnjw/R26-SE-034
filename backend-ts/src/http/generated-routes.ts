@@ -794,6 +794,14 @@ export const routeTable = [
   },
   {
     "method": "GET",
+    "path": "/api/executions/:id/report-page-resolutions"
+  },
+  {
+    "method": "POST",
+    "path": "/api/executions/:id/report-page-resolutions"
+  },
+  {
+    "method": "GET",
     "path": "/api/workflows/:id/schedule"
   },
   {

@@ -25,6 +25,7 @@ routes.push({ method: "GET", path: "/api/executions/:id/readbacks" }, { method: 
   { method: "POST", path: "/api/executions/:id/readbacks/:queryId/cancel" });
 routes.push({ method: "GET", path: "/api/executions/:id/recovery-artifacts" }, { method: "POST", path: "/api/executions/:id/recovery-artifacts" });
 routes.push({ method: "POST", path: "/api/executions/:id/recovery-artifacts/:artifactId/admit" });
+routes.push({ method: "GET", path: "/api/executions/:id/report-page-resolutions" }, { method: "POST", path: "/api/executions/:id/report-page-resolutions" });
 routes.push({ method: "GET", path: "/api/workflows/:id/schedule" }, { method: "PUT", path: "/api/workflows/:id/schedule" });
 const content = `// Generated from frozen Go routes plus named product extensions. Do not hand-edit.\n` +
   `export const routeTable = ${JSON.stringify(routes, null, 2)} as const;\n` +

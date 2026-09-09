@@ -1,6 +1,7 @@
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import ExecutionApprovalReviewPage from "./ExecutionApprovalReviewPage";
 import ExecutionReconciliationPage from "./ExecutionReconciliationPage";
+import ExecutionReportPageResolutionPage from "./ExecutionReportPageResolutionPage";
 import ExecutionStatus from "../../components/executions/ExecutionStatus";
 import PendingApprovalCard from "../../components/executions/PendingApprovalCard";
 import ExecutionOutputPanel from "../../components/executions/ExecutionOutputPanel";
@@ -27,6 +28,7 @@ function ExecutionDetailPage() {
   const { executionId } = useParams();
   const [query] = useSearchParams();
   const { hasAny } = usePermissions();
+  if (query.get("view") === "report-page") return <ExecutionReportPageResolutionPage executionId={executionId} />;
   if (query.get("view") === "reconciliation") return <ExecutionReconciliationPage executionId={executionId} />;
   if (query.get("view") === "approval") return <ExecutionApprovalReviewPage executionId={executionId} approvalId={query.get("approvalId") || undefined} />;
   if (!hasAny(["workflow:read", "execution:read_own"]) && hasAny(["execution:reconcile"])) return <Navigate replace to={`/executions/${encodeURIComponent(executionId)}?view=reconciliation`} />;

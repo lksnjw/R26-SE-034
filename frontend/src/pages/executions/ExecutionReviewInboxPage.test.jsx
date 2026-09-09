@@ -10,7 +10,7 @@ jest.unstable_mockModule("../../services/execution-review.service", () => ({ get
 const { default: Page } = await import("./ExecutionReviewInboxPage");
 const clients = [];
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()); getReviewInbox.mockReset(); user = { id: "operator", roleId: "review-role", permissions: ["execution:approve", "execution:reconcile"] }; });
-const item = { executionId: "run/one", reviewId: "review-one", kind: "approval", requestedAt: "2026-10-06T10:00:00.000Z", state: "open", workflowName: "Daily manager report",
+const item = { executionId: "run/one", reviewId: "review-one", kind: "approval", reviewView: "approval", requestedAt: "2026-10-06T10:00:00.000Z", state: "open", workflowName: "Daily manager report",
   requesterName: "Requester", executionStatus: "AWAITING_APPROVAL", canResume: false, noReplay: true, nodeId: "send", toolName: "Send report",
   expiresAt: "2026-10-06T11:00:00.000Z", statusLabel: "Awaiting decision", reviewAvailable: true, actionable: true, detail: "Open the exact action and arguments before deciding." };
 const data = (params, items = [item], extra = {}) => ({ profile: "execution-review-inbox/v1", kind: params.kind, state: params.state,
@@ -21,11 +21,12 @@ function show(path = "/executions/reviews", client = new QueryClient({ defaultOp
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><Context /><Page /></MemoryRouter></QueryClientProvider>);
 }
 test("readable tasks link only to exact minimum review; the inbox has no decision, resume or resend controls", async () => {
-  getReviewInbox.mockImplementation(async params => data(params, [item, { ...item, executionId: "uncertain", kind: "reconciliation", toolName: "Send invoice", expiresAt: null, statusLabel: "Outcome uncertain" }]));
+  getReviewInbox.mockImplementation(async params => data(params, [item, { ...item, executionId: "uncertain", kind: "reconciliation", reviewView: "reconciliation", toolName: "Send invoice", expiresAt: null, statusLabel: "Outcome uncertain" },
+    { ...item, executionId: "report-page", kind: "reconciliation", reviewView: "report-page", toolName: "Invoice report", expiresAt: null, statusLabel: "Report page outcome uncertain" }]));
   const view = show();
   await screen.findByRole("list", { name: "Review tasks" });
-  expect(screen.getAllByRole("heading", { name: "Daily manager report" })).toHaveLength(2);
-  const links = screen.getAllByRole("link"); expect(links.map(link => link.getAttribute("href"))).toEqual(["/executions/run%2Fone?view=approval&approvalId=review-one", "/executions/uncertain?view=reconciliation"]);
+  expect(screen.getAllByRole("heading", { name: "Daily manager report" })).toHaveLength(3);
+  const links = screen.getAllByRole("link"); expect(links.map(link => link.getAttribute("href"))).toEqual(["/executions/run%2Fone?view=approval&approvalId=review-one", "/executions/uncertain?view=reconciliation", "/executions/report-page?view=report-page"]);
   expect(screen.queryByRole("button", { name: /approve|reject|resume|resend/i })).toBeNull(); expect(view.container.querySelector("pre")).toBeNull();
   expect(screen.getByText("This list cannot approve, execute, resume or resend an action.")).toBeTruthy();
 });

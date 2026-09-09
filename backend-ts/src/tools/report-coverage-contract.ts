@@ -5,9 +5,10 @@ import type { ToolDefinition } from "../registry/schemas.js";
 type JsonSchema = { type?: unknown; properties?: Record<string, JsonSchema>; required?: unknown; items?: unknown; writeOnly?: unknown; maxItems?: unknown };
 type CoverageContract = NonNullable<ToolDefinition["report_coverage_contract"]>;
 
-export type ReportPageEvidence = { page: number; argumentHash: string; outputHash: string; snapshotHash: string; itemCount: number; totalCount: number; hasMore: boolean; confirmedAt: string };
+export type ReportOperatorResolution = { profile: "report-page-operator-evidence/v1"; recordId: string; actorId: string; referenceHash: string; observedAt: string; recordedAt: string };
+export type ReportPageEvidence = { page: number; argumentHash: string; outputHash: string; snapshotHash: string; itemCount: number; totalCount: number; hasMore: boolean; confirmedAt: string; resolution?: ReportOperatorResolution };
 export type ReportCursorEvidence = { ordinal: number; cursorHash: string; nextCursorHash: string; argumentHash: string; outputHash: string; snapshotHash: string;
-  itemCount: number; totalCount: number; hasMore: boolean; confirmedAt: string };
+  itemCount: number; totalCount: number; hasMore: boolean; confirmedAt: string; resolution?: ReportOperatorResolution };
 export type ReportPageReceipt = { profile: "report-page-evidence/v1"; firstPage: number; lastPage: number; pageCount: number; totalCount: number; snapshotHash: string;
   pages: ReportPageEvidence[] };
 export type ReportCursorReceipt = { profile: "report-cursor-evidence/v1"; pageCount: number; totalCount: number; snapshotHash: string; initialCursorHash: string;
@@ -31,6 +32,18 @@ export type ReportPageProgress = { profile: "schedule-report-pages/v1"; nodeId: 
 export type ReportCursorProgress = { profile: "schedule-report-cursors/v1"; nodeId: string; toolId: string; contractHash: string; startAt: string; endAt: string;
   initialCursor: string; nextCursor: string; maxPages: number; items: unknown[]; pages: ReportCursorEvidence[]; snapshotValue?: string; totalCount?: number; lastOutput?: Record<string, unknown> };
 export type ReportPaginationProgress = ReportPageProgress | ReportCursorProgress;
+
+function validResolution(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>, keys = ["profile", "recordId", "actorId", "referenceHash", "observedAt", "recordedAt"];
+  return Object.keys(record).length === keys.length && Object.keys(record).every(key => keys.includes(key)) &&
+    record.profile === "report-page-operator-evidence/v1" && typeof record.recordId === "string" && record.recordId.length > 0 && record.recordId.length <= 256 &&
+    typeof record.actorId === "string" && record.actorId.length > 0 && record.actorId.length <= 256 &&
+    typeof record.referenceHash === "string" && /^sha256:[a-f0-9]{64}$/.test(record.referenceHash) &&
+    typeof record.observedAt === "string" && Number.isFinite(Date.parse(record.observedAt)) &&
+    typeof record.recordedAt === "string" && Number.isFinite(Date.parse(record.recordedAt)) && Date.parse(record.observedAt) <= Date.parse(record.recordedAt) + 30_000;
+}
 
 function schemaAt(root: unknown, path: readonly string[]): JsonSchema | undefined {
   let value = root as JsonSchema | undefined;
@@ -129,7 +142,7 @@ export function confirmScheduledReportCoverage(input: { tool: ToolDefinition; no
         !/^sha256:[a-f0-9]{64}$/.test(input.pagination.snapshotHash) ||
         valueAt(input.output.structuredContent, configured.snapshot_path) !== input.pagination.snapshotHash ||
         input.pagination.totalCount !== result.itemCount || valueAt(input.output.structuredContent, configured.total_count_path) !== input.pagination.totalCount ||
-        input.pagination.pageCount !== pages.length || pages.some(page => page.itemCount < 0 ||
+        input.pagination.pageCount !== pages.length || pages.some(page => page.itemCount < 0 || !validResolution(page.resolution) ||
           page.snapshotHash !== input.pagination!.snapshotHash || page.totalCount !== input.pagination!.totalCount ||
           !/^sha256:[a-f0-9]{64}$/.test(page.argumentHash) || !/^sha256:[a-f0-9]{64}$/.test(page.outputHash) || !Number.isFinite(Date.parse(page.confirmedAt))) ||
         pages.reduce((sum, page) => sum + page.itemCount, 0) !== result.itemCount;
@@ -174,7 +187,7 @@ export function assertReportPageProgress(tool: ToolDefinition, progress: ReportP
   if (!pagination || pagination.profile !== "page-number/v1" || progress.profile !== "schedule-report-pages/v1" || progress.toolId !== tool.tool_id || progress.firstPage !== pagination.first_page ||
       progress.maxPages !== pagination.max_pages || pages.length >= pagination.max_pages || progress.nextPage !== pagination.first_page + pages.length ||
       progress.items.length > pagination.max_items || canonicalJSONBytes(progress.items).length > 2_000_000 ||
-      pages.some((page, index) => page.page !== pagination.first_page + index || page.hasMore !== true || page.itemCount < 0 ||
+      pages.some((page, index) => page.page !== pagination.first_page + index || page.hasMore !== true || page.itemCount < 0 || !validResolution(page.resolution) ||
         page.snapshotHash !== (progress.snapshotValue === undefined ? "" : resolvedParameterHashBytes(canonicalJSONBytes(progress.snapshotValue))) ||
         page.totalCount !== progress.totalCount ||
         !/^sha256:[a-f0-9]{64}$/.test(page.argumentHash) || !/^sha256:[a-f0-9]{64}$/.test(page.outputHash) || !Number.isFinite(Date.parse(page.confirmedAt))) ||
@@ -221,7 +234,7 @@ export function assertReportCursorProgress(tool: ToolDefinition, progress: Repor
   if (!pagination || pagination.profile !== "opaque-cursor/v1" || progress.profile !== "schedule-report-cursors/v1" || progress.toolId !== tool.tool_id ||
       progress.initialCursor !== pagination.initial_cursor || progress.maxPages !== pagination.max_pages || pages.length >= pagination.max_pages ||
       Buffer.byteLength(progress.nextCursor) > 2_048 || progress.items.length > pagination.max_items || canonicalJSONBytes(progress.items).length > 2_000_000 ||
-      pages.some((page, index) => page.ordinal !== index + 1 || page.hasMore !== true || page.itemCount < 0 || page.snapshotHash !== snapshotHash ||
+      pages.some((page, index) => page.ordinal !== index + 1 || page.hasMore !== true || page.itemCount < 0 || !validResolution(page.resolution) || page.snapshotHash !== snapshotHash ||
         page.totalCount !== progress.totalCount || page.cursorHash !== (index === 0 ? initialCursorHash : pages[index - 1]!.nextCursorHash) ||
         !/^sha256:[a-f0-9]{64}$/.test(page.nextCursorHash) || !/^sha256:[a-f0-9]{64}$/.test(page.argumentHash) ||
         !/^sha256:[a-f0-9]{64}$/.test(page.outputHash) || !Number.isFinite(Date.parse(page.confirmedAt))) ||
