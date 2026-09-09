@@ -60,11 +60,6 @@ export function RouteProvider({ children }) {
   // directly-typed forbidden URL must still be denied explicitly.
   useEffect(() => {
     if (location.pathname !== "/") return;
-/*******************************************************************************
- * Function: dashboard
- *
- * Performs the dashboard operation on the application for the RouteContext module.
- ******************************************************************************/
     const landing = NAVIGATION_GROUPS.find((group) => group.id === DEFAULT_ROUTE.main);
     if (!landing?.requiredAny?.length || hasAny(landing.requiredAny)) return;
     const permitted = filterNavigationGroups(NAVIGATION_GROUPS, hasAny, roleId)[0]?.subMenu?.[0]?.path;

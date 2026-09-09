@@ -24,7 +24,6 @@ import { features } from "./features";
  * Performs the lazy Route Components operation on route components for the router module.
  ******************************************************************************/
 export const lazyRouteComponents = {
-  DashboardPage: lazy(() => import("../pages/dashboard/DashboardPage")),
   CompanyPage: lazy(() => import("../pages/company/CompanyPage")),
   WorkflowListPage: lazy(() => import("../pages/workflows/WorkflowListPage")),
   WorkflowBuilderPage: lazy(() => import("../pages/workflows/WorkflowBuilderPage")),
@@ -64,7 +63,6 @@ const C = lazyRouteComponents;
 
 const allProtectedRouteDefinitions = [
   { id: "chat.home", path: "/", Component: C.ChatPage, requiredAny: [PERMISSIONS.CHAT_USE, PERMISSIONS.WORKFLOW_WRITE], feature: "chat" },
-  { id: "dashboard.activity", path: "/activity", Component: C.DashboardPage, requiredAny: [PERMISSIONS.WORKFLOW_READ], componentProps: { view: "activity" }, feature: "dashboard" },
   { id: "company.overview", path: "/company", Component: C.CompanyPage, requiredAny: [], feature: "company" },
   { id: "workflows.list", path: "/workflows", Component: C.WorkflowListPage, requiredAny: [PERMISSIONS.WORKFLOW_READ, PERMISSIONS.WORKFLOW_READ_OWN], feature: "workflows" },
   { id: "workflows.builder", path: "/builder", Component: C.WorkflowBuilderPage, requiredAny: [PERMISSIONS.WORKFLOW_WRITE], feature: "workflows" },

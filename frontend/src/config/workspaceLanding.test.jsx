@@ -7,6 +7,8 @@ import { workspaceKey, workspaceReturnPath, writeWorkspaceValue } from "../utils
 
 test("authenticated landing is chat, not dashboard", () => {
   expect(protectedRouteDefinitions.find((route) => route.path === "/").Component).toBe(lazyRouteComponents.ChatPage);
+  expect(protectedRouteDefinitions.some((route) => route.path === "/activity" || route.id.startsWith("dashboard."))).toBe(false);
+  expect(Object.hasOwn(lazyRouteComponents, "DashboardPage")).toBe(false);
   expect(DEFAULT_ROUTE).toEqual({ main: "chat", sub: "home" });
   expect(NAVIGATION_GROUPS.some((group) => group.id === "dashboard")).toBe(false);
 });

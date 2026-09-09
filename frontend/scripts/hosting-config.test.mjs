@@ -33,7 +33,7 @@ test("RE2-compatible rewrite allowlist supports Windows and URL paths, not priva
   for (const path of ["/", "/chat", "/chat/session", "/settings/providers", "/profile/security", "/login"]) {
     assert.equal(pattern.test(path), true); assert.equal(pattern.test(path.replaceAll("/", "\\")), true);
   }
-  for (const path of ["/api", "/api/missing", "/ws", "/assets/missing.js", "/.env", "/.git/config", "/chatty", "/a-missing-screen"]) {
+  for (const path of ["/api", "/api/missing", "/ws", "/assets/missing.js", "/.env", "/.git/config", "/activity", "/chatty", "/a-missing-screen"]) {
     assert.equal(pattern.test(path), false); assert.equal(pattern.test(path.replaceAll("/", "\\")), false);
   }
 });

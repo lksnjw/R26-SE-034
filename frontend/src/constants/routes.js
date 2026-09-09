@@ -1,7 +1,6 @@
 import { features } from "../config/features";
 
 export const ROUTES = {
-  dashboard: "/dashboard",
   workflows: "/workflows",
   workflowBuilder: "/workflows/builder",
   chat: "/chat",

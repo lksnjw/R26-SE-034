@@ -14,7 +14,7 @@ for (const path of ["/chat", "/chat/saved-chat", "/workflows/saved-workflow", "/
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.match(response.headers.get("content-security-policy"), /connect-src 'self'.*http:\/\/127\.0\.0\.1:8081/);
 }
-for (const path of ["/api", "/api/missing", "/api/pipeline/v1/jobs/nope", "/ws", "/ws/events", "/assets/missing.js", "/src/config/app.js", "/node_modules/package", "/.env", "/.env.hosting.local", "/.git/config", "/a-missing-screen"]) {
+for (const path of ["/api", "/api/missing", "/api/pipeline/v1/jobs/nope", "/ws", "/ws/events", "/assets/missing.js", "/src/config/app.js", "/node_modules/package", "/.env", "/.env.hosting.local", "/.git/config", "/activity", "/a-missing-screen"]) {
   const response = await request(path);
   assert.equal(response.status, 404, `Private/API path ${path} must not return the SPA`);
   assert.notEqual(await response.text(), shell);
@@ -28,4 +28,4 @@ assert.ok(asset);
 const response = await request(`/${asset.path}`);
 assert.equal(response.status, 200); assert.match(response.headers.get("cache-control"), /immutable/);
 assert.equal((await response.arrayBuffer()).byteLength, asset.bytes);
-console.log("Actual Firebase Hosting emulator passed: 10 deep links, 12 API/private/unknown misses, 3 write-method misses, immutable asset, CSP and revalidation headers. No backend/ERP effects dispatched.");
+console.log("Actual Firebase Hosting emulator passed: 10 deep links, 13 API/private/removed/unknown misses, 3 write-method misses, immutable asset, CSP and revalidation headers. No backend/ERP effects dispatched.");
