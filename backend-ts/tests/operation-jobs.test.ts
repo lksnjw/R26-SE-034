@@ -36,20 +36,21 @@ class Records implements PersistenceBackend {
   async saveExecutionCheckpoint(checkpoint: ExecutionCheckpoint) { await this.save(Buffer.from(JSON.stringify(applyExecutionCheckpoint(JSON.parse(this.bytes!.toString()), checkpoint)))); }
   async probe() {} async close() {}
 }
-async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false) {
+async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false, withReportPagination = false) {
   const repository = await Repository.open(storage), registries = await RegistryService.load(resolve("tests/fixtures/tools.json"), resolve("tests/fixtures/rules.json"));
   const base = registries.snapshot(), original = base.tools[0]!;
   const read = toolSchema.parse({ ...original, allowed_roles: ["Platform Admin"], bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [],
     output_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false } } });
   const reportRead = toolSchema.parse({ ...read, tool_id: "report-coverage-fixture", name: "demo.report", mcp_tool_name: "demo.report",
-    input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" } }, required: ["startAt", "endAt"], additionalProperties: false },
+    input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, ...(withReportPagination ? { page: { type: "integer" } } : {}) }, required: ["startAt", "endAt"], additionalProperties: false },
     report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
-      covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"] },
+      covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
+      ...(withReportPagination ? { pagination: { profile: "page-number/v1", page_parameter: "page", page_path: ["page"], first_page: 1, max_pages: 4, max_items: 100 } } : {}) },
     bridge_contract: { ...read.bridge_contract, resource_digest: "e".repeat(64), output_schema: { type: "object", properties: {
       coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
-      items: { type: "array", items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
-      itemCount: { type: "integer" }, summary: { type: "string" } },
-      required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary"], additionalProperties: false } } });
+      items: { type: "array", ...(withReportPagination ? { maxItems: 100 } : {}), items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
+      itemCount: { type: "integer" }, summary: { type: "string" }, ...(withReportPagination ? { page: { type: "integer" } } : {}) },
+      required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary", ...(withReportPagination ? ["page"] : [])], additionalProperties: false } } });
   const write = toolSchema.parse({ ...read, tool_id: "operation-fixture", name: "demo.dispatch", mcp_tool_name: "demo.dispatch", is_read_only: false, risk_level: "low", side_effects: ["Synthetic message acceptance"],
     operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
     bridge_contract: { ...read.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
@@ -78,8 +79,9 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   const sdk = { metadataComplete: true, connect: vi.fn(async () => {}), close: vi.fn(async () => {}), listTools: vi.fn(async () => tools.map(tool => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), outputSchema: tool.bridge_contract!.output_schema!,
     _meta: { "toolplane.resourceDigest": tool.bridge_contract!.resource_digest, "toolplane.resourceVersion": "1.0.0", "io.erpbridge/allowedRoles": [] } }))),
     callTool: vi.fn(async (name: string, args: Record<string, unknown>, _meta?: Record<string, unknown>): Promise<unknown> => name === exactBridgeName(read) ? { content: [], structuredContent: { value: String(args.value).toUpperCase() } } :
-      name === exactBridgeName(reportRead) ? { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: true, hasMore: false,
-        items: [{ id: "invoice-1" }], itemCount: 1, summary: "1 invoice" } } :
+      name === exactBridgeName(reportRead) ? (() => { const page = withReportPagination ? Number(args.page) : 1, hasMore = withReportPagination && page < 3;
+        return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: !hasMore, hasMore,
+          items: [{ id: `invoice-${page}` }], itemCount: 1, summary: `${page} invoice page`, ...(withReportPagination ? { page } : {}) } }; })() :
       readback && name === exactBridgeName(readback) ? { content: [], structuredContent: { value: args.value, state: "ABSENT", settled: true, observedAt: new Date().toISOString() } } :
       { content: [], structuredContent: { accepted: true, id: "fixture-message" } }) };
   const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: sdk,
@@ -119,13 +121,13 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
 
 const scheduleReportWindowBinding = { profile: "workflow-report-window-input-binding/v1" as const,
   startAtInput: "reportStartAt", endAtInput: "reportEndAt" };
-async function prepareScheduleWorkflow(s: Awaited<ReturnType<typeof setup>>) {
+async function prepareScheduleWorkflow(s: Awaited<ReturnType<typeof setup>>, page?: number) {
   await s.repository.mutate(state => {
     const workflow = state.workflows.flow!;
     workflow.yaml = stringify({ name: workflow.name, description: "Scheduled report fixture", trigger: { type: "manual", config: { inputSchema: {
       type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" }, unusedWindow: { type: "string" }, count: { type: "number" } },
       required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
-      { id: "lookupReport", action: s.reportRead.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
+      { id: "lookupReport", action: s.reportRead.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", ...(page === undefined ? {} : { page }) } },
       { id: "send", action: s.write.name, parameters: { value: "{{lookupReport.structuredContent.summary}}" } },
     ] });
     workflow.steps = 2;
@@ -332,6 +334,93 @@ test("changed report coverage evidence after approval request blocks the effect 
   expect((await s.repository.snapshot()).executions[executionId]!.operationSecret!.intents.send).toBeUndefined();
 });
 
+test("server-owned bounded report pagination aggregates every exact page before approval", async () => {
+  const s = await setup(null, true, false, false, true); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string, reportWindow = reportWindowFor("UTC", scheduledFor, "previous-calendar-day");
+  await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string;
+  await s.wait(executionId, "AWAITING_APPROVAL");
+  expect(s.sdk.callTool.mock.calls.map(call => call[1])).toEqual([1, 2, 3].map(page => ({ startAt: reportWindow.startAt, endAt: reportWindow.endAt, page })));
+  const run = (await s.repository.snapshot()).executions[executionId]!;
+  expect(run.stepOutputs!.lookupReport).toMatchObject({ structuredContent: { complete: true, hasMore: false, page: 3, itemCount: 3,
+    items: [{ id: "invoice-1" }, { id: "invoice-2" }, { id: "invoice-3" }] } });
+  expect(run.reportCoverage).toMatchObject({ itemCount: 3, pagination: { profile: "report-page-evidence/v1", firstPage: 1, lastPage: 3, pageCount: 3,
+    pages: [{ page: 1, hasMore: true }, { page: 2, hasMore: true }, { page: 3, hasMore: false }] } });
+  expect(Object.keys(run.operationSecret!.intents)).toEqual(["lookupReport:page:1", "lookupReport:page:2", "lookupReport:page:3"]);
+  expect(run.reportPageSecret).toBeUndefined();
+  const approved = await s.request("POST", `/api/executions/${executionId}/approve`, await s.command(executionId), "reviewer");
+  expect(approved.statusCode, approved.body).toBe(200); await s.wait(executionId, "DONE");
+  expect(s.sdk.callTool.mock.calls.at(-1)![0]).toBe(exactBridgeName(s.write));
+});
+
+test("confirmed report pages resume after committed checkpoint acknowledgement loss without replay", async () => {
+  const storage = new Records(), s = await setup(storage, true, false, false, true); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string;
+  storage.loseWhen = state => Object.values(state.executions).some(run => run.reportPageSecret?.lookupReport?.pages.length === 1 &&
+    run.readProgress?.attempts.lookupReport?.status === "PREPARING");
+  await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  await vi.waitFor(() => expect(() => s.repository.assertAuthority()).toThrow(), { timeout: 4000 });
+  const committed = JSON.parse(storage.bytes!.toString()) as RepositoryState, interrupted = Object.values(committed.executions).find(run => run.scheduleSource)!;
+  expect(interrupted.reportPageSecret!.lookupReport).toMatchObject({ nextPage: 2, pages: [{ page: 1, hasMore: true }] });
+  expect(withoutSecretFields(interrupted)).not.toHaveProperty("reportPageSecret");
+  expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead)).map(call => call[1].page)).toEqual([1]);
+  await s.app.close(); const repository = await Repository.open(storage), validator = new RegistryValidator(s.services.registries, repository), authorize = admissionAuthorizer(repository, s.services.registries);
+  const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: s.sdk,
+    admissionAuthorizer: authorize });
+  const services = { ...s.services, repository, validator, erpbridgeSession: session, executor: new Executor(new ToolRegistry(), validator) };
+  const operations = operationJobQueue(services); closers.push({ close: () => operations.stop() }, session, repository); await operations.start();
+  await vi.waitFor(async () => expect((await repository.snapshot()).executions[interrupted.id]?.status).toBe("AWAITING_APPROVAL"), { timeout: 5000 });
+  const resumed = (await repository.snapshot()).executions[interrupted.id]!;
+  expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead)).map(call => call[1].page)).toEqual([1, 2, 3]);
+  expect(resumed.reportCoverage).toMatchObject({ itemCount: 3, pagination: { pageCount: 3, lastPage: 3 } });
+  expect(resumed.reportPageSecret).toBeUndefined();
+});
+
+test("pagination that never exhausts its reviewed bound fails without approval or effect", async () => {
+  const s = await setup(null, true, false, false, true); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  s.sdk.callTool.mockImplementation(async (name, args) => name === exactBridgeName(s.reportRead) ? { content: [], structuredContent: {
+    coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: false, hasMore: true, items: [{ id: `partial-${args.page}` }], itemCount: 1,
+    summary: "Still partial", page: args.page } } : { content: [], structuredContent: { accepted: true, id: "must-not-dispatch" } });
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string; await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string; await s.wait(executionId, "FAILED");
+  const run = (await s.repository.snapshot()).executions[executionId]!;
+  expect(run.failure).toMatchObject({ failureCategory: "REPORT_COVERAGE_UNCONFIRMED", failedStepId: "lookupReport" });
+  expect(run.runtimeApprovalSecret).toBeUndefined(); expect(run.operationSecret!.intents.send).toBeUndefined();
+  expect(s.sdk.callTool.mock.calls.map(call => call[1].page)).toEqual([1, 2, 3, 4]);
+});
+
+test("an uncertain report page is never automatically replayed", async () => {
+  const s = await setup(null, true, false, false, true); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const original = s.sdk.callTool.getMockImplementation()!;
+  s.sdk.callTool.mockImplementation(async (name, args, meta) => {
+    if (name === exactBridgeName(s.reportRead) && args.page === 2) throw new Error("Synthetic page-two transport outcome unknown");
+    return original(name, args, meta);
+  });
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string; await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string; await s.wait(executionId, "RECONCILIATION_REQUIRED");
+  const before = s.sdk.callTool.mock.calls.length, run = (await s.repository.snapshot()).executions[executionId]!;
+  expect(run.operationSecret!.intents["lookupReport:page:2"]).toMatchObject({ state: "UNKNOWN" }); expect(run.reportCoverage).toBeUndefined();
+  expect((await s.request("POST", `/api/executions/${executionId}/retry`, { input: {} })).statusCode).toBe(409); expect(s.sdk.callTool).toHaveBeenCalledTimes(before);
+});
+
 test.each([
   ["2026-03-09T13:00:00.000Z", "2026-03-08", "2026-03-08T05:00:00.000Z", "2026-03-09T04:00:00.000Z", 23],
   ["2026-11-02T14:00:00.000Z", "2026-11-01", "2026-11-01T04:00:00.000Z", "2026-11-02T05:00:00.000Z", 25],
@@ -370,6 +459,19 @@ test("schedule activation rejects invented timezones, stale publications and una
   const legacy = await s.request("PATCH", "/api/workflows/flow", { trigger: { type: "schedule", config: { cron: "0 9 * * *" } } });
   expect(legacy.statusCode, legacy.body).toBe(422); expect(legacy.body).toContain("LEGACY_SCHEDULE_TRIGGER_REJECTED");
   expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(Object.keys((await s.repository.snapshot()).schedules)).toHaveLength(0);
+});
+
+test("schedule activation rejects a workflow-authored report page", async () => {
+  const s = await setup(null, true, false, false, true); await prepareScheduleWorkflow(s, 2);
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, response = await s.request("PUT", "/api/workflows/flow/schedule", {
+    profile: "workflow-daily-schedule-command/v1", baseRevision: 0, workflowVersion: workflow.publishedVersion,
+    workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding,
+  });
+  expect(response.statusCode, response.body).toBe(422); expect(response.body).toContain("SCHEDULE_REPORT_COVERAGE_REQUIRED");
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
 });
 
 test("an exact-revision pause remains available after publication and service-principal drift", async () => {

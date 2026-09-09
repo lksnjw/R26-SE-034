@@ -38,6 +38,8 @@ function inspectSchema(schema: unknown, path: string, errors: string[]): void {
   }
   if (type === "array") {
     if (schema.items === undefined) errors.push(`${path}.items: is required for arrays`); else inspectSchema(schema.items, `${path}.items`, errors);
+    if (schema.maxItems !== undefined && (!Number.isInteger(schema.maxItems) || Number(schema.maxItems) < 0 || Number(schema.maxItems) > 100_000))
+      errors.push(`${path}.maxItems: must be an integer from 0 to 100000`);
   }
 }
 
@@ -55,6 +57,7 @@ function inspectValue(schema: Record<string, unknown>, value: unknown, path: str
   if (type === "integer") { if (typeof value !== "number" || !Number.isInteger(value)) errors.push(`${path}: expected integer`); return; }
   if (type === "array") {
     if (!Array.isArray(value)) { errors.push(`${path}: expected array`); return; }
+    if (Number.isInteger(schema.maxItems) && value.length > Number(schema.maxItems)) errors.push(`${path}: exceeds maxItems ${schema.maxItems}`);
     value.forEach((item, index) => inspectValue(schema.items as Record<string, unknown>, item, `${path}[${index}]`, errors));
     return;
   }

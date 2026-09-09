@@ -2,7 +2,7 @@ import { validateSchema, validateValue } from "../structured-output/validate.js"
 
 // Explicit, bounded phase-0 JSON Schema profile. Unknown constraints block
 // dispatch rather than silently passing through a partial validator.
-const allowed = new Set(["type", "properties", "required", "additionalProperties", "items", "$schema", "title", "description", "default", "examples", "deprecated", "readOnly", "writeOnly"]);
+const allowed = new Set(["type", "properties", "required", "additionalProperties", "items", "maxItems", "$schema", "title", "description", "default", "examples", "deprecated", "readOnly", "writeOnly"]);
 export function validateToolSchemaProfile(schema: unknown): string[] {
   let nodes = 0;
   const errors: string[] = [];
@@ -13,6 +13,7 @@ export function validateToolSchemaProfile(schema: unknown): string[] {
     if (Object.keys(record).some((key) => !allowed.has(key))) errors.push("Tool schema contains unsupported constraints");
     if (("properties" in record || "required" in record || "additionalProperties" in record) && record.type !== "object") errors.push("Object constraints require object type");
     if ("items" in record && record.type !== "array") errors.push("Items require array type");
+    if ("maxItems" in record && (record.type !== "array" || !Number.isInteger(record.maxItems) || Number(record.maxItems) < 0 || Number(record.maxItems) > 100_000)) errors.push("maxItems requires an array and an integer from 0 to 100000");
     if ("additionalProperties" in record && typeof record.additionalProperties !== "boolean") errors.push("Schema-valued additionalProperties is not supported");
     if (record.properties !== null && typeof record.properties === "object" && !Array.isArray(record.properties)) {
       const children = Object.values(record.properties);

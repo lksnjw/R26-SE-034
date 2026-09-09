@@ -141,7 +141,9 @@ function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<
     if (!tool?.report_coverage_contract) return false;
     try {
       const parameters = reportCoverageParameters(tool)!;
-      return directlyBindsParameter(node.inputs, parameters.start, binding.startAtInput) && directlyBindsParameter(node.inputs, parameters.end, binding.endAtInput);
+      const pageParameter = tool.report_coverage_contract?.pagination?.page_parameter;
+      return directlyBindsParameter(node.inputs, parameters.start, binding.startAtInput) && directlyBindsParameter(node.inputs, parameters.end, binding.endAtInput) &&
+        (!pageParameter || node.inputs.kind === "object" && !Object.hasOwn(node.inputs.fields, pageParameter));
     } catch { return false; }
   });
   if (coverage.length !== 1) throw new HandlerFailure(422, "An active schedule requires exactly one reviewed report read that directly binds both exact window inputs and declares complete-result evidence", { code: "SCHEDULE_REPORT_COVERAGE_REQUIRED" });

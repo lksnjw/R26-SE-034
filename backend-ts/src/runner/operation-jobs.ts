@@ -19,7 +19,8 @@ import { hasReservedBridgeRole } from "../tools/erpbridge-contract.js";
 import { assertConsumedRuntimeApproval, consumeRuntimeApproval, requestRuntimeApproval, runtimeApprovalPolicyHash } from "./runtime-approvals.js";
 import type { OperationIntent } from "./operation-state.js";
 import type { ToolDefinition } from "../registry/schemas.js";
-import { assertScheduledReportCoverageReceipt, confirmScheduledReportCoverage, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
+import { assertReportPageProgress, assertScheduledReportCoverageReceipt, completePaginatedReport, confirmScheduledReportCoverage, confirmScheduledReportPage,
+  newReportPageProgress, reportPagination, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -52,10 +53,18 @@ function finish(state: RepositoryState, run: Execution, status: string, summary:
 function recover(state: RepositoryState, run: Execution, reason: string) {
   if (run.operationSecret?.state !== "CLAIMED" || run.status !== "RUNNING") return;
   const progress = run.readProgress!, attempt = Object.values(progress.attempts).findLast(item => ["PREPARING", "DISPATCH_INTENT"].includes(item.status));
+  const resumablePages = attempt?.status === "PREPARING" ? run.reportPageSecret?.[attempt.nodeId] : undefined;
+  const pageInFlight = attempt && Object.values(run.operationSecret.intents).some(intent => intent.nodeId === attempt.nodeId && intent.state === "DISPATCH_INTENT");
+  if (attempt && resumablePages && !pageInFlight) {
+    progress.epoch++; progress.recoveryReason = reason; run.status = "PENDING"; run.agentSummary = "Confirmed report pages were saved. The next bounded page is queued; no uncertain page is replayed.";
+    run.operationSecret.state = "QUEUED"; delete run.operationSecret.lease;
+    appendExecutionEvent(state, run, "node.report_pages_requeued", { nextPage: resumablePages.nextPage, confirmedPages: resumablePages.pages.length, reason }, attempt.nodeId, attempt.id);
+    audit(state, run, "operation.report_pages_requeued"); return;
+  }
   const uncertain = attempt?.status === "DISPATCH_INTENT";
   if (attempt) {
     attempt.status = uncertain ? "UNKNOWN" : "FAILED"; attempt.completedAt = new Date().toISOString();
-    const intent = run.operationSecret.intents[attempt.nodeId]; if (intent) intent.state = "UNKNOWN";
+    const intent = Object.values(run.operationSecret.intents).findLast(value => value.nodeId === attempt.nodeId && value.state === "DISPATCH_INTENT"); if (intent) intent.state = "UNKNOWN";
     const entry = state.timelines[run.id]?.find(item => item.attemptId === attempt.id);
     if (entry) { entry.status = uncertain ? "UNKNOWN" : "FAILED"; entry.outcome = uncertain ? "UNKNOWN" : "NOT_DISPATCHED"; entry.completedAt = attempt.completedAt; }
     appendExecutionEvent(state, run, uncertain ? "node.outcome_unknown" : "node.interrupted", { outcome: uncertain ? "UNKNOWN" : "NOT_DISPATCHED", reason }, attempt.nodeId, attempt.id);
@@ -216,7 +225,7 @@ export class OperationJobQueue {
   }
   private async process(control: Active) {
     const { services } = this, repository = services.repository, id = control.id;
-    let knownCoverageFailure: { nodeId: string; intentId: string; output: Record<string, unknown>; message: string } | undefined;
+    let knownCoverageFailure: { nodeId: string; intentKey: string; intentId: string; output: Record<string, unknown>; message: string } | undefined;
     try {
       const initial = await repository.mutateExecution(id, state => {
         const run = state.executions[id]!, job = run.operationSecret!;
@@ -264,6 +273,81 @@ export class OperationJobQueue {
           const identity = createDispatchIdentity(actor, services.config.erpbridgeRoleMap);
           if (Object.hasOwn(args, "role") || !identity.erpbridgeRole || !tool.bridge_contract?.remote_roles.includes(identity.erpbridgeRole))
             throw new Error("Operation requires a current reviewed mapped ERPBridge role");
+        }
+        const pagination = node.effectClass === "read" && initial.scheduleSource ? reportPagination(tool) : null;
+        if (pagination) {
+          if (Object.hasOwn(args, pagination.page_parameter)) throw new Error("Workflow-authored report page values are not allowed");
+          let pageDone = false;
+          while (!pageDone) {
+            assertContext();
+            const pageState = await repository.mutateExecution(id, state => {
+              this.assert(control); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!;
+              if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || run.reportCoverage) throw new Error("Report pagination pointer changed");
+              const existing = run.reportPageSecret?.[node.id];
+              const progress = existing ?? newReportPageProgress(tool, node.id, node.capability.contractHash,
+                initial.scheduleSource!.reportWindow.startAt, initial.scheduleSource!.reportWindow.endAt);
+              if (progress.nodeId !== node.id || progress.toolId !== tool.tool_id || progress.contractHash !== node.capability.contractHash ||
+                  progress.startAt !== initial.scheduleSource!.reportWindow.startAt || progress.endAt !== initial.scheduleSource!.reportWindow.endAt ||
+                  progress.maxPages !== pagination.max_pages)
+                throw new Error("Report pagination evidence is inconsistent or exhausted");
+              assertReportPageProgress(tool, progress);
+              (run.reportPageSecret ??= {})[node.id] = progress;
+              return { page: progress.nextPage, items: structuredClone(progress.items), pages: structuredClone(progress.pages) };
+            });
+            const page = pageState.page, pageArgs = { ...structuredClone(args), [pagination.page_parameter]: page };
+            if (validateToolInput(tool.input_schema, pageArgs).length) throw new Error("Server-derived report page arguments are invalid");
+            const pageIssues = validateToolArguments(node.capability.action, pageArgs, tool);
+            if (pageIssues.missing.length || pageIssues.invalid.length) throw new Error("Server-derived report page arguments failed runtime validation");
+            const intentKey = `${node.id}:page:${page}`, pageIntentId = `intent-${randomBytes(16).toString("hex")}`;
+            const persistPageIntent = async () => { await repository.mutateExecution(id, state => {
+              assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, progress = run.reportPageSecret?.[node.id];
+              const fresh = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
+              if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || !progress || progress.nextPage !== page ||
+                  run.operationSecret!.intents[intentKey]) throw new Error("Report page intent facts changed or are already used");
+              const now = new Date().toISOString(), intent: OperationIntent = { id: pageIntentId, nodeId: node.id, invocationId: `${attempt.id}:page:${page}`,
+                operationKey: `${id}:${node.id}:page:${page}`, argumentHash: digest(pageArgs), state: "DISPATCH_INTENT", preparedAt: now };
+              run.operationSecret!.intents[intentKey] = intent; attempt.status = "DISPATCH_INTENT"; attempt.dispatchIntentAt = now;
+              const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!; entry.status = "RUNNING"; entry.phase = `PAGE_${page}_DISPATCH_INTENT`;
+              appendExecutionEvent(state, run, "node.report_page_dispatch_intent", { intentId: pageIntentId, page }, node.id, attempt.id); audit(state, run, "operation.report_page_dispatch_intent");
+            }); };
+            const pageOutput = await dispatchReadTool(services, actor.id, node.capability.action, pageArgs, { workflowId: initial.workflowId, executionId: id,
+              signal: control.controller.signal, assertDispatch: assertContext, beforeDispatch: persistPageIntent,
+              plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } });
+            let confirmed;
+            try {
+              confirmed = confirmScheduledReportPage({ tool, args: pageArgs, output: pageOutput, startAt: initial.scheduleSource!.reportWindow.startAt,
+                endAt: initial.scheduleSource!.reportWindow.endAt, page });
+              const candidateItems = [...pageState.items, ...confirmed.items];
+              if (candidateItems.length > pagination.max_items || canonicalJSONBytes(candidateItems).length > 2_000_000 || confirmed.hasMore && pageState.pages.length + 1 >= pagination.max_pages)
+                throw new Error("Paginated report exceeded its reviewed page, item or byte bound before completeness");
+            } catch (error) {
+              knownCoverageFailure = { nodeId: node.id, intentKey, intentId: pageIntentId, output: structuredClone(pageOutput),
+                message: error instanceof Error ? error.message : "Scheduled report page coverage is unconfirmed" }; throw error;
+            }
+            await repository.mutateExecution(id, state => {
+              assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, intent = run.operationSecret!.intents[intentKey], progress = run.reportPageSecret?.[node.id];
+              if (attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== pageIntentId || intent.state !== "DISPATCH_INTENT" || !progress || progress.nextPage !== page)
+                throw new Error("Report page result does not own the current intent");
+              const now = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = now; progress.pages.push(confirmed.evidence);
+              progress.items.push(...structuredClone(confirmed.items)); progress.lastOutput = structuredClone(pageOutput); progress.nextPage++;
+              const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
+              appendExecutionEvent(state, run, "node.report_page_completed", { intentId: pageIntentId, page, itemCount: confirmed.items.length, hasMore: confirmed.hasMore }, node.id, attempt.id);
+              if (confirmed.hasMore) {
+                attempt.status = "PREPARING"; entry.phase = `PAGE_${progress.nextPage}_PREPARING`; audit(state, run, "operation.report_page_acknowledged"); return;
+              }
+              const completed = completePaginatedReport(tool, progress);
+              const receipt = confirmScheduledReportCoverage({ tool, nodeId: node.id, contractHash: node.capability.contractHash, args,
+                output: completed.output, startAt: initial.scheduleSource!.reportWindow.startAt, endAt: initial.scheduleSource!.reportWindow.endAt,
+                pagination: completed.receiptPagination, confirmedAt: now });
+              attempt.status = "DONE"; attempt.completedAt = now; run.stepOutputs![node.id] = completed.output; run.reportCoverage = receipt; run.readProgress!.nextStepIndex++;
+              delete run.reportPageSecret![node.id]; if (!Object.keys(run.reportPageSecret!).length) delete run.reportPageSecret;
+              Object.assign(entry, { status: "DONE", phase: "COMPLETE", outcome: "REPORT_COVERAGE_CONFIRMED", completedAt: now,
+                durationMs: Math.max(0, Date.parse(now) - Date.parse(attempt.startedAt)), output: withoutSecretFields(completed.output) });
+              appendExecutionEvent(state, run, "node.completed", { intentId: pageIntentId, outcome: "REPORT_COVERAGE_CONFIRMED", pageCount: receipt.pagination!.pageCount }, node.id, attempt.id);
+              audit(state, run, "operation.report_pages_completed"); pageDone = true;
+            });
+          }
+          continue;
         }
         const pending = await repository.readAuthoritative(state => state.executions[id]!.runtimeApprovalSecret);
         if (node.effectClass !== "read" && initial.scheduleSource)
@@ -316,7 +400,7 @@ export class OperationJobQueue {
             coverageReceipt = confirmScheduledReportCoverage({ tool, nodeId: node.id, contractHash: node.capability.contractHash, args, output,
               startAt: initial.scheduleSource.reportWindow.startAt, endAt: initial.scheduleSource.reportWindow.endAt });
           } catch (error) {
-            knownCoverageFailure = { nodeId: node.id, intentId, output: structuredClone(output), message: error instanceof Error ? error.message : "Scheduled report coverage is unconfirmed" };
+            knownCoverageFailure = { nodeId: node.id, intentKey: node.id, intentId, output: structuredClone(output), message: error instanceof Error ? error.message : "Scheduled report coverage is unconfirmed" };
             throw error;
           }
         }
@@ -344,7 +428,7 @@ export class OperationJobQueue {
         const run = state.executions[id];
         if (!run || run.operationSecret?.lease?.id !== control.leaseId || run.status !== "RUNNING") return;
         if (knownCoverageFailure) {
-          const failure = knownCoverageFailure, attempt = run.readProgress!.attempts[failure.nodeId], intent = run.operationSecret.intents[failure.nodeId];
+          const failure = knownCoverageFailure, attempt = run.readProgress!.attempts[failure.nodeId], intent = run.operationSecret.intents[failure.intentKey];
           if (!attempt || attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== failure.intentId || intent.state !== "DISPATCH_INTENT")
             throw new Error("Known report coverage failure no longer owns the current intent");
           const completedAt = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = completedAt;
