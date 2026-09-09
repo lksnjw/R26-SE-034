@@ -64,6 +64,7 @@ export const toolSchema = z.object({
       profile: z.literal("page-number/v1"),
       page_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
       page_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+      snapshot_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
       first_page: z.number().int().min(0).max(1),
       max_pages: z.number().int().min(1).max(100),
       max_items: z.number().int().min(1).max(100_000),
@@ -72,7 +73,7 @@ export const toolSchema = z.object({
     .refine(value => value.start_parameter !== value.end_parameter, "Report coverage parameters must be distinct")
     .refine(value => !value.pagination || ![value.start_parameter, value.end_parameter].includes(value.pagination.page_parameter), "Report page parameter must be distinct from report-window parameters")
     .refine(value => new Set([value.covered_start_path, value.covered_end_path, value.complete_path, value.has_more_path, value.items_path, value.item_count_path]
-      .concat(value.pagination ? [value.pagination.page_path] : []).map(path => path.join("\u0000"))).size === (value.pagination ? 7 : 6), "Report coverage selectors must be distinct").optional(),
+      .concat(value.pagination ? [value.pagination.page_path, value.pagination.snapshot_path] : []).map(path => path.join("\u0000"))).size === (value.pagination ? 8 : 6), "Report coverage selectors must be distinct").optional(),
   required_parameters: z.array(z.string()).default([]),
   optional_parameters: z.array(z.string()).default([]),
   allowed_roles: z.array(z.string()).default([]),

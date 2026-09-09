@@ -39,26 +39,29 @@ test("runtime confirmation binds exact interval, completion, exhaustion, items a
 test("server-owned bounded page evidence aggregates only a contiguous exhausted sequence", () => {
   const base = fixture(), tool = toolSchema.parse({ ...base,
     input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, page: { type: "integer" } }, required: ["startAt", "endAt"], additionalProperties: false },
-    report_coverage_contract: { ...base.report_coverage_contract!, pagination: { profile: "page-number/v1", page_parameter: "page", page_path: ["page"], first_page: 1, max_pages: 3, max_items: 10 } },
+    report_coverage_contract: { ...base.report_coverage_contract!, pagination: { profile: "page-number/v1", page_parameter: "page", page_path: ["page"], snapshot_path: ["snapshotId"], first_page: 1, max_pages: 3, max_items: 10 } },
     bridge_contract: { ...base.bridge_contract!, output_schema: { ...base.bridge_contract!.output_schema!, properties: { ...(base.bridge_contract!.output_schema as any).properties,
-      items: { type: "array", maxItems: 10, items: { type: "object" } }, page: { type: "integer" } },
-      required: [...((base.bridge_contract!.output_schema as any).required as string[]), "page"] } } });
+      items: { type: "array", maxItems: 10, items: { type: "object" } }, page: { type: "integer" }, snapshotId: { type: "string" } },
+      required: [...((base.bridge_contract!.output_schema as any).required as string[]), "page", "snapshotId"] } } });
   expect(() => assertReportCoverageContract(tool)).not.toThrow();
   const requiredPage = structuredClone(tool); (requiredPage.input_schema.required as string[]).push("page");
   expect(() => assertReportCoverageContract(requiredPage)).toThrow(/pagination|page/i);
   const undersizedItems = structuredClone(tool); ((undersizedItems.bridge_contract!.output_schema as any).properties.items as any).maxItems = 9;
   expect(() => assertReportCoverageContract(undersizedItems)).toThrow(/pagination|items output/i);
+  const missingSnapshot = structuredClone(tool); ((missingSnapshot.bridge_contract!.output_schema as any).properties.snapshotId as any).type = "number";
+  expect(() => assertReportCoverageContract(missingSnapshot)).toThrow(/snapshot|pagination/i);
   const startAt = "2026-10-06T00:00:00.000Z", endAt = "2026-10-07T00:00:00.000Z", progress = newReportPageProgress(tool, "report", capabilityContractHash(tool), startAt, endAt);
   for (const page of [1, 2]) {
     const hasMore = page === 1, args = { startAt, endAt, page }, output = { structuredContent: { coveredStartAt: startAt, coveredEndAt: endAt,
-      complete: !hasMore, hasMore, items: [{ id: `item-${page}` }], itemCount: 1, page } };
+      complete: !hasMore, hasMore, items: [{ id: `item-${page}` }], itemCount: 1, page, snapshotId: "snapshot-report" } };
     const confirmed = confirmScheduledReportPage({ tool, args, output, startAt, endAt, page, confirmedAt: `2026-10-07T00:00:0${page}.000Z` });
-    progress.pages.push(confirmed.evidence); progress.items.push(...confirmed.items); progress.lastOutput = output; progress.nextPage++;
+    progress.snapshotValue ??= confirmed.snapshotValue; progress.pages.push(confirmed.evidence); progress.items.push(...confirmed.items); progress.lastOutput = output; progress.nextPage++;
   }
   const completed = completePaginatedReport(tool, progress);
   expect(completed.output.structuredContent).toMatchObject({ complete: true, hasMore: false, itemCount: 2, page: 2, items: [{ id: "item-1" }, { id: "item-2" }] });
   expect(confirmScheduledReportCoverage({ tool, nodeId: "report", contractHash: capabilityContractHash(tool), args: { startAt, endAt }, output: completed.output,
-    startAt, endAt, pagination: completed.receiptPagination })).toMatchObject({ itemCount: 2, pagination: { firstPage: 1, lastPage: 2, pageCount: 2 } });
+    startAt, endAt, pagination: completed.receiptPagination })).toMatchObject({ itemCount: 2,
+      pagination: { firstPage: 1, lastPage: 2, pageCount: 2, snapshotHash: expect.stringMatching(/^sha256:/) } });
   const gap = structuredClone(completed.receiptPagination); gap.pages[1]!.page = 3;
   expect(() => confirmScheduledReportCoverage({ tool, nodeId: "report", contractHash: capabilityContractHash(tool), args: { startAt, endAt }, output: completed.output,
     startAt, endAt, pagination: gap })).toThrow(/incomplete or inconsistent/i);

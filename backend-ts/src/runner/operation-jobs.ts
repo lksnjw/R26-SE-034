@@ -20,7 +20,7 @@ import { assertConsumedRuntimeApproval, consumeRuntimeApproval, requestRuntimeAp
 import type { OperationIntent } from "./operation-state.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { assertReportPageProgress, assertScheduledReportCoverageReceipt, completePaginatedReport, confirmScheduledReportCoverage, confirmScheduledReportPage,
-  newReportPageProgress, reportPagination, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
+  newReportPageProgress, protectedReportPageOutput, reportPagination, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -292,7 +292,7 @@ export class OperationJobQueue {
                 throw new Error("Report pagination evidence is inconsistent or exhausted");
               assertReportPageProgress(tool, progress);
               (run.reportPageSecret ??= {})[node.id] = progress;
-              return { page: progress.nextPage, items: structuredClone(progress.items), pages: structuredClone(progress.pages) };
+              return { page: progress.nextPage, items: structuredClone(progress.items), pages: structuredClone(progress.pages), snapshotValue: progress.snapshotValue };
             });
             const page = pageState.page, pageArgs = { ...structuredClone(args), [pagination.page_parameter]: page };
             if (validateToolInput(tool.input_schema, pageArgs).length) throw new Error("Server-derived report page arguments are invalid");
@@ -318,18 +318,21 @@ export class OperationJobQueue {
               confirmed = confirmScheduledReportPage({ tool, args: pageArgs, output: pageOutput, startAt: initial.scheduleSource!.reportWindow.startAt,
                 endAt: initial.scheduleSource!.reportWindow.endAt, page });
               const candidateItems = [...pageState.items, ...confirmed.items];
+              if (pageState.snapshotValue !== undefined && confirmed.snapshotValue !== pageState.snapshotValue)
+                throw new Error("Paginated report changed its stable snapshot between pages");
               if (candidateItems.length > pagination.max_items || canonicalJSONBytes(candidateItems).length > 2_000_000 || confirmed.hasMore && pageState.pages.length + 1 >= pagination.max_pages)
                 throw new Error("Paginated report exceeded its reviewed page, item or byte bound before completeness");
             } catch (error) {
-              knownCoverageFailure = { nodeId: node.id, intentKey, intentId: pageIntentId, output: structuredClone(pageOutput),
+              knownCoverageFailure = { nodeId: node.id, intentKey, intentId: pageIntentId, output: protectedReportPageOutput(tool, pageOutput),
                 message: error instanceof Error ? error.message : "Scheduled report page coverage is unconfirmed" }; throw error;
             }
             await repository.mutateExecution(id, state => {
               assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, intent = run.operationSecret!.intents[intentKey], progress = run.reportPageSecret?.[node.id];
               if (attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== pageIntentId || intent.state !== "DISPATCH_INTENT" || !progress || progress.nextPage !== page)
                 throw new Error("Report page result does not own the current intent");
+              if (progress.snapshotValue !== undefined && progress.snapshotValue !== confirmed.snapshotValue) throw new Error("Report snapshot changed before checkpoint");
               const now = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = now; progress.pages.push(confirmed.evidence);
-              progress.items.push(...structuredClone(confirmed.items)); progress.lastOutput = structuredClone(pageOutput); progress.nextPage++;
+              progress.snapshotValue ??= confirmed.snapshotValue; progress.items.push(...structuredClone(confirmed.items)); progress.lastOutput = structuredClone(pageOutput); progress.nextPage++;
               const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
               appendExecutionEvent(state, run, "node.report_page_completed", { intentId: pageIntentId, page, itemCount: confirmed.items.length, hasMore: confirmed.hasMore }, node.id, attempt.id);
               if (confirmed.hasMore) {

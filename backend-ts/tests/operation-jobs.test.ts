@@ -45,12 +45,12 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, ...(withReportPagination ? { page: { type: "integer" } } : {}) }, required: ["startAt", "endAt"], additionalProperties: false },
     report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
       covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
-      ...(withReportPagination ? { pagination: { profile: "page-number/v1", page_parameter: "page", page_path: ["page"], first_page: 1, max_pages: 4, max_items: 100 } } : {}) },
+      ...(withReportPagination ? { pagination: { profile: "page-number/v1", page_parameter: "page", page_path: ["page"], snapshot_path: ["snapshotId"], first_page: 1, max_pages: 4, max_items: 100 } } : {}) },
     bridge_contract: { ...read.bridge_contract, resource_digest: "e".repeat(64), output_schema: { type: "object", properties: {
       coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
       items: { type: "array", ...(withReportPagination ? { maxItems: 100 } : {}), items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
-      itemCount: { type: "integer" }, summary: { type: "string" }, ...(withReportPagination ? { page: { type: "integer" } } : {}) },
-      required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary", ...(withReportPagination ? ["page"] : [])], additionalProperties: false } } });
+      itemCount: { type: "integer" }, summary: { type: "string" }, ...(withReportPagination ? { page: { type: "integer" }, snapshotId: { type: "string" } } : {}) },
+      required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary", ...(withReportPagination ? ["page", "snapshotId"] : [])], additionalProperties: false } } });
   const write = toolSchema.parse({ ...read, tool_id: "operation-fixture", name: "demo.dispatch", mcp_tool_name: "demo.dispatch", is_read_only: false, risk_level: "low", side_effects: ["Synthetic message acceptance"],
     operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
     bridge_contract: { ...read.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
@@ -81,7 +81,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     callTool: vi.fn(async (name: string, args: Record<string, unknown>, _meta?: Record<string, unknown>): Promise<unknown> => name === exactBridgeName(read) ? { content: [], structuredContent: { value: String(args.value).toUpperCase() } } :
       name === exactBridgeName(reportRead) ? (() => { const page = withReportPagination ? Number(args.page) : 1, hasMore = withReportPagination && page < 3;
         return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: !hasMore, hasMore,
-          items: [{ id: `invoice-${page}` }], itemCount: 1, summary: `${page} invoice page`, ...(withReportPagination ? { page } : {}) } }; })() :
+          items: [{ id: `invoice-${page}` }], itemCount: 1, summary: `${page} invoice page`, ...(withReportPagination ? { page, snapshotId: "snapshot-daily-invoices" } : {}) } }; })() :
       readback && name === exactBridgeName(readback) ? { content: [], structuredContent: { value: args.value, state: "ABSENT", settled: true, observedAt: new Date().toISOString() } } :
       { content: [], structuredContent: { accepted: true, id: "fixture-message" } }) };
   const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: sdk,
@@ -349,6 +349,8 @@ test("server-owned bounded report pagination aggregates every exact page before 
   const run = (await s.repository.snapshot()).executions[executionId]!;
   expect(run.stepOutputs!.lookupReport).toMatchObject({ structuredContent: { complete: true, hasMore: false, page: 3, itemCount: 3,
     items: [{ id: "invoice-1" }, { id: "invoice-2" }, { id: "invoice-3" }] } });
+  expect((run.stepOutputs!.lookupReport as any).structuredContent.snapshotId).toMatch(/^sha256:[a-f0-9]{64}$/);
+  expect(JSON.stringify(run)).not.toContain("snapshot-daily-invoices");
   expect(run.reportCoverage).toMatchObject({ itemCount: 3, pagination: { profile: "report-page-evidence/v1", firstPage: 1, lastPage: 3, pageCount: 3,
     pages: [{ page: 1, hasMore: true }, { page: 2, hasMore: true }, { page: 3, hasMore: false }] } });
   expect(Object.keys(run.operationSecret!.intents)).toEqual(["lookupReport:page:1", "lookupReport:page:2", "lookupReport:page:3"]);
@@ -386,11 +388,32 @@ test("confirmed report pages resume after committed checkpoint acknowledgement l
   expect(resumed.reportPageSecret).toBeUndefined();
 });
 
+test("a changed ERP snapshot marker between report pages fails before approval or effect", async () => {
+  const s = await setup(null, true, false, false, true); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const original = s.sdk.callTool.getMockImplementation()!;
+  s.sdk.callTool.mockImplementation(async (name, args, meta) => {
+    const output = await original(name, args, meta) as any;
+    if (name === exactBridgeName(s.reportRead) && args.page === 2) output.structuredContent.snapshotId = "changed-erp-snapshot";
+    return output;
+  });
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string; await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string; await s.wait(executionId, "FAILED");
+  const run = (await s.repository.snapshot()).executions[executionId]!;
+  expect(run.failure).toMatchObject({ failureCategory: "REPORT_COVERAGE_UNCONFIRMED", failedStepId: "lookupReport", reason: expect.stringMatching(/stable snapshot/i) });
+  expect(run.agentSummary).toMatch(/No approval was requested and no effect was dispatched/i); expect(run.runtimeApprovalSecret).toBeUndefined(); expect(run.operationSecret!.intents.send).toBeUndefined();
+  expect(JSON.stringify(run.stepOutputs)).not.toMatch(/snapshot-daily-invoices|changed-erp-snapshot/);
+  expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead)).map(call => call[1].page)).toEqual([1, 2]);
+});
+
 test("pagination that never exhausts its reviewed bound fails without approval or effect", async () => {
   const s = await setup(null, true, false, false, true); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
   s.sdk.callTool.mockImplementation(async (name, args) => name === exactBridgeName(s.reportRead) ? { content: [], structuredContent: {
     coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: false, hasMore: true, items: [{ id: `partial-${args.page}` }], itemCount: 1,
-    summary: "Still partial", page: args.page } } : { content: [], structuredContent: { accepted: true, id: "must-not-dispatch" } });
+    summary: "Still partial", page: args.page, snapshotId: "snapshot-daily-invoices" } } : { content: [], structuredContent: { accepted: true, id: "must-not-dispatch" } });
   const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
   const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
     workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
