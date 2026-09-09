@@ -65,7 +65,7 @@ export type Execution = {
   reportCoverage?: import("../tools/report-coverage-contract.js").ReportCoverageReceipt;
   /** Private durable page accumulator, normalized separately while a bounded
    * server-owned report pagination node is in progress. */
-  reportPageSecret?: Record<string, import("../tools/report-coverage-contract.js").ReportPageProgress>;
+  reportPageSecret?: Record<string, import("../tools/report-coverage-contract.js").ReportPaginationProgress>;
 };
 
 export type EmailDeliveryAdmission = {

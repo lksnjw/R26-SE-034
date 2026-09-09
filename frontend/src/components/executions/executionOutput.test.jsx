@@ -80,6 +80,17 @@ test("scheduled report coverage is explained without exposing raw receipt JSON",
   expect(coverage.textContent).toMatch(/does not approve or prove delivery/i); expect(coverage.querySelector("pre")).toBeNull();
 });
 
+test("cursor report coverage explains protected continuation without exposing cursor evidence", () => {
+  render(<ExecutionOutputPanel execution={{ ...doneExecution, reportCoverage: { profile: "schedule-report-coverage/v1", nodeId: "invoiceReport", itemCount: 3,
+    startAt: "2026-10-06T00:00:00.000Z", endAt: "2026-10-07T00:00:00.000Z", confirmedAt: "2026-10-07T09:00:01.000Z",
+    pagination: { profile: "report-cursor-evidence/v1", pageCount: 3, totalCount: 3, snapshotHash: `sha256:${"a".repeat(64)}`,
+      initialCursorHash: `sha256:${"b".repeat(64)}`, pages: [{ cursorHash: "private-looking-hash" }] } } }} />);
+  const coverage = screen.getByRole("region", { name: "Scheduled report coverage" });
+  expect(coverage.textContent).toMatch(/Pages confirmed3 · protected cursor continuation/);
+  expect(coverage.textContent).toMatch(/Declared report total3/); expect(coverage.textContent).not.toMatch(/private-looking-hash/);
+  expect(coverage.querySelector("pre")).toBeNull();
+});
+
 test("a FAILED execution still renders the partial output it produced", () => {
   render(<ExecutionOutputPanel execution={failedExecution} />);
 

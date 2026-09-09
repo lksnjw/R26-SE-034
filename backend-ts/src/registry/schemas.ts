@@ -60,21 +60,36 @@ export const toolSchema = z.object({
     has_more_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
     items_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
     item_count_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
-    pagination: z.object({
-      profile: z.literal("page-number/v1"),
-      page_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
-      page_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
-      snapshot_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
-      total_count_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
-      first_page: z.number().int().min(0).max(1),
-      max_pages: z.number().int().min(1).max(100),
-      max_items: z.number().int().min(1).max(100_000),
-    }).strict().optional(),
+    pagination: z.discriminatedUnion("profile", [
+      z.object({
+        profile: z.literal("page-number/v1"),
+        page_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+        page_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+        snapshot_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+        total_count_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+        first_page: z.number().int().min(0).max(1),
+        max_pages: z.number().int().min(1).max(100),
+        max_items: z.number().int().min(1).max(100_000),
+      }).strict(),
+      z.object({
+        profile: z.literal("opaque-cursor/v1"),
+        cursor_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+        cursor_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+        next_cursor_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+        snapshot_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+        total_count_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+        initial_cursor: z.string().max(2_048),
+        max_pages: z.number().int().min(1).max(100),
+        max_items: z.number().int().min(1).max(100_000),
+      }).strict(),
+    ]).optional(),
   }).strict()
     .refine(value => value.start_parameter !== value.end_parameter, "Report coverage parameters must be distinct")
-    .refine(value => !value.pagination || ![value.start_parameter, value.end_parameter].includes(value.pagination.page_parameter), "Report page parameter must be distinct from report-window parameters")
+    .refine(value => !value.pagination || ![value.start_parameter, value.end_parameter].includes(value.pagination.profile === "page-number/v1" ? value.pagination.page_parameter : value.pagination.cursor_parameter), "Report pagination parameter must be distinct from report-window parameters")
     .refine(value => new Set([value.covered_start_path, value.covered_end_path, value.complete_path, value.has_more_path, value.items_path, value.item_count_path]
-      .concat(value.pagination ? [value.pagination.page_path, value.pagination.snapshot_path, value.pagination.total_count_path] : []).map(path => path.join("\u0000"))).size === (value.pagination ? 9 : 6), "Report coverage selectors must be distinct").optional(),
+      .concat(value.pagination ? value.pagination.profile === "page-number/v1" ? [value.pagination.page_path, value.pagination.snapshot_path, value.pagination.total_count_path] :
+        [value.pagination.cursor_path, value.pagination.next_cursor_path, value.pagination.snapshot_path, value.pagination.total_count_path] : [])
+      .map(path => path.join("\u0000"))).size === (value.pagination ? value.pagination.profile === "page-number/v1" ? 9 : 10 : 6), "Report coverage selectors must be distinct").optional(),
   required_parameters: z.array(z.string()).default([]),
   optional_parameters: z.array(z.string()).default([]),
   allowed_roles: z.array(z.string()).default([]),

@@ -36,21 +36,27 @@ class Records implements PersistenceBackend {
   async saveExecutionCheckpoint(checkpoint: ExecutionCheckpoint) { await this.save(Buffer.from(JSON.stringify(applyExecutionCheckpoint(JSON.parse(this.bytes!.toString()), checkpoint)))); }
   async probe() {} async close() {}
 }
-async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false, withReportPagination = false) {
+async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false, withReportPagination: boolean | "cursor" = false) {
   const repository = await Repository.open(storage), registries = await RegistryService.load(resolve("tests/fixtures/tools.json"), resolve("tests/fixtures/rules.json"));
+  const pageNumberPagination = withReportPagination === true, cursorPagination = withReportPagination === "cursor", paginated = pageNumberPagination || cursorPagination;
   const base = registries.snapshot(), original = base.tools[0]!;
   const read = toolSchema.parse({ ...original, allowed_roles: ["Platform Admin"], bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [],
     output_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false } } });
   const reportRead = toolSchema.parse({ ...read, tool_id: "report-coverage-fixture", name: "demo.report", mcp_tool_name: "demo.report",
-    input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, ...(withReportPagination ? { page: { type: "integer" } } : {}) }, required: ["startAt", "endAt"], additionalProperties: false },
+    input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, ...(pageNumberPagination ? { page: { type: "integer" } } : {}),
+      ...(cursorPagination ? { cursor: { type: "string" } } : {}) }, required: ["startAt", "endAt"], additionalProperties: false },
     report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
       covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
-      ...(withReportPagination ? { pagination: { profile: "page-number/v1", page_parameter: "page", page_path: ["page"], snapshot_path: ["snapshotId"], total_count_path: ["totalAvailable"], first_page: 1, max_pages: 4, max_items: 100 } } : {}) },
+      ...(pageNumberPagination ? { pagination: { profile: "page-number/v1", page_parameter: "page", page_path: ["page"], snapshot_path: ["snapshotId"], total_count_path: ["totalAvailable"], first_page: 1, max_pages: 4, max_items: 100 } } : {}),
+      ...(cursorPagination ? { pagination: { profile: "opaque-cursor/v1", cursor_parameter: "cursor", cursor_path: ["cursor"], next_cursor_path: ["nextCursor"],
+        snapshot_path: ["snapshotId"], total_count_path: ["totalAvailable"], initial_cursor: "", max_pages: 4, max_items: 100 } } : {}) },
     bridge_contract: { ...read.bridge_contract, resource_digest: "e".repeat(64), output_schema: { type: "object", properties: {
       coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
-      items: { type: "array", ...(withReportPagination ? { maxItems: 100 } : {}), items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
-      itemCount: { type: "integer" }, summary: { type: "string" }, ...(withReportPagination ? { page: { type: "integer" }, snapshotId: { type: "string" }, totalAvailable: { type: "integer" } } : {}) },
-      required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary", ...(withReportPagination ? ["page", "snapshotId", "totalAvailable"] : [])], additionalProperties: false } } });
+      items: { type: "array", ...(paginated ? { maxItems: 100 } : {}), items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
+      itemCount: { type: "integer" }, summary: { type: "string" }, ...(pageNumberPagination ? { page: { type: "integer" }, snapshotId: { type: "string" }, totalAvailable: { type: "integer" } } : {}),
+      ...(cursorPagination ? { cursor: { type: "string" }, nextCursor: { type: "string" }, snapshotId: { type: "string" }, totalAvailable: { type: "integer" } } : {}) },
+      required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary", ...(pageNumberPagination ? ["page", "snapshotId", "totalAvailable"] : []),
+        ...(cursorPagination ? ["cursor", "nextCursor", "snapshotId", "totalAvailable"] : [])], additionalProperties: false } } });
   const write = toolSchema.parse({ ...read, tool_id: "operation-fixture", name: "demo.dispatch", mcp_tool_name: "demo.dispatch", is_read_only: false, risk_level: "low", side_effects: ["Synthetic message acceptance"],
     operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
     bridge_contract: { ...read.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
@@ -79,9 +85,11 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   const sdk = { metadataComplete: true, connect: vi.fn(async () => {}), close: vi.fn(async () => {}), listTools: vi.fn(async () => tools.map(tool => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), outputSchema: tool.bridge_contract!.output_schema!,
     _meta: { "toolplane.resourceDigest": tool.bridge_contract!.resource_digest, "toolplane.resourceVersion": "1.0.0", "io.erpbridge/allowedRoles": [] } }))),
     callTool: vi.fn(async (name: string, args: Record<string, unknown>, _meta?: Record<string, unknown>): Promise<unknown> => name === exactBridgeName(read) ? { content: [], structuredContent: { value: String(args.value).toUpperCase() } } :
-      name === exactBridgeName(reportRead) ? (() => { const page = withReportPagination ? Number(args.page) : 1, hasMore = withReportPagination && page < 3;
+      name === exactBridgeName(reportRead) ? (() => { const cursorOrdinal = args.cursor === "" ? 1 : args.cursor === "cursor-2" ? 2 : 3;
+        const page = pageNumberPagination ? Number(args.page) : cursorPagination ? cursorOrdinal : 1, hasMore = paginated && page < 3;
         return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: !hasMore, hasMore,
-          items: [{ id: `invoice-${page}` }], itemCount: 1, summary: `${page} invoice page`, ...(withReportPagination ? { page, snapshotId: "snapshot-daily-invoices", totalAvailable: 3 } : {}) } }; })() :
+          items: [{ id: `invoice-${page}` }], itemCount: 1, summary: `${page} invoice page`, ...(pageNumberPagination ? { page, snapshotId: "snapshot-daily-invoices", totalAvailable: 3 } : {}),
+          ...(cursorPagination ? { cursor: args.cursor, nextCursor: hasMore ? `cursor-${page + 1}` : "", snapshotId: "snapshot-daily-invoices", totalAvailable: 3 } : {}) } }; })() :
       readback && name === exactBridgeName(readback) ? { content: [], structuredContent: { value: args.value, state: "ABSENT", settled: true, observedAt: new Date().toISOString() } } :
       { content: [], structuredContent: { accepted: true, id: "fixture-message" } }) };
   const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: sdk,
@@ -386,6 +394,54 @@ test("confirmed report pages resume after committed checkpoint acknowledgement l
   expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead)).map(call => call[1].page)).toEqual([1, 2, 3]);
   expect(resumed.reportCoverage).toMatchObject({ itemCount: 3, pagination: { pageCount: 3, lastPage: 3 } });
   expect(resumed.reportPageSecret).toBeUndefined();
+});
+
+test("server-owned opaque report cursors survive committed checkpoint acknowledgement loss without replay or disclosure", async () => {
+  const storage = new Records(), s = await setup(storage, true, false, false, "cursor"); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string;
+  storage.loseWhen = state => Object.values(state.executions).some(run => run.reportPageSecret?.lookupReport?.pages.length === 1 &&
+    run.readProgress?.attempts.lookupReport?.status === "PREPARING");
+  await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  await vi.waitFor(() => expect(() => s.repository.assertAuthority()).toThrow(), { timeout: 4000 });
+  const committed = JSON.parse(storage.bytes!.toString()) as RepositoryState, interrupted = Object.values(committed.executions).find(run => run.scheduleSource)!;
+  expect(interrupted.reportPageSecret!.lookupReport).toMatchObject({ profile: "schedule-report-cursors/v1", nextCursor: "cursor-2", pages: [{ ordinal: 1, hasMore: true }] });
+  expect(withoutSecretFields(interrupted)).not.toHaveProperty("reportPageSecret");
+  expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead)).map(call => call[1].cursor)).toEqual([""]);
+  await s.app.close(); const repository = await Repository.open(storage), validator = new RegistryValidator(s.services.registries, repository), authorize = admissionAuthorizer(repository, s.services.registries);
+  const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: s.sdk,
+    admissionAuthorizer: authorize });
+  const services = { ...s.services, repository, validator, erpbridgeSession: session, executor: new Executor(new ToolRegistry(), validator) };
+  const operations = operationJobQueue(services); closers.push({ close: () => operations.stop() }, session, repository); await operations.start();
+  await vi.waitFor(async () => expect((await repository.snapshot()).executions[interrupted.id]?.status).toBe("AWAITING_APPROVAL"), { timeout: 5000 });
+  const resumed = (await repository.snapshot()).executions[interrupted.id]!;
+  expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead)).map(call => call[1].cursor)).toEqual(["", "cursor-2", "cursor-3"]);
+  expect(resumed.reportCoverage).toMatchObject({ itemCount: 3, pagination: { profile: "report-cursor-evidence/v1", pageCount: 3, totalCount: 3 } });
+  expect(resumed.stepOutputs!.lookupReport).toMatchObject({ structuredContent: { cursor: expect.stringMatching(/^sha256:/), nextCursor: "", itemCount: 3 } });
+  expect(JSON.stringify(withoutSecretFields(resumed))).not.toMatch(/cursor-2|cursor-3|snapshot-daily-invoices/); expect(resumed.reportPageSecret).toBeUndefined();
+  expect(Object.keys(resumed.operationSecret!.intents)).toEqual(["lookupReport:cursor:1", "lookupReport:cursor:2", "lookupReport:cursor:3"]);
+});
+
+test("an uncertain opaque report cursor page is never automatically replayed", async () => {
+  const s = await setup(null, true, false, false, "cursor"); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const original = s.sdk.callTool.getMockImplementation()!;
+  s.sdk.callTool.mockImplementation(async (name, args, meta) => {
+    if (name === exactBridgeName(s.reportRead) && args.cursor === "cursor-2") throw new Error("Synthetic cursor-page transport outcome unknown");
+    return original(name, args, meta);
+  });
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string; await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string;
+  await s.wait(executionId, "RECONCILIATION_REQUIRED"); const before = s.sdk.callTool.mock.calls.length, run = (await s.repository.snapshot()).executions[executionId]!;
+  expect(run.operationSecret!.intents["lookupReport:cursor:2"]).toMatchObject({ state: "UNKNOWN" }); expect(run.reportCoverage).toBeUndefined();
+  expect((await s.request("POST", `/api/executions/${executionId}/retry`, { input: {} })).statusCode).toBe(409); expect(s.sdk.callTool).toHaveBeenCalledTimes(before);
 });
 
 test("a changed ERP snapshot marker between report pages fails before approval or effect", async () => {

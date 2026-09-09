@@ -141,7 +141,8 @@ function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<
     if (!tool?.report_coverage_contract) return false;
     try {
       const parameters = reportCoverageParameters(tool)!;
-      const pageParameter = tool.report_coverage_contract?.pagination?.page_parameter;
+      const pagination = tool.report_coverage_contract.pagination;
+      const pageParameter = pagination?.profile === "page-number/v1" ? pagination.page_parameter : pagination?.cursor_parameter;
       return directlyBindsParameter(node.inputs, parameters.start, binding.startAtInput) && directlyBindsParameter(node.inputs, parameters.end, binding.endAtInput) &&
         (!pageParameter || node.inputs.kind === "object" && !Object.hasOwn(node.inputs.fields, pageParameter));
     } catch { return false; }

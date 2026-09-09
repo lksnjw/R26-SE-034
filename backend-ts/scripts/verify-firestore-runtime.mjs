@@ -53,15 +53,16 @@ const tool = toolSchema.parse({ tool_id: "FIXTURE-READ", name: "read", mcp_tool_
   input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
   bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: ["platform_admin"] } });
 const reportTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-REPORT", name: "fixture.report", mcp_tool_name: "fixture.report",
-  input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, page: { type: "integer" } }, required: ["startAt", "endAt"], additionalProperties: false },
+  input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, cursor: { type: "string" } }, required: ["startAt", "endAt"], additionalProperties: false },
   report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
     covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
-    pagination: { profile: "page-number/v1", page_parameter: "page", page_path: ["page"], snapshot_path: ["snapshotId"], total_count_path: ["totalAvailable"], first_page: 1, max_pages: 4, max_items: 100 } },
+    pagination: { profile: "opaque-cursor/v1", cursor_parameter: "cursor", cursor_path: ["cursor"], next_cursor_path: ["nextCursor"], snapshot_path: ["snapshotId"],
+      total_count_path: ["totalAvailable"], initial_cursor: "", max_pages: 4, max_items: 100 } },
   bridge_contract: { ...tool.bridge_contract, resource_digest: "e".repeat(64), output_schema: { type: "object", properties: {
     coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
     items: { type: "array", maxItems: 100, items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
-    itemCount: { type: "integer" }, reportId: { type: "string" }, page: { type: "integer" }, snapshotId: { type: "string" }, totalAvailable: { type: "integer" } },
-    required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "reportId", "page", "snapshotId", "totalAvailable"], additionalProperties: false } } });
+    itemCount: { type: "integer" }, reportId: { type: "string" }, cursor: { type: "string" }, nextCursor: { type: "string" }, snapshotId: { type: "string" }, totalAvailable: { type: "integer" } },
+    required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "reportId", "cursor", "nextCursor", "snapshotId", "totalAvailable"], additionalProperties: false } } });
 const readbackTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-NOTIFICATION-STATUS", name: "fixture.notification-status", mcp_tool_name: "fixture.notification-status",
   bridge_contract: { ...tool.bridge_contract, resource_digest: "c".repeat(64), output_schema: { type: "object", properties: {
     id: { type: "string" }, state: { type: "string" }, settled: { type: "boolean" }, observedAt: { type: "string" },
@@ -110,10 +111,11 @@ async function start(repositoryValue) {
           return { content: [], structuredContent: { id: args.id, state: operations.includes(args.id) ? "APPLIED" : "ABSENT", settled: true, observedAt: new Date().toISOString() } };
         }
         if (name === exactBridgeName(reportTool)) {
-          assert.equal(meta["toolplane.resourceDigest"], "e".repeat(64)); const page = Number(args.page), hasMore = page < 3;
-          reports.push({ startAt: args.startAt, endAt: args.endAt, page });
+          assert.equal(meta["toolplane.resourceDigest"], "e".repeat(64)); const page = args.cursor === "" ? 1 : args.cursor === "cursor-firestore-2" ? 2 : 3, hasMore = page < 3;
+          reports.push({ startAt: args.startAt, endAt: args.endAt, cursor: args.cursor });
           return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: !hasMore, hasMore,
-            items: [{ id: `invoice-firestore-${page}` }], itemCount: 1, reportId: "scheduled-operation", page, snapshotId: "snapshot-firestore-daily", totalAvailable: 3 } };
+            items: [{ id: `invoice-firestore-${page}` }], itemCount: 1, reportId: "scheduled-operation", cursor: args.cursor,
+            nextCursor: hasMore ? `cursor-firestore-${page + 1}` : "", snapshotId: "snapshot-firestore-daily", totalAvailable: 3 } };
         }
         assert.equal(name, exactBridgeName(tool)); assert.equal(meta["toolplane.resourceDigest"], "a".repeat(64));
         calls.push(args.id); await sdkHook?.(args); return { content: [], structuredContent: { id: args.id.toUpperCase(), token: "synthetic-remote-secret" } };
@@ -459,7 +461,7 @@ try {
   };
   await start(pageRepository); await waitFor(() => lostPageCheckpointACK, "report page checkpoint post-COMMIT acknowledgement loss");
   pagePersistence.saveExecutionCheckpoint = actualPageCheckpoint; assert.throws(() => repository.assertAuthority());
-  assert.deepEqual(reports.map(value => value.page), [1]);
+  assert.deepEqual(reports.map(value => value.cursor), [""]);
   await stop(); await start(await openApplicationRepository(config));
   const scheduledExecution = await waitFor(async () => Object.values((await repository.snapshot()).executions).find(value => value.scheduleSource?.scheduledFor === scheduledFor && value.status === "AWAITING_APPROVAL"), "scheduled operation approval wait");
   assert.equal(operations.length, operationsBeforeSchedule); assert.equal(models.length, modelsBeforeSchedule);
@@ -470,14 +472,15 @@ try {
   assert.deepEqual(scheduledExecution.scheduleSource.reportWindow, expectedReportWindow); assert.deepEqual(scheduledExecution.scheduleSource.reportWindowBinding, reportWindowBinding);
   assert.match(scheduledExecution.scheduleSource.inputHash, /^sha256:[a-f0-9]{64}$/); assert.deepEqual(scheduledExecution.workflowSnapshot.input,
     { reportStartAt: expectedReportWindow.startAt, reportEndAt: expectedReportWindow.endAt });
-  assert.deepEqual(reports, [1, 2, 3].map(page => ({ startAt: expectedReportWindow.startAt, endAt: expectedReportWindow.endAt, page })));
+  assert.deepEqual(reports, ["", "cursor-firestore-2", "cursor-firestore-3"].map(cursor => ({ startAt: expectedReportWindow.startAt, endAt: expectedReportWindow.endAt, cursor })));
   assert.equal(scheduledExecution.reportCoverage.profile, "schedule-report-coverage/v1"); assert.equal(scheduledExecution.reportCoverage.nodeId, "report");
   assert.equal(scheduledExecution.reportCoverage.toolId, reportTool.tool_id); assert.equal(scheduledExecution.reportCoverage.itemCount, 3);
   assert.equal(scheduledExecution.reportCoverage.startAt, expectedReportWindow.startAt); assert.equal(scheduledExecution.reportCoverage.endAt, expectedReportWindow.endAt);
-  assert.equal(scheduledExecution.reportCoverage.pagination.pageCount, 3); assert.equal(scheduledExecution.reportCoverage.pagination.lastPage, 3);
+  assert.equal(scheduledExecution.reportCoverage.pagination.profile, "report-cursor-evidence/v1"); assert.equal(scheduledExecution.reportCoverage.pagination.pageCount, 3);
+  assert.match(scheduledExecution.reportCoverage.pagination.initialCursorHash, /^sha256:[a-f0-9]{64}$/);
   assert.equal(scheduledExecution.reportCoverage.pagination.totalCount, 3);
   assert.match(scheduledExecution.reportCoverage.pagination.snapshotHash, /^sha256:[a-f0-9]{64}$/);
-  assert(!JSON.stringify(scheduledExecution).includes("snapshot-firestore-daily"));
+  assert(!JSON.stringify(scheduledExecution).includes("snapshot-firestore-daily")); assert(!JSON.stringify(scheduledExecution).includes("cursor-firestore-"));
   const scheduleReview = (await request("GET", `/api/executions/${scheduledExecution.id}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
   await request("POST", `/api/executions/${scheduledExecution.id}/approve`, { approvalId: scheduleReview.id, baseVersion: scheduleReview.version,
     reviewHash: scheduleReview.reviewHash, decisionKey: "firestore-scheduled-operation-approval-0001" }, 200, "reviewer");
@@ -487,8 +490,8 @@ try {
   await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).executions[scheduledExecution.id], completedScheduledExecution);
   assert.equal(Object.values((await repository.snapshot()).executions).filter(value => value.scheduleSource?.scheduledFor === scheduledFor).length, 1);
-  assert.equal(operations.length, operationsBeforeSchedule + 1); assert.deepEqual(reports.map(value => value.page), [1, 2, 3]);
-  log("actual Firestore daily schedule claim and first report-page checkpoints survived separate post-COMMIT acknowledgement losses; restart resumed at page two without replay, persisted three-page stable-snapshot/complete/exhausted/count evidence, required fresh independent approval, dispatched once and persisted without a model call");
+  assert.equal(operations.length, operationsBeforeSchedule + 1); assert.deepEqual(reports.map(value => value.cursor), ["", "cursor-firestore-2", "cursor-firestore-3"]);
+  log("actual Firestore daily schedule claim and first opaque-cursor report checkpoint survived separate post-COMMIT acknowledgement losses; restart resumed from the protected second cursor without replay, persisted three-page stable-snapshot/complete/exhausted/count evidence without raw cursors, required fresh independent approval, dispatched once and persisted without a model call");
 
   const lostOperation = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-lost-intent-0001", input: { id: "operation-lost-intent" } }, 202)).data.id;
   await waitFor(async () => (await repository.snapshot()).executions[lostOperation].status === "AWAITING_APPROVAL", "lost-intent approval wait");

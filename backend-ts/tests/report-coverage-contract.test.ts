@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
 import { capabilityContractHash } from "../src/registry/capability-admission.js";
 import { toolSchema } from "../src/registry/schemas.js";
-import { assertReportCoverageContract, completePaginatedReport, confirmScheduledReportCoverage, confirmScheduledReportPage,
-  newReportPageProgress } from "../src/tools/report-coverage-contract.js";
+import { assertReportCoverageContract, completeCursorPaginatedReport, completePaginatedReport, confirmScheduledReportCoverage,
+  confirmScheduledReportCursor, confirmScheduledReportPage, newReportCursorProgress, newReportPageProgress } from "../src/tools/report-coverage-contract.js";
 
 const fixture = () => toolSchema.parse({
   tool_id: "report", name: "invoice.report", mcp_tool_name: "invoice.report", allowed_roles: ["Platform Admin"], risk_level: "low", is_read_only: true,
@@ -65,4 +65,36 @@ test("server-owned bounded page evidence aggregates only a contiguous exhausted 
   const gap = structuredClone(completed.receiptPagination); gap.pages[1]!.page = 3;
   expect(() => confirmScheduledReportCoverage({ tool, nodeId: "report", contractHash: capabilityContractHash(tool), args: { startAt, endAt }, output: completed.output,
     startAt, endAt, pagination: gap })).toThrow(/incomplete or inconsistent/i);
+});
+
+test("server-owned opaque cursor evidence advances without exposing raw continuations", () => {
+  const base = fixture(), tool = toolSchema.parse({ ...base,
+    input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, cursor: { type: "string" } }, required: ["startAt", "endAt"], additionalProperties: false },
+    report_coverage_contract: { ...base.report_coverage_contract!, pagination: { profile: "opaque-cursor/v1", cursor_parameter: "cursor", cursor_path: ["cursor"],
+      next_cursor_path: ["nextCursor"], snapshot_path: ["snapshotId"], total_count_path: ["totalAvailable"], initial_cursor: "", max_pages: 3, max_items: 10 } },
+    bridge_contract: { ...base.bridge_contract!, output_schema: { ...base.bridge_contract!.output_schema!, properties: { ...(base.bridge_contract!.output_schema as any).properties,
+      items: { type: "array", maxItems: 10, items: { type: "object" } }, cursor: { type: "string" }, nextCursor: { type: "string" },
+      snapshotId: { type: "string" }, totalAvailable: { type: "integer" } },
+      required: [...((base.bridge_contract!.output_schema as any).required as string[]), "cursor", "nextCursor", "snapshotId", "totalAvailable"] } } });
+  expect(() => assertReportCoverageContract(tool)).not.toThrow();
+  const progress = newReportCursorProgress(tool, "report", capabilityContractHash(tool), "2026-10-06T00:00:00.000Z", "2026-10-07T00:00:00.000Z");
+  for (const [index, cursor] of ["", "cursor-two"].entries()) {
+    const hasMore = index === 0, nextCursor = hasMore ? "cursor-two" : "", args = { startAt: progress.startAt, endAt: progress.endAt, cursor };
+    const output = { structuredContent: { coveredStartAt: progress.startAt, coveredEndAt: progress.endAt, complete: !hasMore, hasMore,
+      items: [{ id: `item-${index + 1}` }], itemCount: 1, cursor, nextCursor, snapshotId: "snapshot-report", totalAvailable: 2 } };
+    const confirmed = confirmScheduledReportCursor({ tool, args, output, startAt: progress.startAt, endAt: progress.endAt, cursor, ordinal: index + 1 });
+    progress.snapshotValue ??= confirmed.snapshotValue; progress.totalCount ??= confirmed.totalCount; progress.pages.push(confirmed.evidence);
+    progress.items.push(...confirmed.items); progress.lastOutput = output; progress.nextCursor = confirmed.nextCursor;
+  }
+  const completed = completeCursorPaginatedReport(tool, progress);
+  expect(JSON.stringify(completed)).not.toContain("cursor-two");
+  expect(completed.output.structuredContent).toMatchObject({ complete: true, hasMore: false, nextCursor: "", itemCount: 2,
+    cursor: expect.stringMatching(/^sha256:/), items: [{ id: "item-1" }, { id: "item-2" }] });
+  expect(confirmScheduledReportCoverage({ tool, nodeId: "report", contractHash: capabilityContractHash(tool), args: { startAt: progress.startAt, endAt: progress.endAt },
+    output: completed.output, startAt: progress.startAt, endAt: progress.endAt, pagination: completed.receiptPagination })).toMatchObject({ itemCount: 2,
+      pagination: { profile: "report-cursor-evidence/v1", pageCount: 2, totalCount: 2, initialCursorHash: expect.stringMatching(/^sha256:/) } });
+  const repeated = { structuredContent: { coveredStartAt: progress.startAt, coveredEndAt: progress.endAt, complete: false, hasMore: true,
+    items: [{ id: "bad" }], itemCount: 1, cursor: "repeat", nextCursor: "repeat", snapshotId: "snapshot-report", totalAvailable: 2 } };
+  expect(() => confirmScheduledReportCursor({ tool, args: { startAt: progress.startAt, endAt: progress.endAt, cursor: "repeat" }, output: repeated,
+    startAt: progress.startAt, endAt: progress.endAt, cursor: "repeat", ordinal: 1 })).toThrow(/did not advance/i);
 });

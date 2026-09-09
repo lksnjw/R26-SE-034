@@ -19,8 +19,9 @@ import { hasReservedBridgeRole } from "../tools/erpbridge-contract.js";
 import { assertConsumedRuntimeApproval, consumeRuntimeApproval, requestRuntimeApproval, runtimeApprovalPolicyHash } from "./runtime-approvals.js";
 import type { OperationIntent } from "./operation-state.js";
 import type { ToolDefinition } from "../registry/schemas.js";
-import { assertReportPageProgress, assertScheduledReportCoverageReceipt, completePaginatedReport, confirmScheduledReportCoverage, confirmScheduledReportPage,
-  newReportPageProgress, protectedReportPageOutput, reportPagination, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
+import { assertReportCursorProgress, assertReportPageProgress, assertScheduledReportCoverageReceipt, completeCursorPaginatedReport, completePaginatedReport,
+  confirmScheduledReportCoverage, confirmScheduledReportCursor, confirmScheduledReportPage, newReportCursorProgress, newReportPageProgress,
+  protectedReportPageOutput, reportPagination, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -58,7 +59,8 @@ function recover(state: RepositoryState, run: Execution, reason: string) {
   if (attempt && resumablePages && !pageInFlight) {
     progress.epoch++; progress.recoveryReason = reason; run.status = "PENDING"; run.agentSummary = "Confirmed report pages were saved. The next bounded page is queued; no uncertain page is replayed.";
     run.operationSecret.state = "QUEUED"; delete run.operationSecret.lease;
-    appendExecutionEvent(state, run, "node.report_pages_requeued", { nextPage: resumablePages.nextPage, confirmedPages: resumablePages.pages.length, reason }, attempt.nodeId, attempt.id);
+    appendExecutionEvent(state, run, "node.report_pages_requeued", { nextPage: resumablePages.profile === "schedule-report-pages/v1" ? resumablePages.nextPage : resumablePages.pages.length + 1,
+      confirmedPages: resumablePages.pages.length, continuationProfile: resumablePages.profile, reason }, attempt.nodeId, attempt.id);
     audit(state, run, "operation.report_pages_requeued"); return;
   }
   const uncertain = attempt?.status === "DISPATCH_INTENT";
@@ -275,6 +277,98 @@ export class OperationJobQueue {
             throw new Error("Operation requires a current reviewed mapped ERPBridge role");
         }
         const pagination = node.effectClass === "read" && initial.scheduleSource ? reportPagination(tool) : null;
+        if (pagination?.profile === "opaque-cursor/v1") {
+          if (Object.hasOwn(args, pagination.cursor_parameter)) throw new Error("Workflow-authored report cursor values are not allowed");
+          let cursorDone = false;
+          while (!cursorDone) {
+            assertContext();
+            const cursorState = await repository.mutateExecution(id, state => {
+              this.assert(control); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!;
+              if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || run.reportCoverage) throw new Error("Report cursor pointer changed");
+              const existing = run.reportPageSecret?.[node.id];
+              if (existing && existing.profile !== "schedule-report-cursors/v1") throw new Error("Report cursor profile changed");
+              const progress = existing ?? newReportCursorProgress(tool, node.id, node.capability.contractHash,
+                initial.scheduleSource!.reportWindow.startAt, initial.scheduleSource!.reportWindow.endAt);
+              if (progress.nodeId !== node.id || progress.toolId !== tool.tool_id || progress.contractHash !== node.capability.contractHash ||
+                  progress.startAt !== initial.scheduleSource!.reportWindow.startAt || progress.endAt !== initial.scheduleSource!.reportWindow.endAt ||
+                  progress.maxPages !== pagination.max_pages)
+                throw new Error("Report cursor evidence is inconsistent or exhausted");
+              assertReportCursorProgress(tool, progress); (run.reportPageSecret ??= {})[node.id] = progress;
+              return { ordinal: progress.pages.length + 1, cursor: progress.nextCursor, items: structuredClone(progress.items),
+                pages: structuredClone(progress.pages), snapshotValue: progress.snapshotValue, totalCount: progress.totalCount };
+            });
+            const ordinal = cursorState.ordinal, cursorArgs = { ...structuredClone(args), [pagination.cursor_parameter]: cursorState.cursor };
+            if (validateToolInput(tool.input_schema, cursorArgs).length) throw new Error("Server-derived report cursor arguments are invalid");
+            const cursorIssues = validateToolArguments(node.capability.action, cursorArgs, tool);
+            if (cursorIssues.missing.length || cursorIssues.invalid.length) throw new Error("Server-derived report cursor arguments failed runtime validation");
+            const intentKey = `${node.id}:cursor:${ordinal}`, cursorIntentId = `intent-${randomBytes(16).toString("hex")}`;
+            const persistCursorIntent = async () => { await repository.mutateExecution(id, state => {
+              assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, progress = run.reportPageSecret?.[node.id];
+              const fresh = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
+              if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || !progress ||
+                  progress.profile !== "schedule-report-cursors/v1" || progress.nextCursor !== cursorState.cursor || progress.pages.length + 1 !== ordinal ||
+                  run.operationSecret!.intents[intentKey]) throw new Error("Report cursor intent facts changed or are already used");
+              const now = new Date().toISOString(), intent: OperationIntent = { id: cursorIntentId, nodeId: node.id, invocationId: `${attempt.id}:cursor:${ordinal}`,
+                operationKey: `${id}:${node.id}:cursor:${ordinal}`, argumentHash: digest(cursorArgs), state: "DISPATCH_INTENT", preparedAt: now };
+              run.operationSecret!.intents[intentKey] = intent; attempt.status = "DISPATCH_INTENT"; attempt.dispatchIntentAt = now;
+              const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!; entry.status = "RUNNING"; entry.phase = `CURSOR_PAGE_${ordinal}_DISPATCH_INTENT`;
+              appendExecutionEvent(state, run, "node.report_page_dispatch_intent", { intentId: cursorIntentId, page: ordinal, continuationProfile: pagination.profile }, node.id, attempt.id);
+              audit(state, run, "operation.report_page_dispatch_intent");
+            }); };
+            const cursorOutput = await dispatchReadTool(services, actor.id, node.capability.action, cursorArgs, { workflowId: initial.workflowId, executionId: id,
+              signal: control.controller.signal, assertDispatch: assertContext, beforeDispatch: persistCursorIntent,
+              plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } });
+            let confirmed;
+            try {
+              confirmed = confirmScheduledReportCursor({ tool, args: cursorArgs, output: cursorOutput, startAt: initial.scheduleSource!.reportWindow.startAt,
+                endAt: initial.scheduleSource!.reportWindow.endAt, cursor: cursorState.cursor, ordinal });
+              const candidateItems = [...cursorState.items, ...confirmed.items];
+              if (cursorState.snapshotValue !== undefined && confirmed.snapshotValue !== cursorState.snapshotValue)
+                throw new Error("Cursor-paginated report changed its stable snapshot between pages");
+              if (cursorState.totalCount !== undefined && confirmed.totalCount !== cursorState.totalCount)
+                throw new Error("Cursor-paginated report changed its total record count between pages");
+              if (confirmed.hasMore && [...cursorState.pages.map(page => page.cursorHash), confirmed.evidence.cursorHash].includes(confirmed.evidence.nextCursorHash))
+                throw new Error("Cursor-paginated report repeated a previously used cursor");
+              if (confirmed.hasMore ? candidateItems.length >= confirmed.totalCount : candidateItems.length !== confirmed.totalCount)
+                throw new Error("Cursor-paginated report exhaustion does not match its declared total record count");
+              if (candidateItems.length > pagination.max_items || canonicalJSONBytes(candidateItems).length > 2_000_000 ||
+                  confirmed.hasMore && cursorState.pages.length + 1 >= pagination.max_pages)
+                throw new Error("Cursor-paginated report exceeded its reviewed page, item or byte bound before completeness");
+            } catch (error) {
+              knownCoverageFailure = { nodeId: node.id, intentKey, intentId: cursorIntentId, output: protectedReportPageOutput(tool, cursorOutput),
+                message: error instanceof Error ? error.message : "Scheduled report cursor coverage is unconfirmed" }; throw error;
+            }
+            await repository.mutateExecution(id, state => {
+              assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, intent = run.operationSecret!.intents[intentKey], progress = run.reportPageSecret?.[node.id];
+              if (attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== cursorIntentId || intent.state !== "DISPATCH_INTENT" || !progress ||
+                  progress.profile !== "schedule-report-cursors/v1" || progress.nextCursor !== cursorState.cursor || progress.pages.length + 1 !== ordinal)
+                throw new Error("Report cursor result does not own the current intent");
+              if (progress.snapshotValue !== undefined && progress.snapshotValue !== confirmed.snapshotValue) throw new Error("Report snapshot changed before cursor checkpoint");
+              if (progress.totalCount !== undefined && progress.totalCount !== confirmed.totalCount) throw new Error("Report total count changed before cursor checkpoint");
+              const now = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = now; progress.pages.push(confirmed.evidence);
+              progress.snapshotValue ??= confirmed.snapshotValue; progress.totalCount ??= confirmed.totalCount; progress.items.push(...structuredClone(confirmed.items));
+              progress.lastOutput = structuredClone(cursorOutput); progress.nextCursor = confirmed.nextCursor;
+              const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
+              appendExecutionEvent(state, run, "node.report_page_completed", { intentId: cursorIntentId, page: ordinal, itemCount: confirmed.items.length,
+                hasMore: confirmed.hasMore, continuationProfile: pagination.profile }, node.id, attempt.id);
+              if (confirmed.hasMore) {
+                attempt.status = "PREPARING"; entry.phase = `CURSOR_PAGE_${ordinal + 1}_PREPARING`; audit(state, run, "operation.report_page_acknowledged"); return;
+              }
+              const completed = completeCursorPaginatedReport(tool, progress);
+              const receipt = confirmScheduledReportCoverage({ tool, nodeId: node.id, contractHash: node.capability.contractHash, args,
+                output: completed.output, startAt: initial.scheduleSource!.reportWindow.startAt, endAt: initial.scheduleSource!.reportWindow.endAt,
+                pagination: completed.receiptPagination, confirmedAt: now });
+              attempt.status = "DONE"; attempt.completedAt = now; run.stepOutputs![node.id] = completed.output; run.reportCoverage = receipt; run.readProgress!.nextStepIndex++;
+              delete run.reportPageSecret![node.id]; if (!Object.keys(run.reportPageSecret!).length) delete run.reportPageSecret;
+              Object.assign(entry, { status: "DONE", phase: "COMPLETE", outcome: "REPORT_COVERAGE_CONFIRMED", completedAt: now,
+                durationMs: Math.max(0, Date.parse(now) - Date.parse(attempt.startedAt)), output: withoutSecretFields(completed.output) });
+              appendExecutionEvent(state, run, "node.completed", { intentId: cursorIntentId, outcome: "REPORT_COVERAGE_CONFIRMED",
+                pageCount: receipt.pagination!.pageCount, continuationProfile: pagination.profile }, node.id, attempt.id);
+              audit(state, run, "operation.report_pages_completed"); cursorDone = true;
+            });
+          }
+          continue;
+        }
         if (pagination) {
           if (Object.hasOwn(args, pagination.page_parameter)) throw new Error("Workflow-authored report page values are not allowed");
           let pageDone = false;
@@ -284,6 +378,7 @@ export class OperationJobQueue {
               this.assert(control); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!;
               if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || run.reportCoverage) throw new Error("Report pagination pointer changed");
               const existing = run.reportPageSecret?.[node.id];
+              if (existing && existing.profile !== "schedule-report-pages/v1") throw new Error("Report pagination profile changed");
               const progress = existing ?? newReportPageProgress(tool, node.id, node.capability.contractHash,
                 initial.scheduleSource!.reportWindow.startAt, initial.scheduleSource!.reportWindow.endAt);
               if (progress.nodeId !== node.id || progress.toolId !== tool.tool_id || progress.contractHash !== node.capability.contractHash ||
@@ -302,7 +397,8 @@ export class OperationJobQueue {
             const persistPageIntent = async () => { await repository.mutateExecution(id, state => {
               assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, progress = run.reportPageSecret?.[node.id];
               const fresh = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
-              if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || !progress || progress.nextPage !== page ||
+              if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || !progress ||
+                  progress.profile !== "schedule-report-pages/v1" || progress.nextPage !== page ||
                   run.operationSecret!.intents[intentKey]) throw new Error("Report page intent facts changed or are already used");
               const now = new Date().toISOString(), intent: OperationIntent = { id: pageIntentId, nodeId: node.id, invocationId: `${attempt.id}:page:${page}`,
                 operationKey: `${id}:${node.id}:page:${page}`, argumentHash: digest(pageArgs), state: "DISPATCH_INTENT", preparedAt: now };
@@ -332,7 +428,8 @@ export class OperationJobQueue {
             }
             await repository.mutateExecution(id, state => {
               assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, intent = run.operationSecret!.intents[intentKey], progress = run.reportPageSecret?.[node.id];
-              if (attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== pageIntentId || intent.state !== "DISPATCH_INTENT" || !progress || progress.nextPage !== page)
+              if (attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== pageIntentId || intent.state !== "DISPATCH_INTENT" || !progress ||
+                  progress.profile !== "schedule-report-pages/v1" || progress.nextPage !== page)
                 throw new Error("Report page result does not own the current intent");
               if (progress.snapshotValue !== undefined && progress.snapshotValue !== confirmed.snapshotValue) throw new Error("Report snapshot changed before checkpoint");
               if (progress.totalCount !== undefined && progress.totalCount !== confirmed.totalCount) throw new Error("Report total count changed before checkpoint");
