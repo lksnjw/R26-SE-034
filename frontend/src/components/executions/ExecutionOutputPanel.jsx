@@ -35,6 +35,7 @@ function ExecutionOutputPanel({ execution, iterationModel }) {
   const itemNodes = collection && iterationModel?.valid ? Object.values(iterationModel.nodes).filter(node => node.kind === "action" && node.rows.length) : [];
   const returned = collection ? iterationModel?.finalKind === "return" : Object.values(execution.readProgress?.values || {}).some(receipt => receipt.kind === "return" && receipt.status === "DONE");
   const hasFinal = collection ? iterationModel?.valid && iterationModel.hasFinal : finalOutput !== undefined && (finalOutput !== null || returned && Object.hasOwn(execution, "finalOutput"));
+  const coverage = execution.reportCoverage?.profile === "schedule-report-coverage/v1" ? execution.reportCoverage : null;
 
   if (!hasFinal && stepEntries.length === 0 && !itemNodes.length) {
     return (
@@ -64,6 +65,14 @@ function ExecutionOutputPanel({ execution, iterationModel }) {
           </span>
         ) : null}
       </div>
+
+      {coverage ? (
+        <section data-testid="report-coverage" aria-label="Scheduled report coverage" className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 text-sm dark:border-emerald-800 dark:bg-emerald-950/20">
+          <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-emerald-950 dark:text-emerald-100">Complete report window confirmed</h3><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">Connector attestation saved</span></div>
+          <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2"><div><dt className="font-semibold">Covered interval</dt><dd>{new Date(coverage.startAt).toLocaleString()} → {new Date(coverage.endAt).toLocaleString()}</dd></div><div><dt className="font-semibold">Records returned</dt><dd>{coverage.itemCount}</dd></div><div><dt className="font-semibold">Evidence step</dt><dd>{coverage.nodeId}</dd></div><div><dt className="font-semibold">Confirmed</dt><dd>{new Date(coverage.confirmedAt).toLocaleString()}</dd></div></dl>
+          <p className="mt-3 text-xs text-emerald-900/80 dark:text-emerald-200/80">This proves the reviewed connector result covered the scheduled interval with no remaining page. It does not approve or prove delivery of a later effect.</p>
+        </section>
+      ) : null}
 
       {hasFinal ? (
         <div data-testid="final-output" className="mb-5">

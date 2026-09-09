@@ -32,6 +32,14 @@ test("formatted inspection requires a note and explicit confirmation; discovery 
   expect(await screen.findByText(/Discovery saved; no tool enabled/)).not.toBeNull(); expect(screen.getByText(/erp.unmapped/)).not.toBeNull(); expect(review).not.toHaveBeenCalled();
 });
 
+test("a report coverage read explains its exact interval and completeness evidence before review", async () => {
+  const value = entry(); value.observation.definition.report_coverage_contract = { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt",
+    covered_start_path: ["coveredStartAt"], covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"] };
+  catalog.mockResolvedValue(page(value)); mount(); await select();
+  expect(screen.getByText("Scheduled report coverage")).toBeTruthy(); expect(screen.getByText(/Exact startAt → endAt interval/)).toBeTruthy();
+  expect(screen.getByText(/does not approve a later effect/i)).toBeTruthy(); expect(document.querySelector("pre")).toBeNull();
+});
+
 test("lost acknowledgement retains exact decision across remount and duplicate disabled receipt does not display enabled success", async () => {
   const first = mount(); await select(); confirm(); review.mockRejectedValueOnce(new Error("ACK lost"));
   fireEvent.click(screen.getByRole("button", { name: "Save explicit read review" }));

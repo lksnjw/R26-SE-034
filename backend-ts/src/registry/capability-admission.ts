@@ -13,6 +13,7 @@ import type { AppConfig } from "../config/config.js";
 import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
 import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { assertOperationReadbackSources } from "../tools/operation-readback-contract.js";
+import { assertReportCoverageContract } from "../tools/report-coverage-contract.js";
 
 export const DEFAULT_BRIDGE_CONNECTION = "erpbridge-default";
 export function requireProductionAdmissionProfile(config: Pick<AppConfig, "mcpMode" | "mcpTransport">) {
@@ -57,6 +58,10 @@ function supportedRead(tool: ToolDefinition) {
   if (!tool.tool_id.trim() || !tool.name.trim() || !tool.bridge_contract || !tool.allowed_roles.length ||
     !tool.is_read_only || tool.risk_level.toLowerCase() !== "low" || tool.side_effects.length || /^system\..*_test$/i.test(tool.name) || /^system\..*_test$/i.test(tool.mcp_tool_name))
     throw new HandlerFailure(422, "This contract requires unsupported effect/risk review; only explicit low-risk reads without side effects can be admitted yet", { code: "ADMISSION_REVIEW_UNSUPPORTED" });
+  if (tool.report_coverage_contract) {
+    try { assertReportCoverageContract(tool); }
+    catch { throw new HandlerFailure(422, "Report coverage requires explicit supported window inputs and complete-result output evidence", { code: "ADMISSION_REVIEW_UNSUPPORTED" }); }
+  }
 }
 export function supportedOperation(tool: ToolDefinition): void {
   const contract = tool.operation_contract, output = tool.bridge_contract?.output_schema;

@@ -60,6 +60,9 @@ export type Execution = {
   emailDeliverySource?: { profile: "email-delivery-source/v1"; admissionId: string; sessionId: string; draftId: string; draftVersion: number; draftHash: string };
   scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string;
     scheduleHash: string; reportWindow: ReportWindow; reportWindowBinding: ReportWindowInputBinding; inputHash: string };
+  /** Connector-attested complete coverage for the immutable schedule window.
+   * This is evidence, not permission to dispatch the later effect. */
+  reportCoverage?: import("../tools/report-coverage-contract.js").ReportCoverageReceipt;
 };
 
 export type EmailDeliveryAdmission = {

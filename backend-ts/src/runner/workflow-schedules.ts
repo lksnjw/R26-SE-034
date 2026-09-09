@@ -10,6 +10,8 @@ import { validateToolInput } from "../tools/tool-input-schema.js";
 import { operationJobQueue, supportsOperationJobs } from "./operation-jobs.js";
 import { canViewWorkflow } from "../workflows/commands.js";
 import type { CompiledOperationPlan, ReadBinding } from "../workflows/compiled-read.js";
+import type { ToolDefinition } from "../registry/schemas.js";
+import { reportCoverageParameters } from "../tools/report-coverage-contract.js";
 
 const digest = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJSONBytes(value)).digest("hex")}`;
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -110,7 +112,13 @@ function referencesWorkflowInput(binding: ReadBinding, name: string): boolean {
   if (binding.kind === "array") return binding.items.some(child => referencesWorkflowInput(child, name));
   return false;
 }
-function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<string, unknown>, binding: ReportWindowInputBinding, window: ReportWindow) {
+function directlyBindsParameter(binding: ReadBinding, parameter: string, workflowInput: string): boolean {
+  if (binding.kind !== "object") return false;
+  const value = binding.fields[parameter];
+  return value?.kind === "ref" && value.source === "workflowInput" && value.path.length === 1 && value.path[0] === workflowInput;
+}
+function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<string, unknown>, binding: ReportWindowInputBinding, window: ReportWindow,
+  tools: readonly ToolDefinition[]) {
   if (!reportWindowInputBindingSchema.safeParse(binding).success)
     throw new HandlerFailure(422, "Report-window input binding is malformed", { code: "SCHEDULE_REPORT_WINDOW_BINDING_INVALID" });
   const names = [binding.startAtInput, binding.endAtInput];
@@ -125,6 +133,18 @@ function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<
     if (!plan.ir.root.nodes.some(node => node.effectClass === "read" && referencesWorkflowInput(node.inputs, name)))
       throw new HandlerFailure(422, `Report-window input ${name} must be referenced by a reviewed ERP read step`, { code: "SCHEDULE_REPORT_WINDOW_BINDING_UNUSED" });
   }
+  const firstEffect = plan.ir.root.nodes.findIndex(node => node.effectClass !== "read");
+  const coverage = plan.ir.root.nodes.filter((node, index) => {
+    if (firstEffect < 0 || index >= firstEffect) return false;
+    if (node.effectClass !== "read") return false;
+    const tool = tools.find(value => value.tool_id === node.capability.toolId && node.capability.contractHash === digest(value));
+    if (!tool?.report_coverage_contract) return false;
+    try {
+      const parameters = reportCoverageParameters(tool)!;
+      return directlyBindsParameter(node.inputs, parameters.start, binding.startAtInput) && directlyBindsParameter(node.inputs, parameters.end, binding.endAtInput);
+    } catch { return false; }
+  });
+  if (coverage.length !== 1) throw new HandlerFailure(422, "An active schedule requires exactly one reviewed report read that directly binds both exact window inputs and declares complete-result evidence", { code: "SCHEDULE_REPORT_COVERAGE_REQUIRED" });
   const effective = { ...structuredClone(staticInput), ...values };
   if (!schema || validateToolInput(schema, effective).length)
     throw new HandlerFailure(422, "Schedule values plus the server-derived report window do not match the published workflow input schema", { code: "SCHEDULE_INPUT_INVALID" });
@@ -186,7 +206,7 @@ export async function saveWorkflowSchedule(services: HandlerServices, workflowId
     const unchanged = previous?.scheduleHash === scheduleHash && previous.state === "ACTIVE" && previous.nextRunAt && Date.parse(previous.nextRunAt) > Date.now();
     const nextRunAt = unchanged ? previous.nextRunAt! : nextDailyOccurrence(command.timezone, command.localTime, Date.now());
     const nextReportWindow = reportWindowFor(command.timezone, nextRunAt, command.reportingPeriod);
-    bindReportWindowInput(compiled.plan, command.input, reportWindowBinding, nextReportWindow);
+    bindReportWindowInput(compiled.plan, command.input, reportWindowBinding, nextReportWindow, services.registries.snapshot().tools);
     const schedule: WorkflowSchedule = { profile: "workflow-daily-schedule/v1", id: scheduleId, workflowId, workflowVersion: command.workflowVersion,
       workflowHash: command.workflowHash, state: command.enabled ? "ACTIVE" : "PAUSED", revision: (previous?.revision ?? 0) + 1,
       timezone: command.timezone, localTime: command.localTime, reportingPeriod: command.reportingPeriod, misfirePolicy: command.misfirePolicy,
@@ -330,7 +350,7 @@ export class WorkflowScheduleRunner {
           .findLast(value => value.artifactState === "PUBLISHED" && value.version === claim.schedule.workflowVersion && value.yaml === workflow?.yaml);
         if (!workflow || !publication) throw new HandlerFailure(409, "Pinned workflow publication is unavailable");
         const compiled = prepareOperationExecution(state, this.services, publication, workflow.yaml, principal.role);
-        const input = bindReportWindowInput(compiled.plan, claim.schedule.input, claim.schedule.reportWindowBinding!, claim.occurrence.reportWindow!);
+        const input = bindReportWindowInput(compiled.plan, claim.schedule.input, claim.schedule.reportWindowBinding!, claim.occurrence.reportWindow!, this.services.registries.snapshot().tools);
         return { workflow: structuredClone(workflow), input };
       });
       const source = { profile: "workflow-schedule-source/v1" as const, scheduleId: claim.schedule.id, scheduleRevision: claim.schedule.revision,

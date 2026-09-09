@@ -19,6 +19,7 @@ import { hasReservedBridgeRole } from "../tools/erpbridge-contract.js";
 import { assertConsumedRuntimeApproval, consumeRuntimeApproval, requestRuntimeApproval, runtimeApprovalPolicyHash } from "./runtime-approvals.js";
 import type { OperationIntent } from "./operation-state.js";
 import type { ToolDefinition } from "../registry/schemas.js";
+import { assertScheduledReportCoverageReceipt, confirmScheduledReportCoverage, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -62,6 +63,23 @@ function recover(state: RepositoryState, run: Execution, reason: string) {
   progress.epoch++; progress.recoveryReason = reason;
   run.failure = { failureCategory: uncertain ? "OPERATION_OUTCOME_UNKNOWN" : "OPERATION_INTERRUPTED", failedStepId: attempt?.nodeId ?? "checkpoint", reason };
   finish(state, run, uncertain ? "RECONCILIATION_REQUIRED" : "RECOVERY_REQUIRED", uncertain ? "An operation intent has no confirmed outcome. Saved results are retained; the action was not automatically replayed. Reconcile with the ERP before retrying." : "Execution was interrupted before a new dispatch. Saved results are retained; recovery requires fresh authorization.");
+}
+function recordValue(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Scheduled report evidence is not an object result");
+  return value as Record<string, unknown>;
+}
+function assertCoverageBeforeScheduledEffect(run: Execution, plan: CompiledOperationPlan, live: readonly ToolDefinition[], effectIndex: number): void {
+  const source = run.scheduleSource;
+  if (!source) return;
+  const receipt = run.reportCoverage;
+  const coverageIndex = receipt ? plan.ir.root.nodes.findIndex(node => node.id === receipt.nodeId) : -1;
+  if (!receipt || coverageIndex < 0 || coverageIndex >= effectIndex) throw new Error("Scheduled effects require prior confirmed report coverage");
+  const node = plan.ir.root.nodes[coverageIndex]!, tool = live.find(value => value.tool_id === node.capability.toolId);
+  if (node.effectClass !== "read" || !tool?.report_coverage_contract || tool.tool_id !== receipt.toolId || node.capability.contractHash !== receipt.contractHash)
+    throw new Error("Scheduled report coverage no longer matches the reviewed read contract");
+  const args = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs }) as Record<string, unknown>;
+  assertScheduledReportCoverageReceipt(receipt, { tool, nodeId: node.id, contractHash: node.capability.contractHash, args,
+    output: recordValue(run.stepOutputs?.[node.id]), startAt: source.reportWindow.startAt, endAt: source.reportWindow.endAt });
 }
 /** Separate fair, bounded single-writer operation worker. Waits hold no worker
  * or HTTP/DB transaction; restart never automatically replays an intent. */
@@ -198,6 +216,7 @@ export class OperationJobQueue {
   }
   private async process(control: Active) {
     const { services } = this, repository = services.repository, id = control.id;
+    let knownCoverageFailure: { nodeId: string; intentId: string; output: Record<string, unknown>; message: string } | undefined;
     try {
       const initial = await repository.mutateExecution(id, state => {
         const run = state.executions[id]!, job = run.operationSecret!;
@@ -247,6 +266,8 @@ export class OperationJobQueue {
             throw new Error("Operation requires a current reviewed mapped ERPBridge role");
         }
         const pending = await repository.readAuthoritative(state => state.executions[id]!.runtimeApprovalSecret);
+        if (node.effectClass !== "read" && initial.scheduleSource)
+          await repository.readAuthoritative(state => assertCoverageBeforeScheduledEffect(state.executions[id]!, plan, live, index));
         if (node.effectClass !== "read" && (!pending || pending.records[pending.activeId]?.binding.nodeId !== node.id)) {
           const binding = await repository.readAuthoritative(state => {
             const run = state.executions[id]!, pin = node.capability.admission!;
@@ -263,6 +284,7 @@ export class OperationJobQueue {
           assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!;
           const fresh = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
           if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || run.operationSecret!.intents[node.id]) throw new Error("Operation intent facts changed or are already used");
+          if (node.effectClass !== "read") assertCoverageBeforeScheduledEffect(run, plan, live, index);
           const record = run.runtimeApprovalSecret?.records[run.runtimeApprovalSecret.activeId];
           if (node.effectClass !== "read") {
             if (!record || record.binding.nodeId !== node.id) throw new Error("Exact operation approval is required");
@@ -288,12 +310,26 @@ export class OperationJobQueue {
           } finally { retireOperationDispatchPermit(permit); }
           if (!confirmedOperationResult(tool, output)) throw new Error("Operation tool returned no contract confirmation");
         }
+        let coverageReceipt: ReportCoverageReceipt | undefined;
+        if (node.effectClass === "read" && initial.scheduleSource && tool.report_coverage_contract) {
+          try {
+            coverageReceipt = confirmScheduledReportCoverage({ tool, nodeId: node.id, contractHash: node.capability.contractHash, args, output,
+              startAt: initial.scheduleSource.reportWindow.startAt, endAt: initial.scheduleSource.reportWindow.endAt });
+          } catch (error) {
+            knownCoverageFailure = { nodeId: node.id, intentId, output: structuredClone(output), message: error instanceof Error ? error.message : "Scheduled report coverage is unconfirmed" };
+            throw error;
+          }
+        }
         await repository.mutateExecution(id, state => {
           assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, intent = run.operationSecret!.intents[node.id]!;
           if (attempt.status !== "DISPATCH_INTENT" || intent.id !== intentId || intent.state !== "DISPATCH_INTENT") throw new Error("Operation result does not own the current intent");
           const now = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = now;
           if (tool.operation_contract) intent.evidenceMeaning = tool.operation_contract.confirmation.meaning;
           attempt.status = "DONE"; attempt.completedAt = now; run.stepOutputs![node.id] = structuredClone(output); run.readProgress!.nextStepIndex++;
+          if (coverageReceipt) {
+            if (!run.scheduleSource || run.reportCoverage) throw new Error("Scheduled report coverage evidence is duplicated or detached");
+            run.reportCoverage = structuredClone(coverageReceipt);
+          }
           const entry = state.timelines[id]!.find(entry => entry.attemptId === attempt.id)!; Object.assign(entry, { status: "DONE", outcome: node.effectClass === "read" ? "READ_CONFIRMED" : intent.evidenceMeaning, completedAt: now, durationMs: Math.max(0, Date.parse(now) - Date.parse(attempt.startedAt)), output: withoutSecretFields(output) });
           appendExecutionEvent(state, run, "node.completed", { intentId, outcome: entry.outcome }, node.id, attempt.id); audit(state, run, "operation.result_acknowledged");
         });
@@ -307,6 +343,20 @@ export class OperationJobQueue {
       try { await repository.mutateExecution(id, state => {
         const run = state.executions[id];
         if (!run || run.operationSecret?.lease?.id !== control.leaseId || run.status !== "RUNNING") return;
+        if (knownCoverageFailure) {
+          const failure = knownCoverageFailure, attempt = run.readProgress!.attempts[failure.nodeId], intent = run.operationSecret.intents[failure.nodeId];
+          if (!attempt || attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== failure.intentId || intent.state !== "DISPATCH_INTENT")
+            throw new Error("Known report coverage failure no longer owns the current intent");
+          const completedAt = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = completedAt;
+          attempt.status = "FAILED"; attempt.completedAt = completedAt; run.stepOutputs![failure.nodeId] = structuredClone(failure.output);
+          const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
+          Object.assign(entry, { status: "FAILED", outcome: "REPORT_COVERAGE_UNCONFIRMED", completedAt,
+            durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(attempt.startedAt)), output: withoutSecretFields(failure.output) });
+          appendExecutionEvent(state, run, "node.report_coverage_unconfirmed", { intentId: intent.id, outcome: "REPORT_COVERAGE_UNCONFIRMED" }, failure.nodeId, attempt.id);
+          run.failure = { failureCategory: "REPORT_COVERAGE_UNCONFIRMED", failedStepId: failure.nodeId, reason: failure.message };
+          finish(state, run, "FAILED", "The ERP read returned, but it did not prove complete coverage of the exact scheduled report window. No approval was requested and no effect was dispatched.");
+          return;
+        }
         const attempt = Object.values(run.readProgress!.attempts).findLast(item => ["PREPARING", "DISPATCH_INTENT"].includes(item.status));
         if (attempt?.status === "DISPATCH_INTENT") recover(state, run, "OPERATION_DISPATCH_OR_RESULT_UNCONFIRMED");
         else if (run.readProgress!.cancellation) finish(state, run, "CANCELLED", "Cancelled before a new dispatch. Previous acknowledged results remain saved.");

@@ -41,6 +41,15 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   const base = registries.snapshot(), original = base.tools[0]!;
   const read = toolSchema.parse({ ...original, allowed_roles: ["Platform Admin"], bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [],
     output_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false } } });
+  const reportRead = toolSchema.parse({ ...read, tool_id: "report-coverage-fixture", name: "demo.report", mcp_tool_name: "demo.report",
+    input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" } }, required: ["startAt", "endAt"], additionalProperties: false },
+    report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
+      covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"] },
+    bridge_contract: { ...read.bridge_contract, resource_digest: "e".repeat(64), output_schema: { type: "object", properties: {
+      coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
+      items: { type: "array", items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
+      itemCount: { type: "integer" }, summary: { type: "string" } },
+      required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary"], additionalProperties: false } } });
   const write = toolSchema.parse({ ...read, tool_id: "operation-fixture", name: "demo.dispatch", mcp_tool_name: "demo.dispatch", is_read_only: false, risk_level: "low", side_effects: ["Synthetic message acceptance"],
     operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
     bridge_contract: { ...read.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
@@ -58,10 +67,10 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     arguments: [{ parameter: "value", source_path: ["value"] }], correlation: [{ source_path: ["value"], result_path: ["value"] }],
       outcome: { path: ["state"], applied: "APPLIED", not_applied: "ABSENT" }, settled_path: ["settled"], observed_at_path: ["observedAt"], max_age_seconds: 60, evidence_meaning: "operation-state" };
   }
-  const tools = [read, write, ...(readback ? [readback] : []), ...(email ? [email] : [])];
+  const tools = [read, reportRead, write, ...(readback ? [readback] : []), ...(email ? [email] : [])];
   vi.spyOn(registries, "snapshot").mockImplementation(() => ({ ...base, tools }));
   vi.spyOn(registries, "findTool").mockImplementation(name => tools.find(tool => [tool.tool_id, tool.name, tool.mcp_tool_name].includes(name)));
-  vi.spyOn(registries, "hash").mockImplementation(() => capabilityContractHash(toolSchema.parse({ ...write, execution_notes: [read, ...(readback ? [readback] : []), ...(email ? [email] : [])].map(capabilityContractHash).join(":") })));
+  vi.spyOn(registries, "hash").mockImplementation(() => capabilityContractHash(toolSchema.parse({ ...write, execution_notes: [read, reportRead, ...(readback ? [readback] : []), ...(email ? [email] : [])].map(capabilityContractHash).join(":") })));
   const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "operation-fixture-secret-at-least-32-characters", MCP_MODE: "mock", STORAGE_DRIVER: "memory", STORAGE_ENCRYPTION_KEY: "x".repeat(32) });
   const validator = new RegistryValidator(registries, repository);
   let dispatchAdmissionHook: (() => Promise<void>) | undefined;
@@ -69,6 +78,8 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   const sdk = { metadataComplete: true, connect: vi.fn(async () => {}), close: vi.fn(async () => {}), listTools: vi.fn(async () => tools.map(tool => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), outputSchema: tool.bridge_contract!.output_schema!,
     _meta: { "toolplane.resourceDigest": tool.bridge_contract!.resource_digest, "toolplane.resourceVersion": "1.0.0", "io.erpbridge/allowedRoles": [] } }))),
     callTool: vi.fn(async (name: string, args: Record<string, unknown>, _meta?: Record<string, unknown>): Promise<unknown> => name === exactBridgeName(read) ? { content: [], structuredContent: { value: String(args.value).toUpperCase() } } :
+      name === exactBridgeName(reportRead) ? { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: true, hasMore: false,
+        items: [{ id: "invoice-1" }], itemCount: 1, summary: "1 invoice" } } :
       readback && name === exactBridgeName(readback) ? { content: [], structuredContent: { value: args.value, state: "ABSENT", settled: true, observedAt: new Date().toISOString() } } :
       { content: [], structuredContent: { accepted: true, id: "fixture-message" } }) };
   const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: sdk,
@@ -102,7 +113,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     const run = (await repository.snapshot()).executions[id]!; expect(run.status, JSON.stringify({ failure: run.failure, progress: run.readProgress, summary: run.agentSummary, sdkCalls: sdk.callTool.mock.calls })).toBe(status);
   };
   const admit = async () => { const pub = await publish(); expect(pub.statusCode, pub.body).toBe(200); const response = await run(); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id; await wait(id, "AWAITING_APPROVAL"); return id as string; };
-  return { repository, services, app, actor, read, write, readback, email, sdk, session, request, publish, run, review, command, wait, admit,
+  return { repository, services, app, actor, read, reportRead, write, readback, email, sdk, session, request, publish, run, review, command, wait, admit,
     setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; } };
 }
 
@@ -114,11 +125,10 @@ async function prepareScheduleWorkflow(s: Awaited<ReturnType<typeof setup>>) {
     workflow.yaml = stringify({ name: workflow.name, description: "Scheduled report fixture", trigger: { type: "manual", config: { inputSchema: {
       type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" }, unusedWindow: { type: "string" }, count: { type: "number" } },
       required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
-      { id: "lookupStart", action: s.read.name, parameters: { value: "{{input.reportStartAt}}" } },
-      { id: "lookupEnd", action: s.read.name, parameters: { value: "{{input.reportEndAt}}" } },
-      { id: "send", action: s.write.name, parameters: { value: "{{lookupEnd.structuredContent.value}}" } },
+      { id: "lookupReport", action: s.reportRead.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
+      { id: "send", action: s.write.name, parameters: { value: "{{lookupReport.structuredContent.summary}}" } },
     ] });
-    workflow.steps = 3;
+    workflow.steps = 2;
     workflow.updatedAt = new Date().toISOString();
   });
   return (await s.repository.snapshot()).workflows.flow!;
@@ -252,12 +262,74 @@ test("durable daily schedule admits one pinned service-principal occurrence and 
     occurrenceId: status.json().data.occurrences[0].id, scheduledFor, reportWindow, reportWindowBinding: scheduleReportWindowBinding });
   expect(before.scheduleSource!.inputHash).toMatch(/^sha256:[a-f0-9]{64}$/);
   expect(before.workflowSnapshot!.input).toEqual({ reportStartAt: reportWindow.startAt, reportEndAt: reportWindow.endAt });
-  expect(before.startedBy.id).toBe("requester"); expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read), exactBridgeName(s.read)]);
-  expect(s.sdk.callTool.mock.calls.slice(0, 2).map(call => call[1])).toEqual([{ value: reportWindow.startAt }, { value: reportWindow.endAt }]);
+  expect(before.startedBy.id).toBe("requester"); expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead)]);
+  expect(s.sdk.callTool.mock.calls[0]![1]).toEqual({ startAt: reportWindow.startAt, endAt: reportWindow.endAt });
+  expect(before.reportCoverage).toMatchObject({ profile: "schedule-report-coverage/v1", nodeId: "lookupReport", toolId: s.reportRead.tool_id,
+    contractHash: capabilityContractHash(s.reportRead), startAt: reportWindow.startAt, endAt: reportWindow.endAt, itemCount: 1 });
   const command = await s.command(executionId), approved = await s.request("POST", `/api/executions/${executionId}/approve`, command, "reviewer");
-  expect(approved.statusCode, approved.body).toBe(200); await s.wait(executionId, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledTimes(3);
+  expect(approved.statusCode, approved.body).toBe(200); await s.wait(executionId, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
   expect(await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor))).toEqual({ admitted: 0, skipped: 0, blocked: 0 });
   expect(Object.values((await s.repository.snapshot()).executions).filter(run => run.scheduleSource).map(run => run.id)).toEqual([executionId]);
+});
+
+test("schedule activation rejects window references that lack one reviewed complete-report contract", async () => {
+  const s = await setup();
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!;
+    workflow.yaml = stringify({ name: workflow.name, description: "Unqualified scheduled report fixture", trigger: { type: "manual", config: { inputSchema: {
+      type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } }, required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
+      { id: "lookupStart", action: s.read.name, parameters: { value: "{{input.reportStartAt}}" } },
+      { id: "lookupEnd", action: s.read.name, parameters: { value: "{{input.reportEndAt}}" } },
+      { id: "send", action: s.write.name, parameters: { value: "{{lookupEnd.structuredContent.value}}" } },
+    ] }); workflow.steps = 3; workflow.updatedAt = new Date().toISOString();
+  });
+  expect((await s.publish()).statusCode).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!;
+  const denied = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding });
+  expect(denied.statusCode, denied.body).toBe(422); expect(denied.body).toMatch(/complete-result evidence/i);
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(Object.keys((await s.repository.snapshot()).schedules)).toHaveLength(0);
+});
+
+test("an incomplete ERP report result fails closed without requesting approval or dispatching the effect", async () => {
+  const s = await setup(); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding });
+  s.sdk.callTool.mockImplementationOnce(async (_name, args) => ({ content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt,
+    complete: false, hasMore: true, items: [{ id: "partial" }], itemCount: 1, summary: "Partial report" } }));
+  const scheduledFor = saved.json().data.nextRunAt as string;
+  expect(await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor))).toEqual({ admitted: 1, skipped: 0, blocked: 0 });
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string;
+  await s.wait(executionId, "FAILED");
+  const run = (await s.repository.snapshot()).executions[executionId]!;
+  expect(run.failure).toMatchObject({ failureCategory: "REPORT_COVERAGE_UNCONFIRMED", failedStepId: "lookupReport" });
+  expect(run.reportCoverage).toBeUndefined(); expect(run.runtimeApprovalSecret).toBeUndefined();
+  expect(run.operationSecret!.intents.lookupReport).toMatchObject({ state: "ACKNOWLEDGED" });
+  expect(run.agentSummary).toMatch(/No approval was requested and no effect was dispatched/i);
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead)]);
+});
+
+test("changed report coverage evidence after approval request blocks the effect before SDK dispatch", async () => {
+  const s = await setup(); await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding });
+  const scheduledFor = saved.json().data.nextRunAt as string;
+  await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
+  const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string;
+  await s.wait(executionId, "AWAITING_APPROVAL"); const command = await s.command(executionId);
+  await s.repository.mutate(state => { state.executions[executionId]!.reportCoverage!.itemCount = 2; });
+  const approved = await s.request("POST", `/api/executions/${executionId}/approve`, command, "reviewer"); expect(approved.statusCode, approved.body).toBe(200);
+  await s.wait(executionId, "FAILED");
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead)]);
+  expect((await s.repository.snapshot()).executions[executionId]!.operationSecret!.intents.send).toBeUndefined();
 });
 
 test.each([
@@ -336,7 +408,7 @@ test("schedule occurrence claim acknowledgement loss resumes after restart as on
     expect(occurrence?.state).toBe("ADMITTED"); expect(Object.values(state.executions).filter(run => run.scheduleSource)).toHaveLength(1); }, { timeout: 4000 });
   const state = await repository.snapshot(), execution = Object.values(state.executions).find(run => run.scheduleSource)!;
   await vi.waitFor(async () => expect((await repository.snapshot()).executions[execution.id]?.status).toBe("AWAITING_APPROVAL"), { timeout: 4000 });
-  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read), exactBridgeName(s.read)]);
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead)]);
   expect(Object.values((await repository.snapshot()).executions).filter(run => run.scheduleSource)).toHaveLength(1);
 });
 

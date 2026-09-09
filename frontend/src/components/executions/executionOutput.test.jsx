@@ -68,6 +68,14 @@ test("a DONE execution renders its final output", () => {
   expect(screen.queryByTestId("partial-output-badge")).toBeNull();
 });
 
+test("scheduled report coverage is explained without exposing raw receipt JSON", () => {
+  render(<ExecutionOutputPanel execution={{ ...doneExecution, reportCoverage: { profile: "schedule-report-coverage/v1", nodeId: "invoiceReport", itemCount: 42,
+    startAt: "2026-10-06T00:00:00.000Z", endAt: "2026-10-07T00:00:00.000Z", confirmedAt: "2026-10-07T09:00:01.000Z" } }} />);
+  const coverage = screen.getByRole("region", { name: "Scheduled report coverage" });
+  expect(coverage.textContent).toMatch(/Complete report window confirmed/); expect(coverage.textContent).toMatch(/Records returned42/);
+  expect(coverage.textContent).toMatch(/does not approve or prove delivery/i); expect(coverage.querySelector("pre")).toBeNull();
+});
+
 test("a FAILED execution still renders the partial output it produced", () => {
   render(<ExecutionOutputPanel execution={failedExecution} />);
 

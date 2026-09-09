@@ -52,6 +52,15 @@ const collection = stringify({ name: "Firestore collection", description: "Bound
 const tool = toolSchema.parse({ tool_id: "FIXTURE-READ", name: "read", mcp_tool_name: "read", is_read_only: true, allowed_roles: ["Platform Admin"], risk_level: "low", side_effects: [],
   input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
   bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: ["platform_admin"] } });
+const reportTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-REPORT", name: "fixture.report", mcp_tool_name: "fixture.report",
+  input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" } }, required: ["startAt", "endAt"], additionalProperties: false },
+  report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
+    covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"] },
+  bridge_contract: { ...tool.bridge_contract, resource_digest: "e".repeat(64), output_schema: { type: "object", properties: {
+    coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
+    items: { type: "array", items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
+    itemCount: { type: "integer" }, reportId: { type: "string" } },
+    required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "reportId"], additionalProperties: false } } });
 const readbackTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-NOTIFICATION-STATUS", name: "fixture.notification-status", mcp_tool_name: "fixture.notification-status",
   bridge_contract: { ...tool.bridge_contract, resource_digest: "c".repeat(64), output_schema: { type: "object", properties: {
     id: { type: "string" }, state: { type: "string" }, settled: { type: "boolean" }, observedAt: { type: "string" },
@@ -70,11 +79,11 @@ const emailTool = toolSchema.parse({ ...operationTool, tool_id: "FIXTURE-EMAIL",
   operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never",
     confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
   bridge_contract: { ...operationTool.bridge_contract, resource_digest: "d".repeat(64) } });
-const fixtureTools = [tool, operationTool, readbackTool, emailTool];
+const fixtureTools = [tool, reportTool, operationTool, readbackTool, emailTool];
 const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions: { tools: "fixture-v1", rules: "fixture-v1" } }), hash: () => resolvedParameterHashBytes(canonicalJSONBytes(fixtureTools)),
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
-const calls = [], models = [], operations = [], readbacks = [], emails = [];
+const calls = [], reports = [], models = [], operations = [], readbacks = [], emails = [];
 let sdkHook, modelHook;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
@@ -98,6 +107,11 @@ async function start(repositoryValue) {
         if (name === exactBridgeName(readbackTool)) {
           assert.equal(meta["toolplane.resourceDigest"], "c".repeat(64)); readbacks.push(args.id);
           return { content: [], structuredContent: { id: args.id, state: operations.includes(args.id) ? "APPLIED" : "ABSENT", settled: true, observedAt: new Date().toISOString() } };
+        }
+        if (name === exactBridgeName(reportTool)) {
+          assert.equal(meta["toolplane.resourceDigest"], "e".repeat(64)); reports.push({ startAt: args.startAt, endAt: args.endAt });
+          return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: true, hasMore: false,
+            items: [{ id: "invoice-firestore-1" }], itemCount: 1, reportId: "scheduled-operation" } };
         }
         assert.equal(name, exactBridgeName(tool)); assert.equal(meta["toolplane.resourceDigest"], "a".repeat(64));
         calls.push(args.id); await sdkHook?.(args); return { content: [], structuredContent: { id: args.id.toUpperCase(), token: "synthetic-remote-secret" } };
@@ -411,14 +425,13 @@ try {
   log("actual Firestore exact email-draft admission survived post-COMMIT acknowledgement loss as one immutable linked execution, required fresh independent approval, dispatched only server-derived fields once, and retained acceptance-not-delivery truth on replay/restart");
 
   const scheduledOperationYAML = stringify({ name: "Scheduled synthetic report", description: "Server-bound report window fixture", trigger: { type: "manual", config: { inputSchema: {
-    type: "object", properties: { id: { type: "string" }, reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
-    required: ["id", "reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
-    { id: "lookupStart", action: "read", parameters: { id: "{{input.reportStartAt}}" } },
-    { id: "lookupEnd", action: "read", parameters: { id: "{{input.reportEndAt}}" } },
-    { id: "send", action: operationTool.name, parameters: { id: "{{lookupEnd.structuredContent.id}}" } },
+    type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
+    required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
+    { id: "report", action: reportTool.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
+    { id: "send", action: operationTool.name, parameters: { id: "{{report.structuredContent.reportId}}" } },
   ] });
   await repository.mutate(state => { state.workflows.scheduledOperation = { ...state.workflows.operation, id: "scheduledOperation", name: "Scheduled synthetic report",
-    yaml: scheduledOperationYAML, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions.scheduledOperation = []; });
+    yaml: scheduledOperationYAML, steps: 2, publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions.scheduledOperation = []; });
   await request("POST", "/api/workflows/scheduledOperation/publish", {}, 200);
   const scheduleWorkflow = (await repository.snapshot()).workflows.scheduledOperation;
   const scheduleLocalTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
@@ -426,7 +439,7 @@ try {
   const schedule = (await request("PUT", "/api/workflows/scheduledOperation/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
     workflowVersion: scheduleWorkflow.publishedVersion, workflowHash: workflowContentHash(scheduleWorkflow.yaml), enabled: true, timezone: "UTC",
     localTime: scheduleLocalTime, reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300,
-    servicePrincipalId: "owner", input: { id: "scheduled-operation" }, reportWindowBinding }, 200)).data;
+    servicePrincipalId: "owner", input: {}, reportWindowBinding }, 200)).data;
   const scheduledFor = schedule.nextRunAt, operationsBeforeSchedule = operations.length, modelsBeforeSchedule = models.length;
   const actualScheduleClaimSave = persistence.save.bind(persistence); let lostScheduleClaimACK = false;
   persistence.save = async payload => { await actualScheduleClaimSave(payload); if (!lostScheduleClaimACK) {
@@ -443,7 +456,11 @@ try {
   assert.equal(scheduledOccurrence.executionId, scheduledExecution.id); assert.deepEqual(scheduledOccurrence.reportWindow, expectedReportWindow);
   assert.deepEqual(scheduledExecution.scheduleSource.reportWindow, expectedReportWindow); assert.deepEqual(scheduledExecution.scheduleSource.reportWindowBinding, reportWindowBinding);
   assert.match(scheduledExecution.scheduleSource.inputHash, /^sha256:[a-f0-9]{64}$/); assert.deepEqual(scheduledExecution.workflowSnapshot.input,
-    { id: "scheduled-operation", reportStartAt: expectedReportWindow.startAt, reportEndAt: expectedReportWindow.endAt });
+    { reportStartAt: expectedReportWindow.startAt, reportEndAt: expectedReportWindow.endAt });
+  assert.deepEqual(reports, [{ startAt: expectedReportWindow.startAt, endAt: expectedReportWindow.endAt }]);
+  assert.equal(scheduledExecution.reportCoverage.profile, "schedule-report-coverage/v1"); assert.equal(scheduledExecution.reportCoverage.nodeId, "report");
+  assert.equal(scheduledExecution.reportCoverage.toolId, reportTool.tool_id); assert.equal(scheduledExecution.reportCoverage.itemCount, 1);
+  assert.equal(scheduledExecution.reportCoverage.startAt, expectedReportWindow.startAt); assert.equal(scheduledExecution.reportCoverage.endAt, expectedReportWindow.endAt);
   const scheduleReview = (await request("GET", `/api/executions/${scheduledExecution.id}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
   await request("POST", `/api/executions/${scheduledExecution.id}/approve`, { approvalId: scheduleReview.id, baseVersion: scheduleReview.version,
     reviewHash: scheduleReview.reviewHash, decisionKey: "firestore-scheduled-operation-approval-0001" }, 200, "reviewer");
@@ -453,8 +470,8 @@ try {
   await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).executions[scheduledExecution.id], completedScheduledExecution);
   assert.equal(Object.values((await repository.snapshot()).executions).filter(value => value.scheduleSource?.scheduledFor === scheduledFor).length, 1);
-  assert.equal(operations.length, operationsBeforeSchedule + 1);
-  log("actual Firestore daily schedule claim injected its exact local-calendar window into reviewed ERP read inputs, survived post-COMMIT acknowledgement loss as one service-principal execution, required fresh independent approval, dispatched once and persisted across restart without a model call");
+  assert.equal(operations.length, operationsBeforeSchedule + 1); assert.equal(reports.length, 1);
+  log("actual Firestore daily schedule claim injected its exact local-calendar window into one reviewed report read, persisted complete/exhausted/count evidence, survived post-COMMIT acknowledgement loss as one service-principal execution, required fresh independent approval, dispatched once and persisted across restart without a model call");
 
   const lostOperation = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-lost-intent-0001", input: { id: "operation-lost-intent" } }, 202)).data.id;
   await waitFor(async () => (await repository.snapshot()).executions[lostOperation].status === "AWAITING_APPROVAL", "lost-intent approval wait");

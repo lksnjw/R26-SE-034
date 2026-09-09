@@ -163,6 +163,7 @@ function CapabilityInspector({ entry, canReview, onDecision }) {
   const [confirmed, setConfirmed] = useState(false);
   const definition = entry.observation?.definition ?? entry.revision?.definition;
   const operation = definition?.is_read_only === false;
+  const reportCoverage = definition?.report_coverage_contract?.profile === "report-coverage/v1" ? definition.report_coverage_contract : null;
   const complete = fullyVisible(definition);
   const validNote = note.trim().length > 0 && note.length <= 2000;
   return <div className="min-w-0">
@@ -172,6 +173,7 @@ function CapabilityInspector({ entry, canReview, onDecision }) {
       <div><dt className="text-xs text-gray-500">Observation time</dt><dd>{entry.observation?.discoveredAt ?? "No observation"}</dd></div>
       <div><dt className="text-xs text-gray-500">Exact contract hash</dt><dd className="font-mono text-xs">{entry.observation?.contractHash ?? entry.revision?.contractHash}</dd></div>
       <div><dt className="text-xs text-gray-500">Output schema validation</dt><dd>{definition?.bridge_contract?.output_schema ? "Declared schema checked before downstream use" : "No declared output schema; bounded result handling still applies"}</dd></div>
+      {reportCoverage ? <div><dt className="text-xs text-gray-500">Scheduled report coverage</dt><dd>Exact {reportCoverage.start_parameter} → {reportCoverage.end_parameter} interval; connector must attest complete result, no remaining page, returned items and matching count. This evidence does not approve a later effect.</dd></div> : null}
       {entry.revision ? <div><dt className="text-xs text-gray-500">Current saved review</dt><dd>{entry.revision.id} · {entry.revision.reviewedBy.id} · {entry.revision.reviewedAt}</dd></div> : null}
       {entry.admission?.reason ? <div><dt className="text-xs text-gray-500">Stored block reason</dt><dd>{label(entry.admission.reason)}</dd></div> : null}
     </dl>

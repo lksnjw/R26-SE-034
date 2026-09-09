@@ -47,6 +47,23 @@ export const toolSchema = z.object({
     body_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
   }).strict().refine(value => new Set([value.recipient_parameter, value.subject_parameter, value.body_parameter]).size === 3,
     "Email delivery parameters must be distinct").optional(),
+  // Optional reviewed proof contract for a bounded report read. This is an
+  // attestation made by the connector result; it is never inferred from
+  // conventional names such as `page`, descriptions, or model output.
+  report_coverage_contract: z.object({
+    profile: z.literal("report-coverage/v1"),
+    start_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+    end_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+    covered_start_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+    covered_end_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+    complete_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+    has_more_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+    items_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+    item_count_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+  }).strict()
+    .refine(value => value.start_parameter !== value.end_parameter, "Report coverage parameters must be distinct")
+    .refine(value => new Set([value.covered_start_path, value.covered_end_path, value.complete_path, value.has_more_path, value.items_path, value.item_count_path]
+      .map(path => path.join("\u0000"))).size === 6, "Report coverage selectors must be distinct").optional(),
   required_parameters: z.array(z.string()).default([]),
   optional_parameters: z.array(z.string()).default([]),
   allowed_roles: z.array(z.string()).default([]),
