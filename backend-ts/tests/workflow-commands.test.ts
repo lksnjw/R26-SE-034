@@ -12,7 +12,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { ProviderRuntime } from "../src/providers/runtime.js";
 import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 import type { Workflow } from "../src/models/schemas.js";
-import { analysisNodePatchSchema, applyWorkflowCommand, selectedNodePatchCommand, selectedNodePatchSchema, selectedNodePatchVersion } from "../src/workflows/commands.js";
+import { agentNodePatchSchema, analysisNodePatchSchema, applyWorkflowCommand, selectedNodePatchCommand, selectedNodePatchSchema, selectedNodePatchVersion } from "../src/workflows/commands.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -101,6 +101,46 @@ test("selected analysis chat proposal uses its hardened narrow prompt and persis
     command: { type: "updateAnalysis", nodeId: "summary", patch: { instruction: "Return one concise summary", max_output_tokens: 256 } } });
   const request = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
   expect(request.messages[0].content).toContain("TASK: ONE SELECTED ANALYSIS NODE PATCH");
+  const state = await s.repository.snapshot(); expect(state.workflows.report!.yaml).toBe(source); expect(state.workflows.report!.draftVersion).toBe(1); expect(state.executions).toEqual({});
+});
+
+test("bounded agent commands edit only its allow-list, completion contract and budgets", () => {
+  const source = stringify({ name: "Agent editing", description: "Author one bounded dynamic read", trigger: { type: "manual" }, steps: [
+    { id: "first", action: "demo.echo", parameters: { value: "original" } },
+    { id: "research", kind: "agent", description: "Research", instruction: "Gather the required evidence", input: "{{first.structuredContent.value}}",
+      allowed_actions: ["demo.echo"], output_schema: { type: "object", properties: { summary: { type: "string" }, complete: { type: "boolean" } }, required: ["summary", "complete"], additionalProperties: false },
+      completion_predicate: { path: ["complete"], equals: true }, data_class: "internal", model: "model-2026-10", max_input_items: 10, max_input_chars: 2000,
+      max_output_tokens: 512, max_total_tokens: 2048, max_rounds: 3, max_tool_calls: 4, max_wall_time_ms: 30000, max_concurrency: 1 },
+    { id: "last", action: "demo.echo", parameters: { value: "{{research.structuredContent.summary}}" } },
+  ] });
+  const patch = agentNodePatchSchema.parse({ instruction: "Gather only the reviewed evidence", max_rounds: 2, max_tool_calls: 2 });
+  expect(selectedNodePatchVersion({ kind: "agent" })).toBe("prompt/agent-node-patch/v1");
+  expect(selectedNodePatchCommand({ id: "research", kind: "agent" }, patch)).toEqual({ type: "updateAgent", nodeId: "research", patch });
+  const updated = parseWorkflowYAMLStrict(applyWorkflowCommand(source, { type: "updateAgent", nodeId: "research", patch }));
+  expect(updated.steps[1]).toMatchObject({ id: "research", kind: "agent", instruction: "Gather only the reviewed evidence", allowed_actions: ["demo.echo"],
+    completion_predicate: { path: ["complete"], equals: true }, max_rounds: 2, max_tool_calls: 2, max_concurrency: 1 });
+  expect(updated.steps[0]).toEqual(parseWorkflowYAMLStrict(source).steps[0]); expect(updated.steps[2]).toEqual(parseWorkflowYAMLStrict(source).steps[2]);
+  expect(() => applyWorkflowCommand(source, { type: "updateNode", nodeId: "research", patch: { description: "Wrong command" } })).toThrow(/type does not match/);
+  const schema = selectedNodePatchSchema({ kind: "agent" });
+  for (const value of [{ action: "demo.echo" }, { model: "provider:latest" }, { input: "{{input.value}}" }, { max_rounds: 9 }, { max_concurrency: 2 },
+    { completion_predicate: { path: [], equals: true } }, {}]) expect(schema.safeParse(value).success).toBe(false);
+});
+
+test("selected agent chat proposal uses the hardened agent prompt and keeps the draft unchanged", async () => {
+  const source = stringify({ name: "Agent proposal", description: "Edit one bounded agent", trigger: { type: "manual" }, steps: [
+    { id: "first", action: "demo.echo", parameters: { value: "original" } },
+    { id: "research", kind: "agent", instruction: "Gather evidence", input: "{{first.structuredContent.value}}", allowed_actions: ["demo.echo"],
+      data_class: "internal", output_schema: { type: "object", properties: { complete: { type: "boolean" } }, required: ["complete"], additionalProperties: false },
+      completion_predicate: { path: ["complete"], equals: true }, max_concurrency: 1 },
+  ] }), hash = workflowContentHash(source);
+  const s = await setup({ instruction: "Gather only the exact reviewed evidence", max_rounds: 2 });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.workflows.report!.steps = 2; state.versions.report = [{ version: 1, artifactState: "PUBLISHED", yaml: source }]; });
+  const response = await s.propose({ nodeId: "research", baseHash: hash, prompt: "Use at most two rounds" });
+  expect(response.statusCode, response.body).toBe(200); expect(response.json().data).toMatchObject({ nodeId: "research", baseHash: hash,
+    command: { type: "updateAgent", nodeId: "research", patch: { instruction: "Gather only the exact reviewed evidence", max_rounds: 2 } } });
+  const request = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
+  expect(request.messages[0].content).toContain("TASK: ONE SELECTED BOUNDED AGENT NODE PATCH");
+  expect(request.messages[1].content).not.toContain("send_email");
   const state = await s.repository.snapshot(); expect(state.workflows.report!.yaml).toBe(source); expect(state.workflows.report!.draftVersion).toBe(1); expect(state.executions).toEqual({});
 });
 

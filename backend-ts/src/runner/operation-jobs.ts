@@ -22,10 +22,11 @@ import type { ToolDefinition } from "../registry/schemas.js";
 import { assertReportCursorProgress, assertReportPageProgress, assertScheduledReportCoverageReceipt, completeCursorPaginatedReport, completePaginatedReport,
   assertReportRelatedKeyProgress, confirmScheduledReportCoverage, confirmScheduledReportCursor, confirmScheduledReportPage, newReportCursorProgress, newReportPageProgress,
   protectedReportPageOutput, reportPagination, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
-import { assertRuntimeAnalysisEgress } from "../providers/egress-policy.js";
+import { assertRuntimeAgentEgress, assertRuntimeAnalysisEgress } from "../providers/egress-policy.js";
 import { ANALYSIS_PROMPT_VERSION } from "../providers/runtime.js";
 import { promptData } from "../prompts/contracts.js";
 import { validateValue } from "../structured-output/validate.js";
+import { runRuntimeAgent, RuntimeAgentKnownFailure } from "./runtime-agent.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -73,6 +74,7 @@ function recover(state: RepositoryState, run: Execution, reason: string) {
   if (uncertain && attempt && run.operationSecret.analysisProvider) {
     try { uncertainAnalysis = effectiveStepKind(parseWorkflowYAMLStrict(run.workflowSnapshot!.yaml).steps[attempt.stepIndex]!) === "analysis"; } catch { uncertainAnalysis = false; }
   }
+  const uncertainAgent = uncertainIntent?.dispatchKind === "agent-model" || uncertainIntent?.dispatchKind === "agent-tool";
   if (attempt) {
     attempt.status = uncertain ? "UNKNOWN" : "FAILED"; attempt.completedAt = new Date().toISOString();
     const intent = uncertainIntent ?? Object.values(run.operationSecret.intents).findLast(value => value.nodeId === attempt.nodeId && value.state === "DISPATCH_INTENT"); if (intent) intent.state = "UNKNOWN";
@@ -81,8 +83,9 @@ function recover(state: RepositoryState, run: Execution, reason: string) {
     appendExecutionEvent(state, run, uncertain ? "node.outcome_unknown" : "node.interrupted", { outcome: uncertain ? "UNKNOWN" : "NOT_DISPATCHED", reason }, attempt.nodeId, attempt.id);
   }
   progress.epoch++; progress.recoveryReason = reason;
-  run.failure = { failureCategory: uncertainAnalysis ? "ANALYSIS_OUTCOME_UNKNOWN" : uncertain ? "OPERATION_OUTCOME_UNKNOWN" : "OPERATION_INTERRUPTED", failedStepId: attempt?.nodeId ?? "checkpoint", reason };
-  finish(state, run, uncertainAnalysis ? "RECOVERY_REQUIRED" : uncertain ? "RECONCILIATION_REQUIRED" : "RECOVERY_REQUIRED",
+  run.failure = { failureCategory: uncertainAgent ? "AGENT_OUTCOME_UNKNOWN" : uncertainAnalysis ? "ANALYSIS_OUTCOME_UNKNOWN" : uncertain ? "OPERATION_OUTCOME_UNKNOWN" : "OPERATION_INTERRUPTED", failedStepId: attempt?.nodeId ?? "checkpoint", reason };
+  finish(state, run, uncertainAgent || uncertainAnalysis ? "RECOVERY_REQUIRED" : uncertain ? "RECONCILIATION_REQUIRED" : "RECOVERY_REQUIRED",
+    uncertainAgent ? "A runtime-agent model turn or governed read may have completed, but no result was acknowledged. It was not replayed and no later effect ran." :
     uncertainAnalysis ? "The model call may have completed, but no validated result was acknowledged. It was not replayed, no later effect ran, and a separate new execution is required." :
       uncertain ? "An operation intent has no confirmed outcome. Saved results are retained; the action was not automatically replayed. Reconcile with the ERP before retrying." :
         "Execution was interrupted before a new dispatch. Saved results are retained; recovery requires fresh authorization.");
@@ -205,7 +208,9 @@ export class OperationJobQueue {
       const compiled = prepareOperationExecution(state, this.services, publication, workflow.yaml, user.role);
       if (compiled.plan.ir.inputSchema && validateToolInput(compiled.plan.ir.inputSchema, input).length) throw new HandlerFailure(422, "Operation input does not match its schema");
       const analysisNodes = compiled.plan.ir.root.nodes.filter(node => node.kind === "analysis");
+      const agentNodes = compiled.plan.ir.root.nodes.filter(node => node.kind === "agent");
       let analysisProvider: NonNullable<Execution["operationSecret"]>["analysisProvider"];
+      let agentProvider: NonNullable<Execution["operationSecret"]>["agentProvider"];
       if (analysisNodes.length) {
         const runtime = this.services.providerRuntime, configuration = runtime?.configuration, binding = runtime?.binding;
         if (!runtime?.configured || !configuration || !binding || binding.providerId !== configuration.id)
@@ -218,6 +223,18 @@ export class OperationJobQueue {
         } catch (error) { throw new HandlerFailure(422, error instanceof Error ? error.message : "Durable analysis provider admission failed", { code: "ANALYSIS_PROVIDER_DENIED" }); }
         analysisProvider = { configuration: structuredClone(configuration), configurationRevision: binding.configurationRevision };
       }
+      if (agentNodes.length) {
+        const runtime = this.services.providerRuntime, configuration = runtime?.configuration, binding = runtime?.binding;
+        if (!runtime?.configured || !configuration || !binding || binding.providerId !== configuration.id)
+          throw new HandlerFailure(503, "A configured model provider is required for durable agent nodes", { code: "AGENT_PROVIDER_REQUIRED" });
+        try {
+          for (const node of agentNodes) {
+            runtime.snapshot(node.model || configuration.model);
+            assertRuntimeAgentEgress(configuration.egressPolicy!, configuration.baseURL, node.dataClass);
+          }
+        } catch (error) { throw new HandlerFailure(422, error instanceof Error ? error.message : "Durable agent provider admission failed", { code: "AGENT_PROVIDER_DENIED" }); }
+        agentProvider = { configuration: structuredClone(configuration), configurationRevision: binding.configurationRevision };
+      }
       runtimeApprovalPolicyHash(state);
       const id = `operation-${randomBytes(16).toString("hex")}`, now = new Date().toISOString();
       const run: Execution = { id, workflowId: workflow.id, workflowName: workflow.name, status: "PENDING", startedAt: now, completedAt: null, durationMs: 0,
@@ -225,7 +242,7 @@ export class OperationJobQueue {
         workflowSnapshot: { yaml: workflow.yaml, version: workflow.publishedVersion, contentHash: compiled.plan.sourceHash, registryHash: compiled.receipt.registryHash, input,
           executionProfile: "sequential-operation-v1", operationCompilation: compiled.receipt }, readProgress: newReadProgress(this.services.repository), stepOutputs: {},
         operationSecret: { profile: "operation-job/v1", actorId: user.id, roleId: state.users[user.id]!.roleId, admittedRole: user.role, state: "QUEUED", idempotencyScope: scope, requestFingerprint: fingerprint, createdAt: now, intents: {},
-          ...(analysisProvider ? { analysisProvider } : {}) },
+          ...(analysisProvider ? { analysisProvider } : {}), ...(agentProvider ? { agentProvider } : {}) },
         ...(source ? { scheduleSource: structuredClone(source) } : {}),
         agentSummary: "Operation queued. Each write requires an independent exact approval; nothing is confirmed by queue admission." };
       assertCurrentRunController(state, run, user.id, user.role);
@@ -269,6 +286,7 @@ export class OperationJobQueue {
     const { services } = this, repository = services.repository, id = control.id;
     let knownCoverageFailure: { nodeId: string; intentKey: string; intentId: string; output: Record<string, unknown>; message: string } | undefined;
     let knownAnalysisFailure: { nodeId: string; intentId: string; message: string; inputTokens: number; outputTokens: number } | undefined;
+    let knownAgentFailure: { nodeId: string; code: string; message: string } | undefined;
     try {
       const initial = await repository.mutateExecution(id, state => {
         const run = state.executions[id]!, job = run.operationSecret!;
@@ -297,6 +315,118 @@ export class OperationJobQueue {
       if (!gate.result.passed || !gate.token) throw new Error("Operation deterministic verification failed");
       for (let index = initial.readProgress!.nextStepIndex; index < plan.ir.root.nodes.length; index++) {
         assertContext(); const node = plan.ir.root.nodes[index]!;
+        if (node.kind === "agent") {
+          const resolvedInput = await repository.mutateExecution(id, state => {
+            this.assert(control); const run = state.executions[id]!, progress = run.readProgress!;
+            if (progress.nextStepIndex !== index) throw new Error("Runtime-agent pointer changed");
+            if (!progress.attempts[node.id]) {
+              const startedAt = new Date().toISOString(), attemptId = `${id}:${node.id}`;
+              progress.attempts[node.id] = { id: attemptId, nodeId: node.id, stepIndex: index, status: "PREPARING", startedAt };
+              (state.timelines[id] ??= []).push({ id: `timeline-${node.id}`, nodeId: node.id, attemptId, label: node.description ?? `Agent ${node.id}`,
+                status: "RUNNING", phase: "PREPARING", startedAt, sideEffect: false });
+              appendExecutionEvent(state, run, "node.agent_preparing", { dataClass: node.dataClass, maxRounds: node.maxRounds, maxToolCalls: node.maxToolCalls }, node.id, attemptId);
+            } else if (progress.attempts[node.id]!.status !== "PREPARING") throw new Error("A runtime-agent invocation cannot be replayed");
+            return resolveReadBinding(node.input, { input: snapshot.input, ...run.stepOutputs });
+          });
+          const inputJSON = JSON.stringify(resolvedInput), itemCount = Array.isArray(resolvedInput) ? resolvedInput.length :
+            resolvedInput !== null && typeof resolvedInput === "object" ? Object.keys(resolvedInput).length : 1;
+          if (itemCount > node.maxInputItems || [...inputJSON].length > node.maxInputChars) throw new Error("Runtime-agent input exceeds its reviewed bounds");
+          const captured = initial.operationSecret!.agentProvider;
+          if (!captured || !services.providerRuntime) throw new Error("Captured runtime-agent provider is unavailable");
+          assertRuntimeAgentEgress(captured.configuration.egressPolicy!, captured.configuration.baseURL, node.dataClass);
+          const model = node.model || captured.configuration.model;
+          const runtime = services.providerRuntime.restoreCaptured(captured.configuration, captured.configurationRevision).snapshot(model);
+          const pendingCalls = new Map<string, { intentKey: string; intentId: string }>();
+          let result;
+          try {
+            result = await runRuntimeAgent({ node, taskInput: resolvedInput, runtime, tools: live, workflowId: initial.workflowId, executionId: id,
+              actor: { id: actor.id, role: actor.role }, ...(initial.traceId ? { traceId: initial.traceId } : {}), signal: control.controller.signal,
+              hooks: {
+                beforeModel: async (round, messages) => {
+                  const intentKey = `${node.id}:model:${round}`, intentId = `intent-${randomBytes(16).toString("hex")}`;
+                  await repository.mutateExecution(id, state => {
+                    assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, current = run.operationSecret!.agentProvider;
+                    const fresh = resolveReadBinding(node.input, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
+                    if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(resolvedInput)) ||
+                        run.operationSecret!.intents[intentKey] || !current || !canonicalJSONBytes(current).equals(canonicalJSONBytes(captured)))
+                      throw new Error("Runtime-agent model intent facts changed or are already used");
+                    assertRuntimeAgentEgress(current.configuration.egressPolicy!, current.configuration.baseURL, node.dataClass);
+                    const now = new Date().toISOString(); run.operationSecret!.intents[intentKey] = { id: intentId, nodeId: node.id,
+                      invocationId: `${attempt.id}:model:${round}`, operationKey: `${id}:${node.id}:model:${round}`, dispatchKind: "agent-model",
+                      argumentHash: digest({ messages, model, round, configurationRevision: current.configurationRevision }), state: "DISPATCH_INTENT", preparedAt: now };
+                    attempt.status = "DISPATCH_INTENT"; attempt.dispatchIntentAt = now;
+                    const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!; entry.phase = `MODEL_${round + 1}_DISPATCH_INTENT`;
+                    appendExecutionEvent(state, run, "node.agent_model_dispatch_intent", { intentId, round: round + 1, model }, node.id, attempt.id); audit(state, run, "operation.agent_model_dispatch_intent");
+                  });
+                },
+                afterModel: async (round, turn) => {
+                  const intentKey = `${node.id}:model:${round}`;
+                  await repository.mutateExecution(id, state => {
+                    assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, intent = run.operationSecret!.intents[intentKey]!;
+                    if (attempt.status !== "DISPATCH_INTENT" || !intent || intent.state !== "DISPATCH_INTENT") throw new Error("Runtime-agent model result does not own the current intent");
+                    const now = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = now; intent.evidenceMeaning = "agent-model-turn";
+                    attempt.status = "PREPARING"; delete attempt.dispatchIntentAt;
+                    run.tokens.input += turn.measured === true ? turn.inputTokens : 0; run.tokens.output += turn.measured === true ? turn.outputTokens : 0; run.tokens.total = run.tokens.input + run.tokens.output;
+                    const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!; entry.phase = `MODEL_${round + 1}_ACKNOWLEDGED`;
+                    appendExecutionEvent(state, run, "node.agent_model_acknowledged", { intentId: intent.id, round: round + 1,
+                      inputTokens: turn.measured === true ? turn.inputTokens : 0, outputTokens: turn.measured === true ? turn.outputTokens : 0,
+                      proposedToolCalls: turn.toolCalls.length }, node.id, attempt.id); audit(state, run, "operation.agent_model_acknowledged");
+                  });
+                },
+                callTool: async (capability, tool, call, round, callIndex, agentSignal) => {
+                  const intentKey = `${node.id}:tool:${round}:${callIndex}`, intentId = `intent-${randomBytes(16).toString("hex")}`;
+                  pendingCalls.set(`${round}:${callIndex}`, { intentKey, intentId });
+                  const persistIntent = async () => repository.mutateExecution(id, state => {
+                    assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, current = run.operationSecret!.agentProvider;
+                    if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || run.operationSecret!.intents[intentKey] || !current ||
+                        !canonicalJSONBytes(current).equals(canonicalJSONBytes(captured))) throw new Error("Runtime-agent tool intent facts changed or are already used");
+                    const now = new Date().toISOString(); run.operationSecret!.intents[intentKey] = { id: intentId, nodeId: node.id,
+                      invocationId: `${attempt.id}:tool:${round}:${callIndex}`, operationKey: `${id}:${node.id}:tool:${round}:${callIndex}`, dispatchKind: "agent-tool",
+                      argumentHash: digest({ capability, arguments: call.arguments }), state: "DISPATCH_INTENT", preparedAt: now };
+                    attempt.status = "DISPATCH_INTENT"; attempt.dispatchIntentAt = now;
+                    const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!; entry.phase = `TOOL_${round + 1}_${callIndex + 1}_DISPATCH_INTENT`;
+                    appendExecutionEvent(state, run, "node.agent_tool_dispatch_intent", { intentId, round: round + 1, call: callIndex + 1, action: capability.action }, node.id, attempt.id);
+                    audit(state, run, "operation.agent_tool_dispatch_intent");
+                  });
+                  return dispatchReadTool(services, actor.id, capability.action, call.arguments, { workflowId: initial.workflowId, executionId: id,
+                    signal: agentSignal, assertDispatch: assertContext, beforeDispatch: persistIntent,
+                    dynamicPlan: { admissionPin: capability.admission, contractHash: capability.contractHash, toolId: tool.tool_id } });
+                },
+                afterTool: async (capability, _call, output, round, callIndex) => {
+                  const pending = pendingCalls.get(`${round}:${callIndex}`); if (!pending) throw new Error("Runtime-agent tool result has no private intent");
+                  await repository.mutateExecution(id, state => {
+                    assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, intent = run.operationSecret!.intents[pending.intentKey]!;
+                    if (attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== pending.intentId || intent.state !== "DISPATCH_INTENT")
+                      throw new Error("Runtime-agent tool result does not own the current intent");
+                    const now = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = now; intent.evidenceMeaning = "agent-tool-result";
+                    attempt.status = "PREPARING"; delete attempt.dispatchIntentAt;
+                    const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!; entry.phase = `TOOL_${round + 1}_${callIndex + 1}_ACKNOWLEDGED`;
+                    appendExecutionEvent(state, run, "node.agent_tool_acknowledged", { intentId: intent.id, round: round + 1, call: callIndex + 1,
+                      action: capability.action, resultHash: digest(withoutSecretFields(output)) }, node.id, attempt.id); audit(state, run, "operation.agent_tool_acknowledged");
+                  });
+                  pendingCalls.delete(`${round}:${callIndex}`);
+                },
+              } });
+          } catch (error) {
+            if (error instanceof RuntimeAgentKnownFailure) knownAgentFailure = { nodeId: node.id, code: error.code, message: error.message };
+            throw error;
+          }
+          await repository.mutateExecution(id, state => {
+            assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!;
+            if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index) throw new Error("Runtime-agent completion does not own the current node");
+            const finalIntent = run.operationSecret!.intents[`${node.id}:model:${result.rounds - 1}`];
+            if (!finalIntent || finalIntent.state !== "ACKNOWLEDGED") throw new Error("Runtime-agent completion lacks an acknowledged final model turn");
+            finalIntent.evidenceMeaning = "agent-structured-output";
+            const now = new Date().toISOString(); attempt.status = "DONE"; attempt.completedAt = now;
+            run.stepOutputs![node.id] = { structuredContent: structuredClone(result.output) }; run.readProgress!.nextStepIndex++;
+            const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
+            Object.assign(entry, { status: "DONE", phase: "COMPLETE", outcome: "AGENT_STRUCTURED_OUTPUT", completedAt: now,
+              durationMs: Math.max(0, Date.parse(now) - Date.parse(attempt.startedAt)), output: { structuredContent: structuredClone(result.output) } });
+            appendExecutionEvent(state, run, "node.agent_completed", { outcome: "AGENT_STRUCTURED_OUTPUT", rounds: result.rounds, toolCalls: result.toolCalls,
+              inputTokens: result.inputTokens, outputTokens: result.outputTokens, latencyMs: result.latencyMs }, node.id, attempt.id); audit(state, run, "operation.agent_completed");
+          });
+          continue;
+        }
         if (node.kind === "analysis") {
           const resolvedInput = await repository.mutateExecution(id, state => {
             this.assert(control); const run = state.executions[id]!, progress = run.readProgress!;
@@ -649,6 +779,18 @@ export class OperationJobQueue {
       try { await repository.mutateExecution(id, state => {
         const run = state.executions[id];
         if (!run || run.operationSecret?.lease?.id !== control.leaseId || run.status !== "RUNNING") return;
+        if (knownAgentFailure) {
+          const failure = knownAgentFailure, attempt = run.readProgress!.attempts[failure.nodeId];
+          if (!attempt || attempt.status !== "PREPARING") throw new Error("Known runtime-agent failure no longer owns the current node");
+          const completedAt = new Date().toISOString(); attempt.status = "FAILED"; attempt.completedAt = completedAt;
+          const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
+          Object.assign(entry, { status: "FAILED", phase: "COMPLETE", outcome: failure.code, completedAt,
+            durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(attempt.startedAt)) });
+          appendExecutionEvent(state, run, "node.agent_failed", { outcome: failure.code }, failure.nodeId, attempt.id);
+          run.failure = { failureCategory: failure.code, failedStepId: failure.nodeId, reason: failure.message };
+          finish(state, run, "FAILED", "The bounded runtime agent stopped without satisfying its reviewed completion contract. No later effect was dispatched.");
+          return;
+        }
         if (knownAnalysisFailure) {
           const failure = knownAnalysisFailure, attempt = run.readProgress!.attempts[failure.nodeId], intent = run.operationSecret.intents[failure.nodeId];
           if (!attempt || attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== failure.intentId || intent.state !== "DISPATCH_INTENT")

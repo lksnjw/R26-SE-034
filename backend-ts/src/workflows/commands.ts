@@ -20,6 +20,22 @@ const analysisNodeSchema = z.object({ id: nodeIdSchema, kind: z.literal("analysi
   input: analysisInputSchema, output_schema: analysisOutputSchema, data_class: z.enum(["public", "internal", "confidential", "restricted"]),
   model: z.string().max(256).refine(value => !value.includes(":latest"), "Floating model IDs are not supported").optional(), max_input_items: z.number().int().min(1).max(10_000).optional(),
   max_input_chars: z.number().int().min(1).max(200_000).optional(), max_output_tokens: z.number().int().min(1).max(8_192).optional() }).strict();
+const completionPredicateSchema = z.object({ path: z.array(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/)).min(1).max(16),
+  equals: z.union([z.string().max(2000), z.number().finite(), z.boolean(), z.null()]) }).strict();
+const agentFields = { description: z.string().max(2000).optional(), instruction: z.string().min(1).max(4000), input: analysisInputSchema,
+  allowed_actions: z.array(z.string().min(1).max(128)).min(1).max(8).refine(value => new Set(value).size === value.length, "Agent actions must be unique"),
+  output_schema: analysisOutputSchema, completion_predicate: completionPredicateSchema, data_class: z.enum(["public", "internal", "confidential", "restricted"]),
+  model: z.string().max(256).refine(value => !value.includes(":latest"), "Floating model IDs are not supported").optional(),
+  max_input_items: z.number().int().min(1).max(10_000).optional(), max_input_chars: z.number().int().min(1).max(200_000).optional(),
+  max_output_tokens: z.number().int().min(1).max(8_192).optional(), max_total_tokens: z.number().int().min(1).max(32_768).optional(),
+  max_rounds: z.number().int().min(1).max(8).optional(), max_tool_calls: z.number().int().min(0).max(16).optional(),
+  max_wall_time_ms: z.number().int().min(1000).max(120_000).optional(), max_concurrency: z.literal(1).optional() };
+export const agentNodePatchSchema = z.object(Object.fromEntries(Object.entries(agentFields).map(([key, value]) => [key, value.optional()])) as { [K in keyof typeof agentFields]: z.ZodOptional<(typeof agentFields)[K]> })
+  .strict().refine(value => Object.keys(value).length > 0).refine(value => value.max_total_tokens === undefined || value.max_output_tokens === undefined || value.max_total_tokens >= value.max_output_tokens,
+    "Total token budget must cover one output turn");
+const agentNodeSchema = z.object({ id: nodeIdSchema, kind: z.literal("agent"), ...agentFields }).strict()
+  .refine(value => value.max_total_tokens === undefined || value.max_output_tokens === undefined || value.max_total_tokens >= value.max_output_tokens,
+    "Total token budget must cover one output turn");
 export const conditionPatchSchema = z.object({ predicate: readPredicateSchema }).strict();
 export const returnPatchSchema = z.object({ output: readReturnSchema }).strict();
 const destinationSchema = z.union([z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict(), z.object({ loopId: nodeIdSchema, scope: z.literal("body") }).strict()]);
@@ -31,8 +47,10 @@ export type NodeContext = z.infer<typeof nodeContextSchema>;
 export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("updateNode"), nodeId: nodeIdSchema, patch: nodePatchSchema }).strict(),
   z.object({ type: z.literal("updateAnalysis"), nodeId: nodeIdSchema, patch: analysisNodePatchSchema }).strict(),
+  z.object({ type: z.literal("updateAgent"), nodeId: nodeIdSchema, patch: agentNodePatchSchema }).strict(),
   z.object({ type: z.literal("addNode"), node: workflowStepBlueprintSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
   z.object({ type: z.literal("addAnalysis"), node: analysisNodeSchema, beforeNodeId: nodeIdSchema.nullable() }).strict(),
+  z.object({ type: z.literal("addAgent"), node: agentNodeSchema, beforeNodeId: nodeIdSchema.nullable() }).strict(),
   z.object({ type: z.literal("removeNode"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("moveNode"), nodeId: nodeIdSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
   z.object({ type: z.literal("addCondition"), conditionId: nodeIdSchema, predicate: readPredicateSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
@@ -54,11 +72,11 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
 export function selectedNodePatchSchema(node: { kind?: string | undefined }) {
-  return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : nodePatchSchema;
+  return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : node.kind === "agent" ? agentNodePatchSchema : nodePatchSchema;
 }
-export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : node.kind === "analysis" ? "prompt/analysis-node-patch/v1" : "prompt/node-patch/v2"; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : node.kind === "analysis" ? "prompt/analysis-node-patch/v1" : node.kind === "agent" ? "prompt/agent-node-patch/v1" : "prompt/node-patch/v2"; }
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
-  return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : node.kind === "analysis" ? "updateAnalysis" : "updateNode", nodeId: node.id, patch });
+  return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : node.kind === "analysis" ? "updateAnalysis" : node.kind === "agent" ? "updateAgent" : "updateNode", nodeId: node.id, patch });
 }
 export function canViewWorkflow(workflow: Workflow, user: Pick<CurrentUser, "id" | "permissions">): boolean {
   if (workflow.emailDeliverySource && workflow.owner.id !== user.id) return false;
@@ -164,10 +182,10 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
     if (blueprint.steps.length > 200) throw new HandlerFailure(422, "Draft must have at most 200 uniquely identified nodes");
     saveDraftFlow(blueprint, root); return stringifyWorkflowYAML(blueprint);
   }
-  if (!["updateNode", "updateAnalysis", "addNode", "addAnalysis", "removeNode", "moveNode"].includes(change.type)) throw new HandlerFailure(422, "Unsupported structural command");
-  if (change.type === "addAnalysis" && blueprint.metadata?.controlFlow !== undefined) throw new HandlerFailure(422, "Analysis nodes are supported only in a flat reviewed operation");
+  if (!["updateNode", "updateAnalysis", "updateAgent", "addNode", "addAnalysis", "addAgent", "removeNode", "moveNode"].includes(change.type)) throw new HandlerFailure(422, "Unsupported structural command");
+  if ((change.type === "addAnalysis" || change.type === "addAgent") && blueprint.metadata?.controlFlow !== undefined) throw new HandlerFailure(422, "Model and agent nodes are supported only in a flat reviewed operation");
   if (change.type === "addCondition" || change.type === "wrapNode" || change.type === "updateCondition" || change.type === "removeCondition") throw new HandlerFailure(422, "Unsupported structural command");
-  if (change.type === "addNode" || change.type === "addAnalysis") {
+  if (change.type === "addNode" || change.type === "addAnalysis" || change.type === "addAgent") {
     if (blueprint.steps.some(step => step.id === change.node.id)) throw new HandlerFailure(422, "Node ID already exists");
     const index = change.beforeNodeId === null ? blueprint.steps.length : blueprint.steps.findIndex(step => step.id === change.beforeNodeId);
     if (index < 0) throw new HandlerFailure(422, "Insertion target does not exist");
@@ -175,9 +193,10 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
   } else {
     const index = blueprint.steps.findIndex(step => step.id === change.nodeId);
     if (index < 0) throw new HandlerFailure(422, "Selected node does not exist");
-    if (change.type === "updateNode" || change.type === "updateAnalysis") {
+    if (change.type === "updateNode" || change.type === "updateAnalysis" || change.type === "updateAgent") {
       const selected = blueprint.steps[index]!;
-      if ((change.type === "updateAnalysis" && selected.kind !== "analysis") || (change.type === "updateNode" && selected.kind === "analysis"))
+      if ((change.type === "updateAnalysis" && selected.kind !== "analysis") || (change.type === "updateAgent" && selected.kind !== "agent") ||
+          (change.type === "updateNode" && (selected.kind === "analysis" || selected.kind === "agent")))
         throw new HandlerFailure(422, "The selected node type does not match this edit command");
       blueprint.steps[index] = { ...selected, ...change.patch };
     }

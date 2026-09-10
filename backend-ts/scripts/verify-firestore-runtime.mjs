@@ -157,7 +157,8 @@ async function start(repositoryValue) {
       } } });
   const providerRuntime = new ProviderRuntime(repository, executor, async (url, init) => {
     assert.equal(url, "https://provider.fixture.example.test/v1/chat/completions"); const request = JSON.parse(String(init.body)); models.push(request.model); await modelHook?.(request, init.signal);
-    const node = request.messages[0].content.includes("ONE SELECTED NODE PATCH"), owner = request.messages[0].content.includes("ONE SELECTED COLLECTION PATCH"), answered = request.messages.some(message => message.role === "tool");
+    const node = request.messages[0].content.includes("ONE SELECTED NODE PATCH"), owner = request.messages[0].content.includes("ONE SELECTED COLLECTION PATCH"),
+      agent = request.messages[0].content.includes("TASK: BOUNDED RUNTIME ERP AGENT"), answered = request.messages.some(message => message.role === "tool");
     if (owner) assert.deepEqual(JSON.parse(request.messages[1].content).tools, []);
     let candidateData = {};
     if (!node && !owner && !answered && typeof request.messages[1]?.content === "string" && request.messages[1].content.trim().startsWith("{"))
@@ -177,12 +178,16 @@ async function start(repositoryValue) {
     }
     if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS"))
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"id":"ANALYSIS-FIXTURE-ONE"}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
+    if (agent) return Response.json({ choices: [{ finish_reason: answered ? "stop" : "tool_calls", message: answered
+      ? { content: '{"id":"AGENT-FOLLOW-UP","complete":true}' }
+      : { content: null, tool_calls: [{ id: "firestore-agent-read", type: "function", function: { name: exactBridgeName(tool), arguments: '{"id":"agent-follow-up"}' } }] } }],
+      usage: answered ? { prompt_tokens: 19, completion_tokens: 8 } : { prompt_tokens: 13, completion_tokens: 5 } });
     return Response.json({ choices: [{ finish_reason: node || owner || answered ? "stop" : "tool_calls", message: owner ? { content: '{"maxItems":2}' } : node ? { content: '{"description":"Reviewable fixture edit"}' } : answered ? { content: "Confirmed fixture invoice CHAT." } : {
       content: "", tool_calls: [{ id: "fixture-chat-read", type: "function", function: { name: "read", arguments: '{"id":"chat"}' } }],
     } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
   });
   providerRuntime.activate({ id: "fixture-provider", name: "Fixture provider", type: "openai_compatible", baseURL: "https://provider.fixture.example.test/v1", apiKey: "synthetic-provider-secret", model: "fixture-model-a", additionalModels: ["fixture-model-b"], temperature: 0, timeoutMs: 10_000,
-    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: ["restricted"],
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: ["internal"], interactiveDataClasses: ["restricted"],
       reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "owner", name: "owner" } } });
   services = { config, repository, registries, validator, executor, providerRuntime, synthesis: new SynthesisService(providerRuntime, registries, validator), erpbridgeSession: session };
   app = await buildApp(services); await app.ready();
@@ -208,9 +213,10 @@ try {
   });
   const providerCreated = await request("POST", "/api/providers", { name: "Persisted fixture provider", type: "openai_compatible",
     baseUrl: "https://provider.fixture.example.test/v1", apiKey: "synthetic-provider-secret", model: "fixture-model-a", additionalModels: ["fixture-model-b"], temperature: 0,
-    egressPolicy: { approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: ["restricted"], confirmed: true } }, 201);
+    egressPolicy: { approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: ["internal"], interactiveDataClasses: ["restricted"], confirmed: true } }, 201);
   const persistedProviderId = providerCreated.data.id;
   assert.deepEqual(providerCreated.data.egressPolicy.runtimeAnalysisDataClasses, ["internal"]);
+  assert.deepEqual(providerCreated.data.egressPolicy.runtimeAgentDataClasses, ["internal"]);
   assert.deepEqual(providerCreated.data.egressPolicy.interactiveDataClasses, ["restricted"]);
   assert.equal(providerCreated.data.egressPolicy.approvedOrigin, "https://provider.fixture.example.test");
   assert(!JSON.stringify(providerCreated).includes("synthetic-provider-secret"));
@@ -294,6 +300,7 @@ try {
   assert.equal((await repository.snapshot()).chats[chatId].messages.findLast(message => message.artifacts?.proposal)?.artifacts.proposal.status, "APPLIED");
   assert.deepEqual((await repository.snapshot()).workflows[automation.workflowId], automationWorkflow); assert.equal((await repository.snapshot()).schedules[`schedule-${automation.workflowId}`], undefined);
   assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.runtimeAnalysisDataClasses, ["internal"]);
+  assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.runtimeAgentDataClasses, ["internal"]);
   assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.interactiveDataClasses, ["restricted"]);
   assert.equal((await repository.snapshot()).providers[persistedProviderId].egressPolicy.approvedOrigin, "https://provider.fixture.example.test");
   assert.equal(calls.length, callsBeforeNode); log("fresh application repository/HTTP worker startup preserved chats, proposals, versions and confirmed runs without replay");
@@ -540,8 +547,54 @@ try {
   await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).executions[durableAnalysisRun], completedDurableAnalysis);
   assert.equal(models.length, analysisModelsBefore + 1); assert.deepEqual(operations.slice(analysisOperationsBefore), ["ANALYSIS-FIXTURE-ONE"]);
-  const modelsAfterDurableAnalysis = models.length;
   log("actual Firestore durable read-analysis-operation captured the reviewed provider privately, persisted bounded structured output/tokens, survived pre/post-approval restarts, required independent approval and never replayed model or SDK effects");
+
+  const durableAgentYAML = stringify({ name: "Durable bounded agent", description: "Actual Firestore bounded agent may select only one reviewed ERP read before an independently approved operation.", trigger: { type: "manual" }, steps: [
+    { id: "agent_lookup", action: "read", parameters: { id: "agent-source" } },
+    { id: "agent_research", kind: "agent", instruction: "Use the reviewed read only when needed and return the confirmed identifier.", input: "{{agent_lookup.structuredContent}}",
+      allowed_actions: ["read"], data_class: "internal", model: "fixture-model-b", max_input_items: 10, max_input_chars: 2000,
+      max_output_tokens: 512, max_total_tokens: 4096, max_rounds: 3, max_tool_calls: 2, max_wall_time_ms: 30000, max_concurrency: 1,
+      output_schema: { type: "object", properties: { id: { type: "string" }, complete: { type: "boolean" } }, required: ["id", "complete"], additionalProperties: false },
+      completion_predicate: { path: ["complete"], equals: true } },
+    { id: "agent_send", action: operationTool.name, parameters: { id: "{{agent_research.structuredContent.id}}" } },
+  ] });
+  await repository.mutate(state => { state.workflows.durableAgent = { ...state.workflows.single, id: "durableAgent", name: "Durable bounded agent",
+    yaml: durableAgentYAML, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions.durableAgent = []; });
+  const durableAgentPublication = (await request("POST", "/api/workflows/durableAgent/publish", {}, 200)).data;
+  assert.equal(durableAgentPublication.compiledOperation.schemaVersion, "workflow-operation-ir/v3");
+  const agentModelsBefore = models.length, agentCallsBefore = calls.length, agentOperationsBefore = operations.length;
+  const durableAgentRun = (await request("POST", "/api/workflows/durableAgent/run", { mode: "async-operation",
+    idempotencyKey: "firestore-durable-agent-0001", input: {} }, 202)).data.id;
+  await waitFor(async () => (await repository.snapshot()).executions[durableAgentRun].status === "AWAITING_APPROVAL", "durable agent approval wait");
+  const waitingAgent = (await repository.snapshot()).executions[durableAgentRun];
+  assert.deepEqual(waitingAgent.stepOutputs.agent_research, { structuredContent: { id: "AGENT-FOLLOW-UP", complete: true } });
+  assert.deepEqual(waitingAgent.tokens, { input: 32, output: 13, total: 45 });
+  assert.deepEqual(Object.values(waitingAgent.operationSecret.intents).filter(intent => intent.nodeId === "agent_research").map(intent => intent.evidenceMeaning),
+    ["agent-model-turn", "agent-tool-result", "agent-structured-output"]);
+  assert.equal(waitingAgent.operationSecret.agentProvider.configuration.model, "fixture-model-a");
+  assert.equal(waitingAgent.operationSecret.agentProvider.configurationRevision, services.providerRuntime.binding.configurationRevision);
+  assert.equal(models.length, agentModelsBefore + 2); assert.deepEqual(calls.slice(agentCallsBefore), ["agent-source", "agent-follow-up"]); assert.equal(operations.length, agentOperationsBefore);
+  assert(!JSON.stringify((await request("GET", `/api/executions/${durableAgentRun}`, undefined, 200)).data).match(/synthetic-provider-secret|agentProvider|operationSecret/));
+  await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[durableAgentRun], waitingAgent);
+  assert.equal(models.length, agentModelsBefore + 2); assert.deepEqual(calls.slice(agentCallsBefore), ["agent-source", "agent-follow-up"]); assert.equal(operations.length, agentOperationsBefore);
+  const durableAgentReview = (await request("GET", `/api/executions/${durableAgentRun}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.deepEqual(durableAgentReview.arguments, { id: "AGENT-FOLLOW-UP" });
+  const durableAgentDecision = { approvalId: durableAgentReview.id, baseVersion: durableAgentReview.version, reviewHash: durableAgentReview.reviewHash,
+    decisionKey: "firestore-durable-agent-decision-0001" };
+  await request("POST", `/api/executions/${durableAgentRun}/approve`, durableAgentDecision, 200, "reviewer");
+  await waitFor(async () => (await repository.snapshot()).executions[durableAgentRun].status === "DONE", "durable agent approved operation");
+  assert.equal(models.length, agentModelsBefore + 2); assert.deepEqual(calls.slice(agentCallsBefore), ["agent-source", "agent-follow-up"]);
+  assert.deepEqual(operations.slice(agentOperationsBefore), ["AGENT-FOLLOW-UP"]);
+  const completedDurableAgent = (await repository.snapshot()).executions[durableAgentRun];
+  assert.equal(completedDurableAgent.operationSecret.intents.agent_send.state, "ACKNOWLEDGED");
+  assert.equal((await request("POST", `/api/executions/${durableAgentRun}/approve`, durableAgentDecision, 200, "reviewer")).data.replayed, true);
+  await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[durableAgentRun], completedDurableAgent);
+  assert.equal(models.length, agentModelsBefore + 2); assert.deepEqual(calls.slice(agentCallsBefore), ["agent-source", "agent-follow-up"]);
+  assert.deepEqual(operations.slice(agentOperationsBefore), ["AGENT-FOLLOW-UP"]);
+  const modelsAfterDurableAgent = models.length;
+  log("actual Firestore bounded runtime-agent used only its reviewed read allow-list, persisted every model/tool intent and structured answer, survived restarts, required independent approval for the later effect, and replayed neither model, ERP read nor operation");
 
   const scheduledOperationYAML = stringify({ name: "Scheduled synthetic report", description: "Server-bound report window fixture", trigger: { type: "manual", config: { inputSchema: {
     type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
@@ -663,7 +716,7 @@ try {
   await stop(); await start(await openApplicationRepository(config));
   const reconciledOperation = (await repository.snapshot()).executions[lostOperation]; assert.equal(reconciledOperation.status, "RECONCILIATION_REQUIRED");
   assert.equal(reconciledOperation.readProgress.attempts.send.status, "UNKNOWN"); assert.equal(reconciledOperation.stepOutputs.lookup.structuredContent.id, "OPERATION-LOST-INTENT");
-  assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsAfterDurableAnalysis);
+  assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsAfterDurableAgent);
   log("actual Firestore post-COMMIT operation intent ACK loss fenced SDK entry; authoritative reload/restart preserved the read answer and unknown intent for reconciliation, without operation replay");
 
   // Explicit broker/helper qualification only, not a durable read-back job,
@@ -681,7 +734,7 @@ try {
   const evaluation = evaluateOperationReadback(operationTool, readbackTool, readbackCase.arguments, readbackResult, readbackCase.preparedAt);
   assert.equal(evaluation.outcome, "NOT_APPLIED"); assert.equal(evaluation.settled, true);
   assert.equal(evaluation.canResume, false); assert.equal(evaluation.noReplay, true); assert.equal(evaluation.deliveryVerified, false);
-  assert.deepEqual(readbacks, ["OPERATION-LOST-INTENT"]); assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsAfterDurableAnalysis);
+  assert.deepEqual(readbacks, ["OPERATION-LOST-INTENT"]); assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsAfterDurableAgent);
   const afterReadback = await repository.snapshot();
   assert(beforeReadback.equals(canonicalJSONBytes([afterReadback.executions[lostOperation], afterReadback.timelines[lostOperation], afterReadback.executionEvents[lostOperation]])));
   assert.equal(afterReadback.executions[lostOperation].status, "RECONCILIATION_REQUIRED");
@@ -704,7 +757,7 @@ try {
     assert.deepEqual(execution.stepOutputs, reconciledOperation.stepOutputs); assert.equal(execution.finalOutput, undefined);
     assert.equal(execution.readProgress.epoch, reconciledOperation.readProgress.epoch); assert.equal(execution.readProgress.nextStepIndex, reconciledOperation.readProgress.nextStepIndex);
     assert.deepEqual(saved.timelines[lostOperation], readbackSnapshot.timelines[lostOperation]);
-    assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsAfterDurableAnalysis);
+    assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsAfterDurableAgent);
   };
   await checkOriginalOperation(); assert.equal(readbacks.length, 2);
   const savedQuery = (await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[normalQuery.id];
@@ -838,7 +891,7 @@ try {
   assert.deepEqual((await repository.snapshot()).executions[lostOperation], savedRecoveryPlan);
   await stop(); await start(await openApplicationRepository(config)); assert.deepEqual((await repository.snapshot()).executions[recoveryExecution], completedRecovery);
   assert.deepEqual((await repository.snapshot()).executions[lostOperation], savedRecoveryPlan); assert.equal(operations.length, beforeRecoveryPlanCalls + 1);
-  await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, beforeRecoveryPlanCalls + 1); assert.equal(models.length, modelsAfterDurableAnalysis);
+  await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, beforeRecoveryPlanCalls + 1); assert.equal(models.length, modelsAfterDurableAgent);
   log("actual Firestore recovery admission survived post-COMMIT acknowledgement loss as one new execution, required fresh independent approval, dispatched one separately journaled synthetic action and never mutated or resumed the source run");
   log("actual Firestore immutable linked recovery survived post-COMMIT acknowledgement loss, same-key replay and fresh restart without dispatch, source-run mutation or model use");
   log("actual Firestore independent query-backed resolution survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; the server derived one private decision from the saved observation with no new SDK/model call, fabricated answer or resume");

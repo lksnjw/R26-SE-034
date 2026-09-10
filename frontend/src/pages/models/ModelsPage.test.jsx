@@ -16,10 +16,11 @@ function mount() {
 
 test("model administration shows and requires explicit purpose-bound model egress review", async () => {
   jest.spyOn(settingsService, "providers").mockResolvedValue([{ id: "one", name: "Reviewed provider", type: "openai_compatible",
-    baseUrl: "https://models.example.test/v1", model: "model-a", egressPolicy: { runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: ["restricted"] } }]);
+    baseUrl: "https://models.example.test/v1", model: "model-a", egressPolicy: { runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: ["internal"], interactiveDataClasses: ["restricted"] } }]);
   const create = jest.spyOn(settingsService, "createProvider").mockResolvedValue({ id: "two" });
   mount();
   expect(await screen.findByText("Runtime analysis: internal")).toBeTruthy();
+  expect(screen.getByText("Runtime agent: internal")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
   fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New provider" } });
   fireEvent.change(screen.getByLabelText("Base URL"), { target: { value: "https://runtime.example.test/v1" } });
@@ -28,12 +29,13 @@ test("model administration shows and requires explicit purpose-bound model egres
   expect(screen.getByText("https://runtime.example.test")).toBeTruthy();
   expect(screen.getByText("Interactive: restricted")).toBeTruthy();
   fireEvent.click(screen.getByLabelText("Runtime internal"));
+  fireEvent.click(screen.getByLabelText("Runtime agent internal"));
   fireEvent.click(screen.getByLabelText("Interactive restricted"));
   expect(screen.getByRole("button", { name: "Save provider" }).disabled).toBe(true);
   fireEvent.click(screen.getByLabelText("Confirm model egress"));
   expect(screen.getByRole("button", { name: "Save provider" }).disabled).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
   await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ egressPolicy: {
-    approvedOrigin: "https://runtime.example.test", runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: ["restricted"], confirmed: true,
+    approvedOrigin: "https://runtime.example.test", runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: ["internal"], interactiveDataClasses: ["restricted"], confirmed: true,
   } })));
 });

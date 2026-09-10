@@ -139,7 +139,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   const providerRuntime = withAnalysis ? new ProviderRuntime(repository, executor, modelFetch as typeof fetch) : undefined;
   providerRuntime?.activate({ id: "analysis-provider", name: "Analysis provider", type: "openai_compatible", baseURL: "https://model.example.test/v1",
     apiKey: "private-model-key", model: "analysis-model-a", additionalModels: ["analysis-model-b"], temperature: 0, timeoutMs: 1000,
-    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://model.example.test", runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: [],
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://model.example.test", runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: ["internal"], interactiveDataClasses: [],
       reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "requester", name: "requester" } } });
   const services = { repository, registries, config, validator, erpbridgeSession: session, executor, ...(providerRuntime ? { providerRuntime } : {}) };
   const app = await buildApp(services); closers.push(app);
@@ -186,6 +186,22 @@ async function prepareAnalysisWorkflow(s: Awaited<ReturnType<typeof setup>>, dat
         data_class: dataClass, model: "analysis-model-b", max_input_items: 10, max_input_chars: 2000,
         output_schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false } },
       { id: "send", action: s.write.name, parameters: { value: "{{summarize.structuredContent.summary}}" } },
+    ] });
+    workflow.steps = 3; workflow.updatedAt = new Date().toISOString();
+  });
+}
+
+async function prepareAgentWorkflow(s: Awaited<ReturnType<typeof setup>>, options: { dataClass?: string; maxRounds?: number } = {}) {
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!;
+    workflow.yaml = stringify({ name: "Agent report then dispatch", description: "Bounded dynamic ERP read selection before an approved effect", trigger: { type: "manual" }, steps: [
+      { id: "lookup", action: s.read.name, parameters: { value: "fixture report" } },
+      { id: "research", kind: "agent", instruction: "Use the allowed ERP read when needed and return the confirmed concise summary.", input: "{{lookup.structuredContent}}",
+        allowed_actions: [s.read.name], data_class: options.dataClass ?? "internal", model: "analysis-model-b", max_input_items: 10, max_input_chars: 2000,
+        max_output_tokens: 512, max_total_tokens: 4096, max_rounds: options.maxRounds ?? 3, max_tool_calls: 2, max_wall_time_ms: 30000, max_concurrency: 1,
+        output_schema: { type: "object", properties: { summary: { type: "string" }, complete: { type: "boolean" } }, required: ["summary", "complete"], additionalProperties: false },
+        completion_predicate: { path: ["complete"], equals: true } },
+      { id: "send", action: s.write.name, parameters: { value: "{{research.structuredContent.summary}}" } },
     ] });
     workflow.steps = 3; workflow.updatedAt = new Date().toISOString();
   });
@@ -279,6 +295,103 @@ test("an unconfirmed analysis transport outcome is never replayed or exposed as 
   expect(execution.stepOutputs).not.toHaveProperty("summarize"); expect(execution.runtimeApprovalSecret).toBeUndefined();
   expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(s.modelFetch).toHaveBeenCalledTimes(1);
   expect((await s.run("durable-analysis-unknown-0001")).json().data.id).toBe(id); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+});
+
+test("bounded runtime agent dynamically selects only its reviewed read and yields structured output before independent effect approval", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAgentWorkflow(s);
+  s.modelFetch.mockReset();
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "call-1", type: "function",
+    function: { name: exactBridgeName(s.read), arguments: JSON.stringify({ value: "agent follow-up" }) } }] } }], usage: { prompt_tokens: 13, completion_tokens: 5 } }));
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"summary":"AGENT FOLLOW-UP","complete":true}' } }], usage: { prompt_tokens: 19, completion_tokens: 8 } }));
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  expect(published.json().data.compiledOperation).toMatchObject({ schemaVersion: "workflow-operation-ir/v3", compilerVersion: "operation-compiler/v3" });
+  const admitted = await s.run("durable-agent-run-0001"); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id as string; await s.wait(id, "AWAITING_APPROVAL");
+  expect(s.modelFetch).toHaveBeenCalledTimes(2); expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read), exactBridgeName(s.read)]);
+  const pending = (await s.repository.snapshot()).executions[id]!;
+  expect(pending.stepOutputs).toMatchObject({ research: { structuredContent: { summary: "AGENT FOLLOW-UP", complete: true } } });
+  expect(pending.tokens).toEqual({ input: 32, output: 13, total: 45 });
+  expect(Object.values(pending.operationSecret!.intents).filter(intent => intent.nodeId === "research").map(intent => intent.evidenceMeaning))
+    .toEqual(["agent-model-turn", "agent-tool-result", "agent-structured-output"]);
+  expect(await s.review(id)).toMatchObject({ arguments: { value: "AGENT FOLLOW-UP" }, canDecide: true });
+  const publicRun = await s.request("GET", `/api/executions/${id}`); expect(publicRun.body).not.toMatch(/private-model-key|agentProvider|operationSecret/);
+  expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200);
+  await s.wait(id, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledTimes(3); expect(s.sdk.callTool.mock.calls[2]![1]).toEqual({ value: "AGENT FOLLOW-UP" });
+});
+
+test("runtime-agent admission is denied independently from analysis and interactive egress before ERP or model entry", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAgentWorkflow(s);
+  s.providerRuntime!.activate({ ...s.providerRuntime!.configuration!, egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://model.example.test",
+    runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: [], interactiveDataClasses: ["restricted"], reviewedAt: "2026-10-07T00:00:00.000Z",
+    reviewedBy: { id: "requester", name: "requester" } } });
+  expect((await s.publish()).statusCode).toBe(200);
+  const denied = await s.run("durable-agent-egress-denied-0001"); expect(denied.statusCode, denied.body).toBe(422);
+  expect(denied.json().meta).toMatchObject({ code: "AGENT_PROVIDER_DENIED" });
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test("runtime agent rejects a model-proposed capability outside its reviewed allow-list before SDK entry", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAgentWorkflow(s);
+  s.modelFetch.mockReset();
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "call-outside", type: "function",
+    function: { name: exactBridgeName(s.write), arguments: JSON.stringify({ value: "bypass" }) } }] } }], usage: { prompt_tokens: 9, completion_tokens: 4 } }));
+  expect((await s.publish()).statusCode).toBe(200);
+  const admitted = await s.run("durable-agent-denied-tool-0001"); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id as string; await s.wait(id, "FAILED");
+  const execution = (await s.repository.snapshot()).executions[id]!;
+  expect(execution.failure).toMatchObject({ failureCategory: "AGENT_TOOL_DENIED", failedStepId: "research" });
+  expect(execution.stepOutputs).not.toHaveProperty("research"); expect(execution.runtimeApprovalSecret).toBeUndefined();
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read)]);
+});
+
+test("runtime agent reports budget exhaustion instead of treating an unfinished last turn as success", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAgentWorkflow(s, { maxRounds: 1 });
+  s.modelFetch.mockReset();
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "call-budget", type: "function",
+    function: { name: exactBridgeName(s.read), arguments: JSON.stringify({ value: "one bounded read" }) } }] } }], usage: { prompt_tokens: 9, completion_tokens: 4 } }));
+  expect((await s.publish()).statusCode).toBe(200);
+  const admitted = await s.run("durable-agent-budget-0001"); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id as string; await s.wait(id, "FAILED");
+  const execution = (await s.repository.snapshot()).executions[id]!;
+  expect(execution.failure).toMatchObject({ failureCategory: "AGENT_BUDGET_EXHAUSTED", failedStepId: "research" });
+  expect(execution.agentSummary).toMatch(/without satisfying/i); expect(execution.runtimeApprovalSecret).toBeUndefined();
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read), exactBridgeName(s.read)]);
+});
+
+test("an unconfirmed runtime-agent model turn is never replayed or exposed as a structured answer", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAgentWorkflow(s);
+  s.modelFetch.mockReset(); s.modelFetch.mockRejectedValueOnce(new Error("synthetic agent provider connection lost after entry"));
+  expect((await s.publish()).statusCode).toBe(200);
+  const admitted = await s.run("durable-agent-model-unknown-0001"); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id as string; await s.wait(id, "RECOVERY_REQUIRED");
+  const execution = (await s.repository.snapshot()).executions[id]!;
+  expect(execution.readProgress!.attempts.research).toMatchObject({ status: "UNKNOWN" });
+  expect(Object.values(execution.operationSecret!.intents).filter(intent => intent.dispatchKind === "agent-model"))
+    .toEqual([expect.objectContaining({ state: "UNKNOWN" })]);
+  expect(execution.failure).toMatchObject({ failureCategory: "AGENT_OUTCOME_UNKNOWN", failedStepId: "research" });
+  expect(execution.stepOutputs).not.toHaveProperty("research"); expect(execution.runtimeApprovalSecret).toBeUndefined();
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+  expect((await s.run("durable-agent-model-unknown-0001")).json().data.id).toBe(id); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+});
+
+test("an unconfirmed runtime-agent ERP read is never replayed and no later effect can run", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAgentWorkflow(s);
+  s.modelFetch.mockReset();
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "call-unknown", type: "function",
+    function: { name: exactBridgeName(s.read), arguments: JSON.stringify({ value: "agent follow-up" }) } }] } }], usage: { prompt_tokens: 13, completion_tokens: 5 } }));
+  s.sdk.callTool.mockImplementationOnce(async () => ({ content: [], structuredContent: { value: "FIXTURE REPORT" } }));
+  s.sdk.callTool.mockRejectedValueOnce(new Error("synthetic ERP transport lost after entry"));
+  expect((await s.publish()).statusCode).toBe(200);
+  const admitted = await s.run("durable-agent-tool-unknown-0001"); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id as string; await s.wait(id, "RECOVERY_REQUIRED");
+  const execution = (await s.repository.snapshot()).executions[id]!;
+  expect(execution.readProgress!.attempts.research).toMatchObject({ status: "UNKNOWN" });
+  expect(Object.values(execution.operationSecret!.intents).filter(intent => intent.dispatchKind === "agent-tool"))
+    .toEqual([expect.objectContaining({ state: "UNKNOWN" })]);
+  expect(execution.failure).toMatchObject({ failureCategory: "AGENT_OUTCOME_UNKNOWN", failedStepId: "research" });
+  expect(execution.stepOutputs).not.toHaveProperty("research"); expect(execution.runtimeApprovalSecret).toBeUndefined();
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+  expect((await s.run("durable-agent-tool-unknown-0001")).json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
 });
 
 test("an exact chat email draft requests independent approval and dispatches only server-derived fields after approval", async () => {

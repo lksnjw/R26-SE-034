@@ -24,7 +24,10 @@ export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: 
   assertDispatch?: (() => void) | undefined;
   /** Server-owned journal instance, never a model/browser evidence payload. */
   iteration?: { checkpoints: ReadIterationCheckpoints; plan: CompiledReadPlan; visit: ReadVisit; assertBinding?: () => void };
-  plan?: { yaml: string; stepIndex: number; token: ValidationToken; admissionPin?: ReadAdmissionPin; contractHash?: string; toolId?: string } };
+  plan?: { yaml: string; stepIndex: number; token: ValidationToken; admissionPin?: ReadAdmissionPin; contractHash?: string; toolId?: string };
+  /** Exact reviewed dynamic-node allow-list binding. The broker still builds
+   * and validates one synthetic single-tool workflow for the concrete call. */
+  dynamicPlan?: { admissionPin: ReadAdmissionPin; contractHash: string; toolId: string } };
 
 // Phase-0 containment: only explicitly registered, role-granted reads may
 // reach the SDK. Transaction writes await approval/idempotency/recovery.
@@ -59,12 +62,14 @@ export async function dispatchReadTool(
     assertWorkerDispatch?.();
   };
   const tools = await discoverTools(session, services.registries);
+  if (context.plan && context.dynamicPlan) throw new Error("Tool dispatch cannot combine static and dynamic plan bindings");
   const matches = tools.filter((tool) => tool.name === toolName || tool.mcp_tool_name === toolName);
   if (matches.length !== 1) throw new Error("Tool dispatch denied: tool has no unique admitted live contract");
   const tool = matches[0]!;
-  const assertContract = () => { if (context.plan?.contractHash && (context.plan.toolId !== tool.tool_id || context.plan.contractHash !== capabilityContractHash(tool))) throw new Error("Compiled tool contract changed; no implicit rebinding is allowed"); };
+  const exactPlan = context.plan ?? context.dynamicPlan;
+  const assertContract = () => { if (exactPlan?.contractHash && (exactPlan.toolId !== tool.tool_id || exactPlan.contractHash !== capabilityContractHash(tool))) throw new Error("Compiled tool contract changed; no implicit rebinding is allowed"); };
   assertContract();
-  await session.assertAdmission?.(tool, context.plan?.admissionPin, context.signal);
+  await session.assertAdmission?.(tool, exactPlan?.admissionPin, context.signal);
   if (!tool.is_read_only) throw new Error("Live ERP writes are blocked until transaction approval, idempotency and recovery are enforced");
   if (!tool.allowed_roles.includes(actor.role)) throw new Error("Tool dispatch denied: current role has no grant for this tool");
   if (hasReservedBridgeRole(tool) && Object.hasOwn(args, "role")) throw new Error("Tool dispatch denied: model-provided role is not allowed");
@@ -119,7 +124,7 @@ export async function dispatchReadTool(
       if (!services.validator.validatePlan("ReadConfirmedPath", prefix, actor.role).passed) throw new Error("Selected read path does not meet confirmed process prerequisites");
     }
   }
-  const { signal, plan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, ...metadata } = context;
+  const { signal, plan, dynamicPlan: _privateDynamicPlan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, ...metadata } = context;
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
   const identity = createDispatchIdentity(actor, services.config.erpbridgeRoleMap);
@@ -155,7 +160,7 @@ export async function dispatchReadTool(
   // Old injected session fixtures retain their existing hook semantics. A
   // collection cannot use that fallback: its binding requires SDK-entry/v1.
   if (session.dispatchBoundary !== "sdk-entry/v1") await finalDispatch();
-  const envelope = await session.clientFor(tool, context.plan?.admissionPin).execute(authored.action!, resolved.capability, parameters, identity, context.signal,
+  const envelope = await session.clientFor(tool, exactPlan?.admissionPin).execute(authored.action!, resolved.capability, parameters, identity, context.signal,
     session.dispatchBoundary === "sdk-entry/v1" ? finalDispatch : undefined, assertContext);
   return envelope;
 }

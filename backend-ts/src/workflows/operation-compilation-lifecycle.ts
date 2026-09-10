@@ -17,6 +17,17 @@ function compileCurrent(state: Readonly<RepositoryState>, services: HandlerServi
   const tools = services.registries.snapshot().tools, pins = new Map<string, ReadAdmissionPin>();
   for (const step of parseWorkflowYAMLStrict(yaml).steps) {
     if (effectiveStepKind(step) === "analysis") continue;
+    if (effectiveStepKind(step) === "agent") {
+      const expectedNode = expected?.ir.root.nodes.find(node => node.id === step.id);
+      for (const action of step.allowed_actions ?? []) {
+        const matches = tools.filter(tool => tool.name === action || tool.mcp_tool_name === action);
+        if (matches.length !== 1) throw new Error("Agent allow-list action has no unique current tool");
+        const tool = matches[0]!, expectedCapability = expectedNode?.kind === "agent" ? expectedNode.allowedCapabilities.find(value => value.toolId === tool.tool_id) : undefined;
+        if (expected && !expectedCapability) throw new Error("Stored agent node lacks an exact capability pin");
+        pins.set(tool.tool_id, captureCapabilityAdmissionPin(state, services.registries, tool, session.admissionBinding, expectedCapability?.admission));
+      }
+      continue;
+    }
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action);
     if (matches.length !== 1) throw new Error("Operation action has no unique current tool");
     const expectedNode = expected?.ir.root.nodes.find(node => node.id === step.id), pin = expectedNode?.kind === "action" ? expectedNode.capability.admission : undefined;

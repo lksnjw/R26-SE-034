@@ -53,7 +53,7 @@ export function validateWorkflowStatically(
   for (const step of steps) {
     // Approval steps are a human sign-off checkpoint, not a dispatchable tool
     // call — they have no action and must not be treated as TOOL_NOT_FOUND.
-    if (step.kind === "approval") continue;
+    if (step.kind === "approval" || step.kind === "analysis" || step.kind === "agent") continue;
     const action = step.action ?? "";
     const resolved = resolveToolName(action, byName, byMcp);
 

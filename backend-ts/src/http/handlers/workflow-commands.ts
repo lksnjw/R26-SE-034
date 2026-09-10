@@ -114,11 +114,13 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       const structural = ["if", "return", "foreach"].includes(node.kind ?? "");
       const authoring = structural ? readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()) : undefined;
       const collection = authoring?.collections?.find(value => value.nodeId === node.id);
+      const availableTools = services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role));
+      const promptTools = node.kind === "agent" ? availableTools.filter(tool => tool.is_read_only && (node.allowed_actions ?? []).some(action => action === tool.name || action === tool.mcp_tool_name)) : availableTools;
       const prompt = promptData({ instruction: value.prompt, node: withoutSecretFields(node),
         ...(node.kind === "if" ? { allowedBooleanSources: authoring?.conditions?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
         ...(node.kind === "return" ? { allowedDataSources: authoring?.returns?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
         ...(node.kind === "foreach" ? { allowedItemSources: collection?.itemSources ?? [], allowedCollectSources: collection?.collectSources ?? [] } : {}),
-        tools: structural ? [] : services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role)).map((tool) => ({ name: tool.name, inputSchema: tool.input_schema })) });
+        tools: structural ? [] : promptTools.map((tool) => ({ name: tool.name, inputSchema: tool.input_schema, readOnly: tool.is_read_only })) });
       const patch = selectedNodePatchSchema(node);
       let proposed: ReturnType<typeof patch.parse>;
       try {

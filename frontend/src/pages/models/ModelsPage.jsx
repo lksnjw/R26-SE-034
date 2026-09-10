@@ -9,7 +9,7 @@ import { apiErrorMessage } from "../../services/api";
 import { settingsService } from "../../services/settings.service";
 
 const DATA_CLASSES = ["public", "internal", "confidential", "restricted"];
-const EMPTY_FORM = { name: "", type: "openai_compatible", baseUrl: "", model: "", fallbackModel: "", temperature: 0, apiKey: "", additionalModels: [], runtimeAnalysisDataClasses: [], interactiveDataClasses: [], egressConfirmed: false };
+const EMPTY_FORM = { name: "", type: "openai_compatible", baseUrl: "", model: "", fallbackModel: "", temperature: 0, apiKey: "", additionalModels: [], runtimeAnalysisDataClasses: [], runtimeAgentDataClasses: [], interactiveDataClasses: [], egressConfirmed: false };
 const INPUT_CLASS = "w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none transition focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackgroundVery dark:text-white";
 const COLUMNS = [
   { key: "name", label: "Provider" },
@@ -87,6 +87,7 @@ function ModelsPage() {
       apiKey: "",
       additionalModels: Array.isArray(provider.additionalModels) ? [...provider.additionalModels] : [],
       runtimeAnalysisDataClasses: Array.isArray(provider.egressPolicy?.runtimeAnalysisDataClasses) ? [...provider.egressPolicy.runtimeAnalysisDataClasses] : [],
+      runtimeAgentDataClasses: Array.isArray(provider.egressPolicy?.runtimeAgentDataClasses) ? [...provider.egressPolicy.runtimeAgentDataClasses] : [],
       interactiveDataClasses: Array.isArray(provider.egressPolicy?.interactiveDataClasses) ? [...provider.egressPolicy.interactiveDataClasses] : [],
       egressConfirmed: false,
     });
@@ -129,8 +130,8 @@ function ModelsPage() {
     event.preventDefault();
     let approvedOrigin = "";
     try { approvedOrigin = new URL(form.baseUrl).origin; } catch { /* Backend returns the precise URL error. */ }
-    const { runtimeAnalysisDataClasses, interactiveDataClasses, egressConfirmed, ...provider } = form;
-    saveMutation.mutate({ ...provider, egressPolicy: { approvedOrigin, runtimeAnalysisDataClasses, interactiveDataClasses, confirmed: egressConfirmed } });
+    const { runtimeAnalysisDataClasses, runtimeAgentDataClasses, interactiveDataClasses, egressConfirmed, ...provider } = form;
+    saveMutation.mutate({ ...provider, egressPolicy: { approvedOrigin, runtimeAnalysisDataClasses, runtimeAgentDataClasses, interactiveDataClasses, confirmed: egressConfirmed } });
   };
 
 /*******************************************************************************
@@ -215,11 +216,15 @@ function ModelsPage() {
             <div className="mt-2 flex flex-wrap gap-3">{DATA_CLASSES.map((dataClass) => <label key={dataClass} className="flex items-center gap-2 text-sm capitalize">
               <input aria-label={`Runtime ${dataClass}`} type="checkbox" checked={form.runtimeAnalysisDataClasses.includes(dataClass)} onChange={() => toggleDataClass("runtimeAnalysisDataClasses", dataClass)} />{dataClass}
             </label>)}</div>
+            <p className="mt-4 text-xs font-semibold">Bounded runtime agent nodes</p>
+            <div className="mt-2 flex flex-wrap gap-3">{DATA_CLASSES.map((dataClass) => <label key={dataClass} className="flex items-center gap-2 text-sm capitalize">
+              <input aria-label={`Runtime agent ${dataClass}`} type="checkbox" checked={form.runtimeAgentDataClasses.includes(dataClass)} onChange={() => toggleDataClass("runtimeAgentDataClasses", dataClass)} />{dataClass}
+            </label>)}</div>
             <p className="mt-4 text-xs font-semibold">Interactive chat, ERP read agent and workflow authoring</p>
             <div className="mt-2 flex flex-wrap gap-3">{DATA_CLASSES.map((dataClass) => <label key={dataClass} className="flex items-center gap-2 text-sm capitalize">
               <input aria-label={`Interactive ${dataClass}`} type="checkbox" checked={form.interactiveDataClasses.includes(dataClass)} onChange={() => toggleDataClass("interactiveDataClasses", dataClass)} />{dataClass}
             </label>)}</div>
-            {form.runtimeAnalysisDataClasses.length + form.interactiveDataClasses.length > 0 ? <label className="mt-4 flex items-start gap-2 text-sm">
+            {form.runtimeAnalysisDataClasses.length + form.runtimeAgentDataClasses.length + form.interactiveDataClasses.length > 0 ? <label className="mt-4 flex items-start gap-2 text-sm">
               <input aria-label="Confirm model egress" type="checkbox" checked={form.egressConfirmed} onChange={(event) => setForm((current) => ({ ...current, egressConfirmed: event.target.checked }))} className="mt-1" />
               I reviewed this exact destination and authorize only the selected purposes and data classes. This does not authorize an ERP write, email, workflow publication, approval, or unrestricted agent.
             </label> : <p className="mt-3 text-xs font-semibold text-amber-700 dark:text-amber-300">All model data egress remains blocked.</p>}
@@ -253,7 +258,7 @@ function ModelsPage() {
             )}
           </div>
 
-          <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={() => setEditor(null)}>Cancel</Button><Button type="submit" disabled={saveMutation.isPending || form.runtimeAnalysisDataClasses.length + form.interactiveDataClasses.length > 0 && !form.egressConfirmed}>{saveMutation.isPending ? "Saving…" : "Save provider"}</Button></div>
+          <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={() => setEditor(null)}>Cancel</Button><Button type="submit" disabled={saveMutation.isPending || form.runtimeAnalysisDataClasses.length + form.runtimeAgentDataClasses.length + form.interactiveDataClasses.length > 0 && !form.egressConfirmed}>{saveMutation.isPending ? "Saving…" : "Save provider"}</Button></div>
         </form>
       ) : null}
 
@@ -265,7 +270,7 @@ function ModelsPage() {
           rows={providers}
           renderCell={(provider, column) => {
             if (column.key === "name") return <><div className="flex items-center gap-2"><p className="font-bold text-gray-950 dark:text-white">{provider.name}</p>{provider.active ? <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-bold uppercase text-green-700">Active</span> : null}</div><p className="mt-1 text-xs text-gray-500">{provider.type}</p></>;
-            if (column.key === "model") { const classes = provider.egressPolicy?.runtimeAnalysisDataClasses ?? [], interactive = provider.egressPolicy?.interactiveDataClasses ?? []; return <><p className="font-semibold">{provider.model}</p><p className="mt-1 max-w-xs truncate text-xs text-gray-500">{provider.baseUrl || "Default provider endpoint"}</p><p className={`mt-1 text-xs ${classes.length ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}`}>{classes.length ? `Runtime analysis: ${classes.join(", ")}` : "Runtime analysis blocked"}</p><p className={`mt-1 text-xs ${interactive.includes("restricted") ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}`}>{interactive.length ? `Interactive: ${interactive.join(", ")}` : "Interactive model traffic blocked"}</p></>; }
+            if (column.key === "model") { const classes = provider.egressPolicy?.runtimeAnalysisDataClasses ?? [], agents = provider.egressPolicy?.runtimeAgentDataClasses ?? [], interactive = provider.egressPolicy?.interactiveDataClasses ?? []; return <><p className="font-semibold">{provider.model}</p><p className="mt-1 max-w-xs truncate text-xs text-gray-500">{provider.baseUrl || "Default provider endpoint"}</p><p className={`mt-1 text-xs ${classes.length ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}`}>{classes.length ? `Runtime analysis: ${classes.join(", ")}` : "Runtime analysis blocked"}</p><p className={`mt-1 text-xs ${agents.length ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}`}>{agents.length ? `Runtime agent: ${agents.join(", ")}` : "Runtime agent blocked"}</p><p className={`mt-1 text-xs ${interactive.includes("restricted") ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}`}>{interactive.length ? `Interactive: ${interactive.join(", ")}` : "Interactive model traffic blocked"}</p></>; }
             if (column.key === "credential") return provider.keyPreview || "Not required";
             return <div className="flex flex-wrap gap-2"><Button variant="ghost" className="px-3 py-1.5 text-xs" onClick={() => openEdit(provider)}>Edit</Button><Button variant="secondary" className="px-3 py-1.5 text-xs" disabled={provider.active} onClick={() => activate(provider)}>{provider.active ? "Active" : "Activate"}</Button><Button variant="secondary" className="px-3 py-1.5 text-xs" disabled={testingId === provider.id} onClick={() => testConnection(provider)}>{testingId === provider.id ? "Testing…" : "Test connection"}</Button>{testResults[provider.id] ? <span className="w-full text-xs text-gray-500">{testResults[provider.id]}</span> : null}</div>;
           }}

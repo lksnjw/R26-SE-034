@@ -98,6 +98,21 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
       if (prefix) upstream.push(...sources(outputSchema, { kind: "ref", source: "nodeOutput", nodeId: step.id, path: ["structuredContent"] }, `Analysis ${step.id}`));
       seen.add(step.id); return result;
     }
+    if (kind === "agent") {
+      const outputSchema = project(step.output_schema), allowed = step.allowed_actions ?? [];
+      const allowedTools = allowed.map(action => tools.filter(tool => tool.name === action || tool.mcp_tool_name === action)).filter(matches => matches.length === 1).map(matches => matches[0]!)
+        .filter(tool => tool.is_read_only && tool.allowed_roles.includes(role));
+      const validScope = prefix && safeID(step.id) && !seen.has(step.id) && allowed.length > 0 && allowedTools.length === allowed.length &&
+        Object.keys(step).every(key => ["id", "kind", "description", "instruction", "input", "allowed_actions", "output_schema", "completion_predicate", "data_class", "model",
+          "max_input_items", "max_input_chars", "max_output_tokens", "max_total_tokens", "max_rounds", "max_tool_calls", "max_wall_time_ms", "max_concurrency"].includes(key));
+      const result = { nodeId: step.id, sourceAction: "agent", kind: "agent", state: outputSchema && allowedTools.length === allowed.length ? "LOCAL_CONTRACT" : "UNAVAILABLE",
+        ...(outputSchema ? { outputSchema } : {}), actions: allowedTools.flatMap(tool => [tool.name, tool.mcp_tool_name]),
+        dataSources: validScope ? upstream.slice(-32).map(source => structuredClone(source)) : [],
+        reason: outputSchema ? "Declared bounded runtime-agent contract only; reviewed allow-list, egress and per-call gateway checks remain separate" : "Agent requires a supported object output schema" };
+      prefix = validScope && !!outputSchema;
+      if (prefix) upstream.push(...sources(outputSchema, { kind: "ref", source: "nodeOutput", nodeId: step.id, path: ["structuredContent"] }, `Agent ${step.id}`));
+      seen.add(step.id); return result;
+    }
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action), tool = matches.length === 1 ? matches[0] : undefined;
     const granted = !!tool && !!tool.tool_id.trim() && !!tool.mcp_tool_name.trim() && tool.input_schema.type === "object" && (tool.is_read_only || !!tool.operation_contract && blueprint.metadata?.controlFlow === undefined) && tool.allowed_roles.includes(role) && effectiveStepKind(step) === "tool";
     const schema = granted ? project(tool.input_schema) : undefined;

@@ -80,6 +80,15 @@ function analysisRecord() {
   ] } };
 }
 
+function agentRecord() {
+  const source = `name: Agent report\ndescription: Bounded dynamic read before delivery\ntrigger:\n  type: manual\nsteps:\n - id: first\n   action: demo.echo\n   parameters:\n     value: original\n - id: research\n   kind: agent\n   description: Research invoices\n   instruction: Gather only the required confirmed evidence\n   input: '{{first.structuredContent.value}}'\n   allowed_actions: [demo.echo]\n   data_class: internal\n   model: model-2026-10\n   max_input_items: 20\n   max_input_chars: 5000\n   max_output_tokens: 512\n   max_total_tokens: 2048\n   max_rounds: 3\n   max_tool_calls: 4\n   max_wall_time_ms: 30000\n   max_concurrency: 1\n   completion_predicate:\n     path: [complete]\n     equals: true\n   output_schema:\n     type: object\n     properties:\n       summary:\n         type: string\n       complete:\n         type: boolean\n     required: [summary, complete]\n     additionalProperties: false\n - id: deliver\n   action: demo.notify\n   parameters:\n     value: '{{research.structuredContent.summary}}'\n`;
+  return { ...record, yaml: source, executionProfile: "sequential-operation-v1", operation_job_admission: "operation-job/v1", authoring: { profile: "read-authoring/v1", nodes: [
+    { nodeId: "first", effectClass: "read", actions: ["demo.echo"], dataSources: [] },
+    { nodeId: "research", kind: "agent", actions: ["demo.echo"], dataSources: [{ label: "Node first · value", expression: "{{first.structuredContent.value}}" }] },
+    { nodeId: "deliver", effectClass: "notification", actions: ["demo.notify"], dataSources: [{ label: "Agent research · summary", expression: "{{research.structuredContent.summary}}" }] },
+  ] } };
+}
+
 test("selected analysis node has a typed bounded inspector and applies only an explicit analysis draft command", async () => {
   const saved = analysisRecord(); workflowService.readiness.mockResolvedValue(saved);
   render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);
@@ -128,6 +137,47 @@ test("operation workspace adds an analysis node as a reviewable positioned draft
   expect(screen.getByRole("region", { name: "Node change preview" }).textContent).toMatch(/classify.*Before deliver/);
   fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
   await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({ type: "addAnalysis", beforeNodeId: "deliver", node: expect.objectContaining({ id: "classify", kind: "analysis", input: "{{summary.structuredContent.summary}}", data_class: "internal" }) })));
+});
+
+test("selected bounded agent has typed allow-list, completion and budget editing with readable saved output", async () => {
+  const saved = agentRecord(), run = { id: "agent-run", workflowId: "report", startedAt: "2026-10-07T00:00:00Z", status: "AWAITING_APPROVAL",
+    workflowSnapshot: { yaml: saved.yaml, version: 1, executionProfile: "sequential-operation-v1" }, readProgress: { profile: "read-progress-v1", lastSequence: 5 },
+    stepOutputs: { research: { structuredContent: { summary: "Two confirmed invoices", complete: true } } } };
+  workflowService.readiness.mockResolvedValue(saved); executionService.list.mockResolvedValue([run]); executionService.getTimeline.mockResolvedValue([
+    { nodeId: "first", status: "DONE", outcome: "READ_CONFIRMED" }, { nodeId: "research", status: "DONE", phase: "COMPLETE", outcome: "AGENT_STRUCTURED_OUTPUT" },
+    { nodeId: "deliver", status: "AWAITING_APPROVAL", sideEffect: true },
+  ]);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);
+  fireEvent.click(await screen.findByRole("button", { name: /Research invoices/ }));
+  expect(screen.getByRole("complementary", { name: "Selected agent details" })).toBeTruthy();
+  expect(screen.getByRole("checkbox", { name: "Allow agent action demo.echo" }).checked).toBe(true);
+  expect(screen.getByRole("spinbutton", { name: "Agent maximum rounds" }).value).toBe("3");
+  expect(screen.getByRole("textbox", { name: "Agent completion path" }).value).toBe("complete");
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Agent maximum rounds" }), { target: { value: "2" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Agent maximum tool calls" }), { target: { value: "2" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview agent edit" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText(/Agent structured answer/)); expect(screen.getByText("Two confirmed invoices")).toBeTruthy(); expect(screen.getAllByText("Yes").length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({
+    type: "updateAgent", nodeId: "research", patch: expect.objectContaining({ allowed_actions: ["demo.echo"], completion_predicate: { path: ["complete"], equals: true }, max_rounds: 2, max_tool_calls: 2, max_concurrency: 1 }) })));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("operation workspace adds a bounded agent as a positioned reviewable draft", async () => {
+  const saved = agentRecord(); workflowService.readiness.mockResolvedValue(saved);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);
+  fireEvent.click(await screen.findByRole("button", { name: "Add bounded agent" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New agent ID" }), { target: { value: "verify" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "New agent instruction" }), { target: { value: "Verify the saved research summary" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "New agent input" }), { target: { value: "{{research.structuredContent.summary}}" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "New agent position" }), { target: { value: "deliver" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview agent node" }));
+  expect(screen.getByRole("region", { name: "Node change preview" }).textContent).toMatch(/verify.*Before deliver/);
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({
+    type: "addAgent", beforeNodeId: "deliver", node: expect.objectContaining({ id: "verify", kind: "agent", input: "{{research.structuredContent.summary}}",
+      allowed_actions: ["demo.echo"], completion_predicate: { path: ["complete"], equals: true }, max_concurrency: 1 }) })));
 });
 
 test("selecting a collection owner forwards its exact saved scope to main chat and exposes a mobile focus action", async () => {
