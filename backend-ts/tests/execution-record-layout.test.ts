@@ -7,7 +7,10 @@ function state() {
     costUsd: 0, tokens: { input: 0, output: 0, total: 0 }, startedBy: { id: "owner", name: "Owner" }, finalOutput: false,
     readProgress: { profile: "read-progress-v1", epoch: 1, nextStepIndex: 1, lastSequence: 1, persistence: "durable", attempts: { node: { id: "attempt", nodeId: "node", stepIndex: 0, status: "DONE", startedAt: "now" } } },
     iterationProgress: { profile: "read-iterations/v1", sourceHash: "source", semanticHash: "semantic", inputBinding: "input", admittedRole: "owner", receipts: { "action:node": { kind: "action", nodeId: "node", invocationId: "node", sourceIndex: 0, status: "DONE", iterations: [], recordedAt: "now", seal: "sealed" } } },
-    stepOutputs: { node: { content: [], structuredContent: { value: 0 } } }, valueOutputs: { answer: { value: null } } };
+    stepOutputs: { node: { content: [], structuredContent: { value: 0 } } }, valueOutputs: { answer: { value: null } },
+    reportCoverages: { node: { profile: "schedule-report-coverage/v1", nodeId: "node", toolId: "report", contractHash: `sha256:${"a".repeat(64)}`,
+      argumentHash: `sha256:${"b".repeat(64)}`, outputHash: `sha256:${"c".repeat(64)}`, startAt: "2026-10-04T00:00:00Z", endAt: "2026-10-05T00:00:00Z",
+      itemCount: 1, confirmedAt: "2026-10-05T00:00:00Z" } } };
   value.timelines.run = [{ id: "one", output: { value: false } }, { id: "two" }]; value.timelines.empty = [];
   value.executionEvents.run = [{ version: 1, executionId: "run", workflowId: "wf", sequence: 1, timestamp: "now", type: "done", payload: {} }]; value.executionLogs.run = [{ message: "done" }];
   value.readJobs.run = { version: 1, executionId: "run", actorId: "owner", admittedRole: "owner", state: "FINISHED", requestFingerprint: "request", connectionFingerprint: "connection", idempotencyScope: "scope", createdAt: "now", inputCiphertext: "encrypted" };
@@ -19,7 +22,9 @@ test("normalizes attempts/receipts/answers/values/events/private jobs and recons
   const original = state(), records = splitRuntimeState(original), before = structuredClone(records);
   expect(assembleRuntimeState(records)).toEqual(original); expect(records).toEqual(before);
   const meta = records.find(record => record.path[0] === "executions")!.value as Execution;
-  expect(meta.stepOutputs).toEqual({}); expect(meta.valueOutputs).toEqual({}); expect(meta.readProgress!.attempts).toEqual({}); expect(meta.iterationProgress!.receipts).toEqual({});
+  expect(meta.stepOutputs).toEqual({}); expect(meta.valueOutputs).toEqual({}); expect(meta.reportCoverages).toEqual({});
+  expect(records.find(record => record.path[0] === "report-coverages")?.path).toEqual(["report-coverages", "run", "node"]);
+  expect(meta.readProgress!.attempts).toEqual({}); expect(meta.iterationProgress!.receipts).toEqual({});
   expect(records.find(record => record.path[0] === "root")!.value).not.toHaveProperty("executions");
 });
 test.each(["missing-entry", "orphan-output", "unknown", "duplicate", "wrong-run", "extra-entry", "embedded-output", "array-length", "missing-root", "missing-audit", "missing-parent", "wrong-cursor", "orphan-cursor"])("malformed %s records fail closed rather than dropping evidence", damage => {

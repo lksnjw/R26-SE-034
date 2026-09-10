@@ -91,6 +91,24 @@ test("cursor report coverage explains protected continuation without exposing cu
   expect(coverage.querySelector("pre")).toBeNull();
 });
 
+test("related report receipts explain the exact invoice-to-order match without exposing key hashes or raw JSON", () => {
+  const keysHash = `sha256:${"d".repeat(64)}`, base = { profile: "schedule-report-coverage/v1",
+    contractHash: `sha256:${"a".repeat(64)}`, argumentHash: `sha256:${"b".repeat(64)}`, outputHash: `sha256:${"c".repeat(64)}`,
+    startAt: "2026-10-06T00:00:00.000Z", endAt: "2026-10-07T00:00:00.000Z", confirmedAt: "2026-10-07T09:00:01.000Z" };
+  render(<ExecutionOutputPanel execution={{ status: "AWAITING_APPROVAL", reportCoverages: {
+    invoiceReport: { ...base, nodeId: "invoiceReport", toolId: "invoice.report", itemCount: 2,
+      relatedRecords: { profile: "report-related-record-evidence/v1", relationName: "invoice-orders", mode: "PROJECTED", keyCount: 2, keysHash } },
+    orderReport: { ...base, nodeId: "orderReport", toolId: "order.report", itemCount: 2,
+      relatedRecords: { profile: "report-related-record-evidence/v1", relationName: "invoice-orders", mode: "REQUESTED_MATCHED", keyCount: 2, keysHash } },
+  } }} />);
+  const coverage = screen.getByRole("region", { name: "Scheduled report coverage" });
+  expect(coverage.textContent).toMatch(/2 reviewed datasets/); expect(coverage.textContent).toMatch(/All related records matched/);
+  expect(screen.getByTestId("related-record-match").textContent).toMatch(/2 keys verified/);
+  expect(coverage.textContent).toMatch(/invoiceReport2 recordsKeys identified/); expect(coverage.textContent).toMatch(/orderReport2 recordsRecords matched/);
+  expect(coverage.textContent).not.toContain(keysHash); expect(coverage.querySelector("pre")).toBeNull();
+  expect(screen.queryByTestId("no-output")).toBeNull();
+});
+
 test("a FAILED execution still renders the partial output it produced", () => {
   render(<ExecutionOutputPanel execution={failedExecution} />);
 

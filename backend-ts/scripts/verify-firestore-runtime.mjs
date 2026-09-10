@@ -63,6 +63,28 @@ const reportTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-REPORT", name: 
     items: { type: "array", maxItems: 100, items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
     itemCount: { type: "integer" }, reportId: { type: "string" }, cursor: { type: "string" }, nextCursor: { type: "string" }, snapshotId: { type: "string" }, totalAvailable: { type: "integer" } },
     required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "reportId", "cursor", "nextCursor", "snapshotId", "totalAvailable"], additionalProperties: false } } });
+const relatedInvoiceTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-INVOICE-RELATION-REPORT", name: "fixture.invoice-relation-report", mcp_tool_name: "fixture.invoice-relation-report",
+  input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" } }, required: ["startAt", "endAt"], additionalProperties: false },
+  report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
+    covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
+    key_projection: { profile: "report-key-projection/v1", relation_name: "invoice-orders", item_key_path: ["orderId"], keys_path: ["orderIds"] } },
+  bridge_contract: { ...tool.bridge_contract, resource_digest: "f".repeat(64), output_schema: { type: "object", properties: {
+    coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
+    items: { type: "array", items: { type: "object", properties: { invoiceId: { type: "string" }, orderId: { type: "string" } },
+      required: ["invoiceId", "orderId"], additionalProperties: false } }, itemCount: { type: "integer" },
+    orderIds: { type: "array", maxItems: 100, items: { type: "string" } }, reportId: { type: "string" } },
+    required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "orderIds", "reportId"], additionalProperties: false } } });
+const relatedOrderTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-ORDER-RELATION-REPORT", name: "fixture.order-relation-report", mcp_tool_name: "fixture.order-relation-report",
+  input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" },
+    orderIds: { type: "array", maxItems: 100, items: { type: "string" } } }, required: ["startAt", "endAt", "orderIds"], additionalProperties: false },
+  report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
+    covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
+    requested_key_coverage: { profile: "report-requested-key-coverage/v1", relation_name: "invoice-orders", keys_parameter: "orderIds", item_key_path: ["orderId"] } },
+  bridge_contract: { ...tool.bridge_contract, resource_digest: "1".repeat(64), output_schema: { type: "object", properties: {
+    coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
+    items: { type: "array", items: { type: "object", properties: { orderId: { type: "string" }, total: { type: "integer" } },
+      required: ["orderId", "total"], additionalProperties: false } }, itemCount: { type: "integer" }, reportId: { type: "string" } },
+    required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "reportId"], additionalProperties: false } } });
 const readbackTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-NOTIFICATION-STATUS", name: "fixture.notification-status", mcp_tool_name: "fixture.notification-status",
   bridge_contract: { ...tool.bridge_contract, resource_digest: "c".repeat(64), output_schema: { type: "object", properties: {
     id: { type: "string" }, state: { type: "string" }, settled: { type: "boolean" }, observedAt: { type: "string" },
@@ -81,11 +103,11 @@ const emailTool = toolSchema.parse({ ...operationTool, tool_id: "FIXTURE-EMAIL",
   operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never",
     confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
   bridge_contract: { ...operationTool.bridge_contract, resource_digest: "d".repeat(64) } });
-const fixtureTools = [tool, reportTool, operationTool, readbackTool, emailTool];
+const fixtureTools = [tool, reportTool, relatedInvoiceTool, relatedOrderTool, operationTool, readbackTool, emailTool];
 const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions: { tools: "fixture-v1", rules: "fixture-v1" } }), hash: () => resolvedParameterHashBytes(canonicalJSONBytes(fixtureTools)),
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
-const calls = [], reports = [], models = [], operations = [], readbacks = [], emails = [];
+const calls = [], reports = [], relatedInvoiceReports = [], relatedOrderReports = [], models = [], operations = [], readbacks = [], emails = [];
 let sdkHook, modelHook;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
@@ -116,6 +138,18 @@ async function start(repositoryValue) {
           return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: !hasMore, hasMore,
             items: [{ id: `invoice-firestore-${page}` }], itemCount: 1, reportId: "scheduled-operation", cursor: args.cursor,
             nextCursor: hasMore ? `cursor-firestore-${page + 1}` : "", snapshotId: "snapshot-firestore-daily", totalAvailable: 3 } };
+        }
+        if (name === exactBridgeName(relatedInvoiceTool)) {
+          assert.equal(meta["toolplane.resourceDigest"], "f".repeat(64)); relatedInvoiceReports.push({ startAt: args.startAt, endAt: args.endAt });
+          return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: true, hasMore: false,
+            items: [{ invoiceId: "invoice-related-1", orderId: "order-related-1" }, { invoiceId: "invoice-related-2", orderId: "order-related-2" }],
+            itemCount: 2, orderIds: ["order-related-2", "order-related-1"], reportId: "related-report-operation" } };
+        }
+        if (name === exactBridgeName(relatedOrderTool)) {
+          assert.equal(meta["toolplane.resourceDigest"], "1".repeat(64)); relatedOrderReports.push({ startAt: args.startAt, endAt: args.endAt, orderIds: structuredClone(args.orderIds) });
+          const orderIds = [...args.orderIds].reverse();
+          return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: true, hasMore: false,
+            items: orderIds.map((orderId, index) => ({ orderId, total: (index + 1) * 10 })), itemCount: orderIds.length, reportId: "related-report-operation" } };
         }
         assert.equal(name, exactBridgeName(tool)); assert.equal(meta["toolplane.resourceDigest"], "a".repeat(64));
         calls.push(args.id); await sdkHook?.(args); return { content: [], structuredContent: { id: args.id.toUpperCase(), token: "synthetic-remote-secret" } };
@@ -493,6 +527,47 @@ try {
   assert.equal(operations.length, operationsBeforeSchedule + 1); assert.deepEqual(reports.map(value => value.cursor), ["", "cursor-firestore-2", "cursor-firestore-3"]);
   log("actual Firestore daily schedule claim and first opaque-cursor report checkpoint survived separate post-COMMIT acknowledgement losses; restart resumed from the protected second cursor without replay, persisted three-page stable-snapshot/complete/exhausted/count evidence without raw cursors, required fresh independent approval, dispatched once and persisted without a model call");
 
+  const relatedScheduledYAML = stringify({ name: "Scheduled related-record report", description: "Invoice keys must cover exact related orders", trigger: { type: "manual", config: { inputSchema: {
+    type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
+    required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
+    { id: "invoices", action: relatedInvoiceTool.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
+    { id: "orders", action: relatedOrderTool.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}",
+      orderIds: "{{invoices.structuredContent.orderIds}}" } },
+    { id: "send", action: operationTool.name, parameters: { id: "{{orders.structuredContent.reportId}}" } },
+  ] });
+  await repository.mutate(state => { state.schedules["schedule-scheduledOperation"].state = "PAUSED"; state.schedules["schedule-scheduledOperation"].nextRunAt = null;
+    state.workflows.relatedScheduledOperation = { ...state.workflows.operation, id: "relatedScheduledOperation",
+    name: "Scheduled related-record report", yaml: relatedScheduledYAML, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false };
+    state.versions.relatedScheduledOperation = []; });
+  await request("POST", "/api/workflows/relatedScheduledOperation/publish", {}, 200);
+  const relatedWorkflow = (await repository.snapshot()).workflows.relatedScheduledOperation;
+  const relatedSchedule = (await request("PUT", "/api/workflows/relatedScheduledOperation/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: relatedWorkflow.publishedVersion, workflowHash: workflowContentHash(relatedWorkflow.yaml), enabled: true, timezone: "UTC",
+    localTime: new Date(Date.now() + 120_000).toISOString().slice(11, 16), reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE",
+    misfireGraceSeconds: 300, servicePrincipalId: "owner", input: {}, reportWindowBinding }, 200)).data;
+  const relatedScheduledFor = relatedSchedule.nextRunAt, operationsBeforeRelatedSchedule = operations.length;
+  assert.deepEqual(await workflowScheduleRunner(services).runDue(Date.parse(relatedScheduledFor)), { admitted: 1, skipped: 0, blocked: 0 });
+  const relatedExecution = await waitFor(async () => Object.values((await repository.snapshot()).executions)
+    .find(value => value.workflowId === "relatedScheduledOperation" && value.scheduleSource?.scheduledFor === relatedScheduledFor && value.status === "AWAITING_APPROVAL"),
+  "related-record scheduled operation approval wait");
+  const relatedWindow = reportWindowFor("UTC", relatedScheduledFor, "previous-calendar-day");
+  assert.deepEqual(relatedInvoiceReports, [{ startAt: relatedWindow.startAt, endAt: relatedWindow.endAt }]);
+  assert.deepEqual(relatedOrderReports, [{ startAt: relatedWindow.startAt, endAt: relatedWindow.endAt, orderIds: ["order-related-2", "order-related-1"] }]);
+  assert.deepEqual(Object.keys(relatedExecution.reportCoverages).sort(), ["invoices", "orders"]);
+  const projectedRelation = relatedExecution.reportCoverages.invoices.relatedRecords, matchedRelation = relatedExecution.reportCoverages.orders.relatedRecords;
+  assert.equal(projectedRelation.mode, "PROJECTED"); assert.equal(matchedRelation.mode, "REQUESTED_MATCHED");
+  assert.equal(projectedRelation.relationName, "invoice-orders"); assert.equal(matchedRelation.relationName, "invoice-orders");
+  assert.equal(projectedRelation.keyCount, 2); assert.equal(matchedRelation.keyCount, 2); assert.equal(projectedRelation.keysHash, matchedRelation.keysHash);
+  assert.equal(operations.length, operationsBeforeRelatedSchedule); assert.equal(models.length, modelsBeforeSchedule);
+  const relatedExecutionBeforeRestart = structuredClone(relatedExecution); await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[relatedExecution.id].reportCoverages, relatedExecutionBeforeRestart.reportCoverages);
+  const relatedReview = (await request("GET", `/api/executions/${relatedExecution.id}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  await request("POST", `/api/executions/${relatedExecution.id}/approve`, { approvalId: relatedReview.id, baseVersion: relatedReview.version,
+    reviewHash: relatedReview.reviewHash, decisionKey: "firestore-related-report-approval-0001" }, 200, "reviewer");
+  await waitFor(async () => (await repository.snapshot()).executions[relatedExecution.id].status === "DONE", "related-record scheduled operation completion");
+  assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(operations.at(-1), "related-report-operation");
+  log("actual Firestore related-record schedule persisted and reloaded separate invoice/order receipts with one matching projected/requested key-set hash, then required fresh independent approval before one synthetic effect");
+
   const lostOperation = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-lost-intent-0001", input: { id: "operation-lost-intent" } }, 202)).data.id;
   await waitFor(async () => (await repository.snapshot()).executions[lostOperation].status === "AWAITING_APPROVAL", "lost-intent approval wait");
   const lostReview = (await request("GET", `/api/executions/${lostOperation}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
@@ -502,12 +577,12 @@ try {
   };
   await request("POST", `/api/executions/${lostOperation}/approve`, { approvalId: lostReview.id, baseVersion: lostReview.version, reviewHash: lostReview.reviewHash, decisionKey: "firestore-operation-lost-decision-0001" }, 200, "reviewer");
   await waitFor(() => lostOperationACK, "operation intent post-COMMIT acknowledgement loss"); persistence.saveExecutionCheckpoint = actualOperationCheckpoint;
-  assert.equal(operations.length, operationsBeforeSchedule + 1); await repository.recoverPersistenceState();
+  assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); await repository.recoverPersistenceState();
   assert.equal((await repository.snapshot()).executions[lostOperation].operationSecret.intents.send.state, "DISPATCH_INTENT");
   await stop(); await start(await openApplicationRepository(config));
   const reconciledOperation = (await repository.snapshot()).executions[lostOperation]; assert.equal(reconciledOperation.status, "RECONCILIATION_REQUIRED");
   assert.equal(reconciledOperation.readProgress.attempts.send.status, "UNKNOWN"); assert.equal(reconciledOperation.stepOutputs.lookup.structuredContent.id, "OPERATION-LOST-INTENT");
-  assert.equal(operations.length, operationsBeforeSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
+  assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
   log("actual Firestore post-COMMIT operation intent ACK loss fenced SDK entry; authoritative reload/restart preserved the read answer and unknown intent for reconciliation, without operation replay");
 
   // Explicit broker/helper qualification only, not a durable read-back job,
@@ -525,7 +600,7 @@ try {
   const evaluation = evaluateOperationReadback(operationTool, readbackTool, readbackCase.arguments, readbackResult, readbackCase.preparedAt);
   assert.equal(evaluation.outcome, "NOT_APPLIED"); assert.equal(evaluation.settled, true);
   assert.equal(evaluation.canResume, false); assert.equal(evaluation.noReplay, true); assert.equal(evaluation.deliveryVerified, false);
-  assert.deepEqual(readbacks, ["OPERATION-LOST-INTENT"]); assert.equal(operations.length, operationsBeforeSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
+  assert.deepEqual(readbacks, ["OPERATION-LOST-INTENT"]); assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
   const afterReadback = await repository.snapshot();
   assert(beforeReadback.equals(canonicalJSONBytes([afterReadback.executions[lostOperation], afterReadback.timelines[lostOperation], afterReadback.executionEvents[lostOperation]])));
   assert.equal(afterReadback.executions[lostOperation].status, "RECONCILIATION_REQUIRED");
@@ -548,7 +623,7 @@ try {
     assert.deepEqual(execution.stepOutputs, reconciledOperation.stepOutputs); assert.equal(execution.finalOutput, undefined);
     assert.equal(execution.readProgress.epoch, reconciledOperation.readProgress.epoch); assert.equal(execution.readProgress.nextStepIndex, reconciledOperation.readProgress.nextStepIndex);
     assert.deepEqual(saved.timelines[lostOperation], readbackSnapshot.timelines[lostOperation]);
-    assert.equal(operations.length, operationsBeforeSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
+    assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
   };
   await checkOriginalOperation(); assert.equal(readbacks.length, 2);
   const savedQuery = (await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[normalQuery.id];

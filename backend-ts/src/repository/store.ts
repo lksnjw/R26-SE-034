@@ -63,6 +63,9 @@ export type Execution = {
   /** Connector-attested complete coverage for the immutable schedule window.
    * This is evidence, not permission to dispatch the later effect. */
   reportCoverage?: import("../tools/report-coverage-contract.js").ReportCoverageReceipt;
+  /** Every schedule-qualified report read, keyed by immutable node ID. The
+   * singular field remains the primary/legacy projection for compatibility. */
+  reportCoverages?: Record<string, import("../tools/report-coverage-contract.js").ReportCoverageReceipt>;
   /** Private durable page accumulator, normalized separately while a bounded
    * server-owned report pagination node is in progress. */
   reportPageSecret?: Record<string, import("../tools/report-coverage-contract.js").ReportPaginationProgress>;

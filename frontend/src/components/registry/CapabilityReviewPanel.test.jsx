@@ -34,9 +34,11 @@ test("formatted inspection requires a note and explicit confirmation; discovery 
 
 test("a report coverage read explains its exact interval and completeness evidence before review", async () => {
   const value = entry(); value.observation.definition.report_coverage_contract = { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt",
-    covered_start_path: ["coveredStartAt"], covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"] };
+    covered_start_path: ["coveredStartAt"], covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
+    key_projection: { profile: "report-key-projection/v1", relation_name: "invoice-orders", item_key_path: ["orderId"], keys_path: ["orderIds"] } };
   catalog.mockResolvedValue(page(value)); mount(); await select();
   expect(screen.getByText("Scheduled report coverage")).toBeTruthy(); expect(screen.getByText(/Exact startAt → endAt interval/)).toBeTruthy();
+  expect(screen.getByText(/identifies the complete/).textContent).toMatch(/invoice-orders/);
   expect(screen.getByText(/does not approve a later effect/i)).toBeTruthy(); expect(document.querySelector("pre")).toBeNull();
 });
 

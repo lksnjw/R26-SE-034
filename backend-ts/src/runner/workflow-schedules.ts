@@ -117,6 +117,12 @@ function directlyBindsParameter(binding: ReadBinding, parameter: string, workflo
   const value = binding.fields[parameter];
   return value?.kind === "ref" && value.source === "workflowInput" && value.path.length === 1 && value.path[0] === workflowInput;
 }
+function directlyBindsNodeOutput(binding: ReadBinding, parameter: string, nodeId: string, path: readonly string[]): boolean {
+  if (binding.kind !== "object") return false;
+  const value = binding.fields[parameter];
+  return value?.kind === "ref" && value.source === "nodeOutput" && value.nodeId === nodeId &&
+    value.path.length === path.length && value.path.every((part, index) => part === path[index]);
+}
 function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<string, unknown>, binding: ReportWindowInputBinding, window: ReportWindow,
   tools: readonly ToolDefinition[]) {
   if (!reportWindowInputBindingSchema.safeParse(binding).success)
@@ -134,20 +140,33 @@ function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<
       throw new HandlerFailure(422, `Report-window input ${name} must be referenced by a reviewed ERP read step`, { code: "SCHEDULE_REPORT_WINDOW_BINDING_UNUSED" });
   }
   const firstEffect = plan.ir.root.nodes.findIndex(node => node.effectClass !== "read");
-  const coverage = plan.ir.root.nodes.filter((node, index) => {
-    if (firstEffect < 0 || index >= firstEffect) return false;
-    if (node.effectClass !== "read") return false;
+  const coverage = plan.ir.root.nodes.flatMap((node, index) => {
+    if (firstEffect < 0 || index >= firstEffect) return [];
+    if (node.effectClass !== "read") return [];
     const tool = tools.find(value => value.tool_id === node.capability.toolId && node.capability.contractHash === digest(value));
-    if (!tool?.report_coverage_contract) return false;
+    if (!tool?.report_coverage_contract) return [];
     try {
       const parameters = reportCoverageParameters(tool)!;
       const pagination = tool.report_coverage_contract.pagination;
       const pageParameter = pagination?.profile === "page-number/v1" ? pagination.page_parameter : pagination?.cursor_parameter;
       return directlyBindsParameter(node.inputs, parameters.start, binding.startAtInput) && directlyBindsParameter(node.inputs, parameters.end, binding.endAtInput) &&
-        (!pageParameter || node.inputs.kind === "object" && !Object.hasOwn(node.inputs.fields, pageParameter));
-    } catch { return false; }
+        (!pageParameter || node.inputs.kind === "object" && !Object.hasOwn(node.inputs.fields, pageParameter)) ? [{ node, tool }] : [];
+    } catch { return []; }
   });
-  if (coverage.length !== 1) throw new HandlerFailure(422, "An active schedule requires exactly one reviewed report read that directly binds both exact window inputs and declares complete-result evidence", { code: "SCHEDULE_REPORT_COVERAGE_REQUIRED" });
+  const supportedSingle = coverage.length === 1 && !coverage[0]!.tool.report_coverage_contract!.key_projection &&
+    !coverage[0]!.tool.report_coverage_contract!.requested_key_coverage;
+  let supportedRelation = false;
+  if (coverage.length === 2) {
+    const [primary, related] = coverage, primaryContract = primary!.tool.report_coverage_contract!, relatedContract = related!.tool.report_coverage_contract!;
+    supportedRelation = !!primaryContract.key_projection && !!relatedContract.requested_key_coverage &&
+      !primaryContract.requested_key_coverage && !relatedContract.key_projection &&
+      primaryContract.key_projection.relation_name === relatedContract.requested_key_coverage.relation_name &&
+      directlyBindsNodeOutput(related!.node.inputs, relatedContract.requested_key_coverage.keys_parameter, primary!.node.id,
+        ["structuredContent", ...primaryContract.key_projection.keys_path]);
+  }
+  if (!supportedSingle && !supportedRelation) throw new HandlerFailure(422,
+    "An active schedule requires either one reviewed complete report or one reviewed primary report followed by an exact related-key coverage report before the first effect",
+    { code: "SCHEDULE_REPORT_COVERAGE_REQUIRED" });
   const effective = { ...structuredClone(staticInput), ...values };
   if (!schema || validateToolInput(schema, effective).length)
     throw new HandlerFailure(422, "Schedule values plus the server-derived report window do not match the published workflow input schema", { code: "SCHEDULE_INPUT_INVALID" });

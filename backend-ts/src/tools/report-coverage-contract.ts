@@ -2,7 +2,7 @@ import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonica
 import { isSecretField } from "../redact/secrets.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 
-type JsonSchema = { type?: unknown; properties?: Record<string, JsonSchema>; required?: unknown; items?: unknown; writeOnly?: unknown; maxItems?: unknown };
+type JsonSchema = { type?: unknown; properties?: Record<string, JsonSchema>; required?: unknown; items?: JsonSchema; writeOnly?: unknown; maxItems?: unknown };
 type CoverageContract = NonNullable<ToolDefinition["report_coverage_contract"]>;
 
 export type ReportOperatorResolution = { profile: "report-page-operator-evidence/v1"; recordId: string; actorId: string; referenceHash: string; observedAt: string; recordedAt: string };
@@ -13,6 +13,8 @@ export type ReportPageReceipt = { profile: "report-page-evidence/v1"; firstPage:
   pages: ReportPageEvidence[] };
 export type ReportCursorReceipt = { profile: "report-cursor-evidence/v1"; pageCount: number; totalCount: number; snapshotHash: string; initialCursorHash: string;
   pages: ReportCursorEvidence[] };
+export type ReportRelatedRecordEvidence = { profile: "report-related-record-evidence/v1"; relationName: string;
+  mode: "PROJECTED" | "REQUESTED_MATCHED"; keyCount: number; keysHash: string };
 
 export type ReportCoverageReceipt = {
   profile: "schedule-report-coverage/v1";
@@ -26,6 +28,7 @@ export type ReportCoverageReceipt = {
   itemCount: number;
   confirmedAt: string;
   pagination?: ReportPageReceipt | ReportCursorReceipt;
+  relatedRecords?: ReportRelatedRecordEvidence;
 };
 export type ReportPageProgress = { profile: "schedule-report-pages/v1"; nodeId: string; toolId: string; contractHash: string; startAt: string; endAt: string;
   firstPage: number; nextPage: number; maxPages: number; items: unknown[]; pages: ReportPageEvidence[]; snapshotValue?: string; totalCount?: number; lastOutput?: Record<string, unknown> };
@@ -48,6 +51,26 @@ function validResolution(value: unknown): boolean {
 function schemaAt(root: unknown, path: readonly string[]): JsonSchema | undefined {
   let value = root as JsonSchema | undefined;
   for (const part of path) value = value?.type === "object" ? value.properties?.[part] : undefined;
+  return value;
+}
+
+function requiredSchemaAt(root: unknown, path: readonly string[]): JsonSchema | undefined {
+  let value = root as JsonSchema | undefined;
+  for (const part of path) {
+    if (value?.type !== "object" || !Array.isArray(value.required) || !value.required.includes(part)) return undefined;
+    value = value.properties?.[part];
+  }
+  return value;
+}
+
+function itemSchemaAt(output: unknown, itemsPath: readonly string[], keyPath: readonly string[]): JsonSchema | undefined {
+  let value = requiredSchemaAt(output, itemsPath);
+  if (value?.type !== "array" || !value.items) return undefined;
+  value = value.items;
+  for (const part of keyPath) {
+    if (value?.type !== "object" || !Array.isArray(value.required) || !value.required.includes(part)) return undefined;
+    value = value.properties?.[part];
+  }
   return value;
 }
 
@@ -74,6 +97,71 @@ function optionalStringParameter(tool: ToolDefinition, name: string): boolean {
   const schema = tool.input_schema as JsonSchema;
   return schema.type === "object" && schema.properties?.[name]?.type === "string" && schema.properties[name]?.writeOnly !== true &&
     (!Array.isArray(schema.required) || !schema.required.includes(name)) && !tool.required_parameters.includes(name) && !isSecretField(name);
+}
+function requiredKeyArrayParameter(tool: ToolDefinition, name: string): JsonSchema | undefined {
+  const schema = tool.input_schema as JsonSchema, value = schema.properties?.[name];
+  return schema.type === "object" && Array.isArray(schema.required) && schema.required.includes(name) && !isSecretField(name) &&
+    value?.type === "array" && Number.isInteger(value.maxItems) && Number(value.maxItems) >= 1 && Number(value.maxItems) <= 100_000 &&
+    ["string", "integer"].includes(String(value.items?.type)) && value.writeOnly !== true ? value.items : undefined;
+}
+
+function keyToken(value: unknown, type: unknown): string {
+  if (type === "string" && typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 2_048) return `s:${value}`;
+  if (type === "integer" && Number.isSafeInteger(value)) return `i:${value}`;
+  throw new Error("Related-record keys must be non-empty bounded strings or safe integers matching the reviewed schema");
+}
+function itemKeyValues(items: unknown[], path: readonly string[], type: unknown): { values: Array<string | number>; tokens: string[] } {
+  const values = items.map(item => valueAt(item, path)).map(value => { keyToken(value, type); return value as string | number; });
+  return { values, tokens: values.map(value => keyToken(value, type)) };
+}
+function uniqueTokens(values: unknown[], type: unknown, label: string): string[] {
+  const tokens = values.map(value => keyToken(value, type));
+  if (new Set(tokens).size !== tokens.length) throw new Error(`${label} contains duplicate related-record keys`);
+  return tokens;
+}
+function sameSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort(), sortedRight = [...right].sort();
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+function relatedEvidence(tool: ToolDefinition, args: Record<string, unknown>, body: unknown, items: unknown[], requestedSubset: boolean): ReportRelatedRecordEvidence | undefined {
+  const contract = tool.report_coverage_contract!;
+  if (contract.key_projection) {
+    const keySchema = itemSchemaAt(tool.bridge_contract!.output_schema, contract.items_path, contract.key_projection.item_key_path)!;
+    const item = itemKeyValues(items, contract.key_projection.item_key_path, keySchema.type), projected = valueAt(body, contract.key_projection.keys_path);
+    if (!Array.isArray(projected)) throw new Error("The report did not return its reviewed related-key projection");
+    const projectedTokens = uniqueTokens(projected, keySchema.type, "Projected key list"), expected = [...new Set(item.tokens)];
+    if (!sameSet(projectedTokens, expected)) throw new Error("The report related-key projection does not cover every returned primary record");
+    const sorted = [...projectedTokens].sort();
+    return { profile: "report-related-record-evidence/v1", relationName: contract.key_projection.relation_name,
+      mode: "PROJECTED", keyCount: sorted.length, keysHash: resolvedParameterHashBytes(canonicalJSONBytes(sorted)) };
+  }
+  if (contract.requested_key_coverage) {
+    const inputSchema = requiredKeyArrayParameter(tool, contract.requested_key_coverage.keys_parameter)!;
+    const requested = args[contract.requested_key_coverage.keys_parameter];
+    if (!Array.isArray(requested)) throw new Error("The related report did not receive its reviewed requested-key list");
+    const requestedTokens = uniqueTokens(requested, inputSchema.type, "Requested key list"), requestedSet = new Set(requestedTokens);
+    const item = itemKeyValues(items, contract.requested_key_coverage.item_key_path, inputSchema.type);
+    if (new Set(item.tokens).size !== item.tokens.length) throw new Error("The related report returned duplicate related-record keys");
+    if (item.tokens.some(value => !requestedSet.has(value)) || !requestedSubset && !sameSet(item.tokens, requestedTokens))
+      throw new Error(requestedSubset ? "The related report returned a record outside the requested key set" : "The related report did not return exactly the requested related-record key set");
+    const sorted = [...requestedTokens].sort();
+    return { profile: "report-related-record-evidence/v1", relationName: contract.requested_key_coverage.relation_name,
+      mode: "REQUESTED_MATCHED", keyCount: sorted.length, keysHash: resolvedParameterHashBytes(canonicalJSONBytes(sorted)) };
+  }
+  return undefined;
+}
+
+/** Checks an aggregate while paginated pages are still being collected. */
+export function assertReportRelatedKeyProgress(tool: ToolDefinition, args: Record<string, unknown>, items: unknown[], hasMore: boolean): void {
+  if (tool.report_coverage_contract?.requested_key_coverage)
+    relatedEvidence(tool, args, { structuredContent: null }, items, hasMore);
+  else if (tool.report_coverage_contract?.key_projection) {
+    const contract = tool.report_coverage_contract.key_projection;
+    const schema = itemSchemaAt(tool.bridge_contract!.output_schema, tool.report_coverage_contract.items_path, contract.item_key_path)!;
+    itemKeyValues(items, contract.item_key_path, schema.type);
+  }
 }
 
 /** Validates a local contract at capability-review time. A connector may do
@@ -105,6 +193,19 @@ export function assertReportCoverageContract(tool: ToolDefinition): void {
       pagination.next_cursor_path.some(isSecretField) || schemaAt(output, pagination.cursor_path)?.type !== "string" ||
       schemaAt(output, pagination.next_cursor_path)?.type !== "string"))
     throw new Error("Cursor report pagination requires an optional string input plus declared current and next cursor output selectors");
+  if (contract.key_projection) {
+    const projected = requiredSchemaAt(output, contract.key_projection.keys_path), itemKey = itemSchemaAt(output, contract.items_path, contract.key_projection.item_key_path);
+    if (contract.key_projection.keys_path.some(isSecretField) || contract.key_projection.item_key_path.some(isSecretField) ||
+        !itemKey || !["string", "integer"].includes(String(itemKey.type)) || itemKey.writeOnly === true || projected?.type !== "array" ||
+        projected.writeOnly === true || projected.items?.type !== itemKey.type || !Number.isInteger(projected.maxItems) ||
+        Number(projected.maxItems) < 1 || Number(projected.maxItems) > 100_000)
+      throw new Error("Related-key projection requires required non-sensitive scalar item keys and one bounded required output key list of the same type");
+  }
+  if (contract.requested_key_coverage) {
+    const requested = requiredKeyArrayParameter(tool, contract.requested_key_coverage.keys_parameter), itemKey = itemSchemaAt(output, contract.items_path, contract.requested_key_coverage.item_key_path);
+    if (!requested || contract.requested_key_coverage.item_key_path.some(isSecretField) || !itemKey || itemKey.type !== requested.type || itemKey.writeOnly === true)
+      throw new Error("Requested related-key coverage requires a bounded required non-sensitive key-list input and required output item keys of the same scalar type");
+  }
 }
 
 export function reportCoverageParameters(tool: ToolDefinition): { start: string; end: string } | null {
@@ -130,7 +231,7 @@ function confirmation(tool: ToolDefinition, args: Record<string, unknown>, outpu
   if (coveredStart !== startAt || coveredEnd !== endAt || complete !== true || hasMore !== false || !Array.isArray(items) ||
       !Number.isSafeInteger(itemCount) || itemCount !== items.length || items.length > 100_000)
     throw new Error("The ERP report result did not attest complete bounded coverage of the exact scheduled window");
-  return { itemCount: itemCount as number };
+  return { itemCount: itemCount as number, relatedRecords: relatedEvidence(tool, args, body, items, false) };
 }
 
 export function confirmScheduledReportCoverage(input: { tool: ToolDefinition; nodeId: string; contractHash: string; args: Record<string, unknown>;
@@ -165,7 +266,7 @@ export function confirmScheduledReportCoverage(input: { tool: ToolDefinition; no
   return { profile: "schedule-report-coverage/v1", nodeId: input.nodeId, toolId: input.tool.tool_id, contractHash: input.contractHash,
     argumentHash: resolvedParameterHashBytes(canonicalJSONBytes(input.args)), outputHash: resolvedParameterHashBytes(canonicalJSONBytes(input.output)),
     startAt: input.startAt, endAt: input.endAt, itemCount: result.itemCount, confirmedAt: input.confirmedAt ?? new Date().toISOString(),
-    ...(input.pagination ? { pagination: structuredClone(input.pagination) } : {}) };
+    ...(input.pagination ? { pagination: structuredClone(input.pagination) } : {}), ...(result.relatedRecords ? { relatedRecords: result.relatedRecords } : {}) };
 }
 
 export function assertScheduledReportCoverageReceipt(receipt: ReportCoverageReceipt | undefined, input: { tool: ToolDefinition; nodeId: string;
@@ -214,6 +315,7 @@ export function confirmScheduledReportPage(input: { tool: ToolDefinition; args: 
       !Number.isSafeInteger(totalCount) || (totalCount as number) < items.length || (totalCount as number) > pagination.max_items ||
       typeof snapshotValue !== "string" || snapshotValue.length === 0 || Buffer.byteLength(snapshotValue) > 2_048)
     throw new Error("The ERP report page did not attest its exact page, interval, stable snapshot, total count, completeness and item count");
+  relatedEvidence(input.tool, input.args, body, items, Boolean(contract.requested_key_coverage));
   const snapshotHash = resolvedParameterHashBytes(canonicalJSONBytes(snapshotValue));
   return { items: structuredClone(items), hasMore, snapshotValue, totalCount: totalCount as number, evidence: { page: input.page,
     argumentHash: resolvedParameterHashBytes(canonicalJSONBytes(input.args)), outputHash: resolvedParameterHashBytes(canonicalJSONBytes(input.output)),
@@ -266,6 +368,7 @@ export function confirmScheduledReportCursor(input: { tool: ToolDefinition; args
       !Number.isSafeInteger(totalCount) || (totalCount as number) < items.length || (totalCount as number) > pagination.max_items ||
       typeof snapshotValue !== "string" || snapshotValue.length === 0 || Buffer.byteLength(snapshotValue) > 2_048)
     throw new Error("The ERP report cursor page did not attest its exact cursor, interval, next cursor, stable snapshot, total count, completeness and item count");
+  relatedEvidence(input.tool, input.args, body, items, Boolean(contract.requested_key_coverage));
   const cursorHash = resolvedParameterHashBytes(canonicalJSONBytes(input.cursor));
   const nextCursorHash = resolvedParameterHashBytes(canonicalJSONBytes(nextCursor));
   if (hasMore && nextCursorHash === cursorHash) throw new Error("The ERP report cursor did not advance");
@@ -283,6 +386,15 @@ function setAt(root: unknown, path: readonly string[], value: unknown): void {
     parent = child as Record<string, unknown>;
   }
   parent[path.at(-1)!] = value;
+}
+
+function setAggregateProjectedKeys(tool: ToolDefinition, output: Record<string, unknown>, items: unknown[]): void {
+  const coverage = tool.report_coverage_contract, projection = coverage?.key_projection;
+  if (!coverage || !projection) return;
+  const schema = itemSchemaAt(tool.bridge_contract!.output_schema, coverage.items_path, projection.item_key_path)!;
+  const keys = itemKeyValues(items, projection.item_key_path, schema.type), seen = new Set<string>(), values: Array<string | number> = [];
+  keys.tokens.forEach((token, index) => { if (!seen.has(token)) { seen.add(token); values.push(keys.values[index]!); } });
+  setAt(output.structuredContent, projection.keys_path, values);
 }
 
 export function protectedReportPageOutput(tool: ToolDefinition, output: Record<string, unknown>, replacement = "[protected snapshot marker]"): Record<string, unknown> {
@@ -304,6 +416,7 @@ export function completePaginatedReport(tool: ToolDefinition, progress: ReportPa
     throw new Error("Paginated report is not complete");
   const output = structuredClone(progress.lastOutput);
   setAt(output.structuredContent, contract.items_path, structuredClone(progress.items)); setAt(output.structuredContent, contract.item_count_path, progress.items.length);
+  setAggregateProjectedKeys(tool, output, progress.items);
   setAt(output.structuredContent, pagination.total_count_path, progress.totalCount);
   setAt(output.structuredContent, contract.complete_path, true); setAt(output.structuredContent, contract.has_more_path, false);
   const lastPage = progress.pages.at(-1)!.page; setAt(output.structuredContent, pagination.page_path, lastPage);
@@ -320,6 +433,7 @@ export function completeCursorPaginatedReport(tool: ToolDefinition, progress: Re
     throw new Error("Cursor-paginated report is not complete");
   const output = structuredClone(progress.lastOutput), last = progress.pages.at(-1)!;
   setAt(output.structuredContent, contract.items_path, structuredClone(progress.items)); setAt(output.structuredContent, contract.item_count_path, progress.items.length);
+  setAggregateProjectedKeys(tool, output, progress.items);
   setAt(output.structuredContent, pagination.total_count_path, progress.totalCount); setAt(output.structuredContent, contract.complete_path, true);
   setAt(output.structuredContent, contract.has_more_path, false); setAt(output.structuredContent, pagination.cursor_path, last.cursorHash);
   setAt(output.structuredContent, pagination.next_cursor_path, "");

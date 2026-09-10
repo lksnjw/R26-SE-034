@@ -36,9 +36,10 @@ class Records implements PersistenceBackend {
   async saveExecutionCheckpoint(checkpoint: ExecutionCheckpoint) { await this.save(Buffer.from(JSON.stringify(applyExecutionCheckpoint(JSON.parse(this.bytes!.toString()), checkpoint)))); }
   async probe() {} async close() {}
 }
-async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false, withReportPagination: boolean | "cursor" = false) {
+async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false, withReportPagination: boolean | "cursor" | "related" = false) {
   const repository = await Repository.open(storage), registries = await RegistryService.load(resolve("tests/fixtures/tools.json"), resolve("tests/fixtures/rules.json"));
-  const pageNumberPagination = withReportPagination === true, cursorPagination = withReportPagination === "cursor", paginated = pageNumberPagination || cursorPagination;
+  const pageNumberPagination = withReportPagination === true, cursorPagination = withReportPagination === "cursor", relatedMode = withReportPagination === "related";
+  const paginated = pageNumberPagination || cursorPagination;
   const base = registries.snapshot(), original = base.tools[0]!;
   const read = toolSchema.parse({ ...original, allowed_roles: ["Platform Admin"], bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [],
     output_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false } } });
@@ -47,16 +48,30 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
       ...(cursorPagination ? { cursor: { type: "string" } } : {}) }, required: ["startAt", "endAt"], additionalProperties: false },
     report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
       covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
+      ...(relatedMode ? { key_projection: { profile: "report-key-projection/v1", relation_name: "invoice-orders", item_key_path: ["orderId"], keys_path: ["orderIds"] } } : {}),
       ...(pageNumberPagination ? { pagination: { profile: "page-number/v1", page_parameter: "page", page_path: ["page"], snapshot_path: ["snapshotId"], total_count_path: ["totalAvailable"], first_page: 1, max_pages: 4, max_items: 100 } } : {}),
       ...(cursorPagination ? { pagination: { profile: "opaque-cursor/v1", cursor_parameter: "cursor", cursor_path: ["cursor"], next_cursor_path: ["nextCursor"],
         snapshot_path: ["snapshotId"], total_count_path: ["totalAvailable"], initial_cursor: "", max_pages: 4, max_items: 100 } } : {}) },
     bridge_contract: { ...read.bridge_contract, resource_digest: "e".repeat(64), output_schema: { type: "object", properties: {
       coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
-      items: { type: "array", ...(paginated ? { maxItems: 100 } : {}), items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
+      items: { type: "array", ...(paginated ? { maxItems: 100 } : {}), items: { type: "object", properties: { id: { type: "string" }, ...(relatedMode ? { orderId: { type: "string" } } : {}) },
+        required: ["id", ...(relatedMode ? ["orderId"] : [])], additionalProperties: false } },
       itemCount: { type: "integer" }, summary: { type: "string" }, ...(pageNumberPagination ? { page: { type: "integer" }, snapshotId: { type: "string" }, totalAvailable: { type: "integer" } } : {}),
-      ...(cursorPagination ? { cursor: { type: "string" }, nextCursor: { type: "string" }, snapshotId: { type: "string" }, totalAvailable: { type: "integer" } } : {}) },
+      ...(cursorPagination ? { cursor: { type: "string" }, nextCursor: { type: "string" }, snapshotId: { type: "string" }, totalAvailable: { type: "integer" } } : {}),
+      ...(relatedMode ? { orderIds: { type: "array", maxItems: 100, items: { type: "string" } } } : {}) },
       required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary", ...(pageNumberPagination ? ["page", "snapshotId", "totalAvailable"] : []),
-        ...(cursorPagination ? ["cursor", "nextCursor", "snapshotId", "totalAvailable"] : [])], additionalProperties: false } } });
+        ...(cursorPagination ? ["cursor", "nextCursor", "snapshotId", "totalAvailable"] : []), ...(relatedMode ? ["orderIds"] : [])], additionalProperties: false } } });
+  const relatedOrderRead = relatedMode ? toolSchema.parse({ ...read, tool_id: "related-order-report-fixture", name: "demo.orders", mcp_tool_name: "demo.orders",
+    input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" },
+      orderIds: { type: "array", maxItems: 100, items: { type: "string" } } }, required: ["startAt", "endAt", "orderIds"], additionalProperties: false },
+    report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
+      covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
+      requested_key_coverage: { profile: "report-requested-key-coverage/v1", relation_name: "invoice-orders", keys_parameter: "orderIds", item_key_path: ["orderId"] } },
+    bridge_contract: { ...read.bridge_contract, resource_digest: "f".repeat(64), output_schema: { type: "object", properties: {
+      coveredStartAt: { type: "string" }, coveredEndAt: { type: "string" }, complete: { type: "boolean" }, hasMore: { type: "boolean" },
+      items: { type: "array", items: { type: "object", properties: { orderId: { type: "string" }, total: { type: "integer" } },
+        required: ["orderId", "total"], additionalProperties: false } }, itemCount: { type: "integer" }, summary: { type: "string" } },
+      required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary"], additionalProperties: false } } }) : undefined;
   const write = toolSchema.parse({ ...read, tool_id: "operation-fixture", name: "demo.dispatch", mcp_tool_name: "demo.dispatch", is_read_only: false, risk_level: "low", side_effects: ["Synthetic message acceptance"],
     operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
     bridge_contract: { ...read.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
@@ -74,10 +89,10 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     arguments: [{ parameter: "value", source_path: ["value"] }], correlation: [{ source_path: ["value"], result_path: ["value"] }],
       outcome: { path: ["state"], applied: "APPLIED", not_applied: "ABSENT" }, settled_path: ["settled"], observed_at_path: ["observedAt"], max_age_seconds: 60, evidence_meaning: "operation-state" };
   }
-  const tools = [read, reportRead, write, ...(readback ? [readback] : []), ...(email ? [email] : [])];
+  const tools = [read, reportRead, ...(relatedOrderRead ? [relatedOrderRead] : []), write, ...(readback ? [readback] : []), ...(email ? [email] : [])];
   vi.spyOn(registries, "snapshot").mockImplementation(() => ({ ...base, tools }));
   vi.spyOn(registries, "findTool").mockImplementation(name => tools.find(tool => [tool.tool_id, tool.name, tool.mcp_tool_name].includes(name)));
-  vi.spyOn(registries, "hash").mockImplementation(() => capabilityContractHash(toolSchema.parse({ ...write, execution_notes: [read, reportRead, ...(readback ? [readback] : []), ...(email ? [email] : [])].map(capabilityContractHash).join(":") })));
+  vi.spyOn(registries, "hash").mockImplementation(() => capabilityContractHash(toolSchema.parse({ ...write, execution_notes: [read, reportRead, ...(relatedOrderRead ? [relatedOrderRead] : []), ...(readback ? [readback] : []), ...(email ? [email] : [])].map(capabilityContractHash).join(":") })));
   const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "operation-fixture-secret-at-least-32-characters", MCP_MODE: "mock", STORAGE_DRIVER: "memory", STORAGE_ENCRYPTION_KEY: "x".repeat(32) });
   const validator = new RegistryValidator(registries, repository);
   let dispatchAdmissionHook: (() => Promise<void>) | undefined;
@@ -88,8 +103,13 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
       name === exactBridgeName(reportRead) ? (() => { const cursorOrdinal = args.cursor === "" ? 1 : args.cursor === "cursor-2" ? 2 : 3;
         const page = pageNumberPagination ? Number(args.page) : cursorPagination ? cursorOrdinal : 1, hasMore = paginated && page < 3;
         return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: !hasMore, hasMore,
-          items: [{ id: `invoice-${page}` }], itemCount: 1, summary: `${page} invoice page`, ...(pageNumberPagination ? { page, snapshotId: "snapshot-daily-invoices", totalAvailable: 3 } : {}),
+          items: relatedMode ? [{ id: "invoice-1", orderId: "order-1" }, { id: "invoice-2", orderId: "order-2" }] : [{ id: `invoice-${page}` }],
+          itemCount: relatedMode ? 2 : 1, summary: `${page} invoice page`, ...(relatedMode ? { orderIds: ["order-1", "order-2"] } : {}),
+          ...(pageNumberPagination ? { page, snapshotId: "snapshot-daily-invoices", totalAvailable: 3 } : {}),
           ...(cursorPagination ? { cursor: args.cursor, nextCursor: hasMore ? `cursor-${page + 1}` : "", snapshotId: "snapshot-daily-invoices", totalAvailable: 3 } : {}) } }; })() :
+      relatedOrderRead && name === exactBridgeName(relatedOrderRead) ? { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt,
+        complete: true, hasMore: false, items: (args.orderIds as string[]).map((orderId, index) => ({ orderId, total: (index + 1) * 10 })),
+        itemCount: (args.orderIds as string[]).length, summary: `${(args.orderIds as string[]).length} related orders` } } :
       readback && name === exactBridgeName(readback) ? { content: [], structuredContent: { value: args.value, state: "ABSENT", settled: true, observedAt: new Date().toISOString() } } :
       { content: [], structuredContent: { accepted: true, id: "fixture-message" } }) };
   const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: sdk,
@@ -123,22 +143,25 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     const run = (await repository.snapshot()).executions[id]!; expect(run.status, JSON.stringify({ failure: run.failure, progress: run.readProgress, summary: run.agentSummary, sdkCalls: sdk.callTool.mock.calls })).toBe(status);
   };
   const admit = async () => { const pub = await publish(); expect(pub.statusCode, pub.body).toBe(200); const response = await run(); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id; await wait(id, "AWAITING_APPROVAL"); return id as string; };
-  return { repository, services, app, actor, read, reportRead, write, readback, email, sdk, session, request, publish, run, review, command, wait, admit,
+  return { repository, services, app, actor, read, reportRead, relatedOrderRead, write, readback, email, sdk, session, request, publish, run, review, command, wait, admit,
     setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; } };
 }
 
 const scheduleReportWindowBinding = { profile: "workflow-report-window-input-binding/v1" as const,
   startAtInput: "reportStartAt", endAtInput: "reportEndAt" };
-async function prepareScheduleWorkflow(s: Awaited<ReturnType<typeof setup>>, page?: number) {
+async function prepareScheduleWorkflow(s: Awaited<ReturnType<typeof setup>>, page?: number,
+  relatedKeys: unknown = "{{lookupReport.structuredContent.orderIds}}") {
   await s.repository.mutate(state => {
     const workflow = state.workflows.flow!;
     workflow.yaml = stringify({ name: workflow.name, description: "Scheduled report fixture", trigger: { type: "manual", config: { inputSchema: {
       type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" }, unusedWindow: { type: "string" }, count: { type: "number" } },
       required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
       { id: "lookupReport", action: s.reportRead.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", ...(page === undefined ? {} : { page }) } },
-      { id: "send", action: s.write.name, parameters: { value: "{{lookupReport.structuredContent.summary}}" } },
+      ...(s.relatedOrderRead ? [{ id: "lookupOrders", action: s.relatedOrderRead.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}",
+        orderIds: relatedKeys } }] : []),
+      { id: "send", action: s.write.name, parameters: { value: s.relatedOrderRead ? "{{lookupOrders.structuredContent.summary}}" : "{{lookupReport.structuredContent.summary}}" } },
     ] });
-    workflow.steps = 2;
+    workflow.steps = s.relatedOrderRead ? 3 : 2;
     workflow.updatedAt = new Date().toISOString();
   });
   return (await s.repository.snapshot()).workflows.flow!;
@@ -282,6 +305,46 @@ test("durable daily schedule admits one pinned service-principal occurrence and 
   expect(Object.values((await s.repository.snapshot()).executions).filter(run => run.scheduleSource).map(run => run.id)).toEqual([executionId]);
 });
 
+test("scheduled invoice delivery proves every projected order key through a second reviewed report before approval", async () => {
+  const s = await setup(null, true, false, false, "related");
+  await prepareScheduleWorkflow(s); expect((await s.publish()).statusCode).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding });
+  expect(saved.statusCode, saved.body).toBe(200);
+  const scheduledFor = saved.json().data.nextRunAt as string, reportWindow = reportWindowFor("UTC", scheduledFor, "previous-calendar-day");
+  expect(await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor))).toEqual({ admitted: 1, skipped: 0, blocked: 0 });
+  const status = await s.request("GET", "/api/workflows/flow/schedule"), executionId = status.json().data.occurrences[0].executionId as string;
+  await s.wait(executionId, "AWAITING_APPROVAL");
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead), exactBridgeName(s.relatedOrderRead!)]);
+  expect(s.sdk.callTool.mock.calls[1]![1]).toEqual({ startAt: reportWindow.startAt, endAt: reportWindow.endAt, orderIds: ["order-1", "order-2"] });
+  const before = (await s.repository.snapshot()).executions[executionId]!, coverages = before.reportCoverages!;
+  expect(Object.keys(coverages).sort()).toEqual(["lookupOrders", "lookupReport"]);
+  expect(coverages.lookupReport).toMatchObject({ nodeId: "lookupReport", itemCount: 2,
+    relatedRecords: { mode: "PROJECTED", relationName: "invoice-orders", keyCount: 2, keysHash: expect.stringMatching(/^sha256:/) } });
+  expect(coverages.lookupOrders).toMatchObject({ nodeId: "lookupOrders", itemCount: 2,
+    relatedRecords: { mode: "REQUESTED_MATCHED", relationName: "invoice-orders", keyCount: 2,
+      keysHash: coverages.lookupReport!.relatedRecords!.keysHash } });
+  const approved = await s.request("POST", `/api/executions/${executionId}/approve`, await s.command(executionId), "reviewer");
+  expect(approved.statusCode, approved.body).toBe(200); await s.wait(executionId, "DONE");
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead), exactBridgeName(s.relatedOrderRead!), exactBridgeName(s.write)]);
+  expect(s.sdk.callTool.mock.calls[2]![1]).toEqual({ value: "2 related orders" });
+});
+
+test("schedule activation rejects workflow-authored related keys instead of trusting a static order subset", async () => {
+  const s = await setup(null, true, false, false, "related");
+  await prepareScheduleWorkflow(s, undefined, ["order-1"]); expect((await s.publish()).statusCode).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!;
+  const response = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding });
+  expect(response.statusCode, response.body).toBe(422); expect(response.body).toContain("SCHEDULE_REPORT_COVERAGE_REQUIRED");
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
 test("schedule activation rejects window references that lack one reviewed complete-report contract", async () => {
   const s = await setup();
   await s.repository.mutate(state => {
@@ -299,7 +362,7 @@ test("schedule activation rejects window references that lack one reviewed compl
     workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
     reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
     reportWindowBinding: scheduleReportWindowBinding });
-  expect(denied.statusCode, denied.body).toBe(422); expect(denied.body).toMatch(/complete-result evidence/i);
+  expect(denied.statusCode, denied.body).toBe(422); expect(denied.body).toMatch(/reviewed complete report/i);
   expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(Object.keys((await s.repository.snapshot()).schedules)).toHaveLength(0);
 });
 
@@ -335,7 +398,7 @@ test("changed report coverage evidence after approval request blocks the effect 
   await workflowScheduleRunner(s.services).runDue(Date.parse(scheduledFor));
   const executionId = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId as string;
   await s.wait(executionId, "AWAITING_APPROVAL"); const command = await s.command(executionId);
-  await s.repository.mutate(state => { state.executions[executionId]!.reportCoverage!.itemCount = 2; });
+  await s.repository.mutate(state => { state.executions[executionId]!.reportCoverages!.lookupReport!.itemCount = 2; });
   const approved = await s.request("POST", `/api/executions/${executionId}/approve`, command, "reviewer"); expect(approved.statusCode, approved.body).toBe(200);
   await s.wait(executionId, "FAILED");
   expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead)]);

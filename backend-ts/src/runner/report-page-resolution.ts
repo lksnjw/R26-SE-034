@@ -14,6 +14,7 @@ import { safeMcpResult } from "../tools/mcp-result.js";
 import {
   assertReportCursorProgress,
   assertReportPageProgress,
+  assertReportRelatedKeyProgress,
   completeCursorPaginatedReport,
   completePaginatedReport,
   confirmScheduledReportCoverage,
@@ -177,6 +178,7 @@ function acceptPage(state: RepositoryState, value: ReturnType<typeof openCase>, 
       confirmScheduledReportCursor({ tool, args: exactArgs, output, startAt: progress.startAt, endAt: progress.endAt,
         cursor: progress.nextCursor, ordinal: pointer, confirmedAt: record.recordedAt }) : deny("Report continuation profile changed");
   const candidateItems = [...progress.items, ...confirmed.items];
+  assertReportRelatedKeyProgress(tool, exactArgs, candidateItems, confirmed.hasMore);
   if (progress.snapshotValue !== undefined && progress.snapshotValue !== confirmed.snapshotValue) deny("Captured page changed the stable report snapshot", 422);
   if (progress.totalCount !== undefined && progress.totalCount !== confirmed.totalCount) deny("Captured page changed the declared report total", 422);
   if ("nextCursor" in confirmed && confirmed.hasMore && (progress as Extract<ReportPaginationProgress, { profile: "schedule-report-cursors/v1" }>).pages
@@ -203,7 +205,8 @@ function acceptPage(state: RepositoryState, value: ReturnType<typeof openCase>, 
   const completed = progress.profile === "schedule-report-pages/v1" ? completePaginatedReport(tool, progress) : completeCursorPaginatedReport(tool, progress);
   const receipt = confirmScheduledReportCoverage({ tool, nodeId: node.id, contractHash: node.capability.contractHash, args: baseArgs,
     output: completed.output, startAt: progress.startAt, endAt: progress.endAt, pagination: completed.receiptPagination, confirmedAt: record.recordedAt });
-  attempt.status = "DONE"; attempt.completedAt = record.recordedAt; execution.stepOutputs![node.id] = completed.output; execution.reportCoverage = receipt;
+  attempt.status = "DONE"; attempt.completedAt = record.recordedAt; execution.stepOutputs![node.id] = completed.output;
+  (execution.reportCoverages ??= {})[node.id] = structuredClone(receipt); execution.reportCoverage ??= structuredClone(receipt);
   execution.readProgress!.nextStepIndex++; delete execution.reportPageSecret![node.id]; if (!Object.keys(execution.reportPageSecret!).length) delete execution.reportPageSecret;
   if (entry) Object.assign(entry, { status: "DONE", phase: "COMPLETE", outcome: "REPORT_COVERAGE_CONFIRMED_WITH_OPERATOR_EVIDENCE", completedAt: record.recordedAt,
     durationMs: Math.max(0, Date.parse(record.recordedAt) - Date.parse(attempt.startedAt)), output: withoutSecretFields(completed.output) });

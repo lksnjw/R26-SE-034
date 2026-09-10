@@ -164,6 +164,8 @@ function CapabilityInspector({ entry, canReview, onDecision }) {
   const definition = entry.observation?.definition ?? entry.revision?.definition;
   const operation = definition?.is_read_only === false;
   const reportCoverage = definition?.report_coverage_contract?.profile === "report-coverage/v1" ? definition.report_coverage_contract : null;
+  const projectedRelation = reportCoverage?.key_projection;
+  const requestedRelation = reportCoverage?.requested_key_coverage;
   const complete = fullyVisible(definition);
   const validNote = note.trim().length > 0 && note.length <= 2000;
   return <div className="min-w-0">
@@ -173,7 +175,10 @@ function CapabilityInspector({ entry, canReview, onDecision }) {
       <div><dt className="text-xs text-gray-500">Observation time</dt><dd>{entry.observation?.discoveredAt ?? "No observation"}</dd></div>
       <div><dt className="text-xs text-gray-500">Exact contract hash</dt><dd className="font-mono text-xs">{entry.observation?.contractHash ?? entry.revision?.contractHash}</dd></div>
       <div><dt className="text-xs text-gray-500">Output schema validation</dt><dd>{definition?.bridge_contract?.output_schema ? "Declared schema checked before downstream use" : "No declared output schema; bounded result handling still applies"}</dd></div>
-      {reportCoverage ? <div><dt className="text-xs text-gray-500">Scheduled report coverage</dt><dd>Exact {reportCoverage.start_parameter} → {reportCoverage.end_parameter} interval; connector must attest complete result, no remaining page, returned items and matching count. This evidence does not approve a later effect.</dd></div> : null}
+      {reportCoverage ? <div><dt className="text-xs text-gray-500">Scheduled report coverage</dt><dd>Exact {reportCoverage.start_parameter} → {reportCoverage.end_parameter} interval; connector must attest complete result, no remaining page, returned items and matching count.
+        {projectedRelation ? <span className="mt-1 block">Related-record role: identifies the complete <strong>{projectedRelation.relation_name}</strong> key set from the primary records for a later reviewed report.</span> : null}
+        {requestedRelation ? <span className="mt-1 block">Related-record role: accepts the reviewed <strong>{requestedRelation.relation_name}</strong> keys through <strong>{requestedRelation.keys_parameter}</strong> and must return each requested record exactly once.</span> : null}
+        <span className="mt-1 block">This evidence does not approve a later effect.</span></dd></div> : null}
       {entry.revision ? <div><dt className="text-xs text-gray-500">Current saved review</dt><dd>{entry.revision.id} · {entry.revision.reviewedBy.id} · {entry.revision.reviewedAt}</dd></div> : null}
       {entry.admission?.reason ? <div><dt className="text-xs text-gray-500">Stored block reason</dt><dd>{label(entry.admission.reason)}</dd></div> : null}
     </dl>

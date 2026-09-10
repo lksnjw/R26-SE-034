@@ -2,7 +2,8 @@ import { expect, test } from "vitest";
 import { capabilityContractHash } from "../src/registry/capability-admission.js";
 import { toolSchema } from "../src/registry/schemas.js";
 import { assertReportCoverageContract, completeCursorPaginatedReport, completePaginatedReport, confirmScheduledReportCoverage,
-  confirmScheduledReportCursor, confirmScheduledReportPage, newReportCursorProgress, newReportPageProgress } from "../src/tools/report-coverage-contract.js";
+  confirmScheduledReportCursor, confirmScheduledReportPage, newReportCursorProgress, newReportPageProgress,
+  assertReportRelatedKeyProgress } from "../src/tools/report-coverage-contract.js";
 
 const fixture = () => toolSchema.parse({
   tool_id: "report", name: "invoice.report", mcp_tool_name: "invoice.report", allowed_roles: ["Platform Admin"], risk_level: "low", is_read_only: true,
@@ -14,6 +15,51 @@ const fixture = () => toolSchema.parse({
   report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
     covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"] },
 });
+
+function relatedFixtures() {
+  const primaryBase = fixture();
+  const primaryOutput = primaryBase.bridge_contract!.output_schema as any;
+  const primary = toolSchema.parse({
+    ...primaryBase,
+    bridge_contract: {
+      ...primaryBase.bridge_contract!,
+      output_schema: {
+        ...primaryOutput,
+        properties: {
+          ...primaryOutput.properties,
+          items: { type: "array", items: { type: "object", properties: { invoiceId: { type: "string" }, orderId: { type: "string" } },
+            required: ["invoiceId", "orderId"], additionalProperties: false } },
+          orderIds: { type: "array", maxItems: 100, items: { type: "string" } },
+        },
+        required: [...primaryOutput.required, "orderIds"],
+      },
+    },
+    report_coverage_contract: { ...primaryBase.report_coverage_contract!, key_projection: { profile: "report-key-projection/v1",
+      relation_name: "invoice-orders", item_key_path: ["orderId"], keys_path: ["orderIds"] } },
+  });
+  const relatedBase = fixture();
+  const relatedOutput = relatedBase.bridge_contract!.output_schema as any;
+  const related = toolSchema.parse({
+    ...relatedBase,
+    tool_id: "order-report", name: "order.report", mcp_tool_name: "order.report",
+    input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" },
+      orderIds: { type: "array", maxItems: 100_000, items: { type: "string" } } }, required: ["startAt", "endAt", "orderIds"], additionalProperties: false },
+    bridge_contract: {
+      ...relatedBase.bridge_contract!,
+      output_schema: {
+        ...relatedOutput,
+        properties: {
+          ...relatedOutput.properties,
+          items: { type: "array", items: { type: "object", properties: { orderId: { type: "string" }, total: { type: "integer" } },
+            required: ["orderId", "total"], additionalProperties: false } },
+        },
+      },
+    },
+    report_coverage_contract: { ...relatedBase.report_coverage_contract!, requested_key_coverage: { profile: "report-requested-key-coverage/v1",
+      relation_name: "invoice-orders", keys_parameter: "orderIds", item_key_path: ["orderId"] } },
+  });
+  return { primary, related };
+}
 
 test("reviewed report coverage requires declared typed non-sensitive selectors", () => {
   expect(() => assertReportCoverageContract(fixture())).not.toThrow();
@@ -34,6 +80,59 @@ test("runtime confirmation binds exact interval, completion, exhaustion, items a
     structuredContent: { ...output.structuredContent, itemCount: 2 } }, startAt, endAt })).toThrow(/complete bounded coverage/i);
   expect(() => confirmScheduledReportCoverage({ tool, nodeId: "report", contractHash: capabilityContractHash(tool), args: { startAt: "wrong", endAt }, output,
     startAt, endAt })).toThrow(/exact scheduled window/i);
+});
+
+test("related report evidence proves the projected invoice order keys were requested and returned exactly", () => {
+  const { primary, related } = relatedFixtures(), startAt = "2026-10-06T00:00:00.000Z", endAt = "2026-10-07T00:00:00.000Z";
+  expect(() => assertReportCoverageContract(primary)).not.toThrow();
+  expect(() => assertReportCoverageContract(related)).not.toThrow();
+  const primaryOutput = { structuredContent: { coveredStartAt: startAt, coveredEndAt: endAt, complete: true, hasMore: false,
+    items: [{ invoiceId: "INV-1", orderId: "ORD-1" }, { invoiceId: "INV-2", orderId: "ORD-2" }], itemCount: 2,
+    orderIds: ["ORD-2", "ORD-1"] } };
+  const projected = confirmScheduledReportCoverage({ tool: primary, nodeId: "invoices", contractHash: capabilityContractHash(primary),
+    args: { startAt, endAt }, output: primaryOutput, startAt, endAt });
+  const relatedArgs = { startAt, endAt, orderIds: ["ORD-1", "ORD-2"] };
+  const relatedOutput = { structuredContent: { coveredStartAt: startAt, coveredEndAt: endAt, complete: true, hasMore: false,
+    items: [{ orderId: "ORD-2", total: 20 }, { orderId: "ORD-1", total: 10 }], itemCount: 2 } };
+  const matched = confirmScheduledReportCoverage({ tool: related, nodeId: "orders", contractHash: capabilityContractHash(related),
+    args: relatedArgs, output: relatedOutput, startAt, endAt });
+  expect(projected.relatedRecords).toMatchObject({ mode: "PROJECTED", relationName: "invoice-orders", keyCount: 2, keysHash: expect.stringMatching(/^sha256:/) });
+  expect(matched.relatedRecords).toMatchObject({ mode: "REQUESTED_MATCHED", relationName: "invoice-orders", keyCount: 2,
+    keysHash: projected.relatedRecords!.keysHash });
+
+  expect(() => confirmScheduledReportCoverage({ tool: primary, nodeId: "invoices", contractHash: capabilityContractHash(primary),
+    args: { startAt, endAt }, output: { structuredContent: { ...primaryOutput.structuredContent, orderIds: ["ORD-1"] } }, startAt, endAt })).toThrow(/projection/i);
+  for (const items of [[{ orderId: "ORD-1", total: 10 }], [{ orderId: "ORD-1", total: 10 }, { orderId: "ORD-3", total: 30 }],
+    [{ orderId: "ORD-1", total: 10 }, { orderId: "ORD-1", total: 10 }]]) {
+    expect(() => confirmScheduledReportCoverage({ tool: related, nodeId: "orders", contractHash: capabilityContractHash(related), args: relatedArgs,
+      output: { structuredContent: { ...relatedOutput.structuredContent, items, itemCount: items.length } }, startAt, endAt })).toThrow(/related-record|duplicate/i);
+  }
+});
+
+test("paginated related-key progress allows only requested subsets and requires the exact final set", () => {
+  const { related } = relatedFixtures(), args = { startAt: "2026-10-06T00:00:00.000Z", endAt: "2026-10-07T00:00:00.000Z", orderIds: ["ORD-1", "ORD-2"] };
+  expect(() => assertReportRelatedKeyProgress(related, args, [{ orderId: "ORD-1", total: 10 }], true)).not.toThrow();
+  expect(() => assertReportRelatedKeyProgress(related, args, [{ orderId: "ORD-1", total: 10 }], false)).toThrow(/exactly/i);
+  expect(() => assertReportRelatedKeyProgress(related, args, [{ orderId: "ORD-3", total: 30 }], true)).toThrow(/outside/i);
+  expect(() => assertReportRelatedKeyProgress(related, args, [{ orderId: "ORD-1", total: 10 }, { orderId: "ORD-1", total: 10 }], true)).toThrow(/duplicate/i);
+});
+
+test("large reviewed related-key sets use bounded set membership rather than repeated linear scans", () => {
+  const { related } = relatedFixtures(), startAt = "2026-10-06T00:00:00.000Z", endAt = "2026-10-07T00:00:00.000Z";
+  const orderIds = Array.from({ length: 10_000 }, (_, index) => `ORD-${index}`), items = [...orderIds].reverse().map((orderId, index) => ({ orderId, total: index }));
+  expect(() => confirmScheduledReportCoverage({ tool: related, nodeId: "orders", contractHash: capabilityContractHash(related),
+    args: { startAt, endAt, orderIds }, output: { structuredContent: { coveredStartAt: startAt, coveredEndAt: endAt, complete: true, hasMore: false,
+      items, itemCount: items.length } }, startAt, endAt })).not.toThrow();
+});
+
+test("related-key contracts fail review when key fields are optional or differently typed", () => {
+  const { primary, related } = relatedFixtures();
+  const optionalProjection = structuredClone(primary);
+  (optionalProjection.bridge_contract!.output_schema as any).required = (optionalProjection.bridge_contract!.output_schema as any).required.filter((name: string) => name !== "orderIds");
+  expect(() => assertReportCoverageContract(optionalProjection)).toThrow(/projection/i);
+  const mismatched = structuredClone(related);
+  (mismatched.bridge_contract!.output_schema as any).properties.items.items.properties.orderId.type = "integer";
+  expect(() => assertReportCoverageContract(mismatched)).toThrow(/related-key coverage/i);
 });
 
 test("server-owned bounded page evidence aggregates only a contiguous exhausted sequence", () => {

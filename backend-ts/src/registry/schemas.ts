@@ -60,6 +60,21 @@ export const toolSchema = z.object({
     has_more_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
     items_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
     item_count_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+    // Optional exact-key contracts for a two-read scheduled relation. The
+    // primary report projects the unique related IDs from every returned
+    // item; the related report must return exactly the requested ID set.
+    key_projection: z.object({
+      profile: z.literal("report-key-projection/v1"),
+      relation_name: z.string().trim().min(1).max(80),
+      item_key_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+      keys_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+    }).strict().optional(),
+    requested_key_coverage: z.object({
+      profile: z.literal("report-requested-key-coverage/v1"),
+      relation_name: z.string().trim().min(1).max(80),
+      keys_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+      item_key_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),
+    }).strict().optional(),
     pagination: z.discriminatedUnion("profile", [
       z.object({
         profile: z.literal("page-number/v1"),
@@ -86,10 +101,15 @@ export const toolSchema = z.object({
   }).strict()
     .refine(value => value.start_parameter !== value.end_parameter, "Report coverage parameters must be distinct")
     .refine(value => !value.pagination || ![value.start_parameter, value.end_parameter].includes(value.pagination.profile === "page-number/v1" ? value.pagination.page_parameter : value.pagination.cursor_parameter), "Report pagination parameter must be distinct from report-window parameters")
+    .refine(value => !value.requested_key_coverage || ![value.start_parameter, value.end_parameter,
+      value.pagination?.profile === "page-number/v1" ? value.pagination.page_parameter : value.pagination?.cursor_parameter]
+      .includes(value.requested_key_coverage.keys_parameter), "Requested related-key input must be distinct from report window and pagination parameters")
+    .refine(value => !(value.key_projection && value.requested_key_coverage), "One report tool cannot both project and consume a related-key set")
     .refine(value => new Set([value.covered_start_path, value.covered_end_path, value.complete_path, value.has_more_path, value.items_path, value.item_count_path]
       .concat(value.pagination ? value.pagination.profile === "page-number/v1" ? [value.pagination.page_path, value.pagination.snapshot_path, value.pagination.total_count_path] :
         [value.pagination.cursor_path, value.pagination.next_cursor_path, value.pagination.snapshot_path, value.pagination.total_count_path] : [])
-      .map(path => path.join("\u0000"))).size === (value.pagination ? value.pagination.profile === "page-number/v1" ? 9 : 10 : 6), "Report coverage selectors must be distinct").optional(),
+      .concat(value.key_projection ? [value.key_projection.keys_path] : [])
+      .map(path => path.join("\u0000"))).size === (value.pagination ? value.pagination.profile === "page-number/v1" ? 9 : 10 : 6) + (value.key_projection ? 1 : 0), "Report coverage selectors must be distinct").optional(),
   required_parameters: z.array(z.string()).default([]),
   optional_parameters: z.array(z.string()).default([]),
   allowed_roles: z.array(z.string()).default([]),

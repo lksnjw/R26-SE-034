@@ -20,7 +20,7 @@ import { assertConsumedRuntimeApproval, consumeRuntimeApproval, requestRuntimeAp
 import type { OperationIntent } from "./operation-state.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { assertReportCursorProgress, assertReportPageProgress, assertScheduledReportCoverageReceipt, completeCursorPaginatedReport, completePaginatedReport,
-  confirmScheduledReportCoverage, confirmScheduledReportCursor, confirmScheduledReportPage, newReportCursorProgress, newReportPageProgress,
+  assertReportRelatedKeyProgress, confirmScheduledReportCoverage, confirmScheduledReportCursor, confirmScheduledReportPage, newReportCursorProgress, newReportPageProgress,
   protectedReportPageOutput, reportPagination, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
@@ -82,15 +82,28 @@ function recordValue(value: unknown): Record<string, unknown> {
 function assertCoverageBeforeScheduledEffect(run: Execution, plan: CompiledOperationPlan, live: readonly ToolDefinition[], effectIndex: number): void {
   const source = run.scheduleSource;
   if (!source) return;
-  const receipt = run.reportCoverage;
-  const coverageIndex = receipt ? plan.ir.root.nodes.findIndex(node => node.id === receipt.nodeId) : -1;
-  if (!receipt || coverageIndex < 0 || coverageIndex >= effectIndex) throw new Error("Scheduled effects require prior confirmed report coverage");
-  const node = plan.ir.root.nodes[coverageIndex]!, tool = live.find(value => value.tool_id === node.capability.toolId);
-  if (node.effectClass !== "read" || !tool?.report_coverage_contract || tool.tool_id !== receipt.toolId || node.capability.contractHash !== receipt.contractHash)
-    throw new Error("Scheduled report coverage no longer matches the reviewed read contract");
-  const args = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs }) as Record<string, unknown>;
-  assertScheduledReportCoverageReceipt(receipt, { tool, nodeId: node.id, contractHash: node.capability.contractHash, args,
-    output: recordValue(run.stepOutputs?.[node.id]), startAt: source.reportWindow.startAt, endAt: source.reportWindow.endAt });
+  const scheduledReads = plan.ir.root.nodes.slice(0, effectIndex).filter(node => node.effectClass === "read" &&
+    live.some(tool => tool.tool_id === node.capability.toolId && tool.report_coverage_contract));
+  if (!scheduledReads.length) throw new Error("Scheduled effects require prior confirmed report coverage");
+  const receipts = run.reportCoverages ?? (run.reportCoverage ? { [run.reportCoverage.nodeId]: run.reportCoverage } : {});
+  const requiredReceipts: ReportCoverageReceipt[] = [];
+  for (const node of scheduledReads) {
+    const receipt = receipts[node.id], tool = live.find(value => value.tool_id === node.capability.toolId);
+    if (!receipt || !tool?.report_coverage_contract || tool.tool_id !== receipt.toolId || node.capability.contractHash !== receipt.contractHash)
+      throw new Error("Scheduled report coverage no longer matches the reviewed read contract");
+    const args = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs }) as Record<string, unknown>;
+    assertScheduledReportCoverageReceipt(receipt, { tool, nodeId: node.id, contractHash: node.capability.contractHash, args,
+      output: recordValue(run.stepOutputs?.[node.id]), startAt: source.reportWindow.startAt, endAt: source.reportWindow.endAt });
+    requiredReceipts.push(receipt);
+  }
+  const projected = requiredReceipts.filter(receipt => receipt.relatedRecords?.mode === "PROJECTED");
+  const matched = requiredReceipts.filter(receipt => receipt.relatedRecords?.mode === "REQUESTED_MATCHED");
+  if (projected.length || matched.length) {
+    if (projected.length !== 1 || matched.length !== 1 || projected[0]!.relatedRecords!.relationName !== matched[0]!.relatedRecords!.relationName ||
+        projected[0]!.relatedRecords!.keysHash !== matched[0]!.relatedRecords!.keysHash ||
+        projected[0]!.relatedRecords!.keyCount !== matched[0]!.relatedRecords!.keyCount)
+      throw new Error("Scheduled related-record coverage is missing or inconsistent");
+  }
 }
 /** Separate fair, bounded single-writer operation worker. Waits hold no worker
  * or HTTP/DB transaction; restart never automatically replays an intent. */
@@ -284,7 +297,7 @@ export class OperationJobQueue {
             assertContext();
             const cursorState = await repository.mutateExecution(id, state => {
               this.assert(control); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!;
-              if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || run.reportCoverage) throw new Error("Report cursor pointer changed");
+              if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || run.reportCoverages?.[node.id] || run.reportCoverage?.nodeId === node.id) throw new Error("Report cursor pointer changed");
               const existing = run.reportPageSecret?.[node.id];
               if (existing && existing.profile !== "schedule-report-cursors/v1") throw new Error("Report cursor profile changed");
               const progress = existing ?? newReportCursorProgress(tool, node.id, node.capability.contractHash,
@@ -323,6 +336,7 @@ export class OperationJobQueue {
               confirmed = confirmScheduledReportCursor({ tool, args: cursorArgs, output: cursorOutput, startAt: initial.scheduleSource!.reportWindow.startAt,
                 endAt: initial.scheduleSource!.reportWindow.endAt, cursor: cursorState.cursor, ordinal });
               const candidateItems = [...cursorState.items, ...confirmed.items];
+              assertReportRelatedKeyProgress(tool, cursorArgs, candidateItems, confirmed.hasMore);
               if (cursorState.snapshotValue !== undefined && confirmed.snapshotValue !== cursorState.snapshotValue)
                 throw new Error("Cursor-paginated report changed its stable snapshot between pages");
               if (cursorState.totalCount !== undefined && confirmed.totalCount !== cursorState.totalCount)
@@ -358,7 +372,8 @@ export class OperationJobQueue {
               const receipt = confirmScheduledReportCoverage({ tool, nodeId: node.id, contractHash: node.capability.contractHash, args,
                 output: completed.output, startAt: initial.scheduleSource!.reportWindow.startAt, endAt: initial.scheduleSource!.reportWindow.endAt,
                 pagination: completed.receiptPagination, confirmedAt: now });
-              attempt.status = "DONE"; attempt.completedAt = now; run.stepOutputs![node.id] = completed.output; run.reportCoverage = receipt; run.readProgress!.nextStepIndex++;
+              attempt.status = "DONE"; attempt.completedAt = now; run.stepOutputs![node.id] = completed.output;
+              (run.reportCoverages ??= {})[node.id] = structuredClone(receipt); run.reportCoverage ??= structuredClone(receipt); run.readProgress!.nextStepIndex++;
               delete run.reportPageSecret![node.id]; if (!Object.keys(run.reportPageSecret!).length) delete run.reportPageSecret;
               Object.assign(entry, { status: "DONE", phase: "COMPLETE", outcome: "REPORT_COVERAGE_CONFIRMED", completedAt: now,
                 durationMs: Math.max(0, Date.parse(now) - Date.parse(attempt.startedAt)), output: withoutSecretFields(completed.output) });
@@ -376,7 +391,7 @@ export class OperationJobQueue {
             assertContext();
             const pageState = await repository.mutateExecution(id, state => {
               this.assert(control); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!;
-              if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || run.reportCoverage) throw new Error("Report pagination pointer changed");
+              if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || run.reportCoverages?.[node.id] || run.reportCoverage?.nodeId === node.id) throw new Error("Report pagination pointer changed");
               const existing = run.reportPageSecret?.[node.id];
               if (existing && existing.profile !== "schedule-report-pages/v1") throw new Error("Report pagination profile changed");
               const progress = existing ?? newReportPageProgress(tool, node.id, node.capability.contractHash,
@@ -414,6 +429,7 @@ export class OperationJobQueue {
               confirmed = confirmScheduledReportPage({ tool, args: pageArgs, output: pageOutput, startAt: initial.scheduleSource!.reportWindow.startAt,
                 endAt: initial.scheduleSource!.reportWindow.endAt, page });
               const candidateItems = [...pageState.items, ...confirmed.items];
+              assertReportRelatedKeyProgress(tool, pageArgs, candidateItems, confirmed.hasMore);
               if (pageState.snapshotValue !== undefined && confirmed.snapshotValue !== pageState.snapshotValue)
                 throw new Error("Paginated report changed its stable snapshot between pages");
               if (pageState.totalCount !== undefined && confirmed.totalCount !== pageState.totalCount)
@@ -445,7 +461,8 @@ export class OperationJobQueue {
               const receipt = confirmScheduledReportCoverage({ tool, nodeId: node.id, contractHash: node.capability.contractHash, args,
                 output: completed.output, startAt: initial.scheduleSource!.reportWindow.startAt, endAt: initial.scheduleSource!.reportWindow.endAt,
                 pagination: completed.receiptPagination, confirmedAt: now });
-              attempt.status = "DONE"; attempt.completedAt = now; run.stepOutputs![node.id] = completed.output; run.reportCoverage = receipt; run.readProgress!.nextStepIndex++;
+              attempt.status = "DONE"; attempt.completedAt = now; run.stepOutputs![node.id] = completed.output;
+              (run.reportCoverages ??= {})[node.id] = structuredClone(receipt); run.reportCoverage ??= structuredClone(receipt); run.readProgress!.nextStepIndex++;
               delete run.reportPageSecret![node.id]; if (!Object.keys(run.reportPageSecret!).length) delete run.reportPageSecret;
               Object.assign(entry, { status: "DONE", phase: "COMPLETE", outcome: "REPORT_COVERAGE_CONFIRMED", completedAt: now,
                 durationMs: Math.max(0, Date.parse(now) - Date.parse(attempt.startedAt)), output: withoutSecretFields(completed.output) });
@@ -517,8 +534,8 @@ export class OperationJobQueue {
           if (tool.operation_contract) intent.evidenceMeaning = tool.operation_contract.confirmation.meaning;
           attempt.status = "DONE"; attempt.completedAt = now; run.stepOutputs![node.id] = structuredClone(output); run.readProgress!.nextStepIndex++;
           if (coverageReceipt) {
-            if (!run.scheduleSource || run.reportCoverage) throw new Error("Scheduled report coverage evidence is duplicated or detached");
-            run.reportCoverage = structuredClone(coverageReceipt);
+            if (!run.scheduleSource || run.reportCoverages?.[node.id] || run.reportCoverage?.nodeId === node.id) throw new Error("Scheduled report coverage evidence is duplicated or detached");
+            (run.reportCoverages ??= {})[node.id] = structuredClone(coverageReceipt); run.reportCoverage ??= structuredClone(coverageReceipt);
           }
           const entry = state.timelines[id]!.find(entry => entry.attemptId === attempt.id)!; Object.assign(entry, { status: "DONE", outcome: node.effectClass === "read" ? "READ_CONFIRMED" : intent.evidenceMeaning, completedAt: now, durationMs: Math.max(0, Date.parse(now) - Date.parse(attempt.startedAt)), output: withoutSecretFields(output) });
           appendExecutionEvent(state, run, "node.completed", { intentId, outcome: entry.outcome }, node.id, attempt.id); audit(state, run, "operation.result_acknowledged");

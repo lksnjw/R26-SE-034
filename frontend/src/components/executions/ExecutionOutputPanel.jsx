@@ -35,10 +35,17 @@ function ExecutionOutputPanel({ execution, iterationModel }) {
   const itemNodes = collection && iterationModel?.valid ? Object.values(iterationModel.nodes).filter(node => node.kind === "action" && node.rows.length) : [];
   const returned = collection ? iterationModel?.finalKind === "return" : Object.values(execution.readProgress?.values || {}).some(receipt => receipt.kind === "return" && receipt.status === "DONE");
   const hasFinal = collection ? iterationModel?.valid && iterationModel.hasFinal : finalOutput !== undefined && (finalOutput !== null || returned && Object.hasOwn(execution, "finalOutput"));
-  const coverage = execution.reportCoverage?.profile === "schedule-report-coverage/v1" ? execution.reportCoverage : null;
-  const pagination = ["report-page-evidence/v1", "report-cursor-evidence/v1"].includes(coverage?.pagination?.profile) ? coverage.pagination : null;
+  const coverageMap = execution.reportCoverages && typeof execution.reportCoverages === "object" && !Array.isArray(execution.reportCoverages) ? execution.reportCoverages : {};
+  const coverages = Object.values(coverageMap).filter(value => value?.profile === "schedule-report-coverage/v1");
+  if (!coverages.length && execution.reportCoverage?.profile === "schedule-report-coverage/v1") coverages.push(execution.reportCoverage);
+  const projected = coverages.filter(value => value.relatedRecords?.mode === "PROJECTED");
+  const matched = coverages.filter(value => value.relatedRecords?.mode === "REQUESTED_MATCHED");
+  const relatedMatch = projected.length === 1 && matched.length === 1 &&
+    projected[0].relatedRecords.relationName === matched[0].relatedRecords.relationName &&
+    projected[0].relatedRecords.keyCount === matched[0].relatedRecords.keyCount &&
+    projected[0].relatedRecords.keysHash === matched[0].relatedRecords.keysHash;
 
-  if (!hasFinal && stepEntries.length === 0 && !itemNodes.length) {
+  if (!hasFinal && stepEntries.length === 0 && !itemNodes.length && !coverages.length) {
     return (
       <Card>
         <h2 className="section-title mb-3">Workflow output</h2>
@@ -67,11 +74,39 @@ function ExecutionOutputPanel({ execution, iterationModel }) {
         ) : null}
       </div>
 
-      {coverage ? (
-        <section data-testid="report-coverage" aria-label="Scheduled report coverage" className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 text-sm dark:border-emerald-800 dark:bg-emerald-950/20">
-          <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-emerald-950 dark:text-emerald-100">Complete report window confirmed</h3><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">Connector attestation saved</span></div>
-          <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2"><div><dt className="font-semibold">Covered interval</dt><dd>{new Date(coverage.startAt).toLocaleString()} → {new Date(coverage.endAt).toLocaleString()}</dd></div><div><dt className="font-semibold">Records verified</dt><dd>{coverage.itemCount}</dd></div>{pagination ? <><div><dt className="font-semibold">Pages confirmed</dt><dd>{pagination.pageCount}{pagination.profile === "report-page-evidence/v1" ? ` · ${pagination.firstPage} through ${pagination.lastPage}` : " · protected cursor continuation"}</dd></div><div><dt className="font-semibold">Declared report total</dt><dd>{pagination.totalCount ?? "Evidence unavailable"}</dd></div><div><dt className="font-semibold">Stable report snapshot</dt><dd>{pagination.snapshotHash ? "Confirmed across every page" : "Evidence unavailable"}</dd></div></> : null}<div><dt className="font-semibold">Evidence step</dt><dd>{coverage.nodeId}</dd></div><div><dt className="font-semibold">Confirmed</dt><dd>{new Date(coverage.confirmedAt).toLocaleString()}</dd></div></dl>
-          <p className="mt-3 text-xs text-emerald-900/80 dark:text-emerald-200/80">This proves the reviewed connector result covered the scheduled interval, exhausted every page and matched its declared record total. It does not approve or prove delivery of a later effect.</p>
+      {coverages.length ? (
+        <section data-testid="report-coverage" aria-label="Scheduled report coverage" className="mb-5 border-y border-emerald-200 py-4 text-sm dark:border-emerald-800">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div><h3 className="font-semibold text-emerald-950 dark:text-emerald-100">Complete report window confirmed</h3>
+              <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">{coverages.length} reviewed {coverages.length === 1 ? "dataset" : "datasets"} saved for this scheduled run.</p></div>
+            <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">
+              {relatedMatch ? "All related records matched" : "Connector attestation saved"}
+            </span>
+          </div>
+          {relatedMatch ? <div className="mt-4 border-l-2 border-emerald-500 pl-3" data-testid="related-record-match">
+            <p className="font-semibold text-emerald-950 dark:text-emerald-100">Related records matched exactly</p>
+            <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">Every projected {projected[0].relatedRecords.relationName} key was requested and returned once · {projected[0].relatedRecords.keyCount} keys verified.</p>
+          </div> : null}
+          <div className="mt-4 divide-y divide-emerald-200 dark:divide-emerald-900">
+            {coverages.map(coverage => {
+              const pagination = ["report-page-evidence/v1", "report-cursor-evidence/v1"].includes(coverage.pagination?.profile) ? coverage.pagination : null;
+              const relation = coverage.relatedRecords;
+              return <details key={coverage.nodeId} className="group py-3 first:pt-0 last:pb-0" open={coverages.length === 1}>
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-md py-1 outline-none transition-colors hover:text-emerald-800 focus-visible:ring-2 focus-visible:ring-emerald-500 dark:hover:text-emerald-200">
+                  <span><span className="font-semibold">{coverage.nodeId}</span><span className="ml-2 text-xs text-gray-500">{coverage.itemCount} records</span></span>
+                  <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">{relation?.mode === "PROJECTED" ? "Keys identified" : relation?.mode === "REQUESTED_MATCHED" ? "Records matched" : "Window covered"}</span>
+                </summary>
+                <dl className="mt-3 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
+                  <div><dt className="font-semibold">Covered interval</dt><dd>{new Date(coverage.startAt).toLocaleString()} → {new Date(coverage.endAt).toLocaleString()}</dd></div>
+                  <div><dt className="font-semibold">Records verified</dt><dd>{coverage.itemCount}</dd></div>
+                  {relation ? <div><dt className="font-semibold">Related-record proof</dt><dd>{relation.mode === "PROJECTED" ? "Required keys identified from primary records" : "Requested keys returned exactly once"}</dd></div> : null}
+                  {pagination ? <><div><dt className="font-semibold">Pages confirmed</dt><dd>{pagination.pageCount}{pagination.profile === "report-page-evidence/v1" ? ` · ${pagination.firstPage} through ${pagination.lastPage}` : " · protected cursor continuation"}</dd></div><div><dt className="font-semibold">Declared report total</dt><dd>{pagination.totalCount ?? "Evidence unavailable"}</dd></div><div><dt className="font-semibold">Stable report snapshot</dt><dd>{pagination.snapshotHash ? "Confirmed across every page" : "Evidence unavailable"}</dd></div></> : null}
+                  <div><dt className="font-semibold">Confirmed</dt><dd>{new Date(coverage.confirmedAt).toLocaleString()}</dd></div>
+                </dl>
+              </details>;
+            })}
+          </div>
+          <p className="mt-4 text-xs text-emerald-900/80 dark:text-emerald-200/80">This proves each reviewed connector result covered the scheduled interval, exhausted any declared pagination and matched its declared record total. It does not approve or prove delivery of a later effect.</p>
         </section>
       ) : null}
 
