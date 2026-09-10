@@ -100,6 +100,14 @@ For recurring requests, keep the workflow trigger manual. Preserve cadence, reci
 
 The result is only an editable draft. Validation, capability review, publication, schedule activation, service-principal admission and every runtime approval are separate backend decisions.`;
 
+// Version 7 adds a server-validated recurring-authoring envelope without
+// changing historical v6 provenance. Context preserves request facts; it is
+// never permission to publish, schedule, approve or dispatch an effect.
+export const RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT = GOVERNED_OPERATION_CANDIDATE_SYSTEM_PROMPT
+  .replace("(prompt/candidate/v6)", "(prompt/candidate/v7)") + `
+
+When SERVER_DERIVED_CONTEXT_JSON is present, copy its exact automation_request object into metadata.automation_request and keep every still-applicable required_unresolved_requirements item in metadata.unresolved_requirements. Use a reviewed report only for its explicit report_coverage_contract.business_resource, map every requested business resource exactly once, and never infer resource identity from a tool name or description. The backend independently rejects changed cadence, recipients, requested resources, report-window mappings, relation mappings, delivery mappings, current-role denial, unsafe notification risk or schedule state. This context preserves request facts and authoring constraints only; it grants no tool, recipient-sharing, publication, scheduling, approval or delivery authority.`;
+
 export const MODIFIER_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 
 TASK: WORKFLOW MODIFICATION PROPOSAL (prompt/workflow-modifier/v2)
@@ -128,6 +136,7 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/candidate/v4": return STRUCTURED_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v5": return VALUE_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v6": return GOVERNED_OPERATION_CANDIDATE_SYSTEM_PROMPT;
+    case "prompt/candidate/v7": return RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/node-patch/v2": return NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/condition-patch/v1": return CONDITION_PATCH_SYSTEM_PROMPT;
     case "prompt/return-patch/v1": return RETURN_PATCH_SYSTEM_PROMPT;

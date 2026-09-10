@@ -65,7 +65,7 @@ const reportTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-REPORT", name: 
     required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "reportId", "cursor", "nextCursor", "snapshotId", "totalAvailable"], additionalProperties: false } } });
 const relatedInvoiceTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-INVOICE-RELATION-REPORT", name: "fixture.invoice-relation-report", mcp_tool_name: "fixture.invoice-relation-report",
   input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" } }, required: ["startAt", "endAt"], additionalProperties: false },
-  report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
+  report_coverage_contract: { profile: "report-coverage/v1", business_resource: "invoices", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
     covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
     key_projection: { profile: "report-key-projection/v1", relation_name: "invoice-orders", item_key_path: ["orderId"], keys_path: ["orderIds"] } },
   bridge_contract: { ...tool.bridge_contract, resource_digest: "f".repeat(64), output_schema: { type: "object", properties: {
@@ -77,7 +77,7 @@ const relatedInvoiceTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-INVOICE
 const relatedOrderTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-ORDER-RELATION-REPORT", name: "fixture.order-relation-report", mcp_tool_name: "fixture.order-relation-report",
   input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" },
     orderIds: { type: "array", maxItems: 100, items: { type: "string" } } }, required: ["startAt", "endAt", "orderIds"], additionalProperties: false },
-  report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
+  report_coverage_contract: { profile: "report-coverage/v1", business_resource: "orders", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
     covered_end_path: ["coveredEndAt"], complete_path: ["complete"], has_more_path: ["hasMore"], items_path: ["items"], item_count_path: ["itemCount"],
     requested_key_coverage: { profile: "report-requested-key-coverage/v1", relation_name: "invoice-orders", keys_parameter: "orderIds", item_key_path: ["orderId"] } },
   bridge_contract: { ...tool.bridge_contract, resource_digest: "1".repeat(64), output_schema: { type: "object", properties: {
@@ -158,6 +158,22 @@ async function start(repositoryValue) {
     assert.equal(url, "https://provider.fixture.example.test/v1/chat/completions"); const request = JSON.parse(String(init.body)); models.push(request.model); await modelHook?.(request, init.signal);
     const node = request.messages[0].content.includes("ONE SELECTED NODE PATCH"), owner = request.messages[0].content.includes("ONE SELECTED COLLECTION PATCH"), answered = request.messages.some(message => message.role === "tool");
     if (owner) assert.deepEqual(JSON.parse(request.messages[1].content).tools, []);
+    let candidateData = {};
+    if (!node && !owner && !answered && typeof request.messages[1]?.content === "string" && request.messages[1].content.trim().startsWith("{"))
+      try { candidateData = JSON.parse(request.messages[1].content); } catch { candidateData = {}; }
+    const recurringContext = candidateData.SERVER_DERIVED_CONTEXT_JSON;
+    if (recurringContext?.profile === "recurring-automation-candidate-context/v1") {
+      const unresolved = recurringContext.required_unresolved_requirements.filter(value => !value.startsWith("Add exact reviewed ERP report") &&
+        !value.startsWith("Add one exact reviewed ERP report") && !value.startsWith("Add one exact reviewed email"));
+      const candidate = stringify({ name: "Daily invoice and related-order report", description: "Maps reviewed report contracts into one blocked recurring delivery draft.",
+        trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
+          required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
+          { id: "invoice_report", action: relatedInvoiceTool.name, description: "Read complete invoices", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
+          { id: "order_report", action: relatedOrderTool.name, description: "Read every related order", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", orderIds: "{{invoice_report.structuredContent.orderIds}}" } },
+          { id: "deliver_report", action: emailTool.name, description: "Propose reviewed email delivery", parameters: { recipient: "manager@example.test", subject: "Daily invoice and order report", body: "{{order_report.structuredContent.reportId}}" } },
+        ], metadata: { automation_request: recurringContext.automation_request, unresolved_requirements: unresolved } });
+      return Response.json({ choices: [{ finish_reason: "stop", message: { content: candidate } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
+    }
     return Response.json({ choices: [{ finish_reason: node || owner || answered ? "stop" : "tool_calls", message: owner ? { content: '{"maxItems":2}' } : node ? { content: '{"description":"Reviewable fixture edit"}' } : answered ? { content: "Confirmed fixture invoice CHAT." } : {
       content: "", tool_calls: [{ id: "fixture-chat-read", type: "function", function: { name: "read", arguments: '{"id":"chat"}' } }],
     } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
@@ -243,14 +259,18 @@ try {
   log("collection-owner saved chat used its dedicated tools-free patch contract and selected model; exact explicit once-only draft apply preserved body/actions and never published or dispatched");
 
   const callsBeforeAutomation = calls.length, modelsBeforeAutomation = models.length;
-  const automation = (await request("POST", `/api/chat/sessions/${chatId}/messages`, { content: "Send daily invoice details to manager@example.test" }, 200)).data.assistantMessage.artifacts;
+  const automation = (await request("POST", `/api/chat/sessions/${chatId}/messages`, { content: "Send daily invoice and order details to manager@example.test" }, 200)).data.assistantMessage.artifacts;
   assert.equal(automation.intent, "WORKFLOW"); assert.equal(automation.automationRequest.profile, "recurring-delivery-request/v1");
   assert.equal(automation.automationRequest.cadence, "daily"); assert.equal(automation.automationRequest.scheduleActive, false); assert(automation.workflowId);
+  assert.deepEqual(automation.automationRequest.requestedResources, ["invoices", "orders"]); assert.equal(automation.automationComposition.status, "CAPABILITIES_MAPPED");
+  assert.equal(automation.automationComposition.mappedSteps.length, 3); assert.deepEqual(automation.automationComposition.relatedRecords, { status: "MATCHED", relationName: "invoice-orders" });
+  assert.equal(automation.automationComposition.readyForPublication, false); assert.equal(automation.automationComposition.scheduleActive, false); assert.equal(automation.emailDraft, undefined);
   const automationWorkflow = (await repository.snapshot()).workflows[automation.workflowId];
-  assert.equal(automationWorkflow.publishedVersion, 0); assert.equal(automationWorkflow.canRun, false); assert.deepEqual(automationWorkflow.trigger, { type: "manual" });
+  assert.equal(automationWorkflow.publishedVersion, 0); assert.equal(automationWorkflow.steps, 3); assert.equal(automationWorkflow.canRun, false); assert.equal(automationWorkflow.trigger.type, "manual");
   assert.match(automationWorkflow.yaml, /unresolved_requirements/); assert.equal((await repository.snapshot()).schedules[`schedule-${automation.workflowId}`], undefined);
-  assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation);
-  log("recurring delivery wording created one durable incomplete manual workflow shell with readable requirements, zero model/SDK calls and no active schedule or one-off email draft");
+  assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation + 1); assert.equal(emails.length, 0); assert.equal(operations.length, 0);
+  const modelsAfterAutomation = models.length;
+  log("recurring delivery wording used one model proposal to save exact reviewed invoice, related-order and delivery capability steps with readable remaining gates, zero SDK calls and no active schedule or one-off email draft");
 
   const saved = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).chats, saved.chats); assert.deepEqual((await repository.snapshot()).executions, saved.executions);
@@ -275,7 +295,7 @@ try {
   const historyQuery = `view=edit-history&baseVersion=${redone.version}&baseHash=${redone.contentHash}`;
   const history = (await request("GET", `/api/workflows/collection_edit/versions?${historyQuery}`, undefined, 200)).data;
   assert.equal(history.total, 4); assert.equal(history.entries[0].change.type, "redoDraft"); assert(!JSON.stringify(history).includes('"yaml"'));
-  assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsBeforeOwner + 1);
+  assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsAfterAutomation);
   assert.equal((await repository.snapshot()).chats[chatId].messages.findLast(message => message.artifacts?.proposal)?.artifacts.proposal.appliedVersion, 2);
   log("normal Firestore saved-history HTTP undo/restart/redo preserved exact collection content, immutable revisions and historical proposal provenance without publication, SDK dispatch or model calls");
 
@@ -299,7 +319,7 @@ try {
   const reconciledHistory = (await request("GET", "/api/workflows/collection_edit/readiness", undefined, 200)).data;
   assert.equal(reconciledHistory.version, 5); assert.equal(reconciledHistory.yaml, collection); assert.equal(reconciledHistory.editHistory.redoDepth, 1);
   await request("POST", "/api/workflows/collection_edit/commands", uncertainUndo, 409);
-  assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsBeforeOwner + 1);
+  assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsAfterAutomation);
   // Storage reconciliation does not silently revive stopped dispatch workers.
   // A fresh supervised application instance is required by this runtime.
   await request("POST", "/api/workflows/collection/run", { mode: "async-read", idempotencyKey: "firestore-history-fenced-queue-0001", input: { rows: ["must-not-enter"] } }, 503);
@@ -326,7 +346,7 @@ try {
   const canvasUndo = (await request("POST", "/api/workflows/collection_edit/commands", { baseVersion: reopenedCanvas.version, baseHash: reopenedCanvas.contentHash,
     command: { type: "undoDraft", versionId: reopenedCanvas.editHistory.undoTarget } }, 200)).data;
   assert.equal(canvasUndo.version, 7); assert.equal(canvasUndo.yaml, canvasOriginal.yaml);
-  assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsBeforeOwner + 1); assert.equal(canvasUndo.publishedVersion, 0);
+  assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsAfterAutomation); assert.equal(canvasUndo.publishedVersion, 0);
   log("normal Firestore whole-collection canvas move retained body/configuration and broken references as a blocked saved draft; restart and explicit undo preserved exact original content without publication, SDK or model calls");
 
   // Server-only synthetic checkpoint producer, NOT a real effect executor.

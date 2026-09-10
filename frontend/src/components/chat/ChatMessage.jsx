@@ -454,13 +454,25 @@ function OpenWorkflowButton({ workflowId }) {
   );
 }
 
-function AutomationRequestBanner({ request }) {
+function AutomationRequestBanner({ request, composition }) {
   if (!request || request.profile !== "recurring-delivery-request/v1") return null;
   const recipient = request.requestedAddresses?.length === 1 ? request.requestedAddresses[0] : "Recipient unresolved";
-  return <section aria-label="Recurring automation requirements" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-100">
-    <p className="font-semibold">{request.cadence === "custom" ? "Recurring" : `${request.cadence[0]?.toUpperCase()}${request.cadence?.slice(1)}`} automation · no schedule active</p>
-    <p className="mt-1">Channel: {request.channel} · Recipient: {recipient}</p>
-    {Array.isArray(request.requirements) && request.requirements.length > 0 && <><p className="mt-2 font-semibold">Resolve before publication</p><ul className="mt-1 list-disc space-y-1 pl-5">{request.requirements.map((item) => <li key={item}>{item}</li>)}</ul></>}
+  const mapped = Array.isArray(composition?.mappedSteps) ? composition.mappedSteps : [];
+  const requirements = Array.isArray(composition?.remainingRequirements) ? composition.remainingRequirements : request.requirements;
+  const hasComposition = composition?.profile === "recurring-automation-composition/v1";
+  return <section aria-label="Recurring automation requirements" className="mt-3 border-l-2 border-amber-400 pl-3 text-xs leading-5 text-gray-700 dark:border-amber-500 dark:text-gray-200">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <p className="font-semibold text-gray-900 dark:text-white">{request.cadence === "custom" ? "Recurring" : `${request.cadence[0]?.toUpperCase()}${request.cadence?.slice(1)}`} automation</p>
+      <span className="text-amber-700 dark:text-amber-300">· {hasComposition ? "Draft composed" : "Setup required"} · no schedule active</span>
+    </div>
+    <p className="mt-1 text-gray-500 dark:text-gray-400">Channel: {request.channel} · Recipient: {recipient}</p>
+    {mapped.length > 0 && <div className="mt-2">
+      <p className="font-semibold text-gray-800 dark:text-gray-200">Mapped capabilities</p>
+      <ul className="mt-1 space-y-1 text-gray-600 dark:text-gray-300">{mapped.map((step) => <li key={`${step.stepId}-${step.tool}`} className="flex gap-2">
+        <span className="w-14 shrink-0 capitalize text-gray-400">{step.capability}</span><span>{step.stepId} · {step.resource ? `${step.resource} · ` : ""}{step.tool}</span>
+      </li>)}</ul>
+    </div>}
+    {Array.isArray(requirements) && requirements.length > 0 && <><p className="mt-2 font-semibold text-gray-800 dark:text-gray-200">Resolve before publication</p><ul className="mt-1 list-disc space-y-1 pl-5 text-gray-600 dark:text-gray-300">{requirements.map((item) => <li key={item}>{item}</li>)}</ul></>}
   </section>;
 }
 
@@ -564,7 +576,7 @@ function ChatMessage({ message, onChatChanged }) {
         {/* ── Workflow: inline validation + YAML preview + save-after-edit ── */}
         {isWorkflow && (
           <>
-            <AutomationRequestBanner request={artifacts?.automationRequest} />
+            <AutomationRequestBanner request={artifacts?.automationRequest} composition={artifacts?.automationComposition} />
             {Array.isArray(artifacts?.missing_tools) && artifacts.missing_tools.length > 0 && (
               <div className="mt-2 flex flex-col gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs dark:border-amber-800/40 dark:bg-amber-900/20">
                 <div className="flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-300">

@@ -12,7 +12,8 @@ import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type Handler
 import { classifyIntent } from "../../agent/intent-classifier.js";
 import { editEmailDraft, prepareEmailDraft } from "../../delivery/email-chat.js";
 import { admitEmailDelivery } from "../../delivery/email-operation.js";
-import { recurringAutomationShell, recurringDeliveryRequest } from "../../delivery/recurring-automation.js";
+import { hasRecurringCompositionCapability, inspectRecurringAutomationCandidate, recurringAutomationCandidateContext,
+  recurringAutomationShell, recurringDeliveryRequest, type RecurringAutomationComposition, type RecurringDeliveryRequest } from "../../delivery/recurring-automation.js";
 import { runQueryLoop, type ToolStep } from "../../agent/query-loop.js";
 import { runActionLoop } from "../../agent/action-loop.js";
 import { discoverTools } from "../../agent/tool-discovery.js";
@@ -552,6 +553,38 @@ export async function processStoredChat(input: {
   const augmentedPriorMessages = workflowContextYaml
     ? [`assistant: I have the following workflow loaded for context:\n**${workflowContextName}**\n\`\`\`yaml\n${workflowContextYaml}\n\`\`\``, ...stored.priorMessages]
     : stored.priorMessages;
+  const preserveRecurringShell = async (requestValue: RecurringDeliveryRequest, compositionFailure?: "COMPOSITION_UNAVAILABLE" | "CAPABILITY_DISCOVERY_UNAVAILABLE" | "NO_REVIEWED_COMPOSITION_CAPABILITY") => {
+    await hooks?.stage("GENERATING");
+    const yaml = recurringAutomationShell(content, requestValue), timestamp = now();
+    const savedAutomation = await chatMutation((state) => {
+      const chat = assertChatAuthority(state, user, sessionId);
+      let workflowId: string | null = null;
+      if (user.permissions.includes("workflow:write")) {
+        workflowId = nextID(state, "wf");
+        state.workflows[workflowId] = { id: workflowId, name: `${requestValue.cadence === "custom" ? "Recurring" : requestValue.cadence} delivery automation`,
+          description: "Incomplete recurring delivery workflow preserved from chat", owner: { id: user.id, name: user.name }, assignedUserIds: [], status: "PENDING",
+          trigger: { type: "manual" }, steps: 0, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [],
+          canRun: false, createdAt: timestamp, updatedAt: timestamp, yaml, archived: false, chatSessionId: sessionId,
+          chatMessageId: stringValue(stored.userMessage.id), prompt: content, traceId } as unknown as import("../../models/schemas.js").Workflow;
+        hooks?.artifact(state, { type: "workflow-draft", id: workflowId });
+      }
+      const reason = compositionFailure === undefined ? "The configured model or ERPBridge connection is unavailable." :
+        compositionFailure === "NO_REVIEWED_COMPOSITION_CAPABILITY" ? "No exact reviewed report or delivery capability is currently available." :
+          compositionFailure === "CAPABILITY_DISCOVERY_UNAVAILABLE" ? "Current ERPBridge capability discovery could not be confirmed." :
+            "The generated composition did not satisfy the server-owned recurring-workflow contract.";
+      const text = workflowId ? `Recurring automation shell saved in the canvas. ${reason} It is incomplete, has not been published or executed, and no schedule is active. Resolve the listed requirements before publication and activate recurrence only through the scheduler.` :
+        `Recurring automation requirements were preserved, but your current role cannot save a workflow. ${reason} Nothing was sent and no schedule is active.`;
+      const artifacts = { intent: "WORKFLOW", yaml, selected_workflow_yaml: yaml, ...(workflowId ? { workflowId } : {}), automationRequest: requestValue,
+        ...(compositionFailure ? { compositionFailure } : {}), can_execute: false, validation_passed: false,
+        validation: { passed: false, failed_rules: ["SCHEMA_INVALID", "UNRESOLVED_REQUIREMENTS"], warnings: [] },
+        blocking_errors: requestValue.requirements, next_action: "REVIEW_DRAFT" };
+      const assistantMessage = { id: nextID(state, "msg"), role: "assistant", text, artifacts, createdAt: timestamp, traceId };
+      chat.messages.push(assistantMessage); chat.messageCount = chat.messages.length; chat.updatedAt = timestamp; hooks?.saved(state, assistantMessage);
+      return { workflowId, assistantMessage, text, artifacts };
+    });
+    return ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage: savedAutomation.assistantMessage, answer: savedAutomation.text,
+      intent: "ACTION", workflowDraft: { yaml }, validation: savedAutomation.artifacts.validation }, "Recurring workflow shell preserved; no schedule or delivery occurred", null);
+  };
   // ── Feasibility / role-policy check ─────────────────────────────────────
   // Controlled by the Policy Checker toggle in Settings (state.settings.rbac.enabled).
   const policyCheckerEnabled = await isPolicyCheckerEnabled(services.repository);
@@ -574,33 +607,9 @@ export async function processStoredChat(input: {
     const result = await prepareEmailDraft(services, user, sessionId, content, request, { ...(signal ? { signal } : {}), traceId, ...(hooks ? { hooks } : {}) });
     return ok({ session: stored.session, userMessage: stored.userMessage, ...result }, "Email draft prepared; nothing sent", null);
   }
-  if (intent === "ACTION" && automationRequest) {
-    await hooks?.stage("GENERATING");
-    const yaml = recurringAutomationShell(content, automationRequest), timestamp = now();
-    const savedAutomation = await chatMutation((state) => {
-      const chat = assertChatAuthority(state, user, sessionId);
-      let workflowId: string | null = null;
-      if (user.permissions.includes("workflow:write")) {
-        workflowId = nextID(state, "wf");
-        state.workflows[workflowId] = { id: workflowId, name: `${automationRequest.cadence === "custom" ? "Recurring" : automationRequest.cadence} delivery automation`,
-          description: "Incomplete recurring delivery workflow preserved from chat", owner: { id: user.id, name: user.name }, assignedUserIds: [], status: "PENDING",
-          trigger: { type: "manual" }, steps: 0, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [],
-          canRun: false, createdAt: timestamp, updatedAt: timestamp, yaml, archived: false, chatSessionId: sessionId,
-          chatMessageId: stringValue(stored.userMessage.id), prompt: content, traceId } as unknown as import("../../models/schemas.js").Workflow;
-        hooks?.artifact(state, { type: "workflow-draft", id: workflowId });
-      }
-      const text = workflowId ? "Recurring automation draft saved in the canvas. It is incomplete, has not been published or executed, and no schedule is active. Resolve the listed requirements before publication and activate recurrence only through the scheduler." :
-        "Recurring automation requirements were preserved, but your current role cannot save a workflow. Nothing was sent and no schedule is active.";
-      const artifacts = { intent: "WORKFLOW", yaml, selected_workflow_yaml: yaml, ...(workflowId ? { workflowId } : {}), automationRequest,
-        can_execute: false, validation_passed: false, validation: { passed: false, failed_rules: ["SCHEMA_INVALID", "UNRESOLVED_REQUIREMENTS"], warnings: [] },
-        blocking_errors: automationRequest.requirements, next_action: "REVIEW_DRAFT" };
-      const assistantMessage = { id: nextID(state, "msg"), role: "assistant", text, artifacts, createdAt: timestamp, traceId };
-      chat.messages.push(assistantMessage); chat.messageCount = chat.messages.length; chat.updatedAt = timestamp; hooks?.saved(state, assistantMessage);
-      return { workflowId, assistantMessage, text, artifacts };
-    });
-    return ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage: savedAutomation.assistantMessage, answer: savedAutomation.text,
-      intent: "ACTION", workflowDraft: { yaml }, validation: savedAutomation.artifacts.validation }, "Recurring workflow draft preserved; no schedule or delivery occurred", null);
-  }
+  if (intent === "ACTION" && automationRequest &&
+      (services.synthesis === undefined || services.erpbridgeSession === undefined || services.providerRuntime?.configured !== true))
+    return preserveRecurringShell(automationRequest);
   if (["QUERY", "AUDIT", "TOOL_CALL"].includes(intent) &&
       (services.erpbridgeSession === undefined || services.providerRuntime?.configured !== true)) {
     const code = services.erpbridgeSession === undefined ? "ERPBRIDGE_NOT_CONNECTED" : "PROVIDER_NOT_CONFIGURED";
@@ -805,11 +814,22 @@ export async function processStoredChat(input: {
   }
 
   if (services.synthesis === undefined) throw new HandlerFailure(502, "Chat orchestration is not configured");
-  const liveToolsForSynthesis = await discoverTools(services.erpbridgeSession ?? null, services.registries);
+  let liveToolsForSynthesis: readonly import("../../registry/schemas.js").ToolDefinition[];
+  try { liveToolsForSynthesis = await discoverTools(services.erpbridgeSession ?? null, services.registries); }
+  catch (error) {
+    if (automationRequest) return preserveRecurringShell(automationRequest, "CAPABILITY_DISCOVERY_UNAVAILABLE");
+    throw error;
+  }
+  if (automationRequest && !hasRecurringCompositionCapability(automationRequest, liveToolsForSynthesis, user.role))
+    return preserveRecurringShell(automationRequest, "NO_REVIEWED_COMPOSITION_CAPABILITY");
   let result;
   await hooks?.stage("GENERATING");
-  try { result = await services.synthesis.synthesize({ prompt: content, userRole: user.role, user: { id: user.id, role: user.role, department: user.departmentId }, ...(provider === undefined ? {} : { providerRuntime: provider }), priorMessages: augmentedPriorMessages, ...(signal ? { signal } : {}), traceId, sessionId: sessionId, messageId: stringValue(stored.userMessage.id), liveTools: liveToolsForSynthesis }); }
+  try { result = await services.synthesis.synthesize({ prompt: content, userRole: user.role, user: { id: user.id, role: user.role, department: user.departmentId }, ...(provider === undefined ? {} : { providerRuntime: provider }), priorMessages: augmentedPriorMessages,
+    ...(automationRequest ? { candidateContext: recurringAutomationCandidateContext(automationRequest),
+      candidateValidator: (yaml: string) => { inspectRecurringAutomationCandidate(yaml, automationRequest, liveToolsForSynthesis, user.role); } } : {}),
+    ...(signal ? { signal } : {}), traceId, sessionId: sessionId, messageId: stringValue(stored.userMessage.id), liveTools: liveToolsForSynthesis }); }
   catch (error) {
+    if (automationRequest) return preserveRecurringShell(automationRequest, "COMPOSITION_UNAVAILABLE");
     const errText = errorText(error);
     const errorDetail = errText.split(":").at(-1)?.trim() || errText;
     const friendlyText = errText.includes("HTTP 400") || errText.includes("Generation attempt failed") || errText.includes("Candidate generation failed")
@@ -823,6 +843,8 @@ export async function processStoredChat(input: {
     });
     return ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage: errMessage, answer: friendlyText, intent: "WORKFLOW_ERROR" }, "Message processed", null);
   }
+  const automationComposition: RecurringAutomationComposition | null = automationRequest ?
+    inspectRecurringAutomationCandidate(result.yaml, automationRequest, liveToolsForSynthesis, user.role) : null;
   // Preserve the proposed program exactly. Unknown actions are reported, not
   // renamed by heuristics or silently removed along with their business intent.
   const liveToolNameSet = new Set(liveToolsForSynthesis.flatMap((tool) => [tool.name, tool.mcp_tool_name]));
@@ -887,12 +909,14 @@ export async function processStoredChat(input: {
 
   // State claims come from persistence/validation, not an additional model.
   const assistantText = [
-    autoSavedWorkflowId ? "Workflow draft saved. It has not been published or executed." : "Workflow proposal prepared, but no saved draft was acknowledged.",
+    autoSavedWorkflowId ? automationComposition ? "Recurring workflow steps saved as an editable draft. They have not been published, scheduled or executed." : "Workflow draft saved. It has not been published or executed." : "Workflow proposal prepared, but no saved draft was acknowledged.",
     result.validation.passed ? "Structural and registry validation passed; this is not execution readiness." : "Validation failed; review the reported issues before publishing.",
+    automationComposition ? `${automationComposition.mappedSteps.length} exact reviewed capability step${automationComposition.mappedSteps.length === 1 ? " was" : "s were"} mapped. ${automationComposition.remainingRequirements.length} requirement${automationComposition.remainingRequirements.length === 1 ? " remains" : "s remain"}; no schedule is active.` : "",
     missingTools.length ? "Some requested actions have no admitted live ERPBridge contract. The original proposal was preserved." : "",
     pendingGenerationApproval ? "Build acceptance is pending. Runtime approval checkpoints remain required for each transaction." : "",
   ].filter(Boolean).join("\n\n");
-  const artifacts = compactWorkflowArtifacts(result, chatSessionId, chatMessageId, traceId, autoSavedWorkflowId, missingTools, pendingGenerationApproval);
+  const artifacts = compactWorkflowArtifacts(result, chatSessionId, chatMessageId, traceId, autoSavedWorkflowId, missingTools, pendingGenerationApproval,
+    automationRequest, automationComposition);
   const assistantMessage = await chatMutation((state) => {
     const chat = assertChatAuthority(state, user, sessionId);
     const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: assistantText, artifacts, createdAt: now(), traceId };
@@ -929,6 +953,8 @@ function compactWorkflowArtifacts(
   workflowId: string | null = null,
   missingTools: string[] = [],
   pendingGenerationApproval: { steps: Array<{ stepId: string; description: string }>; requestedAt: string } | null = null,
+  automationRequest: RecurringDeliveryRequest | null = null,
+  automationComposition: RecurringAutomationComposition | null = null,
 ): Record<string, unknown> {
   const retrieval = result.retrieval as {
     tools?: unknown[];
@@ -948,7 +974,7 @@ function compactWorkflowArtifacts(
     selected_workflow_yaml: result.selected_workflow_yaml,
     ...(result.can_execute ? {} : { yaml: result.yaml }),
     validation_summary: result.validation_summary,
-    blocking_errors: result.blocking_errors,
+    blocking_errors: [...new Set([...result.blocking_errors, ...(automationComposition?.remainingRequirements ?? [])])],
     next_action: "REVIEW_DRAFT",
     candidates: result.candidates.map((candidate) => ({
       id: candidate.id,
@@ -959,6 +985,8 @@ function compactWorkflowArtifacts(
     ...(workflowId !== null ? { workflowId } : {}),
     ...(missingTools.length > 0 ? { missing_tools: missingTools } : {}),
     ...(pendingGenerationApproval !== null ? { generationApproval: { workflowId, ...pendingGenerationApproval } } : {}),
+    ...(automationRequest !== null ? { automationRequest } : {}),
+    ...(automationComposition !== null ? { automationComposition } : {}),
     retrieval: {
       tools: pickArtifactRecords(retrieval.tools, [
         "tool_id", "name", "display_name", "description", "endpoint",

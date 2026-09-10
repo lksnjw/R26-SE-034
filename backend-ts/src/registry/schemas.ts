@@ -52,6 +52,10 @@ export const toolSchema = z.object({
   // conventional names such as `page`, descriptions, or model output.
   report_coverage_contract: z.object({
     profile: z.literal("report-coverage/v1"),
+    // The reviewed business identity is explicit. Agent composition must not
+    // infer that a structurally complete report is an invoice/order report
+    // from its tool name, description, or model wording.
+    business_resource: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).optional(),
     start_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
     end_parameter: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
     covered_start_path: z.array(z.string().min(1).max(128).refine(part => !["__proto__", "constructor", "prototype"].includes(part))).min(1).max(12),

@@ -1,0 +1,100 @@
+[
+  {
+    "tool_id": "invoice-report-fixture",
+    "name": "erp.invoices.report",
+    "display_name": "Invoice report",
+    "mcp_tool_name": "erp.invoices.report",
+    "input_schema": {
+      "type": "object",
+      "properties": { "startAt": { "type": "string" }, "endAt": { "type": "string" } },
+      "required": ["startAt", "endAt"],
+      "additionalProperties": false
+    },
+    "report_coverage_contract": {
+      "profile": "report-coverage/v1",
+      "business_resource": "invoices",
+      "start_parameter": "startAt",
+      "end_parameter": "endAt",
+      "covered_start_path": ["coveredStartAt"],
+      "covered_end_path": ["coveredEndAt"],
+      "complete_path": ["complete"],
+      "has_more_path": ["hasMore"],
+      "items_path": ["items"],
+      "item_count_path": ["itemCount"],
+      "key_projection": {
+        "profile": "report-key-projection/v1",
+        "relation_name": "invoice-orders",
+        "item_key_path": ["orderId"],
+        "keys_path": ["orderIds"]
+      }
+    },
+    "allowed_roles": ["Platform Admin"],
+    "risk_level": "low",
+    "is_read_only": true
+  },
+  {
+    "tool_id": "order-report-fixture",
+    "name": "erp.orders.report",
+    "display_name": "Related order report",
+    "mcp_tool_name": "erp.orders.report",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "startAt": { "type": "string" },
+        "endAt": { "type": "string" },
+        "orderIds": { "type": "array", "maxItems": 100, "items": { "type": "string" } }
+      },
+      "required": ["startAt", "endAt", "orderIds"],
+      "additionalProperties": false
+    },
+    "report_coverage_contract": {
+      "profile": "report-coverage/v1",
+      "business_resource": "orders",
+      "start_parameter": "startAt",
+      "end_parameter": "endAt",
+      "covered_start_path": ["coveredStartAt"],
+      "covered_end_path": ["coveredEndAt"],
+      "complete_path": ["complete"],
+      "has_more_path": ["hasMore"],
+      "items_path": ["items"],
+      "item_count_path": ["itemCount"],
+      "requested_key_coverage": {
+        "profile": "report-requested-key-coverage/v1",
+        "relation_name": "invoice-orders",
+        "keys_parameter": "orderIds",
+        "item_key_path": ["orderId"]
+      }
+    },
+    "allowed_roles": ["Platform Admin"],
+    "risk_level": "low",
+    "is_read_only": true
+  },
+  {
+    "tool_id": "email-delivery-fixture",
+    "name": "erp.email.deliver",
+    "display_name": "Email delivery",
+    "mcp_tool_name": "erp.email.deliver",
+    "input_schema": {
+      "type": "object",
+      "properties": { "recipient": { "type": "string" }, "subject": { "type": "string" }, "body": { "type": "string" } },
+      "required": ["recipient", "subject", "body"],
+      "additionalProperties": false
+    },
+    "operation_contract": {
+      "profile": "operation-result/v1",
+      "effect_class": "notification",
+      "retry_policy": "never",
+      "confirmation": { "path": ["accepted"], "expected": true, "meaning": "operation-accepted" }
+    },
+    "email_delivery_contract": {
+      "profile": "email-delivery-input/v1",
+      "recipient_parameter": "recipient",
+      "subject_parameter": "subject",
+      "body_parameter": "body"
+    },
+    "allowed_roles": ["Platform Admin"],
+    "risk_level": "low",
+    "is_read_only": false,
+    "side_effects": ["Email acceptance"]
+  }
+]

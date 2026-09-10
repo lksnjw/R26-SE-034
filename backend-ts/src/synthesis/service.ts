@@ -65,12 +65,14 @@ export class SynthesisService {
    *
    * Generates a workflow candidate and evaluates its validation outcome.
    ******************************************************************************/
-  async synthesize(input: { prompt: string; userRole: string; user?: GovernanceUser; model?: string; providerRuntime?: ProviderRuntime; priorMessages?: string[]; caseContext?: Record<string, unknown>; signal?: AbortSignal; traceId?: string; sessionId?: string; messageId?: string; liveTools?: readonly ToolDefinition[] }): Promise<SynthesisResult> {
+  async synthesize(input: { prompt: string; userRole: string; user?: GovernanceUser; model?: string; providerRuntime?: ProviderRuntime; priorMessages?: string[]; caseContext?: Record<string, unknown>; candidateContext?: Record<string, unknown>; candidateValidator?: (yaml: string) => void; signal?: AbortSignal; traceId?: string; sessionId?: string; messageId?: string; liveTools?: readonly ToolDefinition[] }): Promise<SynthesisResult> {
     const baseProvider = input.providerRuntime ?? this.providers;
     const providers = baseProvider.snapshot?.(input.model) ?? baseProvider;
-    const prompt = assembleCandidatePrompt(input.prompt, input.userRole, this.registries, input.priorMessages ?? [], input.liveTools);
+    const prompt = assembleCandidatePrompt(input.prompt, input.userRole, this.registries, input.priorMessages ?? [], input.liveTools, input.candidateContext);
     let generated;
-    try { generated = await providers.generateCandidate(prompt, CANDIDATE_PROMPT_VERSION, (response) => { parseWorkflowYAMLStrict(response.text.trim()); }, input.signal, {
+    try { generated = await providers.generateCandidate(prompt, CANDIDATE_PROMPT_VERSION, (response) => {
+      const yaml = response.text.trim(); parseWorkflowYAMLStrict(yaml); input.candidateValidator?.(yaml);
+    }, input.signal, {
       ...(input.traceId === undefined ? {} : { traceId: input.traceId }),
       ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
@@ -151,13 +153,14 @@ export class SynthesisService {
  * Builds a synthesis prompt using the request, conversation, tools, and
  * rules.
  ******************************************************************************/
-export function assembleCandidatePrompt(userText: string, userRole: string, registries: RegistryService, priorMessages: string[] = [], liveTools?: readonly ToolDefinition[]): string {
+export function assembleCandidatePrompt(userText: string, userRole: string, registries: RegistryService, priorMessages: string[] = [], liveTools?: readonly ToolDefinition[], candidateContext?: Record<string, unknown>): string {
   const snapshot = registries.snapshot();
   const applicableRules = snapshot.rules.filter((rule) => rule.enabled && (rule.applies_to_roles.length === 0 || rule.applies_to_roles.some((role) => normalizeRole(role) === normalizeRole(userRole))));
   // An explicitly empty live catalog is unavailable, not a reason to fall
   // back to registered tools that this connection did not advertise.
   return promptData({ USER_ROLE: userRole, PRIOR_MESSAGES_JSON: priorMessages, USER_REQUEST: userText,
-    TOOL_REGISTRY_JSON: liveTools ?? snapshot.tools, APPLICABLE_RULES_JSON: applicableRules });
+    TOOL_REGISTRY_JSON: liveTools ?? snapshot.tools, APPLICABLE_RULES_JSON: applicableRules,
+    ...(candidateContext === undefined ? {} : { SERVER_DERIVED_CONTEXT_JSON: candidateContext }) });
 }
 
 /*******************************************************************************

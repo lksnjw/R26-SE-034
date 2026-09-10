@@ -14,19 +14,24 @@ import { classifyIntent } from "../src/agent/intent-classifier.js";
 import { createEmailDraft, deliveryIntent, type EmailDraft } from "../src/delivery/email-draft.js";
 import { runQueryLoop } from "../src/agent/query-loop.js";
 import { toolSchema } from "../src/registry/schemas.js";
+import { stringify } from "yaml";
+import { recurringAutomationCandidateContext, recurringDeliveryRequest } from "../src/delivery/recurring-automation.js";
+import { SynthesisService } from "../src/synthesis/service.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 const requestText = "Get invoice details, analyse the report and email it to manager@example.test";
 const headersFor = (id: string, secret: string) => ({ authorization: `Bearer ${jwt.sign({}, secret, { algorithm: "HS256", subject: id, expiresIn: 3600 })}` });
-async function setup(options: { bridge?: boolean; calls?: boolean; final?: string; finalStop?: string; failure?: boolean; unadmitted?: boolean; providerFailsAfterRead?: boolean } = {}) {
+async function setup(options: { bridge?: boolean; calls?: boolean; final?: string; finalStop?: string; failure?: boolean; unadmitted?: boolean; providerFailsAfterRead?: boolean;
+  automationTools?: boolean; candidateYaml?: string } = {}) {
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "test-email-draft-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }), erpbridgeRoleMap: { "Platform Admin": "admin" } };
   const repository = new Repository(null);
   await repository.mutate((state) => { for (const id of ["owner", "other"]) state.users[id] = { id, name: id, email: `${id}@example.test`, roleId: "role_admin", permissionOverrides: [], status: "Active", initials: "U", departmentId: null, lastLoginAt: null, createdAt: new Date().toISOString() }; });
-  const registries = await RegistryService.load(resolve(options.unadmitted ? "tests/fixtures/tools.json" : "tests/fixtures/chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
+  const registries = await RegistryService.load(resolve(options.automationTools ? "tests/fixtures/recurring-tools.json" : options.unadmitted ? "tests/fixtures/tools.json" : "tests/fixtures/chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
   const validator = new RegistryValidator(registries, repository);
   const executor = new Executor(new ToolRegistry(), validator);
   const fetchImplementation = vi.fn<typeof fetch>(async (_url, init) => {
+    if (options.candidateYaml !== undefined) return Response.json({ choices: [{ message: { content: options.candidateYaml } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
     const input = JSON.parse(String(init?.body));
     const hasToolResult = input.messages.some((message: { role: string }) => message.role === "tool");
     if (options.providerFailsAfterRead && hasToolResult) throw new Error("private-provider-secret must not leak");
@@ -39,7 +44,8 @@ async function setup(options: { bridge?: boolean; calls?: boolean; final?: strin
   const callTool = vi.fn(async () => options.failure ? { content: [{ type: "text", text: "denied" }], isError: true } : { content: [], structuredContent: { value: "fixture report" } });
   const erpbridgeSession = options.bridge ? await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "fixture-only", timeoutMs: 1000, validator,
     sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => registries.snapshot().tools.map((tool) => ({ name: tool.mcp_tool_name, inputSchema: tool.input_schema })), callTool } }) : undefined;
-  const app = await buildApp({ config, repository, registries, validator, executor, providerRuntime, ...(erpbridgeSession ? { erpbridgeSession } : {}) }); apps.push(app);
+  const app = await buildApp({ config, repository, registries, validator, executor, providerRuntime, synthesis: new SynthesisService(providerRuntime, registries, validator),
+    ...(erpbridgeSession ? { erpbridgeSession } : {}) }); apps.push(app);
   const headers = headersFor("owner", config.jwtSecret);
   const created = await app.inject({ method: "POST", url: "/api/chat/sessions", headers, payload: {} });
   const sessionId = created.json().data.id;
@@ -73,6 +79,61 @@ test("offline recurring request saves an incomplete workflow in the canvas witho
   expect(workflows[0]!.yaml).toContain("unresolved_requirements"); expect((await s.repository.snapshot()).schedules).toEqual({});
   const restored = await s.app.inject({ method: "GET", url: `/api/chat/sessions/${s.sessionId}`, headers: s.headers });
   expect(restored.json().data.messages[1].artifacts.automationRequest.scheduleActive).toBe(false);
+});
+test("connected recurrence skips model latency when discovery has no reviewed report or delivery contract", async () => {
+  const s = await setup({ bridge: true }); const result = await s.send(requestText + " every day");
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data.assistantMessage.artifacts).toMatchObject({ intent: "WORKFLOW", compositionFailure: "NO_REVIEWED_COMPOSITION_CAPABILITY",
+    automationRequest: { scheduleActive: false }, can_execute: false });
+  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+  const state = await s.repository.snapshot(); expect(Object.values(state.workflows)[0]).toMatchObject({ steps: 0, publishedVersion: 0, canRun: false });
+  expect(state.schedules).toEqual({}); expect(state.executions).toEqual({});
+});
+function recurringCandidate(recipient = "manager@example.test") {
+  const text = "Get invoice and order details and email the report to manager@example.test every day";
+  const request = recurringDeliveryRequest(text)!;
+  const unresolved = request.requirements.filter(item => !item.startsWith("Add exact reviewed ERP report") &&
+    !item.startsWith("Add one exact reviewed ERP report") && !item.startsWith("Add one exact reviewed email"));
+  const yaml = stringify({
+    name: "Daily invoice and order report", description: "Reads complete invoice and related order reports before proposing reviewed email delivery.",
+    trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
+      required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } },
+    steps: [
+      { id: "invoice_report", action: "erp.invoices.report", description: "Read complete invoices", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
+      { id: "order_report", action: "erp.orders.report", description: "Read every related order", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", orderIds: "{{invoice_report.structuredContent.orderIds}}" } },
+      { id: "deliver_report", action: "erp.email.deliver", description: "Propose reviewed report delivery", parameters: { recipient, subject: "Daily invoice and order report", body: "{{order_report.structuredContent.summary}}" } },
+    ], metadata: { automation_request: recurringAutomationCandidateContext(request).automation_request, unresolved_requirements: unresolved },
+  }).trim();
+  return { text, yaml, request, unresolved };
+}
+test("connected recurring request saves exact useful capability steps without running, publishing, scheduling or sending", async () => {
+  const candidate = recurringCandidate(), s = await setup({ bridge: true, automationTools: true, candidateYaml: candidate.yaml });
+  const result = await s.send(candidate.text); expect(result.statusCode, result.body).toBe(200);
+  const artifact = result.json().data.assistantMessage.artifacts;
+  expect(artifact).toMatchObject({ intent: "WORKFLOW", can_execute: false,
+    automationRequest: { cadence: "daily", requestedResources: ["invoices", "orders"], scheduleActive: false },
+    automationComposition: { profile: "recurring-automation-composition/v1", status: "CAPABILITIES_MAPPED", reportWindowBound: true,
+      recipientBound: true, deliveryBodyBound: true, readyForPublication: false, scheduleActive: false, remainingRequirements: candidate.unresolved } });
+  expect(artifact.automationComposition.mappedSteps).toHaveLength(3); expect(artifact).not.toHaveProperty("emailDraft");
+  expect(result.json().data.answer).toContain("have not been published, scheduled or executed"); expect(result.json().data.answer).toContain("no schedule is active");
+  const state = await s.repository.snapshot(), workflows = Object.values(state.workflows); expect(workflows).toHaveLength(1);
+  expect(workflows[0]).toMatchObject({ yaml: candidate.yaml, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false, trigger: { type: "manual" } });
+  expect(state.schedules).toEqual({}); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
+  const providerBody = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
+  expect(providerBody.messages[0].content).toContain("prompt/candidate/v7");
+  const context = JSON.parse(providerBody.messages[1].content).SERVER_DERIVED_CONTEXT_JSON;
+  expect(context.automation_request).toEqual(recurringAutomationCandidateContext(candidate.request).automation_request);
+});
+test("unsafe recurring model output falls back to the empty shell and preserves every gate", async () => {
+  const candidate = recurringCandidate("invented@example.test"), s = await setup({ bridge: true, automationTools: true, candidateYaml: candidate.yaml });
+  const result = await s.send(candidate.text); expect(result.statusCode, result.body).toBe(200);
+  const artifact = result.json().data.assistantMessage.artifacts;
+  expect(artifact).toMatchObject({ intent: "WORKFLOW", compositionFailure: "COMPOSITION_UNAVAILABLE", can_execute: false,
+    automationRequest: { requestedAddresses: ["manager@example.test"], scheduleActive: false } });
+  expect(artifact).not.toHaveProperty("automationComposition"); expect(artifact).not.toHaveProperty("emailDraft");
+  const state = await s.repository.snapshot(), workflow = Object.values(state.workflows)[0]!;
+  expect(workflow.steps).toBe(0); expect(workflow.yaml).toContain("unresolved_requirements"); expect(state.schedules).toEqual({}); expect(state.executions).toEqual({});
+  expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
 });
 test("zero-tool model 'sent' claim cannot become a report or delivery result", async () => {
   const s = await setup({ bridge: true, final: "Email sent successfully." }); const result = await s.send();

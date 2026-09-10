@@ -69,6 +69,15 @@ test("reviewed report coverage requires declared typed non-sensitive selectors",
   expect(() => assertReportCoverageContract(secretInput)).toThrow(/window parameters/i);
 });
 
+test("reviewed report business identity is strict and contract-hash bound", () => {
+  const base = fixture();
+  const invoices = toolSchema.parse({ ...base, report_coverage_contract: { ...base.report_coverage_contract!, business_resource: "invoices" } });
+  const orders = toolSchema.parse({ ...base, report_coverage_contract: { ...base.report_coverage_contract!, business_resource: "orders" } });
+  expect(invoices.report_coverage_contract?.business_resource).toBe("invoices");
+  expect(capabilityContractHash(invoices)).not.toBe(capabilityContractHash(orders));
+  expect(() => toolSchema.parse({ ...base, report_coverage_contract: { ...base.report_coverage_contract!, business_resource: "Invoice Details" } })).toThrow();
+});
+
 test("runtime confirmation binds exact interval, completion, exhaustion, items and count into a hashed receipt", () => {
   const tool = fixture(), startAt = "2026-10-06T00:00:00.000Z", endAt = "2026-10-07T00:00:00.000Z";
   const args = { startAt, endAt }, output = { structuredContent: { coveredStartAt: startAt, coveredEndAt: endAt, complete: true, hasMore: false, items: [{ id: "one" }], itemCount: 1 } };
