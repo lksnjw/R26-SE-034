@@ -62,7 +62,9 @@ export function operationCaseEvidence(state: Readonly<RepositoryState>, executio
   const binding = record.binding, receipt = snapshot.operationCompilation;
   const publication = state.versions[execution.workflowId]?.findLast(item => item.version === snapshot.version && item.artifactState === "PUBLISHED");
   const compiled = publication?.compiledOperation as StoredOperationCompilation | undefined;
-  const node = compiled?.plan?.ir?.root?.nodes?.[attempt?.stepIndex ?? -1], pin = node?.capability.admission;
+  const node = compiled?.plan?.ir?.root?.nodes?.[attempt?.stepIndex ?? -1];
+  if (!node || node.kind !== "action") deny("Historical uncertain model calls cannot use ERP effect reconciliation");
+  const pin = node.capability.admission;
   const revision = state.capabilityRevisions[binding.capabilityRevision], tool = toolSchema.safeParse(revision?.definition);
   if (!attempt || attempt.status !== "UNKNOWN" || attempt.id !== intent.invocationId || !attempt.dispatchIntentAt || !attempt.completedAt ||
       attempt.dispatchIntentAt !== intent.preparedAt || execution.readProgress!.nextStepIndex !== attempt.stepIndex || execution.readProgress!.epoch <= binding.workerEpoch ||
@@ -72,7 +74,7 @@ export function operationCaseEvidence(state: Readonly<RepositoryState>, executio
       !receipt || snapshot.contentHash !== workflowContentHash(snapshot.yaml) || receipt.sourceHash !== snapshot.contentHash || receipt.sourceHash !== binding.sourceHash || receipt.semanticHash !== binding.semanticHash ||
       publication?.yaml !== snapshot.yaml || !compiled || compiled.plan.sourceHash !== binding.sourceHash || compiled.plan.semanticHash !== binding.semanticHash ||
       digest(compiled.plan.ir) !== binding.semanticHash || !canonicalJSONBytes(compiled.receipt).equals(canonicalJSONBytes(receipt)) ||
-      !node || node.id !== intent.nodeId || node.effectClass === "read" || !pin || pin.capabilityId !== binding.capabilityId || pin.connectionId !== binding.connectionId ||
+      node.id !== intent.nodeId || node.effectClass === "read" || !pin || pin.capabilityId !== binding.capabilityId || pin.connectionId !== binding.connectionId ||
       pin.revisionId !== binding.capabilityRevision || pin.contractHash !== binding.contractHash || pin.admissionVersion !== binding.admissionVersion ||
       revision?.connectionBinding !== binding.connectionBinding || revision.capabilityId !== binding.capabilityId || revision.connectionId !== binding.connectionId || revision.contractHash !== binding.contractHash ||
       !tool.success || capabilityContractHash(tool.data) !== binding.contractHash || tool.data.is_read_only || !tool.data.operation_contract ||

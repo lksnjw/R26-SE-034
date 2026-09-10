@@ -11,6 +11,7 @@ import { parseReadControlFlow, validateReadControlFlow, controlNodes, loopNodes,
 import { checkBinding, schemaAt } from "./read-binding-validation.js";
 import { ReadValueBudget } from "./read-value-budget.js";
 import { assertOperationReadbackTarget } from "../tools/operation-readback-contract.js";
+import type { ModelDataClass } from "../providers/egress-policy.js";
 
 export type ReadReference = { kind: "ref"; source: "workflowInput" | "nodeOutput"; nodeId?: string; path: string[] };
 export type ReadBinding = ReadReference | { kind: "literal"; value: string | number | boolean | null } |
@@ -29,6 +30,7 @@ export function readCompilationReceipt(plan: CompiledReadPlan, registryHash: str
 }
 const reserved = new Set(["__proto__", "constructor", "prototype"]);
 const supported = new Set(["id", "kind", "action", "parameters", "description"]);
+const analysisSupported = new Set(["id", "kind", "instruction", "input", "output_schema", "max_input_items", "max_input_chars", "max_output_tokens", "data_class", "model", "description"]);
 const hashIR = (ir: ReadIR) => `sha256:${createHash("sha256").update(canonicalJSONBytes(ir)).digest("hex")}`;
 
 /** Pure executable projection. YAML/presentation labels are not runtime logic.
@@ -42,8 +44,9 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
 /** Shared bounded binding compiler, not an execution/admission switch. The
  * operation compiler has a different IR/receipt and mandatory reviewed pins. */
 function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>, operations: boolean):
-  { ir: ReadIR; semanticHash: string; issues: string[] } {
+  { ir: ReadIR; semanticHash: string; issues: string[]; analysisNodes: OperationAnalysisNode[] } {
   const issues: string[] = [], ids = new Set<string>(), outputs = new Map<string, Record<string, unknown>>();
+  const analysisNodes: OperationAnalysisNode[] = [];
   let bindingNodes = 0;
   const inputSchema = blueprint.trigger.config?.inputSchema;
   if (blueprint.trigger.type !== "manual" || Object.keys(blueprint.trigger.config ?? {}).some(key => key !== "inputSchema")) issues.push("Compiled read workflows require a manual trigger and supported input configuration");
@@ -65,11 +68,14 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
   if (blueprint.steps.length < 1 || blueprint.steps.length > 200) issues.push("Read workflows require 1–200 steps");
   for (const step of blueprint.steps.slice(0, 200)) {
     let localNodes = 0;
+    const kind = effectiveStepKind(step);
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(step.id) || step.id === "input" || reserved.has(step.id) || ids.has(step.id)) issues.push("Step IDs must be unique, reference-safe and non-reserved");
-    if (effectiveStepKind(step) !== "tool" || Object.keys(step).some(key => !supported.has(key))) issues.push(`Step ${step.id} uses unsupported execution semantics`);
-    const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action), tool = matches.length === 1 ? matches[0] : undefined;
-    if (!tool || !tool.tool_id || !tool.mcp_tool_name || (!tool.is_read_only && !operations) || !tool.allowed_roles.includes(role)) issues.push(`Step ${step.id} requires a unique role-granted registered ${operations ? "operation" : "read"} tool`);
-    else issues.push(...validateToolSchemaProfile(tool.input_schema));
+    if (kind !== "tool" && !(operations && kind === "analysis") || Object.keys(step).some(key => !(kind === "analysis" ? analysisSupported : supported).has(key))) issues.push(`Step ${step.id} uses unsupported execution semantics`);
+    const matches = kind === "tool" ? tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action) : [], tool = matches.length === 1 ? matches[0] : undefined;
+    if (kind === "tool") {
+      if (!tool || !tool.tool_id || !tool.mcp_tool_name || (!tool.is_read_only && !operations) || !tool.allowed_roles.includes(role)) issues.push(`Step ${step.id} requires a unique role-granted registered ${operations ? "operation" : "read"} tool`);
+      else issues.push(...validateToolSchemaProfile(tool.input_schema));
+    }
     const reference = (expression: string): ReadReference => {
       const path = expression.trim().split("."), root = path.shift()!;
       if (!/^[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*$/.test(expression.trim()) || [root, ...path].some(part => reserved.has(part))) issues.push(`Step ${step.id} has an unsupported data reference`);
@@ -94,6 +100,28 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
       if (value !== null && !(typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))) { issues.push("Read parameters must be finite JSON values"); return { kind: "literal", value: null }; }
       return { kind: "literal", value: value as number | boolean | null };
     };
+    if (kind === "analysis" && operations) {
+      const instruction = (step.instruction ?? "").trim(), input = binding(step.input ?? "", 0), outputSchema = step.output_schema;
+      if (instruction === "" || instruction.length > 4_000) issues.push(`Step ${step.id} requires a bounded analysis instruction`);
+      if (!/^\{\{[\s\S]+\}\}$/.test((step.input ?? "").trim()) || input.kind !== "ref") issues.push(`Step ${step.id} analysis input must be one exact prior-output reference`);
+      if (input.kind === "ref" && input.source !== "nodeOutput") issues.push(`Step ${step.id} analysis input must come from an acknowledged prior node output`);
+      if (input.kind === "ref" && input.source === "nodeOutput" && schemaAt(outputs.get(input.nodeId!), input.path) === undefined)
+        issues.push(`Step ${step.id} analysis input must select a declared prior output`);
+      if (!outputSchema || outputSchema.type !== "object") issues.push(`Step ${step.id} requires an object output_schema`);
+      else issues.push(...validateToolSchemaProfile(outputSchema));
+      if (!step.data_class) issues.push(`Step ${step.id} requires an explicit analysis data_class`);
+      if ((step.model ?? "").length > 256 || (step.model ?? "").includes(":latest")) issues.push(`Step ${step.id} requires a bounded pinned model ID`);
+      const maxInputItems = step.max_input_items ?? 200, maxInputChars = step.max_input_chars ?? 20_000;
+      const maxOutputTokens = step.max_output_tokens ?? 2_048;
+      if (!Number.isInteger(maxInputItems) || maxInputItems < 1 || maxInputItems > 10_000 || !Number.isInteger(maxInputChars) || maxInputChars < 1 || maxInputChars > 200_000)
+        issues.push(`Step ${step.id} analysis limits are unsupported`);
+      if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 8_192) issues.push(`Step ${step.id} analysis output limit is unsupported`);
+      if (input.kind === "ref" && outputSchema && step.data_class) analysisNodes.push({ id: step.id, kind: "analysis", instruction, input,
+        outputSchema: structuredClone(outputSchema), dataClass: step.data_class as ModelDataClass, model: (step.model ?? "").trim(), maxInputItems, maxInputChars, maxOutputTokens,
+        ...((step.description ?? "").trim() ? { description: step.description!.trim() } : {}) });
+      if (outputSchema) outputs.set(step.id, { type: "object", properties: { structuredContent: outputSchema }, required: ["structuredContent"], additionalProperties: false });
+      ids.add(step.id); continue;
+    }
     const inputs = binding(step.parameters ?? {}, 0);
     if (tool) {
       checkBinding(inputs, tool.input_schema, `Step ${step.id}`, issues, ref => {
@@ -113,23 +141,32 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
   // cannot turn a bounded YAML file into an unbounded saved artifact.
   if (ir.flow) issues.push(...validateReadControlFlow(ir.flow, ir, outputs, new Map(ir.root.nodes.map(node => [node.id, tools.find(tool => tool.tool_id === node.capability.toolId)?.input_schema ?? {}]))).issues);
   if (canonicalJSONBytes(ir).length > 1_000_000) issues.push("Compiled read artifact exceeds supported size");
-  return { ir, semanticHash: hashIR(ir), issues: [...new Set(issues)] };
+  return { ir, semanticHash: hashIR(ir), issues: [...new Set(issues)], analysisNodes };
 }
 
-export type OperationIR = { schemaVersion: "workflow-operation-ir/v1"; compilerVersion: "operation-compiler/v1"; trigger: { kind: "manual" };
-  inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: Array<ReadIR["root"]["nodes"][number] & { effectClass: "read" | "write" | "notification";
-    readback?: { profile: "operation-readback-binding/v1"; toolId: string; contractHash: string; admission: ReadAdmissionPin } }> } };
+export type OperationToolNode = ReadIR["root"]["nodes"][number] & { effectClass: "read" | "write" | "notification";
+  readback?: { profile: "operation-readback-binding/v1"; toolId: string; contractHash: string; admission: ReadAdmissionPin } };
+export type OperationAnalysisNode = { id: string; kind: "analysis"; instruction: string; input: ReadReference; outputSchema: Record<string, unknown>;
+  dataClass: ModelDataClass; model: string; maxInputItems: number; maxInputChars: number; maxOutputTokens: number; description?: string };
+export type OperationNode = OperationToolNode | OperationAnalysisNode;
+export function isOperationToolNode(node: OperationNode): node is OperationToolNode { return node.kind === "action"; }
+export type OperationIR = { schemaVersion: "workflow-operation-ir/v1" | "workflow-operation-ir/v2"; compilerVersion: "operation-compiler/v1" | "operation-compiler/v2"; trigger: { kind: "manual" };
+  inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: OperationNode[] } };
 export type CompiledOperationPlan = { ir: OperationIR; semanticHash: string; sourceHash: string };
 export type OperationCompilationReceipt = { schemaVersion: OperationIR["schemaVersion"]; compilerVersion: OperationIR["compilerVersion"]; semanticHash: string; sourceHash: string;
   registryHash: string; origin: "PUBLICATION"; admissionMode: "reviewed" };
 export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>): CompiledOperationPlan {
   if (Buffer.byteLength(yaml) > 200_000) throw new Error("Operation source exceeds supported bounds");
-  const built = buildActionBindingsIR(parseWorkflowYAMLStrict(yaml), tools, role, pins, true);
-  const nodes = built.ir.root.nodes.map(node => {
+  const blueprint = parseWorkflowYAMLStrict(yaml), built = buildActionBindingsIR(blueprint, tools, role, pins, true);
+  const toolNodes = new Map(built.ir.root.nodes.map(node => [node.id, node]));
+  const analysisNodes = new Map(built.analysisNodes.map(node => [node.id, node]));
+  const nodes = blueprint.steps.map(step => {
+    const analysis = analysisNodes.get(step.id); if (analysis) return analysis;
+    const node = toolNodes.get(step.id); if (!node) { built.issues.push(`Step ${step.id} has no compiled operation node`); return null; }
     const tool = tools.find(tool => tool.tool_id === node.capability.toolId)!;
     if (!node.capability.admission || !tool.bridge_contract) built.issues.push("Every operation action requires a reviewed capability pin");
     if (!tool.is_read_only && (!tool.operation_contract || !["low", "medium"].includes(tool.risk_level.toLowerCase()))) built.issues.push("Write actions require an explicit supported operation contract");
-    let readback: OperationIR["root"]["nodes"][number]["readback"];
+    let readback: OperationToolNode["readback"];
     if (tool.operation_contract?.readback) {
       try {
         const contract = tool.operation_contract.readback, targets = tools.filter(target => target.tool_id === contract.tool_id);
@@ -142,10 +179,12 @@ export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefin
       } catch (error) { built.issues.push(error instanceof Error ? error.message : "Invalid operation read-back binding"); }
     }
     return { ...node, effectClass: tool.is_read_only ? "read" as const : tool.operation_contract?.effect_class ?? "write" as const, ...(readback ? { readback } : {}) };
-  });
-  if (!nodes.some(node => node.effectClass !== "read")) built.issues.push("Read-only workflows must use the read profile");
+  }).filter((node): node is OperationNode => node !== null);
+  if (!nodes.some(node => node.kind === "action" && node.effectClass !== "read")) built.issues.push("Read-only workflows must use the read profile");
   if (built.issues.length) throw new Error(`Operation compilation failed: ${built.issues.join("; ")}`);
-  const ir: OperationIR = { schemaVersion: "workflow-operation-ir/v1", compilerVersion: "operation-compiler/v1", trigger: { kind: "manual" },
+  const hasAnalysis = nodes.some(node => node.kind === "analysis");
+  const ir: OperationIR = { schemaVersion: hasAnalysis ? "workflow-operation-ir/v2" : "workflow-operation-ir/v1",
+    compilerVersion: hasAnalysis ? "operation-compiler/v2" : "operation-compiler/v1", trigger: { kind: "manual" },
     ...(built.ir.inputSchema ? { inputSchema: built.ir.inputSchema } : {}), root: { kind: "sequence", nodes } };
   return { ir, semanticHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(ir)).digest("hex")}`, sourceHash: workflowContentHash(yaml) };
 }

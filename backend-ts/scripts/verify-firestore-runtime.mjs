@@ -51,7 +51,8 @@ const collection = stringify({ name: "Firestore collection", description: "Bound
 ] } } } });
 const tool = toolSchema.parse({ tool_id: "FIXTURE-READ", name: "read", mcp_tool_name: "read", is_read_only: true, allowed_roles: ["Platform Admin"], risk_level: "low", side_effects: [],
   input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
-  bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: ["platform_admin"] } });
+  bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: ["platform_admin"],
+    output_schema: { type: "object", properties: { id: { type: "string" }, token: { type: "string" } }, required: ["id"], additionalProperties: false } } });
 const reportTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-REPORT", name: "fixture.report", mcp_tool_name: "fixture.report",
   input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, cursor: { type: "string" } }, required: ["startAt", "endAt"], additionalProperties: false },
   report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
@@ -174,6 +175,8 @@ async function start(repositoryValue) {
         ], metadata: { automation_request: recurringContext.automation_request, unresolved_requirements: unresolved } });
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: candidate } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
     }
+    if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS"))
+      return Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"id":"ANALYSIS-FIXTURE-ONE"}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
     return Response.json({ choices: [{ finish_reason: node || owner || answered ? "stop" : "tool_calls", message: owner ? { content: '{"maxItems":2}' } : node ? { content: '{"description":"Reviewable fixture edit"}' } : answered ? { content: "Confirmed fixture invoice CHAT." } : {
       content: "", tool_calls: [{ id: "fixture-chat-read", type: "function", function: { name: "read", arguments: '{"id":"chat"}' } }],
     } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
@@ -495,6 +498,49 @@ try {
   assert.equal(emails.length, 1); assert.equal(operations.length, operationsBeforeEmail); assert.equal(models.length, modelsBeforeEmail);
   log("actual Firestore exact email-draft admission survived post-COMMIT acknowledgement loss as one immutable linked execution, required fresh independent approval, dispatched only server-derived fields once, and retained acceptance-not-delivery truth on replay/restart");
 
+  const durableAnalysisYAML = stringify({ name: "Durable reviewed analysis", description: "Actual Firestore read, bounded structured model analysis and independently approved operation.", trigger: { type: "manual" }, steps: [
+    { id: "analysis_lookup", action: "read", parameters: { id: "analysis-source" } },
+    { id: "analysis_summary", kind: "analysis", instruction: "Return the reviewed operation identifier as structured JSON.", input: "{{analysis_lookup.structuredContent.id}}",
+      data_class: "internal", model: "fixture-model-b", max_input_items: 10, max_input_chars: 2000, max_output_tokens: 512,
+      output_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } },
+    { id: "analysis_send", action: operationTool.name, parameters: { id: "{{analysis_summary.structuredContent.id}}" } },
+  ] });
+  await repository.mutate(state => { state.workflows.durableAnalysis = { ...state.workflows.single, id: "durableAnalysis", name: "Durable reviewed analysis",
+    yaml: durableAnalysisYAML, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions.durableAnalysis = []; });
+  const durableAnalysisPublication = (await request("POST", "/api/workflows/durableAnalysis/publish", {}, 200)).data;
+  assert.equal(durableAnalysisPublication.compiledOperation.schemaVersion, "workflow-operation-ir/v2");
+  const analysisModelsBefore = models.length, analysisOperationsBefore = operations.length;
+  const durableAnalysisRun = (await request("POST", "/api/workflows/durableAnalysis/run", { mode: "async-operation",
+    idempotencyKey: "firestore-durable-analysis-0001", input: {} }, 202)).data.id;
+  await waitFor(async () => (await repository.snapshot()).executions[durableAnalysisRun].status === "AWAITING_APPROVAL", "durable analysis approval wait");
+  const waitingAnalysis = (await repository.snapshot()).executions[durableAnalysisRun];
+  assert.deepEqual(waitingAnalysis.stepOutputs.analysis_summary, { structuredContent: { id: "ANALYSIS-FIXTURE-ONE" } });
+  assert.deepEqual(waitingAnalysis.tokens, { input: 11, output: 7, total: 18 });
+  assert.equal(waitingAnalysis.operationSecret.intents.analysis_summary.state, "ACKNOWLEDGED");
+  assert.equal(waitingAnalysis.operationSecret.intents.analysis_summary.evidenceMeaning, "analysis-structured-output");
+  assert.equal(waitingAnalysis.operationSecret.analysisProvider.configuration.model, "fixture-model-a");
+  assert.equal(waitingAnalysis.operationSecret.analysisProvider.configurationRevision, services.providerRuntime.binding.configurationRevision);
+  assert.equal(models.length, analysisModelsBefore + 1); assert.equal(models.at(-1), "fixture-model-b"); assert.equal(operations.length, analysisOperationsBefore);
+  assert(!JSON.stringify((await request("GET", `/api/executions/${durableAnalysisRun}`, undefined, 200)).data).match(/synthetic-provider-secret|analysisProvider|operationSecret/));
+  await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[durableAnalysisRun], waitingAnalysis);
+  assert.equal(models.length, analysisModelsBefore + 1); assert.equal(operations.length, analysisOperationsBefore);
+  const durableAnalysisReview = (await request("GET", `/api/executions/${durableAnalysisRun}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.deepEqual(durableAnalysisReview.arguments, { id: "ANALYSIS-FIXTURE-ONE" });
+  const durableAnalysisDecision = { approvalId: durableAnalysisReview.id, baseVersion: durableAnalysisReview.version, reviewHash: durableAnalysisReview.reviewHash,
+    decisionKey: "firestore-durable-analysis-decision-0001" };
+  await request("POST", `/api/executions/${durableAnalysisRun}/approve`, durableAnalysisDecision, 200, "reviewer");
+  await waitFor(async () => (await repository.snapshot()).executions[durableAnalysisRun].status === "DONE", "durable analysis approved operation");
+  assert.equal(models.length, analysisModelsBefore + 1); assert.deepEqual(operations.slice(analysisOperationsBefore), ["ANALYSIS-FIXTURE-ONE"]);
+  const completedDurableAnalysis = (await repository.snapshot()).executions[durableAnalysisRun];
+  assert.equal(completedDurableAnalysis.operationSecret.intents.analysis_send.state, "ACKNOWLEDGED");
+  assert.equal((await request("POST", `/api/executions/${durableAnalysisRun}/approve`, durableAnalysisDecision, 200, "reviewer")).data.replayed, true);
+  await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[durableAnalysisRun], completedDurableAnalysis);
+  assert.equal(models.length, analysisModelsBefore + 1); assert.deepEqual(operations.slice(analysisOperationsBefore), ["ANALYSIS-FIXTURE-ONE"]);
+  const modelsAfterDurableAnalysis = models.length;
+  log("actual Firestore durable read-analysis-operation captured the reviewed provider privately, persisted bounded structured output/tokens, survived pre/post-approval restarts, required independent approval and never replayed model or SDK effects");
+
   const scheduledOperationYAML = stringify({ name: "Scheduled synthetic report", description: "Server-bound report window fixture", trigger: { type: "manual", config: { inputSchema: {
     type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
     required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
@@ -615,7 +661,7 @@ try {
   await stop(); await start(await openApplicationRepository(config));
   const reconciledOperation = (await repository.snapshot()).executions[lostOperation]; assert.equal(reconciledOperation.status, "RECONCILIATION_REQUIRED");
   assert.equal(reconciledOperation.readProgress.attempts.send.status, "UNKNOWN"); assert.equal(reconciledOperation.stepOutputs.lookup.structuredContent.id, "OPERATION-LOST-INTENT");
-  assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
+  assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsAfterDurableAnalysis);
   log("actual Firestore post-COMMIT operation intent ACK loss fenced SDK entry; authoritative reload/restart preserved the read answer and unknown intent for reconciliation, without operation replay");
 
   // Explicit broker/helper qualification only, not a durable read-back job,
@@ -633,7 +679,7 @@ try {
   const evaluation = evaluateOperationReadback(operationTool, readbackTool, readbackCase.arguments, readbackResult, readbackCase.preparedAt);
   assert.equal(evaluation.outcome, "NOT_APPLIED"); assert.equal(evaluation.settled, true);
   assert.equal(evaluation.canResume, false); assert.equal(evaluation.noReplay, true); assert.equal(evaluation.deliveryVerified, false);
-  assert.deepEqual(readbacks, ["OPERATION-LOST-INTENT"]); assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
+  assert.deepEqual(readbacks, ["OPERATION-LOST-INTENT"]); assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsAfterDurableAnalysis);
   const afterReadback = await repository.snapshot();
   assert(beforeReadback.equals(canonicalJSONBytes([afterReadback.executions[lostOperation], afterReadback.timelines[lostOperation], afterReadback.executionEvents[lostOperation]])));
   assert.equal(afterReadback.executions[lostOperation].status, "RECONCILIATION_REQUIRED");
@@ -656,7 +702,7 @@ try {
     assert.deepEqual(execution.stepOutputs, reconciledOperation.stepOutputs); assert.equal(execution.finalOutput, undefined);
     assert.equal(execution.readProgress.epoch, reconciledOperation.readProgress.epoch); assert.equal(execution.readProgress.nextStepIndex, reconciledOperation.readProgress.nextStepIndex);
     assert.deepEqual(saved.timelines[lostOperation], readbackSnapshot.timelines[lostOperation]);
-    assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsBeforeOperation);
+    assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(models.length, modelsAfterDurableAnalysis);
   };
   await checkOriginalOperation(); assert.equal(readbacks.length, 2);
   const savedQuery = (await repository.snapshot()).executions[lostOperation].operationSecret.readbacks[normalQuery.id];
@@ -790,7 +836,7 @@ try {
   assert.deepEqual((await repository.snapshot()).executions[lostOperation], savedRecoveryPlan);
   await stop(); await start(await openApplicationRepository(config)); assert.deepEqual((await repository.snapshot()).executions[recoveryExecution], completedRecovery);
   assert.deepEqual((await repository.snapshot()).executions[lostOperation], savedRecoveryPlan); assert.equal(operations.length, beforeRecoveryPlanCalls + 1);
-  await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, beforeRecoveryPlanCalls + 1); assert.equal(models.length, modelsBeforeOperation);
+  await request("POST", `/api/executions/${lostOperation}/retry`, {}, 409); assert.equal(operations.length, beforeRecoveryPlanCalls + 1); assert.equal(models.length, modelsAfterDurableAnalysis);
   log("actual Firestore recovery admission survived post-COMMIT acknowledgement loss as one new execution, required fresh independent approval, dispatched one separately journaled synthetic action and never mutated or resumed the source run");
   log("actual Firestore immutable linked recovery survived post-COMMIT acknowledgement loss, same-key replay and fresh restart without dispatch, source-run mutation or model use");
   log("actual Firestore independent query-backed resolution survived post-COMMIT decision ACK loss, authoritative original-key replay and fresh application restart; the server derived one private decision from the saved observation with no new SDK/model call, fabricated answer or resume");

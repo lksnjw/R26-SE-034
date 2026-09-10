@@ -152,8 +152,10 @@ function assertBinding(state: RepositoryState, execution: Execution, record: Run
   const compiled = (snapshot.executionProfile === "sequential-operation-v1" ? publication?.compiledOperation : publication?.compiledRead) as StoredReadCompilation | StoredOperationCompilation | undefined;
   const step = parseWorkflowYAMLStrict(snapshot.yaml).steps[attempt.stepIndex];
   if (!publication || publication.yaml !== snapshot.yaml || compiled?.receipt?.semanticHash !== b.semanticHash || compiled.receipt.sourceHash !== b.sourceHash || step?.id !== b.nodeId) deny("Approval is not bound to an immutable published node");
-  const node = compiled.plan?.ir.root.nodes[attempt.stepIndex], pin = node?.capability.admission;
-  if (!node || compiled.plan.sourceHash !== b.sourceHash || compiled.plan.semanticHash !== b.semanticHash || digest(compiled.plan.ir) !== b.semanticHash || node.id !== b.nodeId ||
+  const node = compiled.plan?.ir.root.nodes[attempt.stepIndex];
+  if (!node || node.kind !== "action") deny("Approval is only valid for a compiled tool invocation");
+  const pin = node.capability.admission;
+  if (compiled.plan.sourceHash !== b.sourceHash || compiled.plan.semanticHash !== b.semanticHash || digest(compiled.plan.ir) !== b.semanticHash || node.id !== b.nodeId ||
       node.capability.contractHash !== b.contractHash || !pin || pin.capabilityId !== b.capabilityId || pin.revisionId !== b.capabilityRevision ||
       pin.connectionId !== b.connectionId || pin.admissionVersion !== b.admissionVersion || pin.contractHash !== b.contractHash || compiled.verifiedRole !== state.roles[b.requesterRoleId]!.name ||
       compiled.plan.ir.schemaVersion === "workflow-read-ir/v4") deny("Approval compiled invocation or pinned capability changed; collection approval waits require their own journal adapter");

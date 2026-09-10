@@ -17,6 +17,7 @@ export type ProviderInvocationContext = {
   workflowId?: string;
   executionId?: string;
   actor?: { id: string; role: string };
+  maxOutputTokens?: number;
 };
 
 export interface AnalysisProvider {

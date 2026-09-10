@@ -122,7 +122,8 @@ test("compiled operation semantics pin the separately reviewed read target witho
   const { effect, target } = fixture(), pins = new Map([[effect.tool_id, pin(effect)], [target.tool_id, pin(target)]]);
   const plan = compileOperationWorkflow(yaml(effect), [effect, target], "Platform Admin", pins);
   expect(plan.ir.root.nodes).toHaveLength(1);
-  expect(plan.ir.root.nodes[0]!.readback).toEqual({ profile: "operation-readback-binding/v1", toolId: target.tool_id, contractHash: capabilityContractHash(target), admission: pin(target) });
+  const node = plan.ir.root.nodes[0]!; expect(node.kind).toBe("action");
+  expect(node.kind === "action" ? node.readback : null).toEqual({ profile: "operation-readback-binding/v1", toolId: target.tool_id, contractHash: capabilityContractHash(target), admission: pin(target) });
   expect(target.allowed_roles).toEqual(["ERP Recovery"]);
   pins.set(target.tool_id, { ...pin(target), admissionVersion: 2 });
   expect(compileOperationWorkflow(yaml(effect), [effect, target], "Platform Admin", pins).semanticHash).not.toBe(plan.semanticHash);

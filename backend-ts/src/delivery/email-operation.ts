@@ -131,8 +131,8 @@ export async function admitEmailDelivery(services: HandlerServices, user: Curren
     steps: [{ id: "deliver_email", action: selected.tool.name, parameters: selected.args }] });
   const prepared = await prepareOperationPublication(services, yaml, user);
   if (!prepared) deny("The selected email connector is not a governed operation", 422);
-  const node = prepared.stored.plan.ir.root.nodes[0], resolved = node && resolveReadBinding(node.inputs, { input: {} });
-  if (prepared.stored.plan.ir.root.nodes.length !== 1 || !node || node.capability.toolId !== selected.tool.tool_id || node.effectClass !== "notification" ||
+  const node = prepared.stored.plan.ir.root.nodes[0], resolved = node?.kind === "action" ? resolveReadBinding(node.inputs, { input: {} }) : null;
+  if (prepared.stored.plan.ir.root.nodes.length !== 1 || !node || node.kind !== "action" || node.capability.toolId !== selected.tool.tool_id || node.effectClass !== "notification" ||
       !canonicalJSONBytes(resolved).equals(canonicalJSONBytes(selected.args))) deny("The compiled email action differs from the exact server-derived draft", 409);
   const requestFingerprint = digest({ sessionId, draftId: initial.draft.id, draftVersion: initial.draft.version, draftHash: initial.draft.contentHash,
     actorId: user.id, toolId: selected.tool.tool_id, contractHash: selected.contractHash, sourceHash: prepared.stored.plan.sourceHash, keyHash });

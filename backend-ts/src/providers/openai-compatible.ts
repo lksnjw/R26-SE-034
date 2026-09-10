@@ -92,6 +92,7 @@ export class OpenAICompatibleClient implements AnalysisProvider {
     const selectedModel = model.trim() === "" ? this.model : model;
     const decoded = await this.requestJSON({
       model: selectedModel, messages: generationMessages(prompt, context?.promptTemplateVersion), temperature: this.temperature,
+      ...(context?.maxOutputTokens === undefined ? {} : { max_tokens: context.maxOutputTokens }),
     }, signal, "OpenAI-compatible");
     let parsed: OpenAIChatResponse;
     try { parsed = parseResponse(decoded); }

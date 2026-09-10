@@ -53,7 +53,7 @@ describe("runner output redaction", () => {
       },
     };
     executor.setAnalysisProvider(provider, "test-model");
-    const yaml = `name: analysis_redaction\ndescription: Verify analysis output redaction.\ntrigger:\n  type: manual\nsteps:\n  - id: echo\n    action: demo.echo\n    parameters:\n      value: input\n  - id: summarize\n    kind: analysis\n    instruction: Summarize the input.\n    input: "{{echo.output}}"\n    output_schema:\n      type: object\n      required: [summary]\n      properties:\n        summary: { type: string }\n`;
+    const yaml = `name: analysis_redaction\ndescription: Verify analysis output redaction.\ntrigger:\n  type: manual\nsteps:\n  - id: echo\n    action: demo.echo\n    parameters:\n      value: input\n  - id: summarize\n    kind: analysis\n    instruction: Summarize the input.\n    input: "{{echo.output}}"\n    data_class: internal\n    output_schema:\n      type: object\n      required: [summary]\n      properties:\n        summary: { type: string }\n`;
     const workflow = workflowRecord(yaml);
     const validated = await validator.validateAndIssueToken(
       "runner-redaction-test",

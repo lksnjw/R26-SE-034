@@ -6,6 +6,7 @@ import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { captureCapabilityAdmissionPin, captureReadAdmissionPin } from "../registry/capability-admission.js";
 import { discoverTools } from "../agent/tool-discovery.js";
 import { compileOperationWorkflow, operationCompilationReceipt, type CompiledOperationPlan, type OperationCompilationReceipt, type ReadAdmissionPin } from "./compiled-read.js";
+import { effectiveStepKind } from "../models/schemas.js";
 
 export type StoredOperationCompilation = { plan: CompiledOperationPlan; receipt: OperationCompilationReceipt; verifiedRole: string; compiledAt: string };
 export type PreparedOperationCompilation = { stored: StoredOperationCompilation; session: NonNullable<HandlerServices["erpbridgeSession"]>; generation: number };
@@ -15,14 +16,16 @@ function compileCurrent(state: Readonly<RepositoryState>, services: HandlerServi
     throw new Error("Operations require a connected reviewed SDK-entry ERPBridge session");
   const tools = services.registries.snapshot().tools, pins = new Map<string, ReadAdmissionPin>();
   for (const step of parseWorkflowYAMLStrict(yaml).steps) {
+    if (effectiveStepKind(step) === "analysis") continue;
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action);
     if (matches.length !== 1) throw new Error("Operation action has no unique current tool");
-    const tool = matches[0]!, pin = expected?.ir.root.nodes.find(node => node.id === step.id)?.capability.admission;
+    const expectedNode = expected?.ir.root.nodes.find(node => node.id === step.id), pin = expectedNode?.kind === "action" ? expectedNode.capability.admission : undefined;
+    const tool = matches[0]!;
     if (expected && !pin) throw new Error("Stored operation lacks an exact pin");
     pins.set(tool.tool_id, captureCapabilityAdmissionPin(state, services.registries, tool, session.admissionBinding, pin));
     if (tool.operation_contract?.readback) {
       const targets = tools.filter(target => target.tool_id === tool.operation_contract!.readback!.tool_id);
-      const readback = expected?.ir.root.nodes.find(node => node.id === step.id)?.readback;
+      const readback = expectedNode?.kind === "action" ? expectedNode.readback : undefined;
       if (targets.length !== 1 || expected && !readback) throw new Error("Operation lacks an exact reviewed read-back target");
       pins.set(targets[0]!.tool_id, captureReadAdmissionPin(state, services.registries, targets[0]!, session.admissionBinding, readback?.admission, pin?.connectionId));
     }

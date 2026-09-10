@@ -23,6 +23,7 @@ import { operationReadbackQueue } from "../src/runner/operation-readback-jobs.js
 import { reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { workflowContentHash } from "../src/parser/workflow.js";
 import { draftRequirements, emailDraftHash, type EmailDraft } from "../src/delivery/email-draft.js";
+import { ProviderRuntime } from "../src/providers/runtime.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -36,7 +37,8 @@ class Records implements PersistenceBackend {
   async saveExecutionCheckpoint(checkpoint: ExecutionCheckpoint) { await this.save(Buffer.from(JSON.stringify(applyExecutionCheckpoint(JSON.parse(this.bytes!.toString()), checkpoint)))); }
   async probe() {} async close() {}
 }
-async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false, withReportPagination: boolean | "cursor" | "related" = false) {
+async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false,
+  withReportPagination: boolean | "cursor" | "related" = false, withAnalysis = false) {
   const repository = await Repository.open(storage), registries = await RegistryService.load(resolve("tests/fixtures/tools.json"), resolve("tests/fixtures/rules.json"));
   const pageNumberPagination = withReportPagination === true, cursorPagination = withReportPagination === "cursor", relatedMode = withReportPagination === "related";
   const paginated = pageNumberPagination || cursorPagination;
@@ -131,7 +133,15 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: { observationId: observation.id, contractHash: observation.contractHash,
     decisionKey: `fixture-review-${observation.toolId}`, effectClass: observation.toolId === write.tool_id || observation.toolId === email?.tool_id ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Explicit synthetic contract review",
     ...(observation.toolId === write.tool_id || observation.toolId === email?.tool_id ? { requireIndependentApproval: true } : {}) } });
-  const services = { repository, registries, config, validator, erpbridgeSession: session, executor: new Executor(new ToolRegistry(), validator) };
+  const executor = new Executor(new ToolRegistry(), validator);
+  const modelFetch = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+    Response.json({ choices: [{ message: { content: '{"summary":"FIXTURE REPORT"}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+  const providerRuntime = withAnalysis ? new ProviderRuntime(repository, executor, modelFetch as typeof fetch) : undefined;
+  providerRuntime?.activate({ id: "analysis-provider", name: "Analysis provider", type: "openai_compatible", baseURL: "https://model.example.test/v1",
+    apiKey: "private-model-key", model: "analysis-model-a", additionalModels: ["analysis-model-b"], temperature: 0, timeoutMs: 1000,
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://model.example.test", runtimeAnalysisDataClasses: ["internal"],
+      reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "requester", name: "requester" } } });
+  const services = { repository, registries, config, validator, erpbridgeSession: session, executor, ...(providerRuntime ? { providerRuntime } : {}) };
   const app = await buildApp(services); closers.push(app);
   const request = (method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", url: string, payload?: object, userId = "requester") => app.inject({ method, url, headers: { authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: userId, expiresIn: 3600 })}` }, ...(payload ? { payload } : {}) });
   const publish = () => request("POST", "/api/workflows/flow/publish", {});
@@ -143,7 +153,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     const run = (await repository.snapshot()).executions[id]!; expect(run.status, JSON.stringify({ failure: run.failure, progress: run.readProgress, summary: run.agentSummary, sdkCalls: sdk.callTool.mock.calls })).toBe(status);
   };
   const admit = async () => { const pub = await publish(); expect(pub.statusCode, pub.body).toBe(200); const response = await run(); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id; await wait(id, "AWAITING_APPROVAL"); return id as string; };
-  return { repository, services, app, actor, read, reportRead, relatedOrderRead, write, readback, email, sdk, session, request, publish, run, review, command, wait, admit,
+  return { repository, services, app, actor, read, reportRead, relatedOrderRead, write, readback, email, sdk, session, providerRuntime, modelFetch, request, publish, run, review, command, wait, admit,
     setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; } };
 }
 
@@ -165,6 +175,20 @@ async function prepareScheduleWorkflow(s: Awaited<ReturnType<typeof setup>>, pag
     workflow.updatedAt = new Date().toISOString();
   });
   return (await s.repository.snapshot()).workflows.flow!;
+}
+
+async function prepareAnalysisWorkflow(s: Awaited<ReturnType<typeof setup>>, dataClass = "internal") {
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!;
+    workflow.yaml = stringify({ name: "Analyse report then dispatch", description: "Bounded durable model step", trigger: { type: "manual" }, steps: [
+      { id: "lookup", action: s.read.name, parameters: { value: "fixture report" } },
+      { id: "summarize", kind: "analysis", instruction: "Return the exact reviewed report summary.", input: "{{lookup.structuredContent}}",
+        data_class: dataClass, model: "analysis-model-b", max_input_items: 10, max_input_chars: 2000,
+        output_schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false } },
+      { id: "send", action: s.write.name, parameters: { value: "{{summarize.structuredContent.summary}}" } },
+    ] });
+    workflow.steps = 3; workflow.updatedAt = new Date().toISOString();
+  });
 }
 
 test("normal publish/readiness/run/approve worker executes exact sequential operation once without a model", async () => {
@@ -190,6 +214,71 @@ test("normal publish/readiness/run/approve worker executes exact sequential oper
   expect((await s.run()).json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
   expect((await s.request("POST", `/api/executions/${id}/approve`, command, "reviewer")).json().data.replayed).toBe(true);
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("durable read-analysis-effect captures one reviewed provider, validates structured output and waits for independent effect approval", async () => {
+  const s = await setup(null, true, false, false, false, true);
+  await prepareAnalysisWorkflow(s);
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  expect(published.json().data.compiledOperation).toMatchObject({ schemaVersion: "workflow-operation-ir/v2", compilerVersion: "operation-compiler/v2" });
+  const admitted = await s.run("durable-analysis-run-0001"); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id as string; await s.wait(id, "AWAITING_APPROVAL");
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+  const request = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(request).toMatchObject({ model: "analysis-model-b", max_tokens: 2048 });
+  expect(request.messages[0].content).toContain("TASK: BOUNDED DATA ANALYSIS");
+  const pending = (await s.repository.snapshot()).executions[id]!;
+  expect(pending.stepOutputs).toMatchObject({ summarize: { structuredContent: { summary: "FIXTURE REPORT" } } });
+  expect(pending.tokens).toEqual({ input: 11, output: 7, total: 18 });
+  expect(pending.operationSecret!.intents.summarize).toMatchObject({ state: "ACKNOWLEDGED", evidenceMeaning: "analysis-structured-output" });
+  expect(pending.operationSecret!.analysisProvider).toMatchObject({ configuration: { id: "analysis-provider", apiKey: "private-model-key",
+    egressPolicy: { approvedOrigin: "https://model.example.test", runtimeAnalysisDataClasses: ["internal"] } } });
+  expect(await s.review(id)).toMatchObject({ arguments: { value: "FIXTURE REPORT" }, canDecide: true });
+  const publicRun = await s.request("GET", `/api/executions/${id}`); expect(publicRun.body).not.toMatch(/private-model-key|analysisProvider|operationSecret/);
+  const approved = await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer");
+  expect(approved.statusCode, approved.body).toBe(200); await s.wait(id, "DONE");
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.sdk.callTool.mock.calls[1]![1]).toEqual({ value: "FIXTURE REPORT" });
+  expect(s.modelFetch).toHaveBeenCalledTimes(1);
+});
+
+test("durable analysis admission fails before ERP or model dispatch when its data class is not approved", async () => {
+  const s = await setup(null, true, false, false, false, true);
+  s.providerRuntime!.activate({ ...s.providerRuntime!.configuration!, egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://model.example.test",
+    runtimeAnalysisDataClasses: ["public"], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "requester", name: "requester" } } });
+  await prepareAnalysisWorkflow(s);
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const denied = await s.run("durable-analysis-denied-0001"); expect(denied.statusCode, denied.body).toBe(422);
+  expect(denied.json().meta).toMatchObject({ code: "ANALYSIS_PROVIDER_DENIED" });
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test("a known malformed analysis response fails with no approval or later effect and is not retried", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAnalysisWorkflow(s);
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ message: { content: '{"unexpected":true}' } }], usage: { prompt_tokens: 5, completion_tokens: 3 } }));
+  expect((await s.publish()).statusCode).toBe(200);
+  const admitted = await s.run("durable-analysis-invalid-0001"); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id as string; await s.wait(id, "FAILED");
+  const execution = (await s.repository.snapshot()).executions[id]!;
+  expect(execution.failure).toMatchObject({ failureCategory: "ANALYSIS_OUTPUT_INVALID", failedStepId: "summarize" });
+  expect(execution.operationSecret!.intents.summarize).toMatchObject({ state: "ACKNOWLEDGED" });
+  expect(execution.tokens).toEqual({ input: 5, output: 3, total: 8 }); expect(execution.runtimeApprovalSecret).toBeUndefined();
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+  expect((await s.run("durable-analysis-invalid-0001")).json().data.id).toBe(id); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+});
+
+test("an unconfirmed analysis transport outcome is never replayed or exposed as a structured answer", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAnalysisWorkflow(s);
+  s.modelFetch.mockRejectedValueOnce(new Error("synthetic provider connection lost after entry"));
+  expect((await s.publish()).statusCode).toBe(200);
+  const admitted = await s.run("durable-analysis-unknown-0001"); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id as string; await s.wait(id, "RECOVERY_REQUIRED");
+  const execution = (await s.repository.snapshot()).executions[id]!;
+  expect(execution.readProgress!.attempts.summarize).toMatchObject({ status: "UNKNOWN" });
+  expect(execution.operationSecret!.intents.summarize).toMatchObject({ state: "UNKNOWN" });
+  expect(execution.failure).toMatchObject({ failureCategory: "ANALYSIS_OUTCOME_UNKNOWN", failedStepId: "summarize" });
+  expect(execution.agentSummary).toMatch(/not replayed.*no later effect/i);
+  expect(execution.stepOutputs).not.toHaveProperty("summarize"); expect(execution.runtimeApprovalSecret).toBeUndefined();
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+  expect((await s.run("durable-analysis-unknown-0001")).json().data.id).toBe(id); expect(s.modelFetch).toHaveBeenCalledTimes(1);
 });
 
 test("an exact chat email draft requests independent approval and dispatches only server-derived fields after approval", async () => {

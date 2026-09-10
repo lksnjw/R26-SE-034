@@ -94,10 +94,12 @@ function openCase(state: Readonly<RepositoryState>, executionId: string) {
     deny("Uncertain report-page checkpoint evidence is incomplete");
   const publication = state.versions[execution.workflowId]?.findLast(item => item.version === snapshot.version && item.artifactState === "PUBLISHED");
   const compiled = publication?.compiledOperation as StoredOperationCompilation | undefined, receipt = snapshot.operationCompilation;
-  const node = compiled?.plan?.ir?.root?.nodes?.[attempt.stepIndex], pin = node?.capability.admission;
+  const node = compiled?.plan?.ir?.root?.nodes?.[attempt.stepIndex];
+  if (!node || node.kind !== "action") deny("Uncertain model calls cannot use report-page resolution");
+  const pin = node.capability.admission;
   if (!publication || publication.yaml !== snapshot.yaml || snapshot.contentHash !== workflowContentHash(snapshot.yaml) || !compiled || !receipt ||
       compiled.plan.sourceHash !== snapshot.contentHash || !canonicalJSONBytes(compiled.receipt).equals(canonicalJSONBytes(receipt)) ||
-      !node || node.id !== intent.nodeId || node.effectClass !== "read" || !pin || pin.contractHash !== node.capability.contractHash)
+      node.id !== intent.nodeId || node.effectClass !== "read" || !pin || pin.contractHash !== node.capability.contractHash)
     deny("Historical report publication or compilation evidence changed");
   const revision = state.capabilityRevisions[pin.revisionId] as Record<string, unknown> | undefined, tool = toolSchema.safeParse(revision?.definition);
   if (!tool.success || tool.data.tool_id !== node.capability.toolId || capabilityContractHash(tool.data) !== node.capability.contractHash ||

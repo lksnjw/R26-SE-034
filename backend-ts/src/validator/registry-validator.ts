@@ -544,14 +544,22 @@ export class RegistryValidator {
         `ANALYSIS_INSTRUCTION_REQUIRED: step ${step.id} requires instruction`,
       );
     }
-    if ((step.max_input_items ?? 0) < 0 || (step.max_input_chars ?? 0) < 0) {
+    if ((step.max_input_items ?? 0) < 0 || (step.max_input_chars ?? 0) < 0 || (step.max_output_tokens ?? 0) < 0) {
       result.schema_ok = false;
       result.errors.push(
         `ANALYSIS_INPUT_LIMIT_INVALID: step ${step.id} has a negative input limit`,
       );
     }
+    if (!step.output_schema || step.output_schema.type !== "object") {
+      result.schema_ok = false;
+      result.errors.push(`ANALYSIS_OUTPUT_SCHEMA_REQUIRED: step ${step.id} requires an object output_schema`);
+    }
+    if (!step.data_class) {
+      result.schema_ok = false;
+      result.errors.push(`ANALYSIS_DATA_CLASS_REQUIRED: step ${step.id} requires data_class`);
+    }
     const match =
-      /^\{\{\s*([a-zA-Z0-9_-]+)\.output(?:\.[a-zA-Z0-9_.-]+)?\s*\}\}$/.exec(
+      /^\{\{\s*([a-zA-Z0-9_-]+)\.(?:output|structuredContent)(?:\.[a-zA-Z0-9_.-]+)?\s*\}\}$/.exec(
         (step.input ?? "").trim(),
       );
     if (match?.[1] === undefined) {

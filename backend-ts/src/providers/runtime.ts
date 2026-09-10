@@ -130,11 +130,12 @@ export class ProviderRuntime {
    *
    * Generates text with the active provider and prompt-version metadata.
    ******************************************************************************/
-  async generate(prompt: string, promptTemplateVersion: string, signal?: AbortSignal, model = ""): Promise<AnalysisResponse> {
+  async generate(prompt: string, promptTemplateVersion: string, signal?: AbortSignal, model = "",
+    context: Omit<ProviderInvocationContext, "promptTemplateVersion" | "fallbackUsed"> = {}): Promise<AnalysisResponse> {
     if (this.#provider === null) throw new Error("LLM provider is not configured");
     const selected = model.trim() || this.#configuration!.model;
     if (!configuredModels(this.#configuration!).includes(selected)) throw new Error("Requested model is not in the configured model catalog");
-    return this.#provider.generate(prompt, selected, signal, { promptTemplateVersion });
+    return this.#provider.generate(prompt, selected, signal, { promptTemplateVersion, ...context });
   }
 
   /*******************************************************************************

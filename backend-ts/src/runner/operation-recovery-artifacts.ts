@@ -164,8 +164,8 @@ export async function admitOperationRecovery(services: import("../http/handlers/
   const yaml = stringify({ name: `Recovery for ${initial.artifact.source.nodeId}`, description: `Separate recovery for ${sourceExecutionId}; source remains closed.`, trigger: { type: "manual" },
     steps: [{ id: "recover_action", action: initial.artifact.action.toolName, parameters: initial.artifact.action.arguments }] });
   const prepared = await prepareOperationPublication(services, yaml, user); if (!prepared) deny("Recovery action is not a current reviewed operation", 422);
-  const node = prepared.stored.plan.ir.root.nodes[0], resolved = node && resolveReadBinding(node.inputs, { input: {} });
-  if (prepared.stored.plan.ir.root.nodes.length !== 1 || !node || node.capability.toolId !== initial.artifact.action.toolId || node.effectClass !== initial.artifact.action.effectClass ||
+  const node = prepared.stored.plan.ir.root.nodes[0], resolved = node?.kind === "action" ? resolveReadBinding(node.inputs, { input: {} }) : null;
+  if (prepared.stored.plan.ir.root.nodes.length !== 1 || !node || node.kind !== "action" || node.capability.toolId !== initial.artifact.action.toolId || node.effectClass !== initial.artifact.action.effectClass ||
       !canonicalJSONBytes(resolved).equals(canonicalJSONBytes(initial.artifact.action.arguments))) deny("Current recovery compilation differs from the saved action", 409);
   const fingerprint = digest({ artifactHash: initial.artifact.artifactHash, sourceHash: prepared.stored.plan.sourceHash, semanticHash: prepared.stored.plan.semanticHash });
   try {

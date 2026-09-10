@@ -9,7 +9,7 @@ import { prepareOperationExecution } from "../workflows/operation-compilation-li
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { operationJobQueue, supportsOperationJobs } from "./operation-jobs.js";
 import { canViewWorkflow } from "../workflows/commands.js";
-import type { CompiledOperationPlan, ReadBinding } from "../workflows/compiled-read.js";
+import { isOperationToolNode, type CompiledOperationPlan, type ReadBinding } from "../workflows/compiled-read.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { reportCoverageParameters } from "../tools/report-coverage-contract.js";
 
@@ -136,13 +136,13 @@ function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<
   for (const name of names) {
     if (!properties?.[name] || properties[name]!.writeOnly || validateToolInput(properties[name], values[name]).length)
       throw new HandlerFailure(422, `Report-window input ${name} must be a declared non-sensitive string field`, { code: "SCHEDULE_REPORT_WINDOW_BINDING_INVALID" });
-    if (!plan.ir.root.nodes.some(node => node.effectClass === "read" && referencesWorkflowInput(node.inputs, name)))
+    if (!plan.ir.root.nodes.some(node => isOperationToolNode(node) && node.effectClass === "read" && referencesWorkflowInput(node.inputs, name)))
       throw new HandlerFailure(422, `Report-window input ${name} must be referenced by a reviewed ERP read step`, { code: "SCHEDULE_REPORT_WINDOW_BINDING_UNUSED" });
   }
-  const firstEffect = plan.ir.root.nodes.findIndex(node => node.effectClass !== "read");
+  const firstEffect = plan.ir.root.nodes.findIndex(node => isOperationToolNode(node) && node.effectClass !== "read");
   const coverage = plan.ir.root.nodes.flatMap((node, index) => {
     if (firstEffect < 0 || index >= firstEffect) return [];
-    if (node.effectClass !== "read") return [];
+    if (!isOperationToolNode(node) || node.effectClass !== "read") return [];
     const tool = tools.find(value => value.tool_id === node.capability.toolId && node.capability.contractHash === digest(value));
     if (!tool?.report_coverage_contract) return [];
     try {

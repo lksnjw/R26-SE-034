@@ -3,12 +3,12 @@ import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonica
 import type { CurrentUser, HandlerServices } from "../http/handlers/common.js";
 import { HandlerFailure, validateWorkflow } from "../http/handlers/common.js";
 import type { Execution, ReportWindow, ReportWindowInputBinding, Repository, RepositoryState } from "../repository/store.js";
-import type { Workflow } from "../models/schemas.js";
-import { workflowContentHash } from "../parser/workflow.js";
+import { effectiveStepKind, type Workflow } from "../models/schemas.js";
+import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { newReadProgress, appendExecutionEvent, assertCurrentRunController } from "./read-checkpoints.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
-import { resolveReadBinding, type CompiledOperationPlan } from "../workflows/compiled-read.js";
+import { isOperationToolNode, resolveReadBinding, type CompiledOperationPlan, type OperationToolNode } from "../workflows/compiled-read.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { validateToolArguments } from "../agent/workflow-runtime-validator.js";
 import { discoverTools } from "../agent/tool-discovery.js";
@@ -22,6 +22,10 @@ import type { ToolDefinition } from "../registry/schemas.js";
 import { assertReportCursorProgress, assertReportPageProgress, assertScheduledReportCoverageReceipt, completeCursorPaginatedReport, completePaginatedReport,
   assertReportRelatedKeyProgress, confirmScheduledReportCoverage, confirmScheduledReportCursor, confirmScheduledReportPage, newReportCursorProgress, newReportPageProgress,
   protectedReportPageOutput, reportPagination, type ReportCoverageReceipt } from "../tools/report-coverage-contract.js";
+import { assertRuntimeAnalysisEgress } from "../providers/egress-policy.js";
+import { ANALYSIS_PROMPT_VERSION } from "../providers/runtime.js";
+import { promptData } from "../prompts/contracts.js";
+import { validateValue } from "../structured-output/validate.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -64,16 +68,24 @@ function recover(state: RepositoryState, run: Execution, reason: string) {
     audit(state, run, "operation.report_pages_requeued"); return;
   }
   const uncertain = attempt?.status === "DISPATCH_INTENT";
+  const uncertainIntent = uncertain && attempt ? Object.values(run.operationSecret.intents).findLast(value => value.nodeId === attempt.nodeId && value.state === "DISPATCH_INTENT") : undefined;
+  let uncertainAnalysis = false;
+  if (uncertain && attempt && run.operationSecret.analysisProvider) {
+    try { uncertainAnalysis = effectiveStepKind(parseWorkflowYAMLStrict(run.workflowSnapshot!.yaml).steps[attempt.stepIndex]!) === "analysis"; } catch { uncertainAnalysis = false; }
+  }
   if (attempt) {
     attempt.status = uncertain ? "UNKNOWN" : "FAILED"; attempt.completedAt = new Date().toISOString();
-    const intent = Object.values(run.operationSecret.intents).findLast(value => value.nodeId === attempt.nodeId && value.state === "DISPATCH_INTENT"); if (intent) intent.state = "UNKNOWN";
+    const intent = uncertainIntent ?? Object.values(run.operationSecret.intents).findLast(value => value.nodeId === attempt.nodeId && value.state === "DISPATCH_INTENT"); if (intent) intent.state = "UNKNOWN";
     const entry = state.timelines[run.id]?.find(item => item.attemptId === attempt.id);
     if (entry) { entry.status = uncertain ? "UNKNOWN" : "FAILED"; entry.outcome = uncertain ? "UNKNOWN" : "NOT_DISPATCHED"; entry.completedAt = attempt.completedAt; }
     appendExecutionEvent(state, run, uncertain ? "node.outcome_unknown" : "node.interrupted", { outcome: uncertain ? "UNKNOWN" : "NOT_DISPATCHED", reason }, attempt.nodeId, attempt.id);
   }
   progress.epoch++; progress.recoveryReason = reason;
-  run.failure = { failureCategory: uncertain ? "OPERATION_OUTCOME_UNKNOWN" : "OPERATION_INTERRUPTED", failedStepId: attempt?.nodeId ?? "checkpoint", reason };
-  finish(state, run, uncertain ? "RECONCILIATION_REQUIRED" : "RECOVERY_REQUIRED", uncertain ? "An operation intent has no confirmed outcome. Saved results are retained; the action was not automatically replayed. Reconcile with the ERP before retrying." : "Execution was interrupted before a new dispatch. Saved results are retained; recovery requires fresh authorization.");
+  run.failure = { failureCategory: uncertainAnalysis ? "ANALYSIS_OUTCOME_UNKNOWN" : uncertain ? "OPERATION_OUTCOME_UNKNOWN" : "OPERATION_INTERRUPTED", failedStepId: attempt?.nodeId ?? "checkpoint", reason };
+  finish(state, run, uncertainAnalysis ? "RECOVERY_REQUIRED" : uncertain ? "RECONCILIATION_REQUIRED" : "RECOVERY_REQUIRED",
+    uncertainAnalysis ? "The model call may have completed, but no validated result was acknowledged. It was not replayed, no later effect ran, and a separate new execution is required." :
+      uncertain ? "An operation intent has no confirmed outcome. Saved results are retained; the action was not automatically replayed. Reconcile with the ERP before retrying." :
+        "Execution was interrupted before a new dispatch. Saved results are retained; recovery requires fresh authorization.");
 }
 function recordValue(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Scheduled report evidence is not an object result");
@@ -82,7 +94,7 @@ function recordValue(value: unknown): Record<string, unknown> {
 function assertCoverageBeforeScheduledEffect(run: Execution, plan: CompiledOperationPlan, live: readonly ToolDefinition[], effectIndex: number): void {
   const source = run.scheduleSource;
   if (!source) return;
-  const scheduledReads = plan.ir.root.nodes.slice(0, effectIndex).filter(node => node.effectClass === "read" &&
+  const scheduledReads = plan.ir.root.nodes.slice(0, effectIndex).filter((node): node is OperationToolNode => isOperationToolNode(node) && node.effectClass === "read" &&
     live.some(tool => tool.tool_id === node.capability.toolId && tool.report_coverage_contract));
   if (!scheduledReads.length) throw new Error("Scheduled effects require prior confirmed report coverage");
   const receipts = run.reportCoverages ?? (run.reportCoverage ? { [run.reportCoverage.nodeId]: run.reportCoverage } : {});
@@ -192,13 +204,28 @@ export class OperationJobQueue {
       }
       const compiled = prepareOperationExecution(state, this.services, publication, workflow.yaml, user.role);
       if (compiled.plan.ir.inputSchema && validateToolInput(compiled.plan.ir.inputSchema, input).length) throw new HandlerFailure(422, "Operation input does not match its schema");
+      const analysisNodes = compiled.plan.ir.root.nodes.filter(node => node.kind === "analysis");
+      let analysisProvider: NonNullable<Execution["operationSecret"]>["analysisProvider"];
+      if (analysisNodes.length) {
+        const runtime = this.services.providerRuntime, configuration = runtime?.configuration, binding = runtime?.binding;
+        if (!runtime?.configured || !configuration || !binding || binding.providerId !== configuration.id)
+          throw new HandlerFailure(503, "A configured model provider is required for durable analysis nodes", { code: "ANALYSIS_PROVIDER_REQUIRED" });
+        try {
+          for (const node of analysisNodes) {
+            runtime.snapshot(node.model || configuration.model);
+            assertRuntimeAnalysisEgress(configuration.egressPolicy!, configuration.baseURL, node.dataClass);
+          }
+        } catch (error) { throw new HandlerFailure(422, error instanceof Error ? error.message : "Durable analysis provider admission failed", { code: "ANALYSIS_PROVIDER_DENIED" }); }
+        analysisProvider = { configuration: structuredClone(configuration), configurationRevision: binding.configurationRevision };
+      }
       runtimeApprovalPolicyHash(state);
       const id = `operation-${randomBytes(16).toString("hex")}`, now = new Date().toISOString();
       const run: Execution = { id, workflowId: workflow.id, workflowName: workflow.name, status: "PENDING", startedAt: now, completedAt: null, durationMs: 0,
         startedBy: { id: user.id, name: user.name }, tokens: { input: 0, output: 0, total: 0 }, costUsd: 0, traceId,
         workflowSnapshot: { yaml: workflow.yaml, version: workflow.publishedVersion, contentHash: compiled.plan.sourceHash, registryHash: compiled.receipt.registryHash, input,
           executionProfile: "sequential-operation-v1", operationCompilation: compiled.receipt }, readProgress: newReadProgress(this.services.repository), stepOutputs: {},
-        operationSecret: { profile: "operation-job/v1", actorId: user.id, roleId: state.users[user.id]!.roleId, admittedRole: user.role, state: "QUEUED", idempotencyScope: scope, requestFingerprint: fingerprint, createdAt: now, intents: {} },
+        operationSecret: { profile: "operation-job/v1", actorId: user.id, roleId: state.users[user.id]!.roleId, admittedRole: user.role, state: "QUEUED", idempotencyScope: scope, requestFingerprint: fingerprint, createdAt: now, intents: {},
+          ...(analysisProvider ? { analysisProvider } : {}) },
         ...(source ? { scheduleSource: structuredClone(source) } : {}),
         agentSummary: "Operation queued. Each write requires an independent exact approval; nothing is confirmed by queue admission." };
       assertCurrentRunController(state, run, user.id, user.role);
@@ -241,6 +268,7 @@ export class OperationJobQueue {
   private async process(control: Active) {
     const { services } = this, repository = services.repository, id = control.id;
     let knownCoverageFailure: { nodeId: string; intentKey: string; intentId: string; output: Record<string, unknown>; message: string } | undefined;
+    let knownAnalysisFailure: { nodeId: string; intentId: string; message: string; inputTokens: number; outputTokens: number } | undefined;
     try {
       const initial = await repository.mutateExecution(id, state => {
         const run = state.executions[id]!, job = run.operationSecret!;
@@ -268,7 +296,78 @@ export class OperationJobQueue {
       const gate = await validateWorkflow(services, "OperationJobWorker", snapshot.yaml, actor, { executionId: id, workflowId: initial.workflowId, traceId: initial.traceId, signal: control.controller.signal });
       if (!gate.result.passed || !gate.token) throw new Error("Operation deterministic verification failed");
       for (let index = initial.readProgress!.nextStepIndex; index < plan.ir.root.nodes.length; index++) {
-        assertContext(); const node = plan.ir.root.nodes[index]!, tool = live.find(tool => tool.tool_id === node.capability.toolId);
+        assertContext(); const node = plan.ir.root.nodes[index]!;
+        if (node.kind === "analysis") {
+          const resolvedInput = await repository.mutateExecution(id, state => {
+            this.assert(control); const run = state.executions[id]!, progress = run.readProgress!;
+            if (progress.nextStepIndex !== index) throw new Error("Analysis pointer changed");
+            if (!progress.attempts[node.id]) {
+              const startedAt = new Date().toISOString(), attemptId = `${id}:${node.id}`;
+              progress.attempts[node.id] = { id: attemptId, nodeId: node.id, stepIndex: index, status: "PREPARING", startedAt };
+              (state.timelines[id] ??= []).push({ id: `timeline-${node.id}`, nodeId: node.id, attemptId, label: node.description ?? `Analyse ${node.id}`,
+                status: "RUNNING", phase: "PREPARING", startedAt, sideEffect: false });
+              appendExecutionEvent(state, run, "node.analysis_preparing", { dataClass: node.dataClass }, node.id, attemptId);
+            } else if (progress.attempts[node.id]!.status !== "PREPARING") throw new Error("An analysis invocation cannot be replayed");
+            return resolveReadBinding(node.input, { input: snapshot.input, ...run.stepOutputs });
+          });
+          const inputJSON = JSON.stringify(resolvedInput), itemCount = Array.isArray(resolvedInput) ? resolvedInput.length :
+            resolvedInput !== null && typeof resolvedInput === "object" ? Object.keys(resolvedInput).length : 1;
+          if (itemCount > node.maxInputItems || [...inputJSON].length > node.maxInputChars) throw new Error("Analysis input exceeds its reviewed bounds");
+          const captured = initial.operationSecret!.analysisProvider;
+          if (!captured || !services.providerRuntime) throw new Error("Captured analysis provider is unavailable");
+          assertRuntimeAnalysisEgress(captured.configuration.egressPolicy!, captured.configuration.baseURL, node.dataClass);
+          const model = node.model || captured.configuration.model;
+          const runtime = services.providerRuntime.restoreCaptured(captured.configuration, captured.configurationRevision).snapshot(model);
+          const prompt = promptData({ INSTRUCTION: node.instruction, OUTPUT_SCHEMA: node.outputSchema, INPUT: resolvedInput });
+          const intentId = `intent-${randomBytes(16).toString("hex")}`;
+          await repository.mutateExecution(id, state => {
+            assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, current = run.operationSecret!.analysisProvider;
+            const fresh = resolveReadBinding(node.input, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
+            if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(resolvedInput)) ||
+                run.operationSecret!.intents[node.id] || !current || !canonicalJSONBytes(current).equals(canonicalJSONBytes(captured)))
+              throw new Error("Analysis intent facts changed or are already used");
+            assertRuntimeAnalysisEgress(current.configuration.egressPolicy!, current.configuration.baseURL, node.dataClass);
+            const now = new Date().toISOString(); run.operationSecret!.intents[node.id] = { id: intentId, nodeId: node.id, invocationId: attempt.id,
+              operationKey: `${id}:${node.id}`, argumentHash: digest({ input: resolvedInput, instruction: node.instruction, outputSchema: node.outputSchema,
+                dataClass: node.dataClass, model, maxOutputTokens: node.maxOutputTokens, configurationRevision: current.configurationRevision }), state: "DISPATCH_INTENT", preparedAt: now };
+            attempt.status = "DISPATCH_INTENT"; attempt.dispatchIntentAt = now;
+            const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!; entry.phase = "MODEL_DISPATCH_INTENT";
+            appendExecutionEvent(state, run, "node.analysis_dispatch_intent", { intentId, dataClass: node.dataClass, model }, node.id, attempt.id);
+            audit(state, run, "operation.analysis_dispatch_intent");
+          });
+          assertContext();
+          const response = await runtime.generate(prompt, ANALYSIS_PROMPT_VERSION, control.controller.signal, model,
+            { workflowId: initial.workflowId, executionId: id, ...(initial.traceId ? { traceId: initial.traceId } : {}), actor: { id: actor.id, role: actor.role },
+              maxOutputTokens: node.maxOutputTokens });
+          let safeOutput: Record<string, unknown>;
+          try {
+            const decoded: unknown = JSON.parse(response.text), redacted = withoutSecretFields(decoded);
+            const errors = validateValue(node.outputSchema, redacted);
+            if (errors.length || !redacted || typeof redacted !== "object" || Array.isArray(redacted) || canonicalJSONBytes(redacted).length > 1_000_000)
+              throw new Error(errors.join("; ") || "Analysis output exceeds supported bounds");
+            safeOutput = redacted as Record<string, unknown>;
+          } catch (error) {
+            knownAnalysisFailure = { nodeId: node.id, intentId, message: error instanceof Error ? error.message : "Analysis output is invalid",
+              inputTokens: response.measured ? response.inputTokens : 0, outputTokens: response.measured ? response.outputTokens : 0 };
+            throw error;
+          }
+          await repository.mutateExecution(id, state => {
+            assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, intent = run.operationSecret!.intents[node.id]!;
+            if (attempt.status !== "DISPATCH_INTENT" || intent.id !== intentId || intent.state !== "DISPATCH_INTENT") throw new Error("Analysis result does not own the current intent");
+            assertRuntimeAnalysisEgress(run.operationSecret!.analysisProvider!.configuration.egressPolicy!, run.operationSecret!.analysisProvider!.configuration.baseURL, node.dataClass);
+            const now = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = now; intent.evidenceMeaning = "analysis-structured-output";
+            attempt.status = "DONE"; attempt.completedAt = now; run.stepOutputs![node.id] = { structuredContent: structuredClone(safeOutput) };
+            run.tokens.input += response.measured ? response.inputTokens : 0; run.tokens.output += response.measured ? response.outputTokens : 0;
+            run.tokens.total = run.tokens.input + run.tokens.output; run.readProgress!.nextStepIndex++;
+            const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
+            Object.assign(entry, { status: "DONE", phase: "COMPLETE", outcome: "ANALYSIS_STRUCTURED_OUTPUT", completedAt: now,
+              durationMs: Math.max(0, Date.parse(now) - Date.parse(attempt.startedAt)), output: { structuredContent: structuredClone(safeOutput) } });
+            appendExecutionEvent(state, run, "node.analysis_completed", { intentId, outcome: "ANALYSIS_STRUCTURED_OUTPUT", inputTokens: response.measured ? response.inputTokens : 0,
+              outputTokens: response.measured ? response.outputTokens : 0 }, node.id, attempt.id); audit(state, run, "operation.analysis_result_acknowledged");
+          });
+          continue;
+        }
+        const tool = live.find(tool => tool.tool_id === node.capability.toolId);
         if (!tool) throw new Error("Operation live tool is unavailable");
         const args = await repository.mutateExecution(id, state => {
           this.assert(control); const run = state.executions[id]!, progress = run.readProgress!;
@@ -550,6 +649,21 @@ export class OperationJobQueue {
       try { await repository.mutateExecution(id, state => {
         const run = state.executions[id];
         if (!run || run.operationSecret?.lease?.id !== control.leaseId || run.status !== "RUNNING") return;
+        if (knownAnalysisFailure) {
+          const failure = knownAnalysisFailure, attempt = run.readProgress!.attempts[failure.nodeId], intent = run.operationSecret.intents[failure.nodeId];
+          if (!attempt || attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== failure.intentId || intent.state !== "DISPATCH_INTENT")
+            throw new Error("Known analysis failure no longer owns the current intent");
+          const completedAt = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = completedAt;
+          attempt.status = "FAILED"; attempt.completedAt = completedAt; run.tokens.input += failure.inputTokens; run.tokens.output += failure.outputTokens;
+          run.tokens.total = run.tokens.input + run.tokens.output;
+          const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
+          Object.assign(entry, { status: "FAILED", phase: "COMPLETE", outcome: "ANALYSIS_OUTPUT_INVALID", completedAt,
+            durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(attempt.startedAt)) });
+          appendExecutionEvent(state, run, "node.analysis_output_invalid", { intentId: intent.id, outcome: "ANALYSIS_OUTPUT_INVALID" }, failure.nodeId, attempt.id);
+          run.failure = { failureCategory: "ANALYSIS_OUTPUT_INVALID", failedStepId: failure.nodeId, reason: failure.message };
+          finish(state, run, "FAILED", "The model returned a response, but it did not match the reviewed structured output contract. No later effect was dispatched.");
+          return;
+        }
         if (knownCoverageFailure) {
           const failure = knownCoverageFailure, attempt = run.readProgress!.attempts[failure.nodeId], intent = run.operationSecret.intents[failure.intentKey];
           if (!attempt || attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== failure.intentId || intent.state !== "DISPATCH_INTENT")
