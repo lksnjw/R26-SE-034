@@ -281,7 +281,8 @@ test.each(["Get invoice details and email them to manager@example.test", "Create
 test("queued snapshot does not adopt later administration model/endpoint/credential changes", async () => {
   const s = await setup(); const queue = chatJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
   const admitted = (await s.send("Show me invoices", { model: "model-b" })).json().data.operation;
-  s.runtime.activate({ ...s.runtime.configuration!, baseURL: "https://new.example.test/v1", apiKey: "new-fixture-key", model: "new-model" });
+  s.runtime.activate({ ...s.runtime.configuration!, baseURL: "https://new.example.test/v1", apiKey: "new-fixture-key", model: "new-model",
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://new.example.test", runtimeAnalysisDataClasses: [], reviewedAt: null, reviewedBy: null } });
   kick.mockRestore(); queue.kick(); expect((await s.terminal(admitted.id)).status).toBe("ANSWERED");
   for (const [url, init] of s.fetchImplementation.mock.calls) {
     expect(url).toBe("https://old.example.test/v1/chat/completions"); expect((init!.headers as Record<string,string>).authorization).toBe("Bearer private-fixture-key");

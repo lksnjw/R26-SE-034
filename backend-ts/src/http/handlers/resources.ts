@@ -6,6 +6,7 @@ import { approvalTierSchema, companyProfileSchema, costCentreSchema, departmentS
 import { fail, ok } from "../../models/schemas.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
 import { providerConfigurationFromRecord, validateRuntimeProviderConfiguration } from "../../providers/runtime.js";
+import { modelDataClasses, normalizeModelEgressPolicy, providerOrigin, type ModelDataClass } from "../../providers/egress-policy.js";
 import { requestTraceId } from "../../trace/request-trace.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, numberValue, paginate, queryRecord, requestParam, stringValue } from "./common.js";
@@ -1042,10 +1043,14 @@ async function listProviders(reply: FastifyReply, user: CurrentUser, services: H
  *
  * Validates and normalizes provider configuration input.
  ******************************************************************************/
-function providerInput(body: Record<string, unknown>, id: string, existing?: Record<string, unknown>): Record<string, unknown> {
+function providerInput(body: Record<string, unknown>, id: string, user: CurrentUser, existing?: Record<string, unknown>): Record<string, unknown> {
   const name = stringValue(body.name).trim();
   const model = stringValue(body.model).trim();
   if (name === "" || model === "") throw new HandlerFailure(422, "Provider name and model are required");
+  const baseUrl = stringValue(body.baseUrl).trim() || stringValue(existing?.baseUrl).trim();
+  if (baseUrl === "") throw new HandlerFailure(422, "Provider base URL is required");
+  let origin: string;
+  try { origin = providerOrigin(baseUrl); } catch (error) { throw new HandlerFailure(422, errorText(error)); }
   const type = stringValue(body.type).trim();
   if (type !== "openai_compatible") throw new HandlerFailure(422, "Only OpenAI-compatible providers are implemented; native Gemini/Ollama adapters are unavailable");
   if ((Object.hasOwn(body, "additionalModels") && (!Array.isArray(body.additionalModels) || body.additionalModels.some((value) => typeof value !== "string" || !value.trim()))) ||
@@ -1055,15 +1060,32 @@ function providerInput(body: Record<string, unknown>, id: string, existing?: Rec
   const additionalModels = (rawAdditional as unknown[]).filter((m): m is string => typeof m === "string" && m.trim() !== "").map((m) => m.trim());
   const fallbackModel = Object.hasOwn(body, "fallbackModel") ? stringValue(body.fallbackModel).trim() : stringValue(existing?.fallbackModel);
   if (additionalModels.length > 64 || [...additionalModels, model, fallbackModel].some((value) => value.length > 256 || value.includes(":latest"))) throw new HandlerFailure(422, "Model IDs must be bounded and pinned");
+  let egressPolicy;
+  if (body.egressPolicy === undefined) {
+    try { egressPolicy = normalizeModelEgressPolicy(existing?.egressPolicy, baseUrl); }
+    catch { egressPolicy = normalizeModelEgressPolicy(undefined, baseUrl); }
+  } else {
+    if (!isRecord(body.egressPolicy)) throw new HandlerFailure(422, "Model egress policy must be an object");
+    const classes = body.egressPolicy.runtimeAnalysisDataClasses;
+    if (!Array.isArray(classes) || classes.length > modelDataClasses.length || classes.some(value => typeof value !== "string" || !modelDataClasses.includes(value as ModelDataClass)) || new Set(classes).size !== classes.length)
+      throw new HandlerFailure(422, "Runtime analysis data classes are invalid");
+    if (stringValue(body.egressPolicy.approvedOrigin) !== origin)
+      throw new HandlerFailure(422, "The reviewed model egress origin must exactly match the provider base URL origin");
+    if (classes.length > 0 && body.egressPolicy.confirmed !== true)
+      throw new HandlerFailure(422, "Explicit administrator confirmation is required before model runtime analysis can receive ERP data");
+    egressPolicy = { profile: "model-egress-policy/v1", approvedOrigin: origin, runtimeAnalysisDataClasses: classes as ModelDataClass[],
+      reviewedAt: classes.length ? now() : null, reviewedBy: classes.length ? { id: user.id, name: user.name } : null };
+  }
   return {
     id, name, type,
-    ...(stringValue(body.baseUrl).trim() === "" ? {} : { baseUrl: stringValue(body.baseUrl).trim() }),
+    baseUrl,
     model,
     fallbackModel,
     ...(additionalModels.length > 0 ? { additionalModels } : {}),
     temperature: typeof body.temperature === "number" ? body.temperature : 0,
     apiKey: typeof body.apiKey === "string" && body.apiKey !== "" ? body.apiKey : existing?.apiKey ?? "",
     active: existing?.active === true,
+    egressPolicy,
     revision: numberValue(existing?.revision, 0) + 1,
     createdAt: stringValue(existing?.createdAt) === "" ? now() : existing!.createdAt,
   };
@@ -1073,7 +1095,7 @@ function providerInput(body: Record<string, unknown>, id: string, existing?: Rec
  *
  * Creates a validated provider configuration.
  ******************************************************************************/
-async function createProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { requirePlatformAdmin(user); const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const provider = await services.repository.mutate((state) => { if (Object.values(state.providers).some((item) => stringValue(item.name).toLowerCase() === stringValue(body.name).trim().toLowerCase())) throw new HandlerFailure(409, "A provider with this name already exists"); const id = nextID(state, "provider"); const value = providerInput(body, id); state.providers[id] = value; appendAudit(state, user, "provider.created", "provider", id, null, withoutSecretFields(value) as Record<string, unknown>, request); return value; }); return reply.status(201).send(ok(withoutSecretFields(provider), "Provider created", null)); }
+async function createProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { requirePlatformAdmin(user); const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const provider = await services.repository.mutate((state) => { if (Object.values(state.providers).some((item) => stringValue(item.name).toLowerCase() === stringValue(body.name).trim().toLowerCase())) throw new HandlerFailure(409, "A provider with this name already exists"); const id = nextID(state, "provider"); const value = providerInput(body, id, user); state.providers[id] = value; appendAudit(state, user, "provider.created", "provider", id, null, withoutSecretFields(value) as Record<string, unknown>, request); return value; }); return reply.status(201).send(ok(withoutSecretFields(provider), "Provider created", null)); }
 /*******************************************************************************
  * Function: updateProvider
  *
@@ -1087,7 +1109,7 @@ async function updateProvider(request: FastifyRequest, reply: FastifyReply, user
     assertActorAuthority(state, user);
     const existing = state.providers[id];
     if (existing === undefined) throw new HandlerFailure(404, "Provider configuration not found");
-    const value = providerInput(body, id, existing);
+    const value = providerInput(body, id, user, existing);
     if (value.active === true) {
       try { validateRuntimeProviderConfiguration(providerConfigurationFromRecord(value, services.config.generationTimeoutMs ?? 30_000)); }
       catch (error) { throw new HandlerFailure(422, errorText(error)); }

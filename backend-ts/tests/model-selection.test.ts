@@ -181,11 +181,35 @@ test("provider fallback and additional choices survive edit without exposing cre
   expect(created.statusCode).toBe(201);
   const id = created.json().data.id;
   expect(created.body).not.toContain("saved-secret");
+  expect(created.json().data.egressPolicy).toMatchObject({ profile: "model-egress-policy/v1", approvedOrigin: "https://old-provider.example.invalid",
+    runtimeAnalysisDataClasses: [], reviewedAt: null, reviewedBy: null });
   expect((await s.app.inject({ method: "POST", url: `/api/providers/${id}/activate`, headers: s.headers() })).statusCode).toBe(200);
   const edited = await s.app.inject({ method: "PUT", url: `/api/providers/${id}`, headers: s.headers(), payload: { name: "Saved", type: "openai_compatible", baseUrl: configuration.baseURL, apiKey: "", model: "saved-model" } });
   expect(edited.statusCode).toBe(200); expect(edited.json().data.fallbackModel).toBe("saved-fallback");
   expect(s.runtime.catalog().models).toEqual(["saved-model", "saved-fallback", "saved-extra"]);
   expect((await s.repository.snapshot()).providers[id]?.apiKey).toBe("saved-secret");
+});
+
+test("runtime analysis egress requires exact-origin administrator confirmation and is revoked when the origin changes", async () => {
+  const s = await setup(), payload = { name: "Runtime analysis", type: "openai_compatible", baseUrl: configuration.baseURL,
+    apiKey: "saved-secret", model: "model-a", egressPolicy: { approvedOrigin: "https://old-provider.example.invalid", runtimeAnalysisDataClasses: ["internal"] } };
+  const unconfirmed = await s.app.inject({ method: "POST", url: "/api/providers", headers: s.headers(), payload });
+  expect(unconfirmed.statusCode).toBe(422);
+  const wrongOrigin = await s.app.inject({ method: "POST", url: "/api/providers", headers: s.headers(), payload: {
+    ...payload, egressPolicy: { ...payload.egressPolicy, approvedOrigin: "https://other.example.invalid", confirmed: true } } });
+  expect(wrongOrigin.statusCode).toBe(422);
+  const created = await s.app.inject({ method: "POST", url: "/api/providers", headers: s.headers(), payload: {
+    ...payload, egressPolicy: { ...payload.egressPolicy, confirmed: true } } });
+  expect(created.statusCode, created.body).toBe(201);
+  const id = created.json().data.id;
+  expect(created.json().data.egressPolicy).toMatchObject({ approvedOrigin: "https://old-provider.example.invalid", runtimeAnalysisDataClasses: ["internal"],
+    reviewedBy: { id: "admin", name: "admin" } });
+  expect(Number.isFinite(Date.parse(created.json().data.egressPolicy.reviewedAt))).toBe(true);
+  expect(created.body).not.toContain("saved-secret");
+  const changed = await s.app.inject({ method: "PUT", url: `/api/providers/${id}`, headers: s.headers(), payload: {
+    name: "Runtime analysis", type: "openai_compatible", baseUrl: "https://new-provider.example.invalid/v1", apiKey: "", model: "model-a" } });
+  expect(changed.statusCode, changed.body).toBe(200);
+  expect(changed.json().data.egressPolicy).toMatchObject({ approvedOrigin: "https://new-provider.example.invalid", runtimeAnalysisDataClasses: [], reviewedAt: null, reviewedBy: null });
 });
 
 test("an unconfigured catalog is explicit and model selection cannot manufacture readiness", async () => {

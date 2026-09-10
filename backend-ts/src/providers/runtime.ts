@@ -5,6 +5,7 @@ import type { Executor } from "../runner/executor.js";
 import { isGenerationFallbackEligible, OpenAICompatibleClient, OpenAICompatibleError } from "./openai-compatible.js";
 import type { QueryMessage, QueryOptions, QueryToolDefinition, QueryTurnResult } from "../analysisprovider/query-types.js";
 import { generationPromptHash } from "../prompts/contracts.js";
+import { normalizeModelEgressPolicy, type ModelEgressPolicy } from "./egress-policy.js";
 
 export const ANALYSIS_PROMPT_VERSION = "prompt/analysis/v2";
 export const CANDIDATE_PROMPT_VERSION = "prompt/candidate/v7";
@@ -20,6 +21,7 @@ export type RuntimeProviderConfiguration = {
   additionalModels?: string[];
   temperature: number;
   timeoutMs: number;
+  egressPolicy?: ModelEgressPolicy;
 };
 
 export class ProviderRuntime {
@@ -82,9 +84,10 @@ export class ProviderRuntime {
     validateRuntimeProviderConfiguration(configuration);
     if (!/^[a-f0-9]{32}$/.test(revision)) throw new Error("Invalid captured provider revision");
     const scoped = new ProviderRuntime(this.repository, this.executor, this.fetchImplementation);
-    scoped.#configuration = structuredClone(configuration);
-    scoped.#rawClient = new OpenAICompatibleClient({ ...configuration, fetchImplementation: scoped.authorityGuardedFetch() });
-    scoped.#provider = new ProvenanceAnalysisProvider(scoped.#rawClient, this.repository, structuredClone(configuration), revision);
+    const normalized = { ...structuredClone(configuration), egressPolicy: normalizeModelEgressPolicy(configuration.egressPolicy, configuration.baseURL) };
+    scoped.#configuration = normalized;
+    scoped.#rawClient = new OpenAICompatibleClient({ ...normalized, fetchImplementation: scoped.authorityGuardedFetch() });
+    scoped.#provider = new ProvenanceAnalysisProvider(scoped.#rawClient, this.repository, normalized, revision);
     scoped.#revision = revision;
     return scoped;
   }
@@ -96,12 +99,13 @@ export class ProviderRuntime {
    ******************************************************************************/
   activate(configuration: RuntimeProviderConfiguration): void {
     validateRuntimeProviderConfiguration(configuration);
-    const rawClient = new OpenAICompatibleClient({ baseURL: configuration.baseURL, apiKey: configuration.apiKey, model: configuration.model, temperature: configuration.temperature, timeoutMs: configuration.timeoutMs, fetchImplementation: this.authorityGuardedFetch() });
+    const normalized = { ...structuredClone(configuration), egressPolicy: normalizeModelEgressPolicy(configuration.egressPolicy, configuration.baseURL) };
+    const rawClient = new OpenAICompatibleClient({ baseURL: normalized.baseURL, apiKey: normalized.apiKey, model: normalized.model, temperature: normalized.temperature, timeoutMs: normalized.timeoutMs, fetchImplementation: this.authorityGuardedFetch() });
     const revision = randomBytes(16).toString("hex");
-    const provider = new ProvenanceAnalysisProvider(rawClient, this.repository, structuredClone(configuration), revision);
+    const provider = new ProvenanceAnalysisProvider(rawClient, this.repository, normalized, revision);
     this.#rawClient = rawClient;
     this.#provider = provider;
-    this.#configuration = structuredClone(configuration);
+    this.#configuration = normalized;
     this.#revision = revision;
     this.executor.setAnalysisProvider(provider, configuration.model);
   }
@@ -285,6 +289,7 @@ export function providerConfigurationFromRecord(record: StoredRecord, timeoutMs 
     additionalModels: Array.isArray(record.additionalModels) ? record.additionalModels.filter((value): value is string => typeof value === "string") : [],
     temperature: finiteNumber(record.temperature, 0),
     timeoutMs,
+    egressPolicy: normalizeModelEgressPolicy(record.egressPolicy, stringValue(record.baseUrl)),
   };
 }
 
@@ -302,6 +307,7 @@ export function validateRuntimeProviderConfiguration(configuration: RuntimeProvi
   if (configuredModels(configuration).some((model) => model.length > 256 || model.includes(":latest"))) throw new Error("Configured model IDs must be bounded and pinned");
   if (!Number.isFinite(configuration.temperature)) throw new Error("OpenAI-compatible temperature must be finite");
   if (!Number.isInteger(configuration.timeoutMs) || configuration.timeoutMs <= 0) throw new Error("OpenAI-compatible timeout must be a positive integer");
+  normalizeModelEgressPolicy(configuration.egressPolicy, configuration.baseURL);
 }
 
 /*******************************************************************************
