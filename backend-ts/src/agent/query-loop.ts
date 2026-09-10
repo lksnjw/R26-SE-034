@@ -119,7 +119,8 @@ export async function runQueryLoop(
       turn = await provider.queryWithTools(messages, agentTools, {
         maxOutputTokens: TOKEN_BUDGET - totalTokens.output,
         promptTemplateVersion: "prompt/query/v2",
-        context: { sessionId: input.sessionId, actor: { id: input.actorId, role: input.actorRole }, ...(input.traceId ? { traceId: input.traceId } : {}) },
+        context: { sessionId: input.sessionId, actor: { id: input.actorId, role: input.actorRole }, ...(input.traceId ? { traceId: input.traceId } : {}),
+          egress: { purpose: "interactive", dataClass: "restricted" } },
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
       });
     } catch {

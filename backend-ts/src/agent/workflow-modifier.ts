@@ -34,6 +34,8 @@ export async function modifyWorkflow(
       prompt,
       "prompt/workflow-modifier/v2",
       signal,
+      "",
+      { egress: { purpose: "interactive", dataClass: "restricted" } },
     );
     rawText = response.text.trim();
   } catch (error) {

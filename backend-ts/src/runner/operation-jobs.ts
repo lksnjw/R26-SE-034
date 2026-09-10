@@ -338,7 +338,7 @@ export class OperationJobQueue {
           assertContext();
           const response = await runtime.generate(prompt, ANALYSIS_PROMPT_VERSION, control.controller.signal, model,
             { workflowId: initial.workflowId, executionId: id, ...(initial.traceId ? { traceId: initial.traceId } : {}), actor: { id: actor.id, role: actor.role },
-              maxOutputTokens: node.maxOutputTokens });
+              maxOutputTokens: node.maxOutputTokens, egress: { purpose: "runtime_analysis", dataClass: node.dataClass } });
           let safeOutput: Record<string, unknown>;
           try {
             const decoded: unknown = JSON.parse(response.text), redacted = withoutSecretFields(decoded);

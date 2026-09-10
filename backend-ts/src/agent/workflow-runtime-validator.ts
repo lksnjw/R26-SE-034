@@ -216,7 +216,8 @@ export async function analyzeDataFlow(
   })) });
   try {
     const result = await providerRuntime.generateCandidate(prompt, "prompt/data-flow/v2",
-      () => { /* advisory text only; never a dispatch instruction */ }, signal, { candidateId: "data_flow_plan" });
+      () => { /* advisory text only; never a dispatch instruction */ }, signal,
+      { candidateId: "data_flow_plan", egress: { purpose: "interactive", dataClass: "restricted" } });
     return result.text.trim();
   } catch { return ""; }
 }

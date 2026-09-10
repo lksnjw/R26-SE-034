@@ -379,7 +379,8 @@ export class Executor {
           : promptData({ ...analysisData, CORRECTION: correction }),
         model,
         signal,
-        { promptTemplateVersion: "prompt/analysis/v2", ...traceContext },
+        { promptTemplateVersion: "prompt/analysis/v2", ...traceContext,
+          egress: { purpose: "runtime_analysis", dataClass: step.data_class ?? "restricted" } },
       );
       if (response.measured) {
         inputTokens += response.inputTokens;

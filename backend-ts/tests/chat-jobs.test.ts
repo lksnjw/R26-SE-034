@@ -48,7 +48,8 @@ async function setup(options: { persistence?: PersistenceBackend; timeoutMs?: nu
     } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
   });
   const runtime = new ProviderRuntime(repository, executor, fetchImplementation);
-  runtime.activate({ id: "fixture", name: "Fixture", type: "openai_compatible", baseURL: "https://old.example.test/v1", apiKey: "private-fixture-key", model: "model-a", additionalModels: ["model-b"], temperature: 0, timeoutMs: 1000 });
+  runtime.activate({ id: "fixture", name: "Fixture", type: "openai_compatible", baseURL: "https://old.example.test/v1", apiKey: "private-fixture-key", model: "model-a", additionalModels: ["model-b"], temperature: 0, timeoutMs: 1000,
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://old.example.test", runtimeAnalysisDataClasses: [], interactiveDataClasses: ["restricted"], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "owner", name: "owner" } } });
   const callTool = vi.fn(async (): Promise<unknown> => ({ content: [], structuredContent: { value: "confirmed receipt", token: "private-remote-secret" } }));
   const bridge = await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "fixture-credential", timeoutMs: options.timeoutMs ?? 1000, validator,
     sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => registries.snapshot().tools.map(t => ({ name: t.mcp_tool_name, inputSchema: t.input_schema })), callTool } });
@@ -282,7 +283,7 @@ test("queued snapshot does not adopt later administration model/endpoint/credent
   const s = await setup(); const queue = chatJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
   const admitted = (await s.send("Show me invoices", { model: "model-b" })).json().data.operation;
   s.runtime.activate({ ...s.runtime.configuration!, baseURL: "https://new.example.test/v1", apiKey: "new-fixture-key", model: "new-model",
-    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://new.example.test", runtimeAnalysisDataClasses: [], reviewedAt: null, reviewedBy: null } });
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://new.example.test", runtimeAnalysisDataClasses: [], interactiveDataClasses: [], reviewedAt: null, reviewedBy: null } });
   kick.mockRestore(); queue.kick(); expect((await s.terminal(admitted.id)).status).toBe("ANSWERED");
   for (const [url, init] of s.fetchImplementation.mock.calls) {
     expect(url).toBe("https://old.example.test/v1/chat/completions"); expect((init!.headers as Record<string,string>).authorization).toBe("Bearer private-fixture-key");

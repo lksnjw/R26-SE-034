@@ -9,7 +9,7 @@ import { apiErrorMessage } from "../../services/api";
 import { settingsService } from "../../services/settings.service";
 
 const DATA_CLASSES = ["public", "internal", "confidential", "restricted"];
-const EMPTY_FORM = { name: "", type: "openai_compatible", baseUrl: "", model: "", fallbackModel: "", temperature: 0, apiKey: "", additionalModels: [], runtimeAnalysisDataClasses: [], egressConfirmed: false };
+const EMPTY_FORM = { name: "", type: "openai_compatible", baseUrl: "", model: "", fallbackModel: "", temperature: 0, apiKey: "", additionalModels: [], runtimeAnalysisDataClasses: [], interactiveDataClasses: [], egressConfirmed: false };
 const INPUT_CLASS = "w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none transition focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackgroundVery dark:text-white";
 const COLUMNS = [
   { key: "name", label: "Provider" },
@@ -87,6 +87,7 @@ function ModelsPage() {
       apiKey: "",
       additionalModels: Array.isArray(provider.additionalModels) ? [...provider.additionalModels] : [],
       runtimeAnalysisDataClasses: Array.isArray(provider.egressPolicy?.runtimeAnalysisDataClasses) ? [...provider.egressPolicy.runtimeAnalysisDataClasses] : [],
+      interactiveDataClasses: Array.isArray(provider.egressPolicy?.interactiveDataClasses) ? [...provider.egressPolicy.interactiveDataClasses] : [],
       egressConfirmed: false,
     });
   };
@@ -112,11 +113,11 @@ function ModelsPage() {
     setForm((current) => ({ ...current, additionalModels: current.additionalModels.filter((m) => m !== id) }));
   };
 
-  const toggleDataClass = (dataClass) => {
+  const toggleDataClass = (field, dataClass) => {
     setForm((current) => ({ ...current, egressConfirmed: false,
-      runtimeAnalysisDataClasses: current.runtimeAnalysisDataClasses.includes(dataClass)
-        ? current.runtimeAnalysisDataClasses.filter((value) => value !== dataClass)
-        : [...current.runtimeAnalysisDataClasses, dataClass] }));
+      [field]: current[field].includes(dataClass)
+        ? current[field].filter((value) => value !== dataClass)
+        : [...current[field], dataClass] }));
   };
 
 /*******************************************************************************
@@ -128,8 +129,8 @@ function ModelsPage() {
     event.preventDefault();
     let approvedOrigin = "";
     try { approvedOrigin = new URL(form.baseUrl).origin; } catch { /* Backend returns the precise URL error. */ }
-    const { runtimeAnalysisDataClasses, egressConfirmed, ...provider } = form;
-    saveMutation.mutate({ ...provider, egressPolicy: { approvedOrigin, runtimeAnalysisDataClasses, confirmed: egressConfirmed } });
+    const { runtimeAnalysisDataClasses, interactiveDataClasses, egressConfirmed, ...provider } = form;
+    saveMutation.mutate({ ...provider, egressPolicy: { approvedOrigin, runtimeAnalysisDataClasses, interactiveDataClasses, confirmed: egressConfirmed } });
   };
 
 /*******************************************************************************
@@ -178,7 +179,7 @@ function ModelsPage() {
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-primary">Generation runtime</p>
           <h1 className="page-heading mt-3 text-gray-950 dark:text-white">Models</h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-gray-500 dark:text-gray-400">
-            Configure the supported OpenAI-compatible provider adapter. Credentials are write-only, and runtime ERP-data analysis is denied until its exact egress origin and data classes are reviewed.
+            Configure the supported OpenAI-compatible provider adapter. Credentials are write-only, and all application or ERP data is denied until its exact egress origin, purpose and data class are reviewed.
           </p>
         </div>
         <Button onClick={openCreate}><Icon icon="mdi:plus" className="h-4 w-4" /> Add provider</Button>
@@ -207,16 +208,21 @@ function ModelsPage() {
           </div>
 
           <fieldset className="mt-5 rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/40">
-            <legend className="px-1 text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">Runtime analysis data egress</legend>
-            <p className="mt-1 text-xs leading-5 text-gray-500">This controls only durable workflow model nodes. Chat and workflow authoring retain their existing policy until their separate migration. The reviewed destination is the exact origin of the Base URL.</p>
+            <legend className="px-1 text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">Model data egress</legend>
+            <p className="mt-1 text-xs leading-5 text-gray-500">Every model request is purpose-bound at provider entry. Interactive chat/authoring is conservatively classified as restricted because user text and tool results may contain sensitive data. The reviewed destination is the exact origin of the Base URL.</p>
             <p className="mt-2 text-xs"><span className="font-semibold">Destination:</span> {providerOriginLabel(form.baseUrl)}</p>
-            <div className="mt-3 flex flex-wrap gap-3">{DATA_CLASSES.map((dataClass) => <label key={dataClass} className="flex items-center gap-2 text-sm capitalize">
-              <input type="checkbox" checked={form.runtimeAnalysisDataClasses.includes(dataClass)} onChange={() => toggleDataClass(dataClass)} />{dataClass}
+            <p className="mt-4 text-xs font-semibold">Durable runtime analysis nodes</p>
+            <div className="mt-2 flex flex-wrap gap-3">{DATA_CLASSES.map((dataClass) => <label key={dataClass} className="flex items-center gap-2 text-sm capitalize">
+              <input aria-label={`Runtime ${dataClass}`} type="checkbox" checked={form.runtimeAnalysisDataClasses.includes(dataClass)} onChange={() => toggleDataClass("runtimeAnalysisDataClasses", dataClass)} />{dataClass}
             </label>)}</div>
-            {form.runtimeAnalysisDataClasses.length > 0 ? <label className="mt-4 flex items-start gap-2 text-sm">
-              <input aria-label="Confirm runtime analysis egress" type="checkbox" checked={form.egressConfirmed} onChange={(event) => setForm((current) => ({ ...current, egressConfirmed: event.target.checked }))} className="mt-1" />
-              I reviewed this exact destination and authorize the selected ERP data classes for bounded runtime model analysis. This does not authorize an ERP write, email, or unrestricted agent.
-            </label> : <p className="mt-3 text-xs font-semibold text-amber-700 dark:text-amber-300">Runtime model analysis remains blocked.</p>}
+            <p className="mt-4 text-xs font-semibold">Interactive chat, ERP read agent and workflow authoring</p>
+            <div className="mt-2 flex flex-wrap gap-3">{DATA_CLASSES.map((dataClass) => <label key={dataClass} className="flex items-center gap-2 text-sm capitalize">
+              <input aria-label={`Interactive ${dataClass}`} type="checkbox" checked={form.interactiveDataClasses.includes(dataClass)} onChange={() => toggleDataClass("interactiveDataClasses", dataClass)} />{dataClass}
+            </label>)}</div>
+            {form.runtimeAnalysisDataClasses.length + form.interactiveDataClasses.length > 0 ? <label className="mt-4 flex items-start gap-2 text-sm">
+              <input aria-label="Confirm model egress" type="checkbox" checked={form.egressConfirmed} onChange={(event) => setForm((current) => ({ ...current, egressConfirmed: event.target.checked }))} className="mt-1" />
+              I reviewed this exact destination and authorize only the selected purposes and data classes. This does not authorize an ERP write, email, workflow publication, approval, or unrestricted agent.
+            </label> : <p className="mt-3 text-xs font-semibold text-amber-700 dark:text-amber-300">All model data egress remains blocked.</p>}
           </fieldset>
 
           {/* Selectable models — extra model IDs shown in the chat model selector */}
@@ -247,7 +253,7 @@ function ModelsPage() {
             )}
           </div>
 
-          <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={() => setEditor(null)}>Cancel</Button><Button type="submit" disabled={saveMutation.isPending || form.runtimeAnalysisDataClasses.length > 0 && !form.egressConfirmed}>{saveMutation.isPending ? "Saving…" : "Save provider"}</Button></div>
+          <div className="mt-5 flex justify-end gap-2"><Button variant="secondary" onClick={() => setEditor(null)}>Cancel</Button><Button type="submit" disabled={saveMutation.isPending || form.runtimeAnalysisDataClasses.length + form.interactiveDataClasses.length > 0 && !form.egressConfirmed}>{saveMutation.isPending ? "Saving…" : "Save provider"}</Button></div>
         </form>
       ) : null}
 
@@ -259,7 +265,7 @@ function ModelsPage() {
           rows={providers}
           renderCell={(provider, column) => {
             if (column.key === "name") return <><div className="flex items-center gap-2"><p className="font-bold text-gray-950 dark:text-white">{provider.name}</p>{provider.active ? <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-bold uppercase text-green-700">Active</span> : null}</div><p className="mt-1 text-xs text-gray-500">{provider.type}</p></>;
-            if (column.key === "model") { const classes = provider.egressPolicy?.runtimeAnalysisDataClasses ?? []; return <><p className="font-semibold">{provider.model}</p><p className="mt-1 max-w-xs truncate text-xs text-gray-500">{provider.baseUrl || "Default provider endpoint"}</p><p className={`mt-1 text-xs ${classes.length ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}`}>{classes.length ? `Runtime analysis: ${classes.join(", ")}` : "Runtime analysis blocked"}</p></>; }
+            if (column.key === "model") { const classes = provider.egressPolicy?.runtimeAnalysisDataClasses ?? [], interactive = provider.egressPolicy?.interactiveDataClasses ?? []; return <><p className="font-semibold">{provider.model}</p><p className="mt-1 max-w-xs truncate text-xs text-gray-500">{provider.baseUrl || "Default provider endpoint"}</p><p className={`mt-1 text-xs ${classes.length ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}`}>{classes.length ? `Runtime analysis: ${classes.join(", ")}` : "Runtime analysis blocked"}</p><p className={`mt-1 text-xs ${interactive.includes("restricted") ? "text-green-700 dark:text-green-300" : "text-amber-700 dark:text-amber-300"}`}>{interactive.length ? `Interactive: ${interactive.join(", ")}` : "Interactive model traffic blocked"}</p></>; }
             if (column.key === "credential") return provider.keyPreview || "Not required";
             return <div className="flex flex-wrap gap-2"><Button variant="ghost" className="px-3 py-1.5 text-xs" onClick={() => openEdit(provider)}>Edit</Button><Button variant="secondary" className="px-3 py-1.5 text-xs" disabled={provider.active} onClick={() => activate(provider)}>{provider.active ? "Active" : "Activate"}</Button><Button variant="secondary" className="px-3 py-1.5 text-xs" disabled={testingId === provider.id} onClick={() => testConnection(provider)}>{testingId === provider.id ? "Testing…" : "Test connection"}</Button>{testResults[provider.id] ? <span className="w-full text-xs text-gray-500">{testResults[provider.id]}</span> : null}</div>;
           }}

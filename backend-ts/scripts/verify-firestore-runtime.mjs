@@ -182,7 +182,7 @@ async function start(repositoryValue) {
     } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
   });
   providerRuntime.activate({ id: "fixture-provider", name: "Fixture provider", type: "openai_compatible", baseURL: "https://provider.fixture.example.test/v1", apiKey: "synthetic-provider-secret", model: "fixture-model-a", additionalModels: ["fixture-model-b"], temperature: 0, timeoutMs: 10_000,
-    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"],
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: ["restricted"],
       reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "owner", name: "owner" } } });
   services = { config, repository, registries, validator, executor, providerRuntime, synthesis: new SynthesisService(providerRuntime, registries, validator), erpbridgeSession: session };
   app = await buildApp(services); await app.ready();
@@ -208,13 +208,14 @@ try {
   });
   const providerCreated = await request("POST", "/api/providers", { name: "Persisted fixture provider", type: "openai_compatible",
     baseUrl: "https://provider.fixture.example.test/v1", apiKey: "synthetic-provider-secret", model: "fixture-model-a", additionalModels: ["fixture-model-b"], temperature: 0,
-    egressPolicy: { approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"], confirmed: true } }, 201);
+    egressPolicy: { approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: ["restricted"], confirmed: true } }, 201);
   const persistedProviderId = providerCreated.data.id;
   assert.deepEqual(providerCreated.data.egressPolicy.runtimeAnalysisDataClasses, ["internal"]);
+  assert.deepEqual(providerCreated.data.egressPolicy.interactiveDataClasses, ["restricted"]);
   assert.equal(providerCreated.data.egressPolicy.approvedOrigin, "https://provider.fixture.example.test");
   assert(!JSON.stringify(providerCreated).includes("synthetic-provider-secret"));
   await request("POST", `/api/providers/${persistedProviderId}/activate`, {}, 200);
-  log("actual Firestore provider administration stored an exact-origin reviewed internal-data egress policy without exposing the write-only credential");
+  log("actual Firestore provider administration stored exact-origin reviewed runtime/internal and interactive/restricted egress purposes without exposing the write-only credential");
   const actor = await repository.effectiveUser("owner"), observations = (await observeCapabilities({ repository, registries, session, user: actor })).observations;
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
     observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: [operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
@@ -293,6 +294,7 @@ try {
   assert.equal((await repository.snapshot()).chats[chatId].messages.findLast(message => message.artifacts?.proposal)?.artifacts.proposal.status, "APPLIED");
   assert.deepEqual((await repository.snapshot()).workflows[automation.workflowId], automationWorkflow); assert.equal((await repository.snapshot()).schedules[`schedule-${automation.workflowId}`], undefined);
   assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.runtimeAnalysisDataClasses, ["internal"]);
+  assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.interactiveDataClasses, ["restricted"]);
   assert.equal((await repository.snapshot()).providers[persistedProviderId].egressPolicy.approvedOrigin, "https://provider.fixture.example.test");
   assert.equal(calls.length, callsBeforeNode); log("fresh application repository/HTTP worker startup preserved chats, proposals, versions and confirmed runs without replay");
 

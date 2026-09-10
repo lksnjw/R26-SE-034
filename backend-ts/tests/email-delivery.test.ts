@@ -40,7 +40,8 @@ async function setup(options: { bridge?: boolean; calls?: boolean; final?: strin
     } : { content: options.final ?? "Synthetic fixture report for review." } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
   });
   const providerRuntime = new ProviderRuntime(repository, executor, fetchImplementation);
-  providerRuntime.activate({ id: "test", name: "Test", type: "openai_compatible", baseURL: "https://provider.example.test/v1", apiKey: "test", model: "test", temperature: 0, timeoutMs: 1000 });
+  providerRuntime.activate({ id: "test", name: "Test", type: "openai_compatible", baseURL: "https://provider.example.test/v1", apiKey: "test", model: "test", temperature: 0, timeoutMs: 1000,
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.example.test", runtimeAnalysisDataClasses: [], interactiveDataClasses: ["restricted"], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "owner", name: "owner" } } });
   const callTool = vi.fn(async () => options.failure ? { content: [{ type: "text", text: "denied" }], isError: true } : { content: [], structuredContent: { value: "fixture report" } });
   const erpbridgeSession = options.bridge ? await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "fixture-only", timeoutMs: 1000, validator,
     sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => registries.snapshot().tools.map((tool) => ({ name: tool.mcp_tool_name, inputSchema: tool.input_schema })), callTool } }) : undefined;

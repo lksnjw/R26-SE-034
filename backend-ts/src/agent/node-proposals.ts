@@ -33,7 +33,7 @@ export async function processNodeProposal(input: { context: unknown; content: st
   let patch: ReturnType<typeof patchSchema.parse>;
   try {
     const response = await provider.generateCandidate(prompt, selectedNodePatchVersion(scoped.node), output => { patchSchema.parse(JSON.parse(output.text)); }, signal,
-      { traceId, workflowId: context.workflowId, sessionId, actor: { id: user.id, role: user.role } });
+      { traceId, workflowId: context.workflowId, sessionId, actor: { id: user.id, role: user.role }, egress: { purpose: "interactive", dataClass: "restricted" } });
     patch = patchSchema.parse(JSON.parse(response.text));
   } catch { throw new HandlerFailure(422, "A supported node patch was not returned; nothing was changed", { code: "NODE_PROPOSAL_INVALID" }); }
   const command = selectedNodePatchCommand(scoped.node, patch);

@@ -123,7 +123,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       let proposed: ReturnType<typeof patch.parse>;
       try {
         const response = await provider.generateCandidate(prompt, selectedNodePatchVersion(node), (output) => { patch.parse(JSON.parse(output.text)); }, request.signal,
-          { traceId, workflowId, ...(value.sessionId ? { sessionId: value.sessionId } : {}), actor: { id: user.id, role: user.role } });
+          { traceId, workflowId, ...(value.sessionId ? { sessionId: value.sessionId } : {}), actor: { id: user.id, role: user.role }, egress: { purpose: "interactive", dataClass: "restricted" } });
         proposed = patch.parse(JSON.parse(response.text));
       } catch { throw new HandlerFailure(422, "The model did not return a supported node patch; nothing was changed", { code: "NODE_PROPOSAL_INVALID" }); }
       const change = selectedNodePatchCommand(node, proposed);

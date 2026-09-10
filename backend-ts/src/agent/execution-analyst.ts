@@ -41,7 +41,7 @@ export async function generateExecutionAnalysis(
   signal?: AbortSignal,
 ): Promise<ExecutionAnalysisResult> {
   const prompt = buildAnalysisPrompt(input);
-  const response = await providerRuntime.generate(prompt, PROMPT_VERSION, signal);
+  const response = await providerRuntime.generate(prompt, PROMPT_VERSION, signal, "", { egress: { purpose: "runtime_analysis", dataClass: "restricted" } });
   const text = response.text.trim();
   const visualisation = extractVisualisation(text);
   return {

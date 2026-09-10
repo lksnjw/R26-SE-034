@@ -1067,14 +1067,18 @@ function providerInput(body: Record<string, unknown>, id: string, user: CurrentU
   } else {
     if (!isRecord(body.egressPolicy)) throw new HandlerFailure(422, "Model egress policy must be an object");
     const classes = body.egressPolicy.runtimeAnalysisDataClasses;
+    const interactiveClasses = body.egressPolicy.interactiveDataClasses ?? [];
     if (!Array.isArray(classes) || classes.length > modelDataClasses.length || classes.some(value => typeof value !== "string" || !modelDataClasses.includes(value as ModelDataClass)) || new Set(classes).size !== classes.length)
       throw new HandlerFailure(422, "Runtime analysis data classes are invalid");
+    if (!Array.isArray(interactiveClasses) || interactiveClasses.length > modelDataClasses.length || interactiveClasses.some(value => typeof value !== "string" || !modelDataClasses.includes(value as ModelDataClass)) || new Set(interactiveClasses).size !== interactiveClasses.length)
+      throw new HandlerFailure(422, "Interactive model data classes are invalid");
     if (stringValue(body.egressPolicy.approvedOrigin) !== origin)
       throw new HandlerFailure(422, "The reviewed model egress origin must exactly match the provider base URL origin");
-    if (classes.length > 0 && body.egressPolicy.confirmed !== true)
-      throw new HandlerFailure(422, "Explicit administrator confirmation is required before model runtime analysis can receive ERP data");
-    egressPolicy = { profile: "model-egress-policy/v1", approvedOrigin: origin, runtimeAnalysisDataClasses: classes as ModelDataClass[],
-      reviewedAt: classes.length ? now() : null, reviewedBy: classes.length ? { id: user.id, name: user.name } : null };
+    if (classes.length + interactiveClasses.length > 0 && body.egressPolicy.confirmed !== true)
+      throw new HandlerFailure(422, "Explicit administrator confirmation is required before the model can receive application or ERP data");
+    const reviewed = classes.length + interactiveClasses.length > 0;
+    egressPolicy = { profile: "model-egress-policy/v1", approvedOrigin: origin, runtimeAnalysisDataClasses: classes as ModelDataClass[], interactiveDataClasses: interactiveClasses as ModelDataClass[],
+      reviewedAt: reviewed ? now() : null, reviewedBy: reviewed ? { id: user.id, name: user.name } : null };
   }
   return {
     id, name, type,

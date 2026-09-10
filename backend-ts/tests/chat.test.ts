@@ -555,6 +555,8 @@ async function buildTestApplication(
     model: "openai/gpt-4o-mini-2024-07-18",
     temperature: 0,
     timeoutMs: 1_000,
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://openrouter.ai", runtimeAnalysisDataClasses: [], interactiveDataClasses: ["restricted"],
+      reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "admin", name: "Admin" } },
   };
   providers.activate(providerConfiguration);
   let validationGate: GovernedValidationGate | undefined;

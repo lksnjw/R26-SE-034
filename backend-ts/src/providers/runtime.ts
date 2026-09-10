@@ -5,7 +5,7 @@ import type { Executor } from "../runner/executor.js";
 import { isGenerationFallbackEligible, OpenAICompatibleClient, OpenAICompatibleError } from "./openai-compatible.js";
 import type { QueryMessage, QueryOptions, QueryToolDefinition, QueryTurnResult } from "../analysisprovider/query-types.js";
 import { generationPromptHash } from "../prompts/contracts.js";
-import { normalizeModelEgressPolicy, type ModelEgressPolicy } from "./egress-policy.js";
+import { assertModelEgress, normalizeModelEgressPolicy, type ModelEgressPolicy } from "./egress-policy.js";
 
 export const ANALYSIS_PROMPT_VERSION = "prompt/analysis/v2";
 export const CANDIDATE_PROMPT_VERSION = "prompt/candidate/v7";
@@ -133,6 +133,7 @@ export class ProviderRuntime {
   async generate(prompt: string, promptTemplateVersion: string, signal?: AbortSignal, model = "",
     context: Omit<ProviderInvocationContext, "promptTemplateVersion" | "fallbackUsed"> = {}): Promise<AnalysisResponse> {
     if (this.#provider === null) throw new Error("LLM provider is not configured");
+    this.assertEgress(context.egress);
     const selected = model.trim() || this.#configuration!.model;
     if (!configuredModels(this.#configuration!).includes(selected)) throw new Error("Requested model is not in the configured model catalog");
     return this.#provider.generate(prompt, selected, signal, { promptTemplateVersion, ...context });
@@ -146,6 +147,7 @@ export class ProviderRuntime {
    ******************************************************************************/
   async generateCandidate(prompt: string, promptTemplateVersion: string, validateResponse: (response: AnalysisResponse) => void, signal?: AbortSignal, provenance: Omit<ProviderInvocationContext, "promptTemplateVersion" | "fallbackUsed"> = {}): Promise<AnalysisResponse> {
     if (this.#provider === null || this.#configuration === null) throw new Error("LLM provider is not configured");
+    this.assertEgress(provenance.egress);
     const provider = this.#provider;
     const models = [this.#configuration.model, this.#configuration.fallbackModel ?? ""].filter((value, index, all) => value.trim() !== "" && all.indexOf(value) === index);
     let lastError: unknown = new Error("generation did not run");
@@ -168,6 +170,7 @@ export class ProviderRuntime {
    ******************************************************************************/
   async queryWithTools(messages: QueryMessage[], tools: QueryToolDefinition[], options: QueryOptions): Promise<QueryTurnResult> {
     if (this.#rawClient === null || this.#configuration === null) throw new Error("LLM provider is not configured");
+    this.assertEgress(options.context?.egress);
     const client = this.#rawClient, configuration = structuredClone(this.#configuration), revision = this.#revision;
     const model = options.model?.trim() || configuration.model;
     if (!configuredModels(configuration).includes(model)) throw new Error("Requested model is not in the configured model catalog");
@@ -185,6 +188,12 @@ export class ProviderRuntime {
     catch (error) { await record("FAILED"); throw error; }
     await record("SUCCEEDED", turn);
     return { ...turn, model, provider: configuration.type, configurationRevision: revision };
+  }
+
+  private assertEgress(declaration: ProviderInvocationContext["egress"]): void {
+    if (this.#configuration === null) throw new Error("LLM provider is not configured");
+    if (declaration === undefined) throw new Error("Model egress declaration is required before provider entry");
+    assertModelEgress(this.#configuration.egressPolicy!, this.#configuration.baseURL, declaration);
   }
 
   /*******************************************************************************
@@ -225,6 +234,13 @@ export class ProvenanceAnalysisProvider implements AnalysisProvider {
     const started = performance.now();
     const selectedModel = model.trim() === "" ? this.configuration.model : model;
     const promptTemplateVersion = context?.promptTemplateVersion ?? ANALYSIS_PROMPT_VERSION;
+    // The administration connection probe sends one fixed public literal and
+    // contains no application/user/ERP content. Every other provider entry is
+    // purpose- and data-class-bound even when callers hold this wrapper directly.
+    if (promptTemplateVersion !== "prompt/provider-test/v1") {
+      if (context?.egress === undefined) throw new Error("Model egress declaration is required before provider entry");
+      assertModelEgress(normalizeModelEgressPolicy(this.configuration.egressPolicy, this.configuration.baseURL), this.configuration.baseURL, context.egress);
+    }
     try {
       const response = await this.inner.generate(prompt, selectedModel, signal, context);
       try { validateResponse(response); }
@@ -268,6 +284,7 @@ export class ProvenanceAnalysisProvider implements AnalysisProvider {
         ...(context?.workflowId === undefined ? {} : { workflowId: context.workflowId }),
         ...(context?.executionId === undefined ? {} : { executionId: context.executionId }),
         ...(context?.actor === undefined ? {} : { actor: context.actor }),
+        ...(context?.egress === undefined ? {} : { egress: context.egress }),
       };
     });
   }

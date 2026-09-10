@@ -105,7 +105,8 @@ export async function runActionLoop(
     const turn = await provider.queryWithTools(messages, agentTools, {
       maxOutputTokens: TOKEN_BUDGET - totalTokens.output,
       promptTemplateVersion: "prompt/action/v2",
-      context: { sessionId: input.sessionId, actor: { id: input.actorId, role: input.actorRole }, ...(input.traceId ? { traceId: input.traceId } : {}) },
+      context: { sessionId: input.sessionId, actor: { id: input.actorId, role: input.actorRole }, ...(input.traceId ? { traceId: input.traceId } : {}),
+        egress: { purpose: "interactive", dataClass: "restricted" } },
       ...(input.signal !== undefined ? { signal: input.signal } : {}),
     });
 

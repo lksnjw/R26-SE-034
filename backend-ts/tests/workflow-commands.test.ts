@@ -36,7 +36,8 @@ async function setup(output: unknown = { parameters: { value: "proposed" } }) {
   const validator = new RegistryValidator(registries, repository), executor = new Executor(new ToolRegistry(), validator);
   const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: JSON.stringify(output) } }] }));
   const providerRuntime = new ProviderRuntime(repository, executor, fetchImplementation);
-  providerRuntime.activate({ id: "fixture", name: "Fixture", type: "openai_compatible", baseURL: "https://provider.example.test/v1", apiKey: "fixture", model: "fixture-v1", temperature: 0, timeoutMs: 1000 });
+  providerRuntime.activate({ id: "fixture", name: "Fixture", type: "openai_compatible", baseURL: "https://provider.example.test/v1", apiKey: "fixture", model: "fixture-v1", temperature: 0, timeoutMs: 1000,
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.example.test", runtimeAnalysisDataClasses: [], interactiveDataClasses: ["restricted"], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "admin", name: "admin" } } });
   const app = await buildApp({ config, repository, registries, validator, executor, providerRuntime }); apps.push(app);
   const headers = (id = "admin") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { algorithm: "HS256", subject: id, expiresIn: 3600 })}` });
   const edit = (command: unknown, baseVersion = 1, baseHash = workflowContentHash(yaml), actor = "admin") => app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: headers(actor), payload: { baseVersion, baseHash, command } });

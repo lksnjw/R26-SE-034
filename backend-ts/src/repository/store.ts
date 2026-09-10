@@ -208,6 +208,7 @@ export type InvocationProvenanceRecord = {
   workflowId?: string;
   executionId?: string;
   actor?: { id: string; role: string };
+  egress?: { purpose: "interactive" | "runtime_analysis"; dataClass: "public" | "internal" | "confidential" | "restricted" };
 };
 
 // Private interpreter/evidence state; never part of public execution payloads.

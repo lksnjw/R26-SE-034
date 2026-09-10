@@ -18,6 +18,7 @@ export type ProviderInvocationContext = {
   executionId?: string;
   actor?: { id: string; role: string };
   maxOutputTokens?: number;
+  egress?: { purpose: "interactive" | "runtime_analysis"; dataClass: "public" | "internal" | "confidential" | "restricted" };
 };
 
 export interface AnalysisProvider {

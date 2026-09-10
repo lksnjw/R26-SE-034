@@ -78,6 +78,7 @@ export class SynthesisService {
       ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
       candidateId: "candidate_1",
       ...(input.user === undefined ? {} : { actor: { id: input.user.id, role: input.user.role } }),
+      egress: { purpose: "interactive", dataClass: "restricted" },
     }); }
     catch (error) { throw new SynthesisFailure(`Candidate generation failed: ${errorText(error)}`); }
     // Preserve the exact proposal: deterministic verification reports unknown

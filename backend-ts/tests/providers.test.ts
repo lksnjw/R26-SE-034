@@ -21,15 +21,28 @@ const configuration: RuntimeProviderConfiguration = {
   fallbackModel: "vendor/fallback-2025-12-01",
   temperature: 0,
   timeoutMs: 1_000,
+  egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://router.example", runtimeAnalysisDataClasses: [], interactiveDataClasses: ["restricted"],
+    reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "admin", name: "Admin" } },
 };
+const interactive = { egress: { purpose: "interactive" as const, dataClass: "restricted" as const } };
 
 test.each(["query", "generate", "candidate", "captured"])("provider %s checks captured repository authority immediately before external fetch", async path => {
   const send = vi.fn<typeof fetch>().mockResolvedValue(providerResponse("fixture")), { runtime, repository } = providerRuntime(send);
   const captured = runtime.restoreCaptured(runtime.configuration!, runtime.binding!.configurationRevision);
   await repository.close();
-  const operation = path === "query" ? runtime.queryWithTools([{ role: "user", content: "read" }], [], {}) : path === "captured" ? captured.generate("prompt", "fixture")
-    : path === "candidate" ? runtime.generateCandidate("prompt", "fixture", () => {}) : runtime.generate("prompt", "fixture");
+  const operation = path === "query" ? runtime.queryWithTools([{ role: "user", content: "read" }], [], { context: interactive }) : path === "captured" ? captured.generate("prompt", "fixture", undefined, "", interactive)
+    : path === "candidate" ? runtime.generateCandidate("prompt", "fixture", () => {}, undefined, interactive) : runtime.generate("prompt", "fixture", undefined, "", interactive);
   await expect(operation).rejects.toThrow(); expect(send).not.toHaveBeenCalled();
+});
+
+test("every application-data provider entry requires an allowed purpose and data class before fetch", async () => {
+  const send = vi.fn<typeof fetch>().mockResolvedValue(providerResponse("ok")), { runtime } = providerRuntime(send);
+  await expect(runtime.generateCandidate("prompt", "candidate-v1", () => undefined)).rejects.toThrow(/egress declaration/);
+  await expect(runtime.generateCandidate("prompt", "candidate-v1", () => undefined, undefined,
+    { egress: { purpose: "interactive", dataClass: "confidential" } })).rejects.toThrow(/not approved/);
+  expect(send).not.toHaveBeenCalled();
+  await expect(runtime.generateCandidate("prompt", "candidate-v1", () => undefined, undefined, interactive)).resolves.toMatchObject({ text: "ok" });
+  expect(send).toHaveBeenCalledOnce();
 });
 
 describe("generation provider configuration", () => {
@@ -84,7 +97,7 @@ describe("bounded generation fallback", () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(providerResponse("name: primary", 4, 3));
     const { runtime, repository } = providerRuntime(fetchImpl);
 
-    const response = await runtime.generateCandidate("prompt", "candidate-v1", () => undefined);
+    const response = await runtime.generateCandidate("prompt", "candidate-v1", () => undefined, undefined, interactive);
 
     expect(response.model).toBe(configuration.model);
     expect(fetchImpl).toHaveBeenCalledOnce();
@@ -111,7 +124,7 @@ describe("bounded generation fallback", () => {
       .mockResolvedValueOnce(providerResponse("name: fallback", 9, 5));
     const { runtime, repository } = providerRuntime(fetchImpl, { timeoutMs: 5 });
 
-    const response = await runtime.generateCandidate("prompt", "candidate-v1", () => undefined);
+    const response = await runtime.generateCandidate("prompt", "candidate-v1", () => undefined, undefined, interactive);
 
     expect(response.model).toBe(configuration.fallbackModel);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -145,7 +158,7 @@ describe("bounded generation fallback", () => {
     );
     const { runtime, repository } = providerRuntime(fetchImpl);
 
-    await expect(runtime.generateCandidate("prompt", "candidate-v1", () => undefined)).rejects.toThrow(
+    await expect(runtime.generateCandidate("prompt", "candidate-v1", () => undefined, undefined, interactive)).rejects.toThrow(
       /failed for model/,
     );
 
@@ -166,7 +179,7 @@ describe("bounded generation fallback", () => {
       if (!candidate.text.includes(":")) {
         throw new Error("malformed workflow YAML");
       }
-    });
+    }, undefined, interactive);
 
     expect(response.model).toBe(configuration.fallbackModel);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -181,7 +194,7 @@ describe("bounded generation fallback", () => {
     const { runtime, repository } = providerRuntime(fetchImpl);
     const validate = vi.fn();
 
-    await expect(runtime.generateCandidate("prompt", "candidate-v1", validate)).rejects.toThrow(
+    await expect(runtime.generateCandidate("prompt", "candidate-v1", validate, undefined, interactive)).rejects.toThrow(
       /failed for model "vendor\/fallback-2025-12-01"/,
     );
 
@@ -209,6 +222,7 @@ describe("generation provenance integrity", () => {
     await provider.generate("sensitive prompt", configuration.model, undefined, {
       promptTemplateVersion: "candidate-v1",
       fallbackUsed: false,
+      ...interactive,
     });
 
     const record = Object.values((await repository.snapshot()).invocationProvenance)[0];
@@ -236,6 +250,7 @@ describe("generation provenance integrity", () => {
     await provider.generate("sensitive prompt", configuration.model, undefined, {
       promptTemplateVersion: "candidate-v1",
       fallbackUsed: false,
+      ...interactive,
     });
 
     const record = Object.values((await repository.snapshot()).invocationProvenance)[0];
@@ -261,6 +276,8 @@ test.skipIf(!liveEnvironmentConfigured())(
       ...(configuredFallback === undefined ? {} : { fallbackModel: configuredFallback }),
       temperature: Number(process.env.GENERATION_TEMPERATURE ?? "0"),
       timeoutMs: Number(process.env.GENERATION_TIMEOUT_MS ?? "30000"),
+      egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: new URL(process.env.GENERATION_BASE_URL!).origin,
+        runtimeAnalysisDataClasses: [], interactiveDataClasses: ["public"], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "live-test", name: "Live test" } },
     };
     const repository = new Repository(null);
     const provider = new ProvenanceAnalysisProvider(
@@ -272,6 +289,7 @@ test.skipIf(!liveEnvironmentConfigured())(
     const response = await provider.generate("Reply with exactly: live-provider-ok", liveConfiguration.model, undefined, {
       promptTemplateVersion: "live-provider-smoke-v1",
       fallbackUsed: false,
+      egress: { purpose: "interactive", dataClass: "public" },
     });
 
     expect(response.text.length).toBeGreaterThan(0);

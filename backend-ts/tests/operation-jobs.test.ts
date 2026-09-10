@@ -139,7 +139,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   const providerRuntime = withAnalysis ? new ProviderRuntime(repository, executor, modelFetch as typeof fetch) : undefined;
   providerRuntime?.activate({ id: "analysis-provider", name: "Analysis provider", type: "openai_compatible", baseURL: "https://model.example.test/v1",
     apiKey: "private-model-key", model: "analysis-model-a", additionalModels: ["analysis-model-b"], temperature: 0, timeoutMs: 1000,
-    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://model.example.test", runtimeAnalysisDataClasses: ["internal"],
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://model.example.test", runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: [],
       reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "requester", name: "requester" } } });
   const services = { repository, registries, config, validator, erpbridgeSession: session, executor, ...(providerRuntime ? { providerRuntime } : {}) };
   const app = await buildApp(services); closers.push(app);
@@ -243,7 +243,7 @@ test("durable read-analysis-effect captures one reviewed provider, validates str
 test("durable analysis admission fails before ERP or model dispatch when its data class is not approved", async () => {
   const s = await setup(null, true, false, false, false, true);
   s.providerRuntime!.activate({ ...s.providerRuntime!.configuration!, egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://model.example.test",
-    runtimeAnalysisDataClasses: ["public"], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "requester", name: "requester" } } });
+    runtimeAnalysisDataClasses: ["public"], interactiveDataClasses: [], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "requester", name: "requester" } } });
   await prepareAnalysisWorkflow(s);
   const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
   const denied = await s.run("durable-analysis-denied-0001"); expect(denied.statusCode, denied.body).toBe(422);

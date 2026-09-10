@@ -17,7 +17,8 @@ import type { Workflow } from "../src/models/schemas.js";
 
 const configuration: RuntimeProviderConfiguration = { id: "fixture", name: "Fixture provider", type: "openai_compatible",
   baseURL: "https://old-provider.example.invalid/v1", apiKey: "fixture-old-key", model: "model-a", additionalModels: ["model-b"],
-  fallbackModel: "model-c", temperature: 0, timeoutMs: 1000 };
+  fallbackModel: "model-c", temperature: 0, timeoutMs: 1000, egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://old-provider.example.invalid",
+    runtimeAnalysisDataClasses: [], interactiveDataClasses: ["restricted"], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "admin", name: "admin" } } };
 const yaml = 'name: Report\ndescription: Read report\ntrigger:\n  type: manual\nsteps:\n  - id: read\n    action: demo.echo\n    parameters:\n      value: fixture';
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -123,7 +124,8 @@ test("admin activation mid-query cannot change a later turn's endpoint, credenti
   const s = await setup(), original = s.fetchImplementation.getMockImplementation()!;
   s.fetchImplementation.mockImplementation(async (...args) => {
     const response = await original(...args);
-    if (s.fetchImplementation.mock.calls.length === 1) s.runtime.activate({ ...configuration, id: "new", apiKey: "new-key", baseURL: "https://new.example.invalid/v1", model: "model-d", temperature: 1 });
+    if (s.fetchImplementation.mock.calls.length === 1) s.runtime.activate({ ...configuration, id: "new", apiKey: "new-key", baseURL: "https://new.example.invalid/v1", model: "model-d", temperature: 1,
+      egressPolicy: { ...configuration.egressPolicy!, approvedOrigin: "https://new.example.invalid" } });
     return response;
   });
   const result = await s.send("Show me invoices", { model: "model-b" });
@@ -156,7 +158,8 @@ test.each(["Show me invoices", "Execute the read operation", "Create a workflow 
 test("generation fallback stays on its captured provider even when admin activation changes", async () => {
   const s = await setup(), original = s.fetchImplementation.getMockImplementation()!;
   s.fetchImplementation.mockImplementationOnce(async () => {
-    s.runtime.activate({ ...configuration, baseURL: "https://new.example.invalid/v1", apiKey: "new-key", model: "model-d" });
+    s.runtime.activate({ ...configuration, baseURL: "https://new.example.invalid/v1", apiKey: "new-key", model: "model-d",
+      egressPolicy: { ...configuration.egressPolicy!, approvedOrigin: "https://new.example.invalid" } });
     return new Response("", { status: 503 });
   }).mockImplementation(original);
   const result = await s.send("Create a workflow to read invoices", { model: "model-b" });
@@ -192,7 +195,7 @@ test("provider fallback and additional choices survive edit without exposing cre
 
 test("runtime analysis egress requires exact-origin administrator confirmation and is revoked when the origin changes", async () => {
   const s = await setup(), payload = { name: "Runtime analysis", type: "openai_compatible", baseUrl: configuration.baseURL,
-    apiKey: "saved-secret", model: "model-a", egressPolicy: { approvedOrigin: "https://old-provider.example.invalid", runtimeAnalysisDataClasses: ["internal"] } };
+    apiKey: "saved-secret", model: "model-a", egressPolicy: { approvedOrigin: "https://old-provider.example.invalid", runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: ["restricted"] } };
   const unconfirmed = await s.app.inject({ method: "POST", url: "/api/providers", headers: s.headers(), payload });
   expect(unconfirmed.statusCode).toBe(422);
   const wrongOrigin = await s.app.inject({ method: "POST", url: "/api/providers", headers: s.headers(), payload: {
@@ -202,14 +205,14 @@ test("runtime analysis egress requires exact-origin administrator confirmation a
     ...payload, egressPolicy: { ...payload.egressPolicy, confirmed: true } } });
   expect(created.statusCode, created.body).toBe(201);
   const id = created.json().data.id;
-  expect(created.json().data.egressPolicy).toMatchObject({ approvedOrigin: "https://old-provider.example.invalid", runtimeAnalysisDataClasses: ["internal"],
+  expect(created.json().data.egressPolicy).toMatchObject({ approvedOrigin: "https://old-provider.example.invalid", runtimeAnalysisDataClasses: ["internal"], interactiveDataClasses: ["restricted"],
     reviewedBy: { id: "admin", name: "admin" } });
   expect(Number.isFinite(Date.parse(created.json().data.egressPolicy.reviewedAt))).toBe(true);
   expect(created.body).not.toContain("saved-secret");
   const changed = await s.app.inject({ method: "PUT", url: `/api/providers/${id}`, headers: s.headers(), payload: {
     name: "Runtime analysis", type: "openai_compatible", baseUrl: "https://new-provider.example.invalid/v1", apiKey: "", model: "model-a" } });
   expect(changed.statusCode, changed.body).toBe(200);
-  expect(changed.json().data.egressPolicy).toMatchObject({ approvedOrigin: "https://new-provider.example.invalid", runtimeAnalysisDataClasses: [], reviewedAt: null, reviewedBy: null });
+  expect(changed.json().data.egressPolicy).toMatchObject({ approvedOrigin: "https://new-provider.example.invalid", runtimeAnalysisDataClasses: [], interactiveDataClasses: [], reviewedAt: null, reviewedBy: null });
 });
 
 test("an unconfigured catalog is explicit and model selection cannot manufacture readiness", async () => {

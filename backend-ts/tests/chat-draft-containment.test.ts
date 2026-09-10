@@ -23,7 +23,8 @@ async function setup(response = yaml, roleId = "role_admin") {
   const executor = new Executor(new ToolRegistry(), validator);
   const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: response } }], usage: { prompt_tokens: 5, completion_tokens: 7 } }));
   const providerRuntime = new ProviderRuntime(repository, executor, fetchImplementation);
-  providerRuntime.activate({ id: "test", name: "Test", type: "openai_compatible", baseURL: "https://provider.example.test/v1", apiKey: "test", model: "test-v1", temperature: 0, timeoutMs: 1000 });
+  providerRuntime.activate({ id: "test", name: "Test", type: "openai_compatible", baseURL: "https://provider.example.test/v1", apiKey: "test", model: "test-v1", temperature: 0, timeoutMs: 1000,
+    egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.example.test", runtimeAnalysisDataClasses: [], interactiveDataClasses: ["restricted"], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "user", name: "User" } } });
   const app = await buildApp({ config, repository, registries, validator, executor, providerRuntime, synthesis: new SynthesisService(providerRuntime, registries, validator) });
   apps.push(app);
   const headers = { authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { algorithm: "HS256", subject: "user", expiresIn: 3600 })}` };

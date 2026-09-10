@@ -10,7 +10,9 @@ import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 import { stringify } from "yaml";
 
-const configuration: RuntimeProviderConfiguration = { id: "provider_test", name: "Test", type: "openai_compatible", baseURL: "https://openrouter.ai/api/v1", apiKey: "test-key", model: "openai/gpt-4o-mini-2024-07-18", temperature: 0, timeoutMs: 1_000 };
+const configuration: RuntimeProviderConfiguration = { id: "provider_test", name: "Test", type: "openai_compatible", baseURL: "https://openrouter.ai/api/v1", apiKey: "test-key", model: "openai/gpt-4o-mini-2024-07-18", temperature: 0, timeoutMs: 1_000,
+  egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://openrouter.ai", runtimeAnalysisDataClasses: [], interactiveDataClasses: ["restricted"],
+    reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "admin", name: "Admin" } } };
 
 describe("single-candidate synthesis", () => {
   test("live discovery does not trigger a second model rewrite or silently rename unknown steps", async () => {
