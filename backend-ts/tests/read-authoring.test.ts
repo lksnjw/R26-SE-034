@@ -58,6 +58,20 @@ test("only declared workflow input and preceding structured outputs are suggeste
   expect(value.nodes.flatMap(node => node.dataSources).every(source => !source.expression.includes("last") && !/private|credential|token/.test(source.expression))).toBe(true);
 });
 
+test("flat operation authoring exposes analysis input choices and its declared structured output to the following tool", () => {
+  const source: WorkflowBlueprint = { name: "Analysis authoring", trigger: { type: "manual" }, steps: [
+    { id: "first", action: tool.name, parameters: { count: 1 } },
+    { id: "summary", kind: "analysis", instruction: "Summarize", input: "{{first.structuredContent.count}}", data_class: "internal", model: "model-2026-10",
+      output_schema: { type: "object", properties: { summary: { type: "string" }, secret_token: { type: "string" } }, required: ["summary"], additionalProperties: false } },
+    { id: "last", action: tool.name, parameters: { count: 2 } },
+  ] };
+  const value = contract(source), analysis = value.nodes.find(node => node.nodeId === "summary")!, following = value.nodes.find(node => node.nodeId === "last")!;
+  expect(analysis).toMatchObject({ kind: "analysis", state: "LOCAL_CONTRACT", outputSchema: { type: "object" } });
+  expect(analysis.dataSources.map(item => item.expression)).toEqual(["{{first.structuredContent.count}}", "{{first.structuredContent.label}}"]);
+  expect(following.dataSources.map(item => item.expression)).toContain("{{summary.structuredContent.summary}}");
+  expect(following.dataSources.some(item => item.expression.includes("secret_token"))).toBe(false);
+});
+
 test("suggested structured bindings round-trip through the authoritative compiler without scalar coercion", () => {
   const value = contract(), source = value.nodes[1]!.dataSources.find(item => item.schema.type === "integer" && item.binding.source === "nodeOutput")!;
   const plan = compileReadWorkflow(stringify(blueprint), [tool], role);

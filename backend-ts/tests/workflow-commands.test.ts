@@ -12,6 +12,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { ProviderRuntime } from "../src/providers/runtime.js";
 import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 import type { Workflow } from "../src/models/schemas.js";
+import { analysisNodePatchSchema, applyWorkflowCommand, selectedNodePatchCommand, selectedNodePatchSchema, selectedNodePatchVersion } from "../src/workflows/commands.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -56,6 +57,50 @@ test("scoped node edit preserves unrelated nodes and control flow and creates a 
   expect(state.versions.report?.at(-1)?.artifactState).toBe("DRAFT");
   expect(state.workflows.report?.pendingGenerationApproval?.steps[0]?.stepId).toBe("approval");
   expect(state.executions).toEqual({}); expect(s.fetchImplementation).not.toHaveBeenCalled();
+});
+
+test("analysis node commands edit only the bounded analysis contract and add only an explicit flat analysis step", () => {
+  const source = stringify({ name: "Analysis editing", description: "Author one bounded transformation", trigger: { type: "manual" }, steps: [
+    { id: "first", action: "demo.echo", parameters: { value: "original" } },
+    { id: "summary", kind: "analysis", description: "Summarize", instruction: "Return a short summary", input: "{{first.structuredContent.value}}",
+      output_schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false },
+      data_class: "internal", model: "model-2026-10", max_input_items: 10, max_input_chars: 2000, max_output_tokens: 512 },
+    { id: "last", action: "demo.echo", parameters: { value: "{{summary.structuredContent.summary}}" } },
+  ] });
+  const patch = analysisNodePatchSchema.parse({ instruction: "Return a concise reviewed summary", max_output_tokens: 256 });
+  expect(selectedNodePatchVersion({ kind: "analysis" })).toBe("prompt/analysis-node-patch/v1");
+  expect(selectedNodePatchCommand({ id: "summary", kind: "analysis" }, patch)).toEqual({ type: "updateAnalysis", nodeId: "summary", patch });
+  const updated = parseWorkflowYAMLStrict(applyWorkflowCommand(source, { type: "updateAnalysis", nodeId: "summary", patch }));
+  expect(updated.steps[1]).toMatchObject({ id: "summary", kind: "analysis", instruction: "Return a concise reviewed summary", input: "{{first.structuredContent.value}}",
+    data_class: "internal", model: "model-2026-10", max_output_tokens: 256 });
+  expect(updated.steps[0]).toEqual(parseWorkflowYAMLStrict(source).steps[0]); expect(updated.steps[2]).toEqual(parseWorkflowYAMLStrict(source).steps[2]);
+  expect(() => applyWorkflowCommand(source, { type: "updateNode", nodeId: "summary", patch: { description: "Wrong command" } })).toThrow(/type does not match/);
+  const node = { id: "second_summary", kind: "analysis" as const, instruction: "Classify", input: "{{first.structuredContent.value}}", data_class: "public" as const,
+    output_schema: { type: "object", properties: { label: { type: "string" } }, required: ["label"], additionalProperties: false }, max_output_tokens: 128 };
+  const added = parseWorkflowYAMLStrict(applyWorkflowCommand(source, { type: "addAnalysis", node, beforeNodeId: "last" }));
+  expect(added.steps.map(step => step.id)).toEqual(["first", "summary", "second_summary", "last"]);
+});
+
+test("analysis patch schema rejects authority changes, floating models, workflow-input references and unsafe bounds", () => {
+  const schema = selectedNodePatchSchema({ kind: "analysis" });
+  for (const value of [{ action: "demo.echo" }, { model: "provider:latest" }, { input: "{{input.value}}" }, { max_output_tokens: 8193 }, {}])
+    expect(schema.safeParse(value).success).toBe(false);
+});
+
+test("selected analysis chat proposal uses its hardened narrow prompt and persists no workflow edit", async () => {
+  const source = stringify({ name: "Analysis proposal", trigger: { type: "manual" }, steps: [
+    { id: "first", action: "demo.echo", parameters: { value: "original" } },
+    { id: "summary", kind: "analysis", instruction: "Summarize", input: "{{first.structuredContent.value}}", data_class: "internal",
+      output_schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false } },
+  ] }), hash = workflowContentHash(source);
+  const s = await setup({ instruction: "Return one concise summary", max_output_tokens: 256 });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.workflows.report!.steps = 2; state.versions.report = [{ version: 1, artifactState: "PUBLISHED", yaml: source }]; });
+  const response = await s.propose({ nodeId: "summary", baseHash: hash, prompt: "Make the summary concise" });
+  expect(response.statusCode, response.body).toBe(200); expect(response.json().data).toMatchObject({ nodeId: "summary", baseHash: hash,
+    command: { type: "updateAnalysis", nodeId: "summary", patch: { instruction: "Return one concise summary", max_output_tokens: 256 } } });
+  const request = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
+  expect(request.messages[0].content).toContain("TASK: ONE SELECTED ANALYSIS NODE PATCH");
+  const state = await s.repository.snapshot(); expect(state.workflows.report!.yaml).toBe(source); expect(state.workflows.report!.draftVersion).toBe(1); expect(state.executions).toEqual({});
 });
 
 const historyURL = (value: { version: number; contentHash: string }, extra = "") => `/api/workflows/report/versions?view=edit-history&baseVersion=${value.version}&baseHash=${value.contentHash}${extra}`;

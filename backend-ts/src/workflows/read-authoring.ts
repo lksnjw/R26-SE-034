@@ -87,6 +87,17 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   };
   let prefix = blueprint.trigger.type === "manual" && Object.keys(blueprint.trigger.config ?? {}).every(key => key === "inputSchema"), seen = new Set<string>();
   const nodes = blueprint.steps.slice(0, 200).map(step => {
+    const kind = effectiveStepKind(step);
+    if (kind === "analysis") {
+      const outputSchema = project(step.output_schema), validScope = prefix && safeID(step.id) && !seen.has(step.id) &&
+        Object.keys(step).every(key => ["id", "kind", "description", "instruction", "input", "output_schema", "data_class", "model", "max_input_items", "max_input_chars", "max_output_tokens"].includes(key));
+      const result = { nodeId: step.id, sourceAction: "analysis", kind: "analysis", state: outputSchema ? "LOCAL_CONTRACT" : "UNAVAILABLE",
+        ...(outputSchema ? { outputSchema } : {}), dataSources: validScope ? upstream.slice(-32).map(source => structuredClone(source)) : [],
+        reason: outputSchema ? "Declared structured analysis contract only; provider egress, model admission and runtime validation are separate" : "Analysis requires a supported object output schema" };
+      prefix = validScope && !!outputSchema;
+      if (prefix) upstream.push(...sources(outputSchema, { kind: "ref", source: "nodeOutput", nodeId: step.id, path: ["structuredContent"] }, `Analysis ${step.id}`));
+      seen.add(step.id); return result;
+    }
     const matches = tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action), tool = matches.length === 1 ? matches[0] : undefined;
     const granted = !!tool && !!tool.tool_id.trim() && !!tool.mcp_tool_name.trim() && tool.input_schema.type === "object" && (tool.is_read_only || !!tool.operation_contract && blueprint.metadata?.controlFlow === undefined) && tool.allowed_roles.includes(role) && effectiveStepKind(step) === "tool";
     const schema = granted ? project(tool.input_schema) : undefined;

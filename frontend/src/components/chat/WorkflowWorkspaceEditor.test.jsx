@@ -71,6 +71,65 @@ function collectionRecord() {
   return { ...record, yaml: s.yaml, contentHash: s.sourceHash, authoring: { profile: "read-authoring/v1", controlFlow: s.flow, collections: [{ nodeId: "each", itemSources: [], collectSources: [] }] } };
 }
 
+function analysisRecord() {
+  const source = `name: Analysed report\ntrigger:\n  type: manual\nsteps:\n - id: first\n   action: demo.echo\n   parameters:\n     value: original\n - id: summary\n   kind: analysis\n   description: Summarise invoices\n   instruction: Return the reviewed total\n   input: '{{first.structuredContent.value}}'\n   data_class: internal\n   model: model-2026-10\n   max_input_items: 20\n   max_input_chars: 5000\n   max_output_tokens: 512\n   output_schema:\n     type: object\n     properties:\n       summary:\n         type: string\n     required: [summary]\n     additionalProperties: false\n - id: deliver\n   action: demo.notify\n   parameters:\n     value: '{{summary.structuredContent.summary}}'\n`;
+  return { ...record, yaml: source, executionProfile: "sequential-operation-v1", operation_job_admission: "operation-job/v1", authoring: { profile: "read-authoring/v1", nodes: [
+    { nodeId: "first", effectClass: "read", dataSources: [] },
+    { nodeId: "summary", kind: "analysis", dataSources: [{ label: "Node first · value", expression: "{{first.structuredContent.value}}" }] },
+    { nodeId: "deliver", effectClass: "notification", dataSources: [{ label: "Analysis summary · summary", expression: "{{summary.structuredContent.summary}}" }] },
+  ] } };
+}
+
+test("selected analysis node has a typed bounded inspector and applies only an explicit analysis draft command", async () => {
+  const saved = analysisRecord(); workflowService.readiness.mockResolvedValue(saved);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);
+  fireEvent.click(await screen.findByRole("button", { name: /Summarise invoices/ }));
+  expect(screen.getByRole("complementary", { name: "Selected analysis details" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "Analysis input" }).value).toBe("{{first.structuredContent.value}}");
+  expect(screen.getByRole("combobox", { name: "Analysis data class" }).value).toBe("internal");
+  fireEvent.change(screen.getByRole("textbox", { name: "Analysis instruction" }), { target: { value: "Return one concise reviewed total" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Analysis maximum output tokens" }), { target: { value: "256" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview analysis edit" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: saved.contentHash }), expect.objectContaining({
+    type: "updateAnalysis", nodeId: "summary", patch: expect.objectContaining({ instruction: "Return one concise reviewed total", input: "{{first.structuredContent.value}}", data_class: "internal", model: "model-2026-10", max_output_tokens: 256 }) })));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("analysis node chat remains revision-scoped and runtime output is shown as a readable node answer", async () => {
+  const saved = analysisRecord(), run = { id: "analysis-run", workflowId: "report", startedAt: "2026-10-07T00:00:00Z", status: "AWAITING_APPROVAL",
+    workflowSnapshot: { yaml: saved.yaml, version: 1, executionProfile: "sequential-operation-v1" }, readProgress: { profile: "read-progress-v1", lastSequence: 2 },
+    stepOutputs: { summary: { structuredContent: { summary: "Invoices total LKR 125,000", reviewed: true } } } };
+  workflowService.readiness.mockResolvedValue(saved); executionService.list.mockResolvedValue([run]); executionService.getTimeline.mockResolvedValue([
+    { nodeId: "first", status: "DONE", outcome: "READ_COMPLETED" },
+    { nodeId: "summary", status: "DONE", phase: "COMPLETE", outcome: "ANALYSIS_STRUCTURED_OUTPUT" },
+    { nodeId: "deliver", status: "AWAITING_APPROVAL", sideEffect: true },
+  ]);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);
+  fireEvent.click(await screen.findByRole("button", { name: /Summarise invoices/ }));
+  fireEvent.click(screen.getByText(/Structured analysis answer/));
+  expect(screen.getByText("Invoices total LKR 125,000")).toBeTruthy(); expect(screen.getByText("Yes")).toBeTruthy();
+  fireEvent.change(screen.getByRole("textbox", { name: "Selected node prompt" }), { target: { value: "Use a shorter summary" } });
+  fireEvent.click(screen.getByRole("button", { name: "Propose change" }));
+  await waitFor(() => expect(send).toHaveBeenCalledWith("Use a shorter summary", undefined, { nodeContext: { workflowId: "report", nodeId: "summary", baseVersion: 1, baseHash: saved.contentHash } }));
+  expect(screen.getByText(/cannot approve egress/)).toBeTruthy();
+});
+
+test("operation workspace adds an analysis node as a reviewable positioned draft preview", async () => {
+  const saved = analysisRecord(); workflowService.readiness.mockResolvedValue(saved);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);
+  fireEvent.click(await screen.findByRole("button", { name: "Add analysis" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New analysis ID" }), { target: { value: "classify" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "New analysis instruction" }), { target: { value: "Classify the reviewed summary" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "New analysis input" }), { target: { value: "{{summary.structuredContent.summary}}" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "New analysis position" }), { target: { value: "deliver" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview analysis node" }));
+  expect(screen.getByRole("region", { name: "Node change preview" }).textContent).toMatch(/classify.*Before deliver/);
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({ type: "addAnalysis", beforeNodeId: "deliver", node: expect.objectContaining({ id: "classify", kind: "analysis", input: "{{summary.structuredContent.summary}}", data_class: "internal" }) })));
+});
+
 test("selecting a collection owner forwards its exact saved scope to main chat and exposes a mobile focus action", async () => {
   const saved = collectionRecord(), onNodeContext = jest.fn(), onFocusChat = jest.fn(); workflowService.readiness.mockResolvedValue(saved);
   render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit onNodeContext={onNodeContext} onFocusChat={onFocusChat} />);

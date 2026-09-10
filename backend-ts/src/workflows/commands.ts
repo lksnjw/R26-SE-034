@@ -9,6 +9,17 @@ import { readMergeSchema, readReturnSchema } from "./read-values.js";
 
 export const nodeIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 export const nodePatchSchema = z.object({ action: z.string().min(1).max(128).optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
+const analysisInputSchema = z.string().min(1).max(1000).regex(/^\{\{[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+\}\}$/).refine(value => !value.startsWith("{{input."), "Analysis input must come from a prior node output");
+const analysisOutputSchema = jsonObjectSchema.refine(value => value.type === "object", "Analysis output schema must be an object");
+export const analysisNodePatchSchema = z.object({ description: z.string().max(2000).optional(), instruction: z.string().min(1).max(4000).optional(),
+  input: analysisInputSchema.optional(), output_schema: analysisOutputSchema.optional(),
+  data_class: z.enum(["public", "internal", "confidential", "restricted"]).optional(), model: z.string().max(256).refine(value => !value.includes(":latest"), "Floating model IDs are not supported").optional(),
+  max_input_items: z.number().int().min(1).max(10_000).optional(), max_input_chars: z.number().int().min(1).max(200_000).optional(),
+  max_output_tokens: z.number().int().min(1).max(8_192).optional() }).strict().refine(value => Object.keys(value).length > 0);
+const analysisNodeSchema = z.object({ id: nodeIdSchema, kind: z.literal("analysis"), description: z.string().max(2000).optional(), instruction: z.string().min(1).max(4000),
+  input: analysisInputSchema, output_schema: analysisOutputSchema, data_class: z.enum(["public", "internal", "confidential", "restricted"]),
+  model: z.string().max(256).refine(value => !value.includes(":latest"), "Floating model IDs are not supported").optional(), max_input_items: z.number().int().min(1).max(10_000).optional(),
+  max_input_chars: z.number().int().min(1).max(200_000).optional(), max_output_tokens: z.number().int().min(1).max(8_192).optional() }).strict();
 export const conditionPatchSchema = z.object({ predicate: readPredicateSchema }).strict();
 export const returnPatchSchema = z.object({ output: readReturnSchema }).strict();
 const destinationSchema = z.union([z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict(), z.object({ loopId: nodeIdSchema, scope: z.literal("body") }).strict()]);
@@ -19,7 +30,9 @@ export const nodeContextSchema = z.object({ workflowId: z.string().min(1).max(12
 export type NodeContext = z.infer<typeof nodeContextSchema>;
 export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("updateNode"), nodeId: nodeIdSchema, patch: nodePatchSchema }).strict(),
+  z.object({ type: z.literal("updateAnalysis"), nodeId: nodeIdSchema, patch: analysisNodePatchSchema }).strict(),
   z.object({ type: z.literal("addNode"), node: workflowStepBlueprintSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
+  z.object({ type: z.literal("addAnalysis"), node: analysisNodeSchema, beforeNodeId: nodeIdSchema.nullable() }).strict(),
   z.object({ type: z.literal("removeNode"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("moveNode"), nodeId: nodeIdSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
   z.object({ type: z.literal("addCondition"), conditionId: nodeIdSchema, predicate: readPredicateSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
@@ -41,11 +54,11 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
 export function selectedNodePatchSchema(node: { kind?: string | undefined }) {
-  return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : nodePatchSchema;
+  return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : nodePatchSchema;
 }
-export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : "prompt/node-patch/v2"; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : node.kind === "analysis" ? "prompt/analysis-node-patch/v1" : "prompt/node-patch/v2"; }
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
-  return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : "updateNode", nodeId: node.id, patch });
+  return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : node.kind === "analysis" ? "updateAnalysis" : "updateNode", nodeId: node.id, patch });
 }
 export function canViewWorkflow(workflow: Workflow, user: Pick<CurrentUser, "id" | "permissions">): boolean {
   if (workflow.emailDeliverySource && workflow.owner.id !== user.id) return false;
@@ -151,9 +164,10 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
     if (blueprint.steps.length > 200) throw new HandlerFailure(422, "Draft must have at most 200 uniquely identified nodes");
     saveDraftFlow(blueprint, root); return stringifyWorkflowYAML(blueprint);
   }
-  if (!["updateNode", "addNode", "removeNode", "moveNode"].includes(change.type)) throw new HandlerFailure(422, "Unsupported structural command");
+  if (!["updateNode", "updateAnalysis", "addNode", "addAnalysis", "removeNode", "moveNode"].includes(change.type)) throw new HandlerFailure(422, "Unsupported structural command");
+  if (change.type === "addAnalysis" && blueprint.metadata?.controlFlow !== undefined) throw new HandlerFailure(422, "Analysis nodes are supported only in a flat reviewed operation");
   if (change.type === "addCondition" || change.type === "wrapNode" || change.type === "updateCondition" || change.type === "removeCondition") throw new HandlerFailure(422, "Unsupported structural command");
-  if (change.type === "addNode") {
+  if (change.type === "addNode" || change.type === "addAnalysis") {
     if (blueprint.steps.some(step => step.id === change.node.id)) throw new HandlerFailure(422, "Node ID already exists");
     const index = change.beforeNodeId === null ? blueprint.steps.length : blueprint.steps.findIndex(step => step.id === change.beforeNodeId);
     if (index < 0) throw new HandlerFailure(422, "Insertion target does not exist");
@@ -161,7 +175,12 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
   } else {
     const index = blueprint.steps.findIndex(step => step.id === change.nodeId);
     if (index < 0) throw new HandlerFailure(422, "Selected node does not exist");
-    if (change.type === "updateNode") blueprint.steps[index] = { ...blueprint.steps[index]!, ...change.patch };
+    if (change.type === "updateNode" || change.type === "updateAnalysis") {
+      const selected = blueprint.steps[index]!;
+      if ((change.type === "updateAnalysis" && selected.kind !== "analysis") || (change.type === "updateNode" && selected.kind === "analysis"))
+        throw new HandlerFailure(422, "The selected node type does not match this edit command");
+      blueprint.steps[index] = { ...selected, ...change.patch };
+    }
     else if (change.type === "removeNode") blueprint.steps.splice(index, 1);
     else {
       if (change.beforeNodeId === change.nodeId) throw new HandlerFailure(422, "A node cannot move before itself");
