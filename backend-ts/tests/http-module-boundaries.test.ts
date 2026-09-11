@@ -7,7 +7,7 @@ const source = (path: string) => readFile(resolve(path), "utf8");
 describe("HTTP responsibility boundaries", () => {
   test("keeps the application composition root below the agreed size ceiling", async () => {
     const app = await source("src/http/app.ts");
-    expect(app.split(/\r?\n/).length).toBeLessThanOrEqual(1_500);
+    expect(app.split(/\r?\n/).length).toBeLessThanOrEqual(1_000);
   });
 
   test("keeps authentication/session cryptography out of the route composition root", async () => {
@@ -31,5 +31,17 @@ describe("HTTP responsibility boundaries", () => {
     expect(app).not.toMatch(/export type ApplicationServices\s*=\s*\{/);
     expect(services).toMatch(/export type ApplicationServices\s*=\s*\{/);
     expect(requestBody).toContain("export const INVALID_JSON_BODY");
+  });
+
+  test("keeps workflow lifecycle and admission out of the route composition root", async () => {
+    const [app, workflowRuntime, executionRoutes] = await Promise.all([
+      source("src/http/app.ts"),
+      source("src/http/handlers/workflow-runtime.ts"),
+      source("src/http/handlers/uploads-executions.ts"),
+    ]);
+    expect(app).not.toMatch(/function\s+(?:createWorkflow|runWorkflowFor|resumeWorkflowApproval)\b/);
+    expect(workflowRuntime).toContain("export async function runWorkflowFor");
+    expect(executionRoutes).toContain('from "./workflow-runtime.js"');
+    expect(executionRoutes).not.toContain('from "../app.js"');
   });
 });

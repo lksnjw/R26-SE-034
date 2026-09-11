@@ -11,7 +11,7 @@ import { withoutSecretFields } from "../../redact/secrets.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import { canReadExecution } from "../execution-scope.js";
 import { requestTraceId } from "../../trace/request-trace.js";
-import { runWorkflowFor, resumeWorkflowApproval } from "../app.js";
+import { runWorkflowFor, resumeWorkflowApproval } from "./workflow-runtime.js";
 import { decideRuntimeApproval } from "../../runner/runtime-approvals.js";
 import { assertCurrentRunController } from "../../runner/read-checkpoints.js";
 import {
