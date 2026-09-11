@@ -17,7 +17,8 @@ const safeID = (id: string) => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(id) && id !=
 /** Offline authoring hints, never discovery or dispatch authority. Schema
  * annotations/defaults/examples can contain business data or credentials and
  * are deliberately omitted. No result samples or connection secrets enter it. */
-export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, registryHash: string) {
+export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, registryHash: string,
+  connections: readonly { id: string; primary: boolean; dispatchSupported: boolean }[] = []) {
   let schemaNodes = 0, sourceNodes = 0;
   const project = (raw: unknown): Schema | undefined => {
     if (validateToolSchemaProfile(raw).length) return undefined;
@@ -103,9 +104,9 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
       const allowedTools = allowed.map(action => tools.filter(tool => tool.name === action || tool.mcp_tool_name === action)).filter(matches => matches.length === 1).map(matches => matches[0]!)
         .filter(tool => tool.is_read_only && tool.allowed_roles.includes(role));
       const validScope = prefix && safeID(step.id) && !seen.has(step.id) && allowed.length > 0 && allowedTools.length === allowed.length &&
-        Object.keys(step).every(key => ["id", "kind", "description", "instruction", "input", "allowed_actions", "output_schema", "completion_predicate", "data_class", "model",
+        Object.keys(step).every(key => ["id", "kind", "connection_id", "description", "instruction", "input", "allowed_actions", "output_schema", "completion_predicate", "data_class", "model",
           "max_input_items", "max_input_chars", "max_output_tokens", "max_total_tokens", "max_rounds", "max_tool_calls", "max_wall_time_ms", "max_concurrency"].includes(key));
-      const result = { nodeId: step.id, sourceAction: "agent", kind: "agent", state: outputSchema && allowedTools.length === allowed.length ? "LOCAL_CONTRACT" : "UNAVAILABLE",
+      const result = { nodeId: step.id, sourceAction: "agent", kind: "agent", ...(step.connection_id || connections.length ? { connectionId: step.connection_id ?? connections.find(item => item.primary)?.id ?? connections[0]!.id } : {}), state: outputSchema && allowedTools.length === allowed.length ? "LOCAL_CONTRACT" : "UNAVAILABLE",
         ...(outputSchema ? { outputSchema } : {}), actions: allowedTools.flatMap(tool => [tool.name, tool.mcp_tool_name]),
         dataSources: validScope ? upstream.slice(-32).map(source => structuredClone(source)) : [],
         reason: outputSchema ? "Declared bounded runtime-agent contract only; reviewed allow-list, egress and per-call gateway checks remain separate" : "Agent requires a supported object output schema" };
@@ -117,8 +118,8 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     const granted = !!tool && !!tool.tool_id.trim() && !!tool.mcp_tool_name.trim() && tool.input_schema.type === "object" && (tool.is_read_only || !!tool.operation_contract && blueprint.metadata?.controlFlow === undefined) && tool.allowed_roles.includes(role) && effectiveStepKind(step) === "tool";
     const schema = granted ? project(tool.input_schema) : undefined;
     const outputSchema = granted && tool?.bridge_contract?.output_schema ? project(tool.bridge_contract.output_schema) : undefined;
-    const validScope = prefix && safeID(step.id) && !seen.has(step.id) && Object.keys(step).every(key => ["id", "kind", "action", "parameters", "description"].includes(key));
-    const result = { nodeId: step.id, sourceAction: step.action ?? "", state: schema ? "LOCAL_CONTRACT" : "UNAVAILABLE",
+    const validScope = prefix && safeID(step.id) && !seen.has(step.id) && Object.keys(step).every(key => ["id", "kind", "action", "connection_id", "parameters", "description"].includes(key));
+    const result = { nodeId: step.id, sourceAction: step.action ?? "", ...(step.connection_id || connections.length ? { connectionId: step.connection_id ?? connections.find(item => item.primary)?.id ?? connections[0]!.id } : {}), state: schema ? "LOCAL_CONTRACT" : "UNAVAILABLE",
       ...(schema && tool ? { inputSchema: schema, ...(outputSchema ? { outputSchema } : {}), contractHash: capabilityContractHash(tool), actions: [tool.name, tool.mcp_tool_name], effectClass: tool.is_read_only ? "read" : tool.operation_contract!.effect_class, requiresIndependentApproval: !tool.is_read_only } : {}),
       dataSources: validScope && (!compiled || scopes) ? upstream.filter(source => scopedSource(source, step.id) && (!scopes || source.binding.source === "workflowInput" || scopes.get(step.id)?.has(source.binding.nodeId!))).slice(-32).map(source => structuredClone(source)) : [],
       reason: schema ? "Local schema guidance only; live admission and runtime checks are separate" : "No supported role-granted local read schema; existing values are preserved" };
@@ -138,7 +139,8 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   const collectionGuides = collections.map(node => ({ nodeId: node.id, itemSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.items, node.id),
     collectSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.collect, node.id, true) }));
   const executionProfile = compiled?.ir.schemaVersion === "workflow-read-ir/v4" ? "collection-simulation-only" : compiled?.ir.schemaVersion === "workflow-read-ir/v3" ? "structured-read-v1" : editableFlow ? "conditional-read-v1" : "sequential-read-v1";
-  const value = { profile: "read-authoring/v1", registryHash, executionProfile, ...(inputSchema ? { inputSchema } : {}), nodes, ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides } : {}) };
+  const connectionChoices = connections.filter(item => /^[a-z][a-z0-9_-]{0,63}$/.test(item.id) && item.dispatchSupported).map(item => ({ id: item.id, primary: item.primary }));
+  const value = { profile: "read-authoring/v1", registryHash, executionProfile, connectionChoices, ...(inputSchema ? { inputSchema } : {}), nodes, ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides } : {}) };
   if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, nodes: [], conditions: [], returns: [], collections: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
   return value;
 }

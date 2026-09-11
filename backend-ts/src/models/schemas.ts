@@ -27,6 +27,7 @@ export const workflowStepBlueprintSchema = z.object({
   kind: z.string().optional(),
   type: z.string().optional(),
   action: z.string().optional(),
+  connection_id: z.string().optional(),
   parameters: jsonObjectSchema.optional(),
   instruction: z.string().optional(),
   input: z.string().optional(),

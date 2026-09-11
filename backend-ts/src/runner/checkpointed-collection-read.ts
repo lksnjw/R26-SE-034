@@ -9,6 +9,8 @@ import { ReadIterationCheckpoints } from "./read-iteration-checkpoints.js";
 import { assertIterationDispatchBinding } from "../workflows/read-iteration-dispatch-binding.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { ReadWorkerLeaseFailure, type ReadWorkerContext } from "./read-worker-lease.js";
+import { boundMcpConnection, selectedMcpConnectionId } from "../tools/mcp-dispatch-context.js";
+import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 
 /** Shared server driver for admitted immutable collection controllers.
  * Never accepts client-produced cursors, outputs, permissions or evidence. */
@@ -18,14 +20,18 @@ export async function completeCheckpointedCollectionRead(services: HandlerServic
   if (!snapshot || !captured.readProgress || !captured.iterationProgress || snapshot.executionProfile !== "collection-read-v1" || token.registry_hash !== snapshot.registryHash)
     throw new Error("Collection driver requires an admitted immutable run identity");
   const journal = new ReadIterationCheckpoints(services.repository, captured.id, captured.readProgress.epoch, snapshot.yaml, plan, input, services.registries.snapshot().tools, bindingKey, signal);
-  const session = services.erpbridgeSession, registryHash = services.registries.hash(), generation = session?.discoveryGeneration ?? 0;
-  const roleMap = canonicalJSONBytes(services.config.erpbridgeRoleMap);
+  const registryHash = services.registries.hash(), pinnedIds = plan.ir.root.nodes.map(node => node.capability.admission?.connectionId).filter((value): value is string => !!value);
+  const connectionIds = [...new Set(pinnedIds.length ? pinnedIds : parseWorkflowYAMLStrict(snapshot.yaml).steps.map(step => selectedMcpConnectionId(services, step.connection_id)))];
+  const bindings = new Map(connectionIds.map(id => { const bound = boundMcpConnection(services, id); return [id,
+    { ...bound, generation: bound.session.discoveryGeneration ?? 0, roleMapHash: canonicalJSONBytes(bound.roleMap) }] as const; }));
   const assertActive = worker?.assertActive.bind(worker), assertWorkerDispatch = worker?.assertDispatch.bind(worker);
   let denied: ReadCheckpointFailure | ReadRunCancelled | undefined;
   const assertBinding = () => {
     assertActive?.(); if (denied) throw denied;
-    if (services.erpbridgeSession !== session || services.registries.hash() !== registryHash || session?.available === false ||
-        (session?.discoveryGeneration ?? 0) !== generation || !roleMap.equals(canonicalJSONBytes(services.config.erpbridgeRoleMap))) throw new Error("Collection controller context changed");
+    if (services.registries.hash() !== registryHash) throw new Error("Collection registry changed");
+    for (const [connectionId, expected] of bindings) { const current = boundMcpConnection(services, connectionId);
+      if (current.session !== expected.session || current.session.available === false || (current.session.discoveryGeneration ?? 0) !== expected.generation ||
+          !expected.roleMapHash.equals(canonicalJSONBytes(current.roleMap))) throw new Error("Collection connection context changed"); }
     assertDispatchBinding?.();
   };
   const assertBoundary = (state: Parameters<typeof assertIterationDispatchBinding>[1]) => {

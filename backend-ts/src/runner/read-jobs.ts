@@ -12,6 +12,7 @@ import { discoverTools } from "../agent/tool-discovery.js";
 import { prepareCompiledExecution } from "../workflows/read-compilation-lifecycle.js";
 import { supportsCollectionReads, readIterationBindingKey } from "./read-collection-admission.js";
 import { completeCheckpointedCollectionRead } from "./checkpointed-collection-read.js";
+import { boundMcpConnection, selectedMcpConnectionId } from "../tools/mcp-dispatch-context.js";
 
 type Admission = { input: Record<string, unknown>; actorId: string; admittedRole: string; scope: string; fingerprint: string; connectionFingerprint: string };
 const queues = new WeakMap<Repository, ReadJobQueue>();
@@ -70,11 +71,17 @@ export class ReadJobQueue {
     if (Buffer.byteLength(canonical) > 64_000) throw new HandlerFailure(413, "Read job input exceeds 64 KB", { code: "READ_JOB_INPUT_LIMIT" });
     const scope = this.digest(JSON.stringify([user.id, workflow.id, key]));
     const fingerprint = this.digest(JSON.stringify([workflow.publishedVersion, workflowContentHash(workflow.yaml), canonical]));
-    return { input: structuredClone(input), actorId: user.id, admittedRole: user.role, scope, fingerprint, connectionFingerprint: this.connectionFingerprint() };
+    // An existing idempotent admission remains queryable while its connection
+    // is degraded or fenced. A new admission still fails in store() because an
+    // empty fingerprint cannot match a current connected context.
+    let connectionFingerprint = "";
+    try { connectionFingerprint = this.connectionFingerprint(workflow.yaml); } catch { /* resolved after existing-key lookup */ }
+    return { input: structuredClone(input), actorId: user.id, admittedRole: user.role, scope, fingerprint, connectionFingerprint };
   }
   private digest(value: string): string { return createHmac("sha256", this.#fingerprintKey).update(value).digest("hex"); }
-  private connectionFingerprint(): string {
-    return this.digest(canonicalInput({ binding: this.services.erpbridgeSession?.admissionBinding ?? null, roleMap: this.services.config.erpbridgeRoleMap }));
+  private connectionFingerprint(yaml: string): string {
+    const source = parseWorkflowYAMLStrict(yaml), ids = [...new Set(source.steps.map(step => selectedMcpConnectionId(this.services, step.connection_id)))].sort();
+    return this.digest(canonicalInput(ids.map(id => { const bound = boundMcpConnection(this.services, id); return { id, binding: bound.session.admissionBinding ?? null, roleMap: bound.roleMap }; })));
   }
   existing(state: Readonly<RepositoryState>, admission: Admission, user: CurrentUser): Execution | null {
     const job = Object.values(state.readJobs).find((item) => item.idempotencyScope === admission.scope);
@@ -93,7 +100,7 @@ export class ReadJobQueue {
   }
   store(state: RepositoryState, item: Execution, admission: Admission): void {
     if (this.#closed || this.#stalled) throw new HandlerFailure(503, "Read workers are unavailable", { code: "READ_QUEUE_UNAVAILABLE" });
-    if (!this.services.erpbridgeSession?.admissionBinding || this.connectionFingerprint() !== admission.connectionFingerprint)
+    if (!item.workflowSnapshot?.yaml || this.connectionFingerprint(item.workflowSnapshot.yaml) !== admission.connectionFingerprint)
       throw new HandlerFailure(503, "Read connection identity is unavailable or changed during admission", { code: "READ_CONNECTION_BINDING_REQUIRED" });
     const inputCiphertext = this.#codec.encode(Buffer.from(JSON.stringify({ version: 1, executionId: item.id, input: admission.input }))).toString("base64");
     if (!Number.isSafeInteger(state.counter + 1) || state.counter < 0) throw new Error("Read admission sequence is unavailable");
@@ -204,7 +211,7 @@ export class ReadJobQueue {
       const job = claimed.job, snapshot = initial.workflowSnapshot;
       if (this.#closed || control.controller.signal.aborted || job.version !== 1 || !snapshot || snapshot.contentHash !== workflowContentHash(snapshot.yaml) ||
           job.actorId !== initial.startedBy.id || !job.inputCiphertext) throw new Error("Invalid queued job");
-      if (this.services.erpbridgeSession?.requiresReviewedRevision && !snapshot.compilation) throw new Error("Queued modern run has no compiled admission receipt");
+      if (this.services.config.mcpTransport === "erpbridge-mcp" && this.services.config.mcpMode === "remote" && !snapshot.compilation) throw new Error("Queued modern run has no compiled admission receipt");
       const actor = await this.services.repository.effectiveUser(job.actorId);
       const compilation = await this.services.repository.readAuthoritative((state) => {
         assertCurrentRunController(state as RepositoryState, initial!, job.actorId, job.admittedRole);
@@ -213,17 +220,20 @@ export class ReadJobQueue {
         return prepareCompiledExecution(state, this.services, publication, snapshot.yaml, job.admittedRole, snapshot.compilation);
       });
       if (!actor || actor.role !== job.admittedRole || snapshot.registryHash !== this.services.registries.hash() ||
-          !this.services.erpbridgeSession?.admissionBinding || job.connectionFingerprint !== this.connectionFingerprint()) throw new Error("Queued authority, connection or registry changed");
+          job.connectionFingerprint !== this.connectionFingerprint(snapshot.yaml)) throw new Error("Queued authority, connection or registry changed");
       const privateInput = JSON.parse(this.#codec.decode(Buffer.from(job.inputCiphertext, "base64")).toString("utf8")) as { version?: number; executionId?: string; input?: Record<string, unknown> };
       if (privateInput.version !== 1 || privateInput.executionId !== id || !privateInput.input || Array.isArray(privateInput.input) || typeof privateInput.input !== "object") throw new Error("Private job input is not authentic");
       canonicalInput(privateInput.input);
       const gate = await validateWorkflow(this.services, "ReadJobWorker", snapshot.yaml, actor, { traceId: initial.traceId, workflowId: initial.workflowId, executionId: id, signal: control.controller.signal });
-      if (!gate.result.passed || !gate.token || gate.token.registry_hash !== snapshot.registryHash || !this.services.erpbridgeSession) throw new Error("Queued verification failed");
-      const live = await discoverTools(this.services.erpbridgeSession, this.services.registries);
+      if (!gate.result.passed || !gate.token || gate.token.registry_hash !== snapshot.registryHash) throw new Error("Queued verification failed");
+      const pinnedIds = compilation.plan.ir.root.nodes.map(node => node.capability.admission?.connectionId).filter((value): value is string => !!value);
+      const connectionIds = [...new Set(pinnedIds.length ? pinnedIds : parseWorkflowYAMLStrict(snapshot.yaml).steps.map(step => selectedMcpConnectionId(this.services, step.connection_id)))];
+      const live = [...new Map((await Promise.all(connectionIds.map(async id => discoverTools(boundMcpConnection(this.services, id).session, this.services.registries))))
+        .flatMap(tools => tools.map(tool => [tool.tool_id, tool] as const))).values()];
       if (inspectReadWorkflow(parseWorkflowYAMLStrict(snapshot.yaml), live, actor.role, supportsCollectionReads(this.services)).length) throw new Error("Queued contracts changed");
       this.workerContext(control).assertActive();
       const assertConnection = () => {
-        if (!this.services.erpbridgeSession?.admissionBinding || job.connectionFingerprint !== this.connectionFingerprint())
+        if (job.connectionFingerprint !== this.connectionFingerprint(snapshot.yaml))
           throw new Error("Queued connection binding changed; refusing further dispatch");
       };
       if (compilation.plan.ir.schemaVersion === "workflow-read-ir/v4") await completeCheckpointedCollectionRead(this.services, initial, privateInput.input, gate.token,

@@ -2,12 +2,12 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { assertReadContinuation, type Execution, type Repository, type RepositoryState, type ReadRunAttempt } from "../repository/store.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { canonicalJSONByteLength, JSONProofCache } from "../core/json-proof-cache.js";
-import { workflowContentHash } from "../parser/workflow.js";
+import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
 import { type ReadVisit } from "../workflows/read-interpreter.js";
 import { ReadMachine } from "../workflows/read-machine.js";
 import { ReadContinuationCodec } from "./read-continuation.js";
 import { ReadCompletionEvidence, type CompletedRead } from "../workflows/read-completion-evidence.js";
-import { assertCompiledReadMatches, compileReadWorkflow, type CompiledReadPlan } from "../workflows/compiled-read.js";
+import { assertCompiledReadMatches, compileReadWorkflow, type CompiledReadPlan, type ReadAdmissionPin } from "../workflows/compiled-read.js";
 import { loopNodes, structuralNodes, type ReadSkipReason } from "../workflows/read-control-flow.js";
 import { ReadValueBudget } from "../workflows/read-value-budget.js";
 import type { ToolDefinition } from "../registry/schemas.js";
@@ -15,6 +15,7 @@ import { safeMcpResult } from "../tools/mcp-result.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { appendExecutionEvent, assertCurrentRunController, ReadCheckpointFailure, ReadRunCancelled } from "./read-checkpoints.js";
+import { connectionToolKey } from "../tools/mcp-dispatch-context.js";
 
 export type IterationReceipt = {
   nodeId: string; invocationId: string; iterations: ReadVisit["iterations"]; sourceIndex: number;
@@ -100,7 +101,9 @@ export class ReadIterationCheckpoints {
     // These projections are private cloned immutable inputs. Validate once per
     // captured role; volatile execution/authority/evidence is checked every time.
     if (this.#validatedPlanRole !== ledger.admittedRole) {
-      const pins = new Map(this.#plan.ir.root.nodes.flatMap(node => node.capability.admission ? [[node.capability.toolId, node.capability.admission] as const] : []));
+      const source = parseWorkflowYAMLStrict(this.yaml), pins = new Map<string, ReadAdmissionPin>();
+      this.#plan.ir.root.nodes.forEach((node, index) => { const pin = node.capability.admission; if (!pin) return;
+        pins.set(connectionToolKey(pin.connectionId, node.capability.toolId), pin); if (!source.steps[index]?.connection_id) pins.set(node.capability.toolId, pin); });
       assertCompiledReadMatches(this.#plan, compileReadWorkflow(this.yaml, this.#tools, ledger.admittedRole, pins)); this.#validatedPlanRole = ledger.admittedRole;
     }
     if (Object.keys(ledger.receipts).length > 5000 || canonicalJSONByteLength(ledger) > 1_000_000) throw new Error("Iteration journal exceeds bounded limits");

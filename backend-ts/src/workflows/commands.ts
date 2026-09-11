@@ -8,7 +8,8 @@ import { draftFlow, locateFlowNode, insertionScope, moveDraftNode, saveDraftFlow
 import { readMergeSchema, readReturnSchema } from "./read-values.js";
 
 export const nodeIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
-export const nodePatchSchema = z.object({ action: z.string().min(1).max(128).optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
+const connectionIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
+export const nodePatchSchema = z.object({ action: z.string().min(1).max(128).optional(), connection_id: connectionIdSchema.optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
 const analysisInputSchema = z.string().min(1).max(1000).regex(/^\{\{[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+\}\}$/).refine(value => !value.startsWith("{{input."), "Analysis input must come from a prior node output");
 const analysisOutputSchema = jsonObjectSchema.refine(value => value.type === "object", "Analysis output schema must be an object");
 export const analysisNodePatchSchema = z.object({ description: z.string().max(2000).optional(), instruction: z.string().min(1).max(4000).optional(),
@@ -22,7 +23,7 @@ const analysisNodeSchema = z.object({ id: nodeIdSchema, kind: z.literal("analysi
   max_input_chars: z.number().int().min(1).max(200_000).optional(), max_output_tokens: z.number().int().min(1).max(8_192).optional() }).strict();
 const completionPredicateSchema = z.object({ path: z.array(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/)).min(1).max(16),
   equals: z.union([z.string().max(2000), z.number().finite(), z.boolean(), z.null()]) }).strict();
-const agentFields = { description: z.string().max(2000).optional(), instruction: z.string().min(1).max(4000), input: analysisInputSchema,
+const agentFields = { description: z.string().max(2000).optional(), connection_id: connectionIdSchema.optional(), instruction: z.string().min(1).max(4000), input: analysisInputSchema,
   allowed_actions: z.array(z.string().min(1).max(128)).min(1).max(8).refine(value => new Set(value).size === value.length, "Agent actions must be unique"),
   output_schema: analysisOutputSchema, completion_predicate: completionPredicateSchema, data_class: z.enum(["public", "internal", "confidential", "restricted"]),
   model: z.string().max(256).refine(value => !value.includes(":latest"), "Floating model IDs are not supported").optional(),

@@ -27,6 +27,7 @@ import { ANALYSIS_PROMPT_VERSION } from "../providers/runtime.js";
 import { promptData } from "../prompts/contracts.js";
 import { validateValue } from "../structured-output/validate.js";
 import { runRuntimeAgent, RuntimeAgentKnownFailure } from "./runtime-agent.js";
+import { boundMcpConnection } from "../tools/mcp-dispatch-context.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -308,14 +309,33 @@ export class OperationJobQueue {
         if (!publication || publication.yaml !== snapshot.yaml) throw new Error("Operation publication changed");
         return prepareOperationExecution(state, services, publication, snapshot.yaml, actor.role, snapshot.operationCompilation).plan;
       });
-      const session = services.erpbridgeSession!, generation = session.discoveryGeneration ?? 0, roleMap = canonicalJSONBytes(services.config.erpbridgeRoleMap);
-      const assertContext = () => { this.assert(control); if (services.erpbridgeSession !== session || session.available === false || generation !== (session.discoveryGeneration ?? 0) || !roleMap.equals(canonicalJSONBytes(services.config.erpbridgeRoleMap)) || snapshot.registryHash !== services.registries.hash()) throw new Error("Operation connection or registry changed"); };
-      const live = await discoverTools(session, services.registries); assertContext();
+      const connectionIds = new Set<string>();
+      for (const node of plan.ir.root.nodes) {
+        if (node.kind === "action" && node.capability.admission) connectionIds.add(node.capability.admission.connectionId);
+        if (node.kind === "agent") for (const capability of node.allowedCapabilities) connectionIds.add(capability.admission.connectionId);
+      }
+      const bindings = new Map([...connectionIds].map(connectionId => { const bound = boundMcpConnection(services, connectionId); return [connectionId,
+        { ...bound, generation: bound.session.discoveryGeneration ?? 0, roleMapHash: canonicalJSONBytes(bound.roleMap) }] as const; }));
+      const assertContext = () => {
+        this.assert(control);
+        for (const [connectionId, expected] of bindings) { const current = boundMcpConnection(services, connectionId);
+          if (current.session !== expected.session || current.session.available === false || expected.generation !== (current.session.discoveryGeneration ?? 0) ||
+              !expected.roleMapHash.equals(canonicalJSONBytes(current.roleMap))) throw new Error("Operation connection context changed"); }
+        if (snapshot.registryHash !== services.registries.hash()) throw new Error("Operation registry changed");
+      };
+      const liveByConnection = new Map<string, readonly ToolDefinition[]>();
+      await Promise.all([...bindings].map(async ([connectionId, value]) => { liveByConnection.set(connectionId, await discoverTools(value.session, services.registries)); }));
+      const live = [...new Map([...liveByConnection.values()].flatMap(tools => tools.map(tool => [tool.tool_id, tool] as const))).values()];
+      assertContext();
       const gate = await validateWorkflow(services, "OperationJobWorker", snapshot.yaml, actor, { executionId: id, workflowId: initial.workflowId, traceId: initial.traceId, signal: control.controller.signal });
       if (!gate.result.passed || !gate.token) throw new Error("Operation deterministic verification failed");
       for (let index = initial.readProgress!.nextStepIndex; index < plan.ir.root.nodes.length; index++) {
         assertContext(); const node = plan.ir.root.nodes[index]!;
         if (node.kind === "agent") {
+          const agentConnections = new Set(node.allowedCapabilities.map(value => value.admission.connectionId));
+          if (agentConnections.size !== 1) throw new Error("A runtime-agent node must use one exact ERPBridge connection");
+          const agentConnectionId = [...agentConnections][0]!, agentLive = liveByConnection.get(agentConnectionId);
+          if (!agentLive) throw new Error("Runtime-agent ERPBridge connection is unavailable");
           const resolvedInput = await repository.mutateExecution(id, state => {
             this.assert(control); const run = state.executions[id]!, progress = run.readProgress!;
             if (progress.nextStepIndex !== index) throw new Error("Runtime-agent pointer changed");
@@ -339,7 +359,7 @@ export class OperationJobQueue {
           const pendingCalls = new Map<string, { intentKey: string; intentId: string }>();
           let result;
           try {
-            result = await runRuntimeAgent({ node, taskInput: resolvedInput, runtime, tools: live, workflowId: initial.workflowId, executionId: id,
+            result = await runRuntimeAgent({ node, taskInput: resolvedInput, runtime, tools: agentLive, workflowId: initial.workflowId, executionId: id,
               actor: { id: actor.id, role: actor.role }, ...(initial.traceId ? { traceId: initial.traceId } : {}), signal: control.controller.signal,
               hooks: {
                 beforeModel: async (round, messages) => {
@@ -497,7 +517,10 @@ export class OperationJobQueue {
           });
           continue;
         }
-        const tool = live.find(tool => tool.tool_id === node.capability.toolId);
+        const connectionId = node.capability.admission?.connectionId;
+        if (!connectionId) throw new Error("Operation node has no immutable ERPBridge connection pin");
+        const nodeBinding = bindings.get(connectionId), nodeLive = liveByConnection.get(connectionId);
+        const tool = nodeLive?.find(tool => tool.tool_id === node.capability.toolId);
         if (!tool) throw new Error("Operation live tool is unavailable");
         const args = await repository.mutateExecution(id, state => {
           this.assert(control); const run = state.executions[id]!, progress = run.readProgress!;
@@ -514,7 +537,7 @@ export class OperationJobQueue {
         const issues = validateToolArguments(node.capability.action, args, tool);
         if (issues.missing.length || issues.invalid.length) throw new Error("Resolved operation arguments failed runtime validation");
         if (hasReservedBridgeRole(tool)) {
-          const identity = createDispatchIdentity(actor, services.config.erpbridgeRoleMap);
+          const identity = createDispatchIdentity(actor, nodeBinding!.roleMap);
           if (Object.hasOwn(args, "role") || !identity.erpbridgeRole || !tool.bridge_contract?.remote_roles.includes(identity.erpbridgeRole))
             throw new Error("Operation requires a current reviewed mapped ERPBridge role");
         }
@@ -708,7 +731,7 @@ export class OperationJobQueue {
           const binding = await repository.readAuthoritative(state => {
             const run = state.executions[id]!, pin = node.capability.admission!;
             return { executionId: id, workflowId: run.workflowId, nodeId: node.id, invocationId: run.readProgress!.attempts[node.id]!.id, operationKey: `${id}:${node.id}`,
-              sourceHash: plan.sourceHash, semanticHash: plan.semanticHash, connectionId: pin.connectionId, connectionBinding: session.admissionBinding!, capabilityId: pin.capabilityId,
+              sourceHash: plan.sourceHash, semanticHash: plan.semanticHash, connectionId: pin.connectionId, connectionBinding: nodeBinding!.session.admissionBinding!, capabilityId: pin.capabilityId,
               capabilityRevision: pin.revisionId, admissionVersion: pin.admissionVersion, contractHash: pin.contractHash, argumentHash: digest(args), requesterId: actor.id,
               requesterRoleId: run.operationSecret!.roleId, workerEpoch: run.readProgress!.epoch, policyHash: runtimeApprovalPolicyHash(state) };
           });
@@ -736,12 +759,12 @@ export class OperationJobQueue {
         if (node.effectClass === "read") output = await dispatchReadTool(services, actor.id, node.capability.action, args, { workflowId: initial.workflowId, executionId: id, signal: control.controller.signal, assertDispatch: assertContext,
           beforeDispatch: persistIntent, plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } });
         else {
-          const identity = createDispatchIdentity(actor, services.config.erpbridgeRoleMap), resolved = await services.validator.evaluateResolvedStep(id, snapshot.yaml, index, args, gate.token, identity);
+          const identity = createDispatchIdentity(actor, nodeBinding!.roleMap), resolved = await services.validator.evaluateResolvedStep(id, snapshot.yaml, index, args, gate.token, identity);
           if (!resolved.capability || resolved.violation) throw new Error("Exact operation dispatch capability was denied");
           await persistIntent();
           const permit = await issueOperationDispatchPermit(repository, id, intentId, tool, args, identity, assertContext);
           try {
-            output = await session.clientFor(tool, node.capability.admission).execute(node.capability.action, resolved.capability, args, identity, control.controller.signal,
+            output = await nodeBinding!.session.clientFor(tool, node.capability.admission).execute(node.capability.action, resolved.capability, args, identity, control.controller.signal,
               async () => { assertContext(); await repository.readAuthoritative(state => assertConsumedRuntimeApproval(state as RepositoryState, id, intentId)); assertContext(); }, assertContext, permit);
           } finally { retireOperationDispatchPermit(permit); }
           if (!confirmedOperationResult(tool, output)) throw new Error("Operation tool returned no contract confirmation");

@@ -8,8 +8,10 @@ const memoryKeys = new WeakMap<Repository, Buffer>();
  * explicit non-durable memory mode or actual encrypted record transactions.
  * An environment setting alone cannot qualify a storage implementation. */
 export function supportsCollectionReads(services: HandlerServices): boolean {
-  const session = services.erpbridgeSession, persistence = services.repository.persistence;
-  if (!session || session.available === false || session.requiresReviewedRevision !== true || session.dispatchBoundary !== "sdk-entry/v1" || !session.admissionBinding) return false;
+  const runtime = services.mcpConnectionRuntime;
+  const sessions = runtime ? runtime.connectionCatalog().map(item => runtime.sessionFor(item.id)).filter(value => value !== undefined) : [services.erpbridgeSession].filter(value => value !== undefined);
+  const persistence = services.repository.persistence;
+  if (!sessions.some(session => session.available !== false && session.requiresReviewedRevision === true && session.dispatchBoundary === "sdk-entry/v1" && !!session.admissionBinding)) return false;
   if (persistence === null) return true;
   if (persistence.readQueueDurability !== "encrypted-single-writer" || persistence.executionCheckpointDurability !== "encrypted-record-transactions/v1" || !persistence.saveExecutionCheckpoint) return false;
   try { decodeEncryptionKey(services.config.storageEncryptionKey); return true; } catch { return false; }

@@ -90,8 +90,9 @@ export class McpConnectionRuntime {
     if (this.#state !== "CONNECTED" || this.#stopped || this.#session?.available === false) return undefined;
     return this.#session;
   }
+  get primaryConnectionId() { return this.connection.id; }
   hasConnection(id: string) { return id === this.connection.id; }
-  connectionCatalog() { return [{ id: this.connection.id, primary: this.connection.primary, dispatchSupported: this.connection.primary }]; }
+  connectionCatalog() { return [{ id: this.connection.id, primary: this.connection.primary, dispatchSupported: true }]; }
   sessionFor(id: string) { return id === this.connection.id ? this.session : undefined; }
   roleMapFor(id: string) { return id === this.connection.id ? this.connection.roleMap : undefined; }
   private supportedStorage() { return this.options.repository.persistence === null || this.options.repository.persistence.readQueueDurability === "encrypted-single-writer"; }
@@ -149,7 +150,7 @@ export class McpConnectionRuntime {
     const state = this.#stopped ? "STOPPED" : this.#state === "CONNECTED" && (this.#session?.available === false || !record?.desiredEnabled || record.revision !== this.#revision || record.configurationHash !== this.#configurationHash) ? "DEGRADED" : this.#state;
     const canInitialize = this.#configured && this.supportedStorage() && !this.#stopped && this.#state !== "CONNECTING" && !this.#probeBusy;
     return { id: this.connection.id, transport: "erpbridge-mcp", configurationSource: "backend-environment", secretReference: this.connection.tokenReference,
-      primary: this.connection.primary, dispatchSupported: this.connection.primary, configured: this.#configured,
+      primary: this.connection.primary, dispatchSupported: true, configured: this.#configured,
       revision: record?.revision ?? this.#revision, desiredEnabled: record?.desiredEnabled ?? false, state,
       initialized: state === "CONNECTED" && Boolean(this.session), discoveryAvailable: state === "CONNECTED" && Boolean(this.session), qualification: "Initialization/discovery only; not live ERP tool authorization or delivery",
       notificationStream: this.#session?.notificationState ?? null,
@@ -233,10 +234,9 @@ export class McpConnectionRuntime {
   async stop() { this.#stopped = true; const old = this.#session; this.invalidate("STOPPED"); if (old) await this.dispose(old); }
 }
 
-/** Owns a bounded set of independently revisioned backend connections. The
- * primary session remains the only workflow dispatch path until publications
- * carry an explicit per-node connection binding. Secondary connections can be
- * initialized, discovered and reviewed without silently gaining dispatch. */
+/** Owns a bounded set of independently revisioned backend connections.
+ * Workflow dispatch is allowed only through an immutable per-node connection
+ * pin captured from that connection's reviewed capability revision. */
 export class McpConnectionManager {
   private constructor(readonly runtimes: ReadonlyMap<string, McpConnectionRuntime>, readonly primaryConnectionId: string) {}
   static async open(options: Omit<RuntimeOptions, "connection">) {
@@ -253,7 +253,7 @@ export class McpConnectionManager {
   get session() { return this.runtimes.get(this.primaryConnectionId)?.session; }
   hasConnection(id: string) { return this.runtimes.has(id); }
   connectionCatalog() { return [...this.runtimes.values()].map(runtime => ({ id: runtime.connection.id, primary: runtime.connection.primary,
-    dispatchSupported: runtime.connection.primary })).sort((a, b) => Number(b.primary) - Number(a.primary) || a.id.localeCompare(b.id)); }
+    dispatchSupported: true })).sort((a, b) => Number(b.primary) - Number(a.primary) || a.id.localeCompare(b.id)); }
   sessionFor(id = this.primaryConnectionId) { return this.runtimes.get(id)?.session; }
   roleMapFor(id = this.primaryConnectionId) { return this.runtimes.get(id)?.roleMapFor(id); }
   async status(user: CurrentUser) {
@@ -261,7 +261,7 @@ export class McpConnectionManager {
     const connections = parts.flatMap(value => value.connections).sort((a, b) => Number(b.primary) - Number(a.primary) || a.id.localeCompare(b.id));
     const recentOperations = parts.flatMap(value => value.recentOperations).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.id.localeCompare(a.id)).slice(0, 50);
     return { connections, recentOperations, primaryConnectionId: this.primaryConnectionId,
-      dispatchScope: "Only the configured primary connection is currently eligible for workflow dispatch; secondary lifecycle readiness grants no execution authority" };
+      dispatchScope: "A workflow node may dispatch only through its immutable reviewed connection pin; lifecycle readiness alone grants no execution authority" };
   }
   async command(action: "connect" | "disconnect" | "test", user: CurrentUser, body: unknown, request?: FastifyRequest, targetConnectionId = this.primaryConnectionId) {
     const runtime = this.runtimes.get(targetConnectionId); if (!runtime) throw new HandlerFailure(404, "MCP connection not found");

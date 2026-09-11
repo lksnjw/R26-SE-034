@@ -12,6 +12,7 @@ import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
 import { valueNodes } from "../workflows/read-control-flow.js";
 import { interpretReadPlan } from "../workflows/read-interpreter.js";
 import { ReadWorkerLeaseFailure } from "./read-worker-lease.js";
+import { connectionToolKey } from "../tools/mcp-dispatch-context.js";
 
 /** Explicit read profiles: sequential actions and structured boolean branches. Unsupported logic
  * is rejected before any dispatch, never reinterpreted by an agent. */
@@ -27,7 +28,9 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
   const actor = await services.repository.effectiveUser(actorId);
   if (actor === null || inspectReadWorkflow(blueprint, services.registries.snapshot().tools, actor.role).length > 0)
     throw new Error("Read workflow does not meet the supported execution profile");
-  const pins = new Map(expectedPlan?.ir.root.nodes.flatMap(node => node.capability.admission ? [[node.capability.toolId, node.capability.admission] as const] : []) ?? []);
+  const pins = new Map<string, NonNullable<CompiledReadPlan["ir"]["root"]["nodes"][number]["capability"]["admission"]>>();
+  expectedPlan?.ir.root.nodes.forEach((node, index) => { const pin = node.capability.admission; if (!pin) return;
+    pins.set(connectionToolKey(pin.connectionId, node.capability.toolId), pin); if (!blueprint.steps[index]?.connection_id) pins.set(node.capability.toolId, pin); });
   const currentPlan = compileReadWorkflow(yaml, services.registries.snapshot().tools, actor.role, pins);
   if (services.erpbridgeSession?.requiresReviewedRevision && !expectedPlan) throw new Error("Modern workflow execution requires a published compiled artifact");
   if (expectedPlan) assertCompiledReadMatches(expectedPlan, currentPlan);

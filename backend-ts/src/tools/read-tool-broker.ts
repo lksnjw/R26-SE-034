@@ -17,6 +17,7 @@ import type { ReadVisit } from "../workflows/read-interpreter.js";
 import { selectedReadEvidenceYAML } from "../workflows/read-completion-evidence.js";
 import { assertIterationDispatchBinding } from "../workflows/read-iteration-dispatch-binding.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
+import { boundMcpConnection, selectedMcpConnectionId } from "./mcp-dispatch-context.js";
 
 export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined;
   beforeDispatch?: ((verifiedRole: string) => Promise<void>) | undefined;
@@ -47,26 +48,27 @@ export async function dispatchReadTool(
       !actor.permissions.some((permission) => ["chat:use", "workflow:write", "workflow:run", "workflow:run_own"].includes(permission)))
     throw new Error("Tool dispatch denied: current actor is not authorized");
   await checkWorkflowScope(services, actor, context.workflowId);
-  const session = services.erpbridgeSession;
-  if (session === undefined) throw new Error("ERPBridge is not connected; tool dispatch is unavailable");
+  if (context.plan && context.dynamicPlan) throw new Error("Tool dispatch cannot combine static and dynamic plan bindings");
+  const exactPlan = context.plan ?? context.dynamicPlan;
+  const connectionId = exactPlan?.admissionPin?.connectionId ?? selectedMcpConnectionId(services);
+  const bound = boundMcpConnection(services, connectionId), session = bound.session;
   const registryHash = services.registries.hash(), generation = session.discoveryGeneration ?? 0;
-  const roleMap = canonicalJSONBytes(services.config.erpbridgeRoleMap);
+  const roleMap = canonicalJSONBytes(bound.roleMap);
   const iteration = context.iteration && { ...context.iteration, plan: structuredClone(context.iteration.plan), visit: structuredClone(context.iteration.visit) };
   const assertContext = () => {
     assertStorageAuthority();
-    if (services.erpbridgeSession !== session || session.available === false || services.registries.hash() !== registryHash ||
-        (session.discoveryGeneration ?? 0) !== generation || !roleMap.equals(canonicalJSONBytes(services.config.erpbridgeRoleMap)))
+    const current = boundMcpConnection(services, connectionId);
+    if (current.session !== session || session.available === false || services.registries.hash() !== registryHash ||
+        (session.discoveryGeneration ?? 0) !== generation || !roleMap.equals(canonicalJSONBytes(current.roleMap)))
       throw new Error("Tool dispatch context changed during verification");
     if (context.signal?.aborted) throw new Error("Tool dispatch was cancelled");
     iteration?.assertBinding?.();
     assertWorkerDispatch?.();
   };
   const tools = await discoverTools(session, services.registries);
-  if (context.plan && context.dynamicPlan) throw new Error("Tool dispatch cannot combine static and dynamic plan bindings");
   const matches = tools.filter((tool) => tool.name === toolName || tool.mcp_tool_name === toolName);
   if (matches.length !== 1) throw new Error("Tool dispatch denied: tool has no unique admitted live contract");
   const tool = matches[0]!;
-  const exactPlan = context.plan ?? context.dynamicPlan;
   const assertContract = () => { if (exactPlan?.contractHash && (exactPlan.toolId !== tool.tool_id || exactPlan.contractHash !== capabilityContractHash(tool))) throw new Error("Compiled tool contract changed; no implicit rebinding is allowed"); };
   assertContract();
   await session.assertAdmission?.(tool, exactPlan?.admissionPin, context.signal);
@@ -81,6 +83,7 @@ export async function dispatchReadTool(
   const index = context.plan?.stepIndex ?? 0;
   const blueprint = parseWorkflowYAMLStrict(yaml), authored = blueprint.steps[index];
   if (authored === undefined || ![tool.name, tool.mcp_tool_name].includes(authored.action ?? "")) throw new Error("Tool dispatch denied: authored action does not match requested tool");
+  if (context.plan && selectedMcpConnectionId(services, authored.connection_id) !== connectionId) throw new Error("Tool dispatch denied: authored and compiled ERPBridge connections differ");
   let selected: ReadSelectedEvidence | undefined;
   const checkSelectedPath = (evidence: ReadSelectedEvidence) => {
     if (!services.validator.validatePlan("ReadConfirmedIterations", selectedReadEvidenceYAML(blueprint, evidence.nodeId, evidence.args, evidence.visit, evidence.prior), actor.role).passed)
@@ -127,7 +130,7 @@ export async function dispatchReadTool(
   const { signal, plan, dynamicPlan: _privateDynamicPlan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, ...metadata } = context;
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
-  const identity = createDispatchIdentity(actor, services.config.erpbridgeRoleMap);
+  const identity = createDispatchIdentity(actor, bound.roleMap);
   // The original run receipt must remain authentic/current as well as the
   // fresh governance decision. Registry drift never silently rebinds a run.
   const resolved = await services.validator.evaluateResolvedStep(context.executionId ?? "ReadToolBroker", yaml, index, parameters, plan?.token ?? gate.token, identity);

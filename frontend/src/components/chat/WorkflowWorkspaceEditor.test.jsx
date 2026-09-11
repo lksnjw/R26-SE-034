@@ -278,6 +278,24 @@ test("manual editing is preview-only until an explicit revision-bound apply", as
   expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
 });
 
+test("a reviewed node connection is selected explicitly and saved in the revision-bound draft command", async () => {
+  const connected = { ...record, authoring: { profile: "read-authoring/v1", connectionChoices: [
+    { id: "finance", primary: true }, { id: "hr", primary: false },
+  ], nodes: [{ nodeId: "first", effectClass: "read", connectionId: "finance", dataSources: [] }] } };
+  workflowService.readiness.mockResolvedValue(connected);
+  await open(); await selectNode();
+  expect(screen.getByRole("combobox", { name: "Node ERPBridge connection" }).value).toBe("finance");
+  fireEvent.change(screen.getByRole("combobox", { name: "Node ERPBridge connection" }), { target: { value: "hr" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview manual edit" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  expect(screen.getByRole("region", { name: "Node change preview" }).textContent).toContain("hr");
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: record.contentHash }), {
+    type: "updateNode", nodeId: "first", patch: { description: "", action: "demo.echo", connection_id: "hr", parameters: { value: "original" } },
+  }));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
 test("node prompts persist a scoped proposal and stale apply preserves its preview", async () => {
   workflowService.command.mockRejectedValue({ response: { data: { message: "Draft changed. Reload." } } });
   const view = await open(); await selectNode();

@@ -12,6 +12,7 @@ import { checkBinding, schemaAt } from "./read-binding-validation.js";
 import { ReadValueBudget } from "./read-value-budget.js";
 import { assertOperationReadbackTarget } from "../tools/operation-readback-contract.js";
 import type { ModelDataClass } from "../providers/egress-policy.js";
+import { connectionToolKey, MCP_CONNECTION_ID_PATTERN } from "../tools/mcp-dispatch-context.js";
 
 export type ReadReference = { kind: "ref"; source: "workflowInput" | "nodeOutput"; nodeId?: string; path: string[] };
 export type ReadBinding = ReadReference | { kind: "literal"; value: string | number | boolean | null } |
@@ -29,9 +30,9 @@ export function readCompilationReceipt(plan: CompiledReadPlan, registryHash: str
   return { schemaVersion: plan.ir.schemaVersion, compilerVersion: plan.ir.compilerVersion, semanticHash: plan.semanticHash, sourceHash: plan.sourceHash, registryHash, origin, admissionMode };
 }
 const reserved = new Set(["__proto__", "constructor", "prototype"]);
-const supported = new Set(["id", "kind", "action", "parameters", "description"]);
+const supported = new Set(["id", "kind", "action", "connection_id", "parameters", "description"]);
 const analysisSupported = new Set(["id", "kind", "instruction", "input", "output_schema", "max_input_items", "max_input_chars", "max_output_tokens", "data_class", "model", "description"]);
-const agentSupported = new Set(["id", "kind", "instruction", "input", "allowed_actions", "output_schema", "completion_predicate", "max_input_items", "max_input_chars",
+const agentSupported = new Set(["id", "kind", "connection_id", "instruction", "input", "allowed_actions", "output_schema", "completion_predicate", "max_input_items", "max_input_chars",
   "max_output_tokens", "max_total_tokens", "max_rounds", "max_tool_calls", "max_wall_time_ms", "max_concurrency", "data_class", "model", "description"]);
 const hashIR = (ir: ReadIR) => `sha256:${createHash("sha256").update(canonicalJSONBytes(ir)).digest("hex")}`;
 
@@ -57,6 +58,11 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
   const ir: ReadIR = { schemaVersion: "workflow-read-ir/v1", compilerVersion: "read-compiler/v1", trigger: { kind: "manual" },
     ...(inputSchema === undefined ? {} : { inputSchema: structuredClone(inputSchema) as Record<string, unknown> }), root: { kind: "sequence", nodes: [] } };
   const mergedIDs = new Set<string>();
+  const admissionFor = (connectionId: string | undefined, toolId: string) => {
+    const explicit = connectionId?.trim();
+    const pin = explicit ? pins.get(connectionToolKey(explicit, toolId)) ?? pins.get(toolId) : pins.get(toolId);
+    return pin && (!explicit || pin.connectionId === explicit) ? pin : undefined;
+  };
   if (blueprint.metadata?.controlFlow !== undefined) {
     if (operations) issues.push("Operation control flow requires an operation-specific interpreter; it cannot use read-only control semantics");
     ir.schemaVersion = "workflow-read-ir/v2"; ir.compilerVersion = "read-compiler/v2";
@@ -72,6 +78,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
   for (const step of blueprint.steps.slice(0, 200)) {
     let localNodes = 0;
     const kind = effectiveStepKind(step);
+    if (step.connection_id !== undefined && !MCP_CONNECTION_ID_PATTERN.test(step.connection_id)) issues.push(`Step ${step.id} has an unsupported ERPBridge connection ID`);
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(step.id) || step.id === "input" || reserved.has(step.id) || ids.has(step.id)) issues.push("Step IDs must be unique, reference-safe and non-reserved");
     if (kind !== "tool" && !(operations && (kind === "analysis" || kind === "agent")) || Object.keys(step).some(key => !(kind === "analysis" ? analysisSupported : kind === "agent" ? agentSupported : supported).has(key))) issues.push(`Step ${step.id} uses unsupported execution semantics`);
     const matches = kind === "tool" ? tools.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action) : [], tool = matches.length === 1 ? matches[0] : undefined;
@@ -153,7 +160,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
           issues.push(`Step ${step.id} allowed action ${action} must be one unique role-granted read-only tool`); continue;
         }
         issues.push(...validateToolSchemaProfile(allowed.input_schema));
-        const admission = pins.get(allowed.tool_id);
+        const admission = admissionFor(step.connection_id, allowed.tool_id);
         if (!admission) { issues.push(`Step ${step.id} allowed action ${action} requires a reviewed capability pin`); continue; }
         capabilities.push({ toolId: allowed.tool_id, action: allowed.name, remoteName: exactBridgeName(allowed), contractHash: capabilityContractHash(allowed), admission: structuredClone(admission) });
       }
@@ -180,8 +187,9 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
         const schema = ref.source === "workflowInput" ? ir.inputSchema : outputs.get(ref.nodeId!);
         return schemaAt(schema, ref.path);
       });
+      const admission = admissionFor(step.connection_id, tool.tool_id);
       ir.root.nodes.push({ id: step.id, kind: "action", capability: { toolId: tool.tool_id, action: tool.name, remoteName: exactBridgeName(tool), contractHash: capabilityContractHash(tool),
-        ...(pins.has(tool.tool_id) ? { admission: structuredClone(pins.get(tool.tool_id)!) } : {}) }, inputs });
+        ...(admission ? { admission: structuredClone(admission) } : {}) }, inputs });
       if (tool.bridge_contract?.output_schema) {
         issues.push(...validateToolSchemaProfile(tool.bridge_contract.output_schema));
         outputs.set(step.id, { type: "object", properties: { structuredContent: tool.bridge_contract.output_schema }, required: ["structuredContent"] });
@@ -230,7 +238,7 @@ export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefin
         const contract = tool.operation_contract.readback, targets = tools.filter(target => target.tool_id === contract.tool_id);
         if (targets.length !== 1) throw new Error("Read-back target has no unique exact local contract");
         assertOperationReadbackTarget(tool, targets[0]!);
-        const admission = pins.get(contract.tool_id);
+        const admission = pins.get(connectionToolKey(node.capability.admission!.connectionId, contract.tool_id)) ?? pins.get(contract.tool_id);
         if (!admission || admission.contractHash !== contract.contract_hash || admission.connectionId !== node.capability.admission?.connectionId)
           throw new Error("Read-back target requires a current read admission on the same ERP connection");
         readback = { profile: "operation-readback-binding/v1", toolId: contract.tool_id, contractHash: contract.contract_hash, admission: { ...admission } };

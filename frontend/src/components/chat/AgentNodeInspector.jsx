@@ -8,12 +8,13 @@ const buttonClass = "inline-flex min-h-8 items-center gap-1.5 rounded-md border 
 const integer = (value, fallback) => Number.isInteger(value) ? value : fallback;
 const predicateType = (value) => value === null ? "null" : typeof value === "boolean" ? "boolean" : typeof value === "number" ? "number" : "string";
 
-export default function AgentNodeInspector({ node, canEdit, busy, onPreview, sessionId, context, onProposal, sharedChat, draftStorageKey, authoring }) {
+export default function AgentNodeInspector({ node, canEdit, busy, onPreview, sessionId, context, onProposal, sharedChat, draftStorageKey, authoring, connections = [] }) {
   const source = node.source, predicate = source.completion_predicate ?? { path: ["complete"], equals: true };
   const [description, setDescription] = useState(source.description ?? "");
   const [instruction, setInstruction] = useState(source.instruction ?? "");
   const [agentInput, setAgentInput] = useState(source.input ?? "");
   const [allowedActions, setAllowedActions] = useState(source.allowed_actions ?? []);
+  const [connectionId, setConnectionId] = useState(source.connection_id ?? authoring?.connectionId ?? connections.find(item => item.primary)?.id ?? "erpbridge-default");
   const [dataClass, setDataClass] = useState(source.data_class ?? "internal");
   const [model, setModel] = useState(source.model ?? "");
   const [maxInputItems, setMaxInputItems] = useState(integer(source.max_input_items, 200));
@@ -33,16 +34,17 @@ export default function AgentNodeInspector({ node, canEdit, busy, onPreview, ses
 
   if (!canEdit) return <aside aria-label="Selected agent details" className="workspace-reveal mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
     <div className="flex items-center gap-2"><Icon icon="lucide:bot" className="h-4 w-4 text-primary" /><h4 className="text-sm font-semibold">Bounded runtime agent · {node.id}</h4></div>
-    <dl className="mt-4 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-xs"><dt className="text-gray-500">Task</dt><dd>{instruction}</dd><dt className="text-gray-500">Input</dt><dd className="break-all font-mono text-[10px]">{agentInput}</dd><dt className="text-gray-500">Allowed reads</dt><dd>{allowedActions.join(", ")}</dd><dt className="text-gray-500">Completion</dt><dd>{completionPath} equals {String(predicate.equals)}</dd><dt className="text-gray-500">Limits</dt><dd>{maxRounds} rounds · {maxToolCalls} calls · {maxTotalTokens} tokens · {(maxWallTimeMs / 1000).toFixed(0)} seconds · concurrency 1</dd></dl>
+    <dl className="mt-4 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-xs"><dt className="text-gray-500">Connection</dt><dd>{connectionId}</dd><dt className="text-gray-500">Task</dt><dd>{instruction}</dd><dt className="text-gray-500">Input</dt><dd className="break-all font-mono text-[10px]">{agentInput}</dd><dt className="text-gray-500">Allowed reads</dt><dd>{allowedActions.join(", ")}</dd><dt className="text-gray-500">Completion</dt><dd>{completionPath} equals {String(predicate.equals)}</dd><dt className="text-gray-500">Limits</dt><dd>{maxRounds} rounds · {maxToolCalls} calls · {maxTotalTokens} tokens · {(maxWallTimeMs / 1000).toFixed(0)} seconds · concurrency 1</dd></dl>
   </aside>;
 
   return <aside aria-label="Selected agent details" className="workspace-reveal mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
     <div className="flex items-center gap-2"><Icon icon="lucide:bot" className="h-4 w-4 text-primary" /><div><h4 className="text-sm font-semibold">Bounded runtime agent · {node.id}</h4><p className="mt-0.5 text-[10px] text-gray-500">Dynamic selection is limited to these reviewed reads. Effects remain separate deterministic nodes with independent approval.</p></div></div>
-    <form className="mt-4 space-y-4" onSubmit={event => { event.preventDefault(); onPreview({ description, instruction, input: agentInput, allowed_actions: allowedActions,
+    <form className="mt-4 space-y-4" onSubmit={event => { event.preventDefault(); onPreview({ description, ...(source.connection_id || connections.length ? { connection_id: connectionId } : {}), instruction, input: agentInput, allowed_actions: allowedActions,
       output_schema: outputSchema, completion_predicate: { path: completionPath.split(".").filter(Boolean), equals: completionEquals() }, data_class: dataClass, model,
       max_input_items: Number(maxInputItems), max_input_chars: Number(maxInputChars), max_output_tokens: Number(maxOutputTokens), max_total_tokens: Number(maxTotalTokens),
       max_rounds: Number(maxRounds), max_tool_calls: Number(maxToolCalls), max_wall_time_ms: Number(maxWallTimeMs), max_concurrency: 1 }); }}>
       <label className="block text-xs text-gray-500">Label<input aria-label="Agent label" className={inputClass} value={description} onChange={event => setDescription(event.target.value)} maxLength={2000} /></label>
+      {connections.length > 0 && <label className="block text-xs text-gray-500">ERPBridge connection<select aria-label="Agent ERPBridge connection" className={inputClass} value={connectionId} onChange={event => setConnectionId(event.target.value)}>{connections.map(item => <option key={item.id} value={item.id}>{item.id}{item.primary ? " · primary" : ""}</option>)}</select></label>}
       <label className="block text-xs text-gray-500">Trusted task instruction<textarea aria-label="Agent instruction" className={`${inputClass} min-h-24 resize-y leading-5`} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={4000} required /></label>
       <label className="block text-xs text-gray-500">Acknowledged prior output<input aria-label="Agent input" className={`${inputClass} font-mono`} list={`agent-sources-${node.id}`} value={agentInput} onChange={event => setAgentInput(event.target.value)} placeholder="{{prior_node.structuredContent.field}}" maxLength={1000} required /></label>
       <datalist id={`agent-sources-${node.id}`}>{sources.map(item => <option key={item.expression} value={item.expression}>{item.label}</option>)}</datalist>

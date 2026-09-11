@@ -15,6 +15,7 @@ import { validateToolInput } from "../../tools/tool-input-schema.js";
 import { supportsCollectionReads, readIterationBindingKey } from "../../runner/read-collection-admission.js";
 import { newReadIterationLedger } from "../../runner/read-iteration-checkpoints.js";
 import { completeCheckpointedCollectionRead } from "../../runner/checkpointed-collection-read.js";
+import { boundMcpConnection, selectedMcpConnectionId } from "../../tools/mcp-dispatch-context.js";
 
 export async function runVerifiedRead(workflow: Workflow, input: Record<string, unknown>, token: ValidationToken, traceId: string,
   request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
@@ -22,11 +23,19 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
   const allowCollections = supportsCollectionReads(services);
   const localIssues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role, allowCollections);
   if (localIssues.length) return reply.status(422).send(fail("Workflow is outside the supported read execution profiles", { code: "UNSUPPORTED_EXECUTION_PROFILE", issues: localIssues, traceId }));
-  if (services.erpbridgeSession === undefined) return reply.status(503).send(fail("ERPBridge is not connected; no workflow tools were executed", { code: "ERPBRIDGE_NOT_CONNECTED", traceId }));
-  let live;
-  try { live = await discoverTools(services.erpbridgeSession, services.registries); }
+  let bindings: ReturnType<typeof boundMcpConnection>[];
+  try {
+    const ids = [...new Set(blueprint.steps.map(step => selectedMcpConnectionId(services, step.connection_id)))];
+    bindings = ids.map(id => boundMcpConnection(services, id));
+  }
+  catch { return reply.status(503).send(fail("ERPBridge is not connected; no workflow tools were executed", { code: "ERPBRIDGE_NOT_CONNECTED", traceId })); }
+  let liveByConnection: Map<string, Awaited<ReturnType<typeof discoverTools>>>;
+  try { liveByConnection = new Map(await Promise.all(bindings.map(async value => [value.id, await discoverTools(value.session, services.registries)] as const))); }
   catch { return reply.status(503).send(fail("ERPBridge discovery failed; no workflow tools were executed", { code: "ERPBRIDGE_DISCOVERY_FAILED", traceId })); }
-  const readinessIssues = inspectReadWorkflow(blueprint, live, user.role, allowCollections);
+  const readinessIssues = blueprint.steps.flatMap(step => {
+    const connectionId = selectedMcpConnectionId(services, step.connection_id), live = liveByConnection.get(connectionId) ?? [];
+    return live.filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action).length === 1 ? [] : [`Step ${step.id} capability is unavailable on ERPBridge connection ${connectionId}`];
+  });
   if (readinessIssues.length) return reply.status(422).send(fail("Workflow live contracts are unavailable or changed", { code: "LIVE_CONTRACT_NOT_READY", issues: readinessIssues, traceId }));
   const compilation = await services.repository.readAuthoritative(state => {
     const publication = (state.versions[workflow.id] ?? []).findLast(version => version.version === workflow.publishedVersion && version.artifactState === "PUBLISHED");

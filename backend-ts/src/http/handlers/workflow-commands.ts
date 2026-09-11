@@ -20,6 +20,8 @@ import { supportsOperationJobs } from "../../runner/operation-jobs.js";
 import { readAuthoringContract } from "../../workflows/read-authoring.js";
 import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 import { draftHistorySummary, resolveDraftCommand, saveDraftRevision } from "../../workflows/draft-history.js";
+import { boundMcpConnection, selectedMcpConnectionId } from "../../tools/mcp-dispatch-context.js";
+import { effectiveStepKind } from "../../models/schemas.js";
 import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
@@ -28,6 +30,9 @@ const requestSchema = z.object({ ...base, command, proposalId: z.string().min(1)
 const proposalSchema = z.object({ ...base, nodeId: id, prompt: z.string().trim().min(1).max(4000), sessionId: z.string().min(1).max(128), model: z.string().trim().min(1).max(256).optional() }).strict();
 
 function record(workflow: Workflow) { return { workflowId: workflow.id, version: workflow.draftVersion, contentHash: workflowContentHash(workflow.yaml), yaml: workflow.yaml, publishedVersion: workflow.publishedVersion, canRun: workflow.canRun }; }
+function connectionCatalog(services: HandlerServices) {
+  return services.mcpConnectionRuntime?.connectionCatalog() ?? [{ id: services.config.erpbridgePrimaryConnectionId || "erpbridge-default", primary: true, dispatchSupported: true }];
+}
 function ownedProposal(state: RepositoryState, actorId: string, workflowId: string, proposalId: string) {
   for (const chat of Object.values(state.chats)) {
     if (chat.ownerId !== actorId) continue;
@@ -63,10 +68,21 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
           try { await prepareOperationPublication(services, current.yaml, user); if (!supportsOperationJobs(services)) issues.push("Operation checkpoint persistence is not qualified"); }
           catch { issues.push("Operation requires a supported reviewed sequential artifact and current connection"); }
         } else issues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role, supportsCollectionReads(services));
-        if (services.erpbridgeSession !== undefined) {
-          bridge = "discovery_available";
-          try { const live = await discoverTools(services.erpbridgeSession, services.registries); if (!operationProfile) issues.push(...inspectReadWorkflow(blueprint, live, user.role, supportsCollectionReads(services))); }
-          catch { bridge = "discovery_failed"; }
+        const connectionIds = [...new Set(blueprint.steps.filter(step => effectiveStepKind(step) !== "analysis").map(step => selectedMcpConnectionId(services, step.connection_id)))];
+        if (connectionIds.length) {
+          let selectedConnections;
+          try { selectedConnections = connectionIds.map(id => boundMcpConnection(services, id)); }
+          catch { selectedConnections = null; }
+          if (selectedConnections) try {
+            const liveByConnection = new Map(await Promise.all(selectedConnections.map(async value => [value.id, await discoverTools(value.session, services.registries)] as const)));
+            bridge = "discovery_available";
+            if (!operationProfile) {
+              const live = [...new Map([...liveByConnection.values()].flatMap(items => items.map(tool => [tool.tool_id, tool] as const))).values()];
+              issues.push(...inspectReadWorkflow(blueprint, live, user.role, supportsCollectionReads(services)));
+              for (const step of blueprint.steps) if ((liveByConnection.get(selectedMcpConnectionId(services, step.connection_id)) ?? []).filter(tool => tool.name === step.action || tool.mcp_tool_name === step.action).length !== 1)
+                issues.push(`Node ${step.id} is unavailable on its selected ERPBridge connection`);
+            }
+          } catch { bridge = "discovery_failed"; }
         }
       } catch { issues.push("Workflow could not be parsed"); }
       const published = await services.repository.read((state) => (state.versions[workflowId] ?? []).some((version) => version.artifactState === "PUBLISHED" && version.version === current.publishedVersion && version.yaml === current.yaml));
@@ -88,7 +104,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         let blueprint;
         try { blueprint = parseWorkflowYAMLStrict(current.yaml); }
         catch { return { authoring: { profile: "read-authoring/v1", registryHash: services.registries.hash(), nodes: [], reason: "Workflow source cannot be parsed; existing values are preserved" }, editHistory: draftHistorySummary(state, fresh) }; }
-        return { authoring: readAuthoringContract(blueprint, services.registries.snapshot().tools, user.role, services.registries.hash()), editHistory: draftHistorySummary(state, fresh) };
+        return { authoring: readAuthoringContract(blueprint, services.registries.snapshot().tools, user.role, services.registries.hash(), connectionCatalog(services)), editHistory: draftHistorySummary(state, fresh) };
       });
       const { authoring, editHistory } = workspace;
       return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation, authoring,
@@ -112,7 +128,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       });
       const provider = selectProvider(services, value.model ?? sessionModel)!;
       const structural = ["if", "return", "foreach"].includes(node.kind ?? "");
-      const authoring = structural ? readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()) : undefined;
+      const authoring = structural ? readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash(), connectionCatalog(services)) : undefined;
       const collection = authoring?.collections?.find(value => value.nodeId === node.id);
       const availableTools = services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role));
       const promptTools = node.kind === "agent" ? availableTools.filter(tool => tool.is_read_only && (node.allowed_actions ?? []).some(action => action === tool.name || action === tool.mcp_tool_name)) : availableTools;

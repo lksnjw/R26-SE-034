@@ -61,7 +61,7 @@ export async function handleRegistryRoute(route: RouteDefinition, request: Fasti
 function capabilityConnection(request: FastifyRequest, services: HandlerServices) {
   const runtime = services.mcpConnectionRuntime;
   const requested = stringValue(queryRecord(request).connectionId).trim();
-  const fallback = runtime && "primaryConnectionId" in runtime ? runtime.primaryConnectionId : runtime?.connection.id ?? DEFAULT_BRIDGE_CONNECTION;
+  const fallback = runtime?.primaryConnectionId ?? DEFAULT_BRIDGE_CONNECTION;
   const id = requested || fallback;
   if (!/^[a-z][a-z0-9_-]{0,63}$/.test(id)) throw new HandlerFailure(400, "Invalid ERPBridge connection selection");
   if (runtime && !runtime.hasConnection(id)) throw new HandlerFailure(404, "ERPBridge connection not found");

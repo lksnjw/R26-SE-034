@@ -15,6 +15,8 @@ import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { buildApp } from "../src/http/app.js";
 import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
+import { stringify } from "yaml";
+import { prepareReadPublication } from "../src/workflows/read-compilation-lifecycle.js";
 
 const runtimes: { stop(): Promise<unknown> }[] = [], apps: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); await Promise.all(runtimes.splice(0).map(runtime => runtime.stop())); vi.restoreAllMocks(); });
@@ -59,7 +61,7 @@ test("real runtime connect initializes/discovers without a business call or gran
   await s.review(); expect((await dispatchReadTool(s.services, "admin", s.tool.name, { value: "fixture" })).content).toEqual([{ type: "text", text: "Confirmed fixture result" }]); expect(s.sdkClients[0]!.callTool).toHaveBeenCalledOnce();
 });
 
-test("bounded manager owns independent revisioned connections while only the configured primary is exposed for workflow dispatch", async () => {
+test("bounded manager owns independent revisioned connections and dispatches only through an immutable reviewed node connection", async () => {
   const s = await setup();
   const multi = loadConfig({ APP_ENV: "test", JWT_SECRET: "mcp-runtime-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "remote", MCP_TRANSPORT: "erpbridge-mcp",
     ERPBRIDGE_PRIMARY_CONNECTION_ID: "finance", ERPBRIDGE_CONNECTIONS_JSON: JSON.stringify([
@@ -70,7 +72,7 @@ test("bounded manager owns independent revisioned connections while only the con
   let status = await manager.status(s.admin);
   expect(status).toMatchObject({ primaryConnectionId: "finance", connections: [
     { id: "finance", primary: true, dispatchSupported: true, state: "DISCONNECTED", secretReference: "FINANCE_TOKEN" },
-    { id: "hr", primary: false, dispatchSupported: false, state: "DISCONNECTED", secretReference: "HR_TOKEN" },
+    { id: "hr", primary: false, dispatchSupported: true, state: "DISCONNECTED", secretReference: "HR_TOKEN" },
   ] });
   await manager.command("connect", s.admin, { baseRevision: 1, requestId: "finance_connect_request_0001" }, undefined, "finance");
   await manager.command("connect", s.admin, { baseRevision: 1, requestId: "hr_connect_request_0001" }, undefined, "hr");
@@ -85,6 +87,14 @@ test("bounded manager owns independent revisioned connections while only the con
   const headers = { authorization: `Bearer ${jwt.sign({}, multi.jwtSecret, { subject: "admin", expiresIn: 3600 })}` };
   const listed = await app.inject({ method: "GET", url: "/api/settings/mcp-connections", headers });
   expect(listed.statusCode, listed.body).toBe(200); expect(listed.json().data.primaryConnectionId).toBe("finance");
+  const discoveredFinance = await app.inject({ method: "POST", url: "/api/registry/capabilities/discovery?connectionId=finance", headers, payload: {} });
+  expect(discoveredFinance.statusCode, discoveredFinance.body).toBe(200);
+  const financeObservation = discoveredFinance.json().data.observations[0];
+  const reviewedFinance = await app.inject({ method: "POST", url: `/api/registry/capabilities/${financeObservation.capabilityId}/review?connectionId=finance`, headers, payload: {
+    observationId: financeObservation.id, contractHash: financeObservation.contractHash, decisionKey: "finance_capability_review_0001",
+    effectClass: "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Exact finance read contract reviewed",
+  } });
+  expect(reviewedFinance.statusCode, reviewedFinance.body).toBe(200);
   const discoveredHr = await app.inject({ method: "POST", url: "/api/registry/capabilities/discovery?connectionId=hr", headers, payload: {} });
   expect(discoveredHr.statusCode, discoveredHr.body).toBe(200); expect(discoveredHr.json().data).toMatchObject({ connectionId: "hr", authorityGranted: false });
   const hrObservation = discoveredHr.json().data.observations[0];
@@ -94,9 +104,20 @@ test("bounded manager owns independent revisioned connections while only the con
   expect(wrongConnection.statusCode).toBe(409);
   const reviewedHr = await app.inject({ method: "POST", url: `/api/registry/capabilities/${hrObservation.capabilityId}/review?connectionId=hr`, headers, payload: reviewBody });
   expect(reviewedHr.statusCode, reviewedHr.body).toBe(200); expect(reviewedHr.json().data.revision.connectionId).toBe("hr");
+  const yaml = stringify({ name: "Exact multi-connection read", trigger: { type: "manual" }, steps: [
+    { id: "finance_read", action: s.tool.name, connection_id: "finance", parameters: { value: "finance" } },
+    { id: "hr_read", action: s.tool.name, connection_id: "hr", parameters: { value: "hr" } },
+  ] });
+  const prepared = await prepareReadPublication(services, yaml, s.admin);
+  const financePin = prepared!.stored.plan.ir.root.nodes[0]!.capability.admission!, hrPin = prepared!.stored.plan.ir.root.nodes[1]!.capability.admission!;
+  expect(financePin).toMatchObject({ connectionId: "finance", capabilityId: financeObservation.capabilityId, revisionId: reviewedFinance.json().data.revision.id });
+  expect(hrPin).toMatchObject({ connectionId: "hr", capabilityId: hrObservation.capabilityId, revisionId: reviewedHr.json().data.revision.id });
+  await dispatchReadTool(services, "admin", s.tool.name, { value: "finance" }, { dynamicPlan: { admissionPin: financePin, contractHash: financePin.contractHash, toolId: s.tool.tool_id } });
+  await dispatchReadTool(services, "admin", s.tool.name, { value: "hr" }, { dynamicPlan: { admissionPin: hrPin, contractHash: hrPin.contractHash, toolId: s.tool.tool_id } });
+  expect(s.sdkClients[0]!.callTool).toHaveBeenCalledOnce(); expect(s.sdkClients[1]!.callTool).toHaveBeenCalledOnce();
   const financeCatalog = await app.inject({ method: "GET", url: "/api/registry/capabilities?connectionId=finance", headers });
   const hrCatalog = await app.inject({ method: "GET", url: "/api/registry/capabilities?connectionId=hr", headers });
-  expect(financeCatalog.statusCode, financeCatalog.body).toBe(200); expect(financeCatalog.json().data.capabilities).toHaveLength(0);
+  expect(financeCatalog.statusCode, financeCatalog.body).toBe(200); expect(financeCatalog.json().data).toMatchObject({ connection: { id: "finance" }, capabilities: [{ capabilityId: financeObservation.capabilityId, effectiveState: "AVAILABLE" }] });
   expect(hrCatalog.statusCode, hrCatalog.body).toBe(200); expect(hrCatalog.json().data).toMatchObject({ connection: { id: "hr" }, capabilities: [{ capabilityId: hrObservation.capabilityId, effectiveState: "AVAILABLE" }] });
   expect(hrCatalog.body).not.toMatch(/hr-private-credential|connectionBinding|decisionHash/);
   expect((await app.inject({ method: "GET", url: "/api/registry/capabilities?connectionId=unknown", headers })).statusCode).toBe(404);
@@ -121,7 +142,7 @@ test("bounded manager owns independent revisioned connections while only the con
     ["finance", 2, "CONNECTED", true], ["hr", 5, "DISCONNECTED", false],
   ]);
   expect(rotated.session).toBe(rotated.sessionFor("finance")); expect(rotated.sessionFor("hr")).toBeUndefined();
-  expect(s.sdkClients.every(client => client.callTool.mock.calls.length === 0)).toBe(true);
+  expect(s.sdkClients.reduce((count, client) => count + client.callTool.mock.calls.length, 0)).toBe(2);
 });
 
 test("disconnect fences captured old clients and a reconnect has a new admission identity without automatic re-review", async () => {

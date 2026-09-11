@@ -14,6 +14,7 @@ import { operationCaseEvidence, operationReconciliationView } from "./operation-
 import { validateHistoricalOperationReadback } from "./operation-readback-evidence.js";
 import { operationReadbackCommandSchema, operationReadbackJobSchema, readbackEvaluationSchema, type OperationReadbackJob } from "./operation-readback-state.js";
 import { supportsOperationJobs } from "./operation-jobs.js";
+import { boundMcpConnection } from "../tools/mcp-dispatch-context.js";
 
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
 const same = (a: unknown, b: unknown) => canonicalJSONBytes(a).equals(canonicalJSONBytes(b));
@@ -50,7 +51,7 @@ function historicalQuery(state: Readonly<RepositoryState>, job: OperationReadbac
   catch (error) { deny(error instanceof Error ? error.message : "Original operation or reviewed query evidence changed"); }
 }
 function currentQuery(state: Readonly<RepositoryState>, services: HandlerServices, job: OperationReadbackJob) {
-  const { source, target } = historicalQuery(state, job), actor = queryActor(state, job.executionId, job.actorId), session = services.erpbridgeSession;
+  const { source, target } = historicalQuery(state, job), actor = queryActor(state, job.executionId, job.actorId), session = boundMcpConnection(services, job.admission.connectionId).session;
   if (source.resolved || source.version !== job.baseVersion || source.factsHash !== job.factsHash || actor.roleId !== job.roleId || actor.role !== job.admittedRole || !target.allowed_roles.includes(actor.role))
     deny("Current query case or actor authority changed");
   if (!session?.requiresReviewedRevision || session.dispatchBoundary !== "sdk-entry/v1" || session.available === false || session.admissionBinding !== job.connectionBinding)
@@ -94,7 +95,7 @@ export function operationReadbackHistory(state: Readonly<RepositoryState>, servi
   try { controller = queryActor(state, executionId, actorId); } catch { /* Minimum history access is not query control authority. */ }
   let canQuery = false;
   try {
-    const actor = queryActor(state, executionId, actorId), binding = source.node.readback, session = services.erpbridgeSession;
+    const actor = queryActor(state, executionId, actorId), binding = source.node.readback, session = binding ? boundMcpConnection(services, binding.admission.connectionId).session : undefined;
     const target = binding && services.registries.snapshot().tools.filter(tool => tool.tool_id === binding.toolId);
     if (!source.resolved && binding && session?.available !== false && session?.requiresReviewedRevision && session.dispatchBoundary === "sdk-entry/v1" && session.admissionBinding === source.connectionBinding &&
         target?.length === 1 && target[0]!.allowed_roles.includes(actor.role)) {
@@ -116,7 +117,7 @@ export function operationReadbackQueue(services: HandlerServices) {
   return queue;
 }
 type Active = { executionId: string; id: string; actorId: string; leaseId: string; epoch: number; fixed: string; valid: boolean; expiresAt: number;
-  controller: AbortController; timer?: NodeJS.Timeout; task?: Promise<void>; roleMapHash: string; governanceHash?: string };
+  controller: AbortController; timer?: NodeJS.Timeout; task?: Promise<void>; connectionId: string; roleMapHash: string; governanceHash?: string };
 /** Separate read-only query jobs. Original run status, effect intents, SDK
  * answers, timeline and continuation pointer are never changed by this queue. */
 export class OperationReadbackQueue {
@@ -133,7 +134,7 @@ export class OperationReadbackQueue {
           if (!job || job.state !== "RUNNING" || job.epoch !== control.epoch || immutable(job) !== control.fixed || job.lease?.id !== control.leaseId || job.lease.workerId !== this.#workerId || job.lease.expiresAt <= Date.now() || job.cancellation)
             throw new Error("Status query claim changed");
           currentQuery(state, services, job);
-          if (digest(services.config.erpbridgeRoleMap) !== control.roleMapHash || control.governanceHash && digest(state.governancePolicy) !== control.governanceHash) throw new Error("Query policy or role map changed");
+          if (digest(boundMcpConnection(services, control.connectionId).roleMap) !== control.roleMapHash || control.governanceHash && digest(state.governancePolicy) !== control.governanceHash) throw new Error("Query policy or role map changed");
           control.expiresAt = job.lease.expiresAt;
         } catch { control.valid = false; control.controller.abort(); }
       }
@@ -153,7 +154,7 @@ export class OperationReadbackQueue {
         const source = operationCaseEvidence(state, executionId), binding = source.node.readback;
         if (!binding || source.resolved || source.intent.id !== command.intentId || source.version !== command.baseVersion || source.factsHash !== command.factsHash) deny("Query case is closed, changed or lacks a reviewed status contract");
         if (jobs.length >= 100 || jobs.some(pending) || allJobs(state).filter(pending).length >= 64) deny("A status query is already pending or its bounded quota is full", 429);
-        const session = this.services.erpbridgeSession, matches = this.services.registries.snapshot().tools.filter(tool => tool.tool_id === binding.toolId);
+        const session = boundMcpConnection(this.services, binding.admission.connectionId).session, matches = this.services.registries.snapshot().tools.filter(tool => tool.tool_id === binding.toolId);
         if (!session?.admissionBinding || matches.length !== 1) deny("Reviewed status tool is unavailable", 503);
         const args = resolveOperationReadbackArguments(source.tool, matches[0]!, source.args);
         const job = operationReadbackJobSchema.parse({ profile: "operation-readback-job/v1", id: `readback-${randomBytes(16).toString("hex")}`, executionId, intentId: command.intentId, nodeId: source.intent.nodeId,
@@ -206,15 +207,16 @@ export class OperationReadbackQueue {
       const candidates = await this.services.repository.readAuthoritative(state => allJobs(state).filter(job => job.state === "QUEUED" && !this.#active.has(job.id) &&
         [...this.#active.values()].filter(control => control.actorId === job.actorId).length < this.services.config.readWorkerPerActor).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)));
       const job = candidates.find(job => job.actorId !== this.#lastActor) ?? candidates[0]; if (!job) return;
+      const connection = boundMcpConnection(this.services, job.admission.connectionId);
       const control: Active = { executionId: job.executionId, id: job.id, actorId: job.actorId, leaseId: `readback-lease-${randomBytes(16).toString("hex")}`, epoch: job.epoch,
-        fixed: immutable(job), valid: true, expiresAt: Date.now() + this.services.config.readWorkerLeaseMs, controller: new AbortController(), roleMapHash: digest(this.services.config.erpbridgeRoleMap) };
+        fixed: immutable(job), valid: true, expiresAt: Date.now() + this.services.config.readWorkerLeaseMs, controller: new AbortController(), connectionId: job.admission.connectionId, roleMapHash: digest(connection.roleMap) };
       this.#active.set(job.id, control); this.#lastActor = job.actorId;
       control.task = this.work(control).catch(() => { this.#stalled = true; }).finally(() => { if (control.timer) clearInterval(control.timer); this.#active.delete(job.id); this.kick(); });
     }
   }
   private assert(control: Active) {
     this.services.repository.assertAuthority();
-    if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt || digest(this.services.config.erpbridgeRoleMap) !== control.roleMapHash)
+    if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt || digest(boundMcpConnection(this.services, control.connectionId).roleMap) !== control.roleMapHash)
       throw new Error("Status query worker is fenced");
   }
   private async retire(control: Active) {
@@ -242,7 +244,7 @@ export class OperationReadbackQueue {
       }).catch(() => { control.valid = false; control.controller.abort(); }); }, Math.max(1000, Math.floor(services.config.readWorkerLeaseMs / 3))); control.timer.unref();
       const verified = await repository.readAuthoritative(state => currentQuery(state, services, initial));
       const yaml = stringify({ name: "Exact operation status query", description: "Read-only query of one reviewed uncertain operation; no resend or resume", trigger: { type: "manual" },
-        steps: [{ id: "query", action: verified.target.name, parameters: initial.arguments }] });
+        steps: [{ id: "query", action: verified.target.name, connection_id: initial.admission.connectionId, parameters: initial.arguments }] });
       const gate = await boundedOperation(() => validateWorkflow(services, "OperationReadbackQuery", yaml, verified.actor, { signal: control.controller.signal }),
         { timeoutMs: 120_000, signal: control.controller.signal, label: "Operation status query verification", onAbandon: () => { control.valid = false; control.controller.abort(); } });
       if (!gate.token || !gate.result.passed) throw new Error("Query verification failed");
