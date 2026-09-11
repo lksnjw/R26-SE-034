@@ -7,16 +7,11 @@ import {
   RegistryService,
   ensureRuntimeRegistries,
 } from "../registry/service.js";
-import type { ToolDefinition } from "../registry/schemas.js";
 import { Repository } from "../repository/store.js";
 import { Executor } from "../runner/executor.js";
-import { GenericMCPTool } from "../tools/generic-mcp-tool.js";
 import { McpConnectionManager } from "../tools/mcp-connection-runtime.js";
-import {
-  createGovernedMCPClient,
-  type GovernedMCPClient,
-} from "../tools/mcp-client.js";
-import { ToolRegistry } from "../tools/registry.js";
+import { createGovernedMCPClient } from "../tools/mcp-client.js";
+import { createExecutorToolBoundary } from "../tools/executor-tool-boundary.js";
 import { RegistryValidator } from "../validator/registry-validator.js";
 import { hashPassword } from "../authn/password.js";
 import { openApplicationRepository } from "../storage/open-repository.js";
@@ -99,29 +94,8 @@ const legacyMcp =
       })
     : null;
 const mcpConnectionRuntime = await McpConnectionManager.open({ config, repository, registries, validator });
-/*******************************************************************************
- * Function: clientFor
- *
- * Selects the MCP client for the supplied tool definition.
- ******************************************************************************/
-const clientFor = (definition: ToolDefinition): GovernedMCPClient | null => config.mcpTransport === "erpbridge-mcp"
-  ? Object.freeze({ execute: async (action, capability, parameters, identity, signal) => {
-      const session = mcpConnectionRuntime.session;
-      if (!session) throw new Error("ERPBridge MCP is disconnected; no dispatch is available");
-      return session.clientFor(definition).execute(action, capability, parameters, identity, signal);
-    } }) : legacyMcp;
-const toolRegistry = new ToolRegistry();
-for (const definition of registries.snapshot().tools) {
-  const client = clientFor(definition);
-  if (client !== null)
-    toolRegistry.register(new GenericMCPTool(definition.name, definition.description, client));
-}
-registries.onToolUpsert((definition) => {
-  const client = clientFor(definition);
-  if (client !== null) toolRegistry.register(new GenericMCPTool(definition.name, definition.description, client));
-});
-
-const executor = new Executor(toolRegistry, validator);
+const executorTools = createExecutorToolBoundary({ transport: config.mcpTransport, tools: registries, legacyClient: legacyMcp });
+const executor = new Executor(executorTools.registry, validator);
 const providerRuntime = new ProviderRuntime(repository, executor);
 const generationConfiguration = staticProviderConfiguration();
 await providerRuntime.activateStoredOrStatic(generationConfiguration);
@@ -204,6 +178,7 @@ const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
   await app.close();
+  executorTools.close();
   try { await mcpConnectionRuntime.stop(); }
   catch { console.warn("[erpbridge] MCP cleanup could not be confirmed; continuing shutdown without replay"); }
   await repository.close();
