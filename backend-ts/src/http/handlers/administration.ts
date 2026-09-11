@@ -53,10 +53,6 @@ export async function handleAdministrationRoute(route: RouteDefinition, request:
     if (route.path === `${base}/settings/llm` && route.method === "PATCH") return patchSettingsGroup(request, reply, services, "llm", "LLM settings updated", user, true);
     if (route.path === `${base}/settings/rbac` && route.method === "GET") return getSettingsGroup(reply, services, "rbac");
     if (route.path === `${base}/settings/rbac` && route.method === "PATCH") return patchSettingsGroup(request, reply, services, "rbac", "RBAC settings updated", user);
-    if (route.path === `${base}/notifications` && route.method === "GET") return listNotifications(request, reply, services);
-    if (route.path === `${base}/notifications/read-all`) return markAllNotifications(reply, services);
-    if (route.path === `${base}/notifications/:id/read`) return markNotification(request, reply, services);
-    if (route.path === `${base}/notifications/:id` && route.method === "DELETE") return deleteNotification(request, reply, services);
   } catch (error) {
     if (error instanceof HandlerFailure) return reply.status(error.status).send(fail(error.message, error.meta));
     throw error;
@@ -298,31 +294,6 @@ function applySettingsGroup(state: RepositoryState, group: string, body: Record<
   const { runtimeApprovalPolicy: _protectedPolicy, ...ordinary } = body;
   state.settings[group] = { ...(isRecord(state.settings[group]) ? state.settings[group] : {}), ...ordinary };
 }
-
-/*******************************************************************************
- * Function: listNotifications
- *
- * Returns notifications using this handler's visibility and ordering rules.
- ******************************************************************************/
-async function listNotifications(request: FastifyRequest, reply: FastifyReply, services: HandlerServices): Promise<unknown> { const unreadOnly = stringValue(queryRecord(request).unreadOnly).toLowerCase() === "true"; const notifications = await services.repository.read((state) => Object.values(state.notifications).filter((item) => !unreadOnly || item.read !== true).sort((a, b) => stringValue(b.createdAt).localeCompare(stringValue(a.createdAt)))); const page = paginate(notifications, request); return reply.send(ok(page.items, "OK", page.meta)); }
-/*******************************************************************************
- * Function: markAllNotifications
- *
- * Marks the current user's notifications as read.
- ******************************************************************************/
-async function markAllNotifications(reply: FastifyReply, services: HandlerServices): Promise<unknown> { const updated = await services.repository.mutate((state) => { let count = 0; for (const item of Object.values(state.notifications)) if (item.read !== true) { item.read = true; count += 1; } return count; }); return reply.send(ok({ updated }, "All notifications marked read", null)); }
-/*******************************************************************************
- * Function: markNotification
- *
- * Marks the requested notification as read for the current user.
- ******************************************************************************/
-async function markNotification(request: FastifyRequest, reply: FastifyReply, services: HandlerServices): Promise<unknown> { const item = await services.repository.mutate((state) => { const value = state.notifications[requestParam(request, "id")]; if (value === undefined) throw new HandlerFailure(404, "Notification not found"); value.read = true; return structuredClone(value); }); return reply.send(ok(item, "Notification marked as read", null)); }
-/*******************************************************************************
- * Function: deleteNotification
- *
- * Deletes the requested notification.
- ******************************************************************************/
-async function deleteNotification(request: FastifyRequest, reply: FastifyReply, services: HandlerServices): Promise<unknown> { await services.repository.mutate((state) => { delete state.notifications[requestParam(request, "id")]; }); return reply.send(ok({ deleted: true }, "Notification deleted", null)); }
 
 /*******************************************************************************
  * Function: stringArray

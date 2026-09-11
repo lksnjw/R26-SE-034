@@ -7,7 +7,7 @@ const source = (path: string) => readFile(resolve(path), "utf8");
 describe("HTTP responsibility boundaries", () => {
   test("keeps the application composition root below the agreed size ceiling", async () => {
     const app = await source("src/http/app.ts");
-    expect(app.split(/\r?\n/).length).toBeLessThanOrEqual(1_000);
+    expect(app.split(/\r?\n/).length).toBeLessThanOrEqual(650);
   });
 
   test("keeps authentication/session cryptography out of the route composition root", async () => {
@@ -55,5 +55,22 @@ describe("HTTP responsibility boundaries", () => {
     expect(executionEvents).toContain("export async function handleExecutionEvents");
     expect(executionEvents).toContain("repository.observeCommits");
     expect(executionEvents).toContain("repository.readAuthoritative");
+  });
+
+  test("separates access, socket, execution-query and notification responsibilities", async () => {
+    const [app, policy, socket, executionQueries, notifications, administration] = await Promise.all([
+      source("src/http/app.ts"),
+      source("src/http/route-policy.ts"),
+      source("src/http/system-health-websocket.ts"),
+      source("src/http/handlers/execution-queries.ts"),
+      source("src/http/handlers/notifications.ts"),
+      source("src/http/handlers/administration.ts"),
+    ]);
+    expect(app).not.toMatch(/function\s+(?:routePolicy|sendWebsocketSnapshot|listExecutions|getExecution|listNotifications|markNotificationRead)\b/);
+    expect(policy).toContain("export function routePolicy");
+    expect(socket).toContain("export function attachSystemHealthSocket");
+    expect(executionQueries).toContain("export async function handleExecutionQueryRoute");
+    expect(notifications).toContain("export async function handleNotificationRoute");
+    expect(administration).not.toContain("function listNotifications");
   });
 });

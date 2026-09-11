@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
@@ -8,25 +7,15 @@ import Fastify, {
   type FastifyRequest,
   type HTTPMethods,
 } from "fastify";
-import { z } from "zod";
 import {
   fail,
   ok,
 } from "../models/schemas.js";
-import { withoutSecretFields } from "../redact/secrets.js";
-import type { User } from "../repository/store.js";
 import { ResourceMutations } from "./resource-mutations.js";
-import { executionReviewInbox } from "../runner/execution-review-inbox.js";
 import { routeTable, type RouteDefinition } from "./generated-routes.js";
 import { isPolicyCheckerEnabled, checkErpPolicy } from "../governance/rbac.js";
 import {
-  canReadExecution,
-  visibleExecutions,
-} from "./execution-scope.js";
-import { buildTraceChain } from "./trace-chain.js";
-import {
   initializeRequestTrace,
-  isTraceId,
   requestTraceId,
 } from "../trace/request-trace.js";
 import {
@@ -44,9 +33,6 @@ import { chatJobQueue, supportsChatJobs } from "../agent/chat-jobs.js";
 import { handleExecutionControlRoute, EXECUTION_CONTROL_UNHANDLED } from "./handlers/execution-control.js";
 import { handleWorkflowScheduleRoute, WORKFLOW_SCHEDULE_UNHANDLED } from "./handlers/workflow-schedules.js";
 import { workflowScheduleRunner } from "../runner/workflow-schedules.js";
-import { runtimeApprovalAdministration, runtimeApprovalView } from "../runner/runtime-approvals.js";
-import { operationReconciliationView, hasOperationReconciliation } from "../runner/operation-reconciliation.js";
-import { hasReportPageResolution } from "../runner/report-page-resolution.js";
 import {
   REGISTRY_UNHANDLED,
   handleRegistryRoute,
@@ -65,7 +51,6 @@ import {
 } from "./handlers/workflows.js";
 import {
   HandlerFailure,
-  stringValue,
 } from "./handlers/common.js";
 import {
   authenticate,
@@ -85,6 +70,10 @@ import {
   runWorkflow,
   validateWorkflowRoute,
 } from "./handlers/workflow-runtime.js";
+import { routePolicy } from "./route-policy.js";
+import { attachSystemHealthSocket } from "./system-health-websocket.js";
+import { EXECUTION_QUERY_UNHANDLED, handleExecutionQueryRoute } from "./handlers/execution-queries.js";
+import { handleNotificationRoute, NOTIFICATION_UNHANDLED } from "./handlers/notifications.js";
 
 const publicRoutes = new Set([
   "GET /healthz",
@@ -265,18 +254,7 @@ export async function buildApp(
             if (auth === null) return reply;
           },
         },
-        (socket, request) => {
-          const wildcard = (request.params as Record<string, unknown>)["*"];
-          const channel =
-            typeof wildcard === "string" && wildcard.trim() !== ""
-              ? wildcard
-              : "system-health";
-          const interval = setInterval(() => {
-            void sendWebsocketSnapshot(socket, channel, services);
-          }, 5_000);
-          socket.once("close", () => clearInterval(interval));
-          socket.once("error", () => clearInterval(interval));
-        },
+        (socket, request) => attachSystemHealthSocket(socket, request, services),
       );
       continue;
     }
@@ -304,7 +282,6 @@ export async function buildApp(
     );
   return app;
 }
-
 /*******************************************************************************
  * Function: assertApplicationServices
  *
@@ -344,44 +321,6 @@ function assertApplicationServices(services: ApplicationServices): void {
     typeof services.executor.run !== "function"
   )
     throw new Error("application executor is invalid");
-}
-
-/*******************************************************************************
- * Function: sendWebsocketSnapshot
- *
- * Sends the current workflow and execution snapshot to an open websocket.
- ******************************************************************************/
-async function sendWebsocketSnapshot(
-  socket: { readyState: number; send(data: string): void },
-  channel: string,
-  services: ApplicationServices,
-): Promise<void> {
-  if (socket.readyState !== 1) return;
-  const state = await services.repository.snapshot();
-  const workflows = Object.values(state.workflows).filter(
-    (item) => !item.archived,
-  ).length;
-  const executions = Object.values(state.executions);
-  const runningExecutions = executions.filter(
-    (item) => item.status === "RUNNING",
-  ).length;
-  socket.send(
-    JSON.stringify({
-      type: "system.health.snapshot",
-      id: `event_${randomBytes(8).toString("hex")}`,
-      timestamp: new Date().toISOString(),
-      data: {
-        channel,
-        overall: "healthy",
-        workflows,
-        executions: executions.length,
-        runningExecutions,
-        mcpConfigured:
-          services.config.mcpMode === "mock" ||
-          services.config.mcpBaseURL !== "",
-      },
-    }),
-  );
 }
 
 /*******************************************************************************
@@ -507,61 +446,14 @@ async function handleRoute(
         registryHash: services.registries.hash(),
       }),
     );
-  if (
-    route.path === `${services.config.apiBasePath}/executions` &&
-    route.method === "GET"
-  )
-    return listExecutions(request, reply, current!, services);
-  if (route.path === `${services.config.apiBasePath}/execution-reviews` && route.method === "GET") {
-    let page;
-    try { page = await services.repository.readAuthoritative(state => executionReviewInbox(state, current!, request.query, services.config.jwtSecret)); }
-    catch (error) {
-      try { services.repository.assertAuthority(); }
-      catch { throw new HandlerFailure(503, "The review inbox is unavailable until authoritative storage is recovered. No tasks or actions are confirmed."); }
-      throw error;
-    }
-    return reply.send(ok(page, "Current minimum review tasks; no decision or dispatch authority", null));
-  }
-  if (route.path === `${services.config.apiBasePath}/settings/runtime-approval-policy` && route.method === "GET") {
-    if (!isRecord(request.query) || Object.keys(request.query).length) throw new HandlerFailure(400, "Approval settings do not accept query overrides");
-    let view;
-    try { view = await services.repository.readAuthoritative(state => runtimeApprovalAdministration(state, current!)); }
-    catch (error) {
-      try { services.repository.assertAuthority(); }
-      catch { throw new HandlerFailure(503, "Approval settings are unavailable until authoritative storage is recovered. No policy is confirmed."); }
-      throw error;
-    }
-    return reply.send(ok({ ...view, memoryOnly: services.repository.persistence === null }, "Current exact approval policy; no execution authority", null));
-  }
-  if (
-    route.path === `${services.config.apiBasePath}/executions/:id` &&
-    route.method === "GET"
-  )
-    return getExecution(request, reply, current!, services);
+  const executionQuery = await handleExecutionQueryRoute(route, request, reply, current!, services);
+  if (executionQuery !== EXECUTION_QUERY_UNHANDLED) return executionQuery;
   const executionControl = await handleExecutionControlRoute(route, request, reply, current!, services);
   if (executionControl !== EXECUTION_CONTROL_UNHANDLED) return executionControl;
   const workflowSchedule = await handleWorkflowScheduleRoute(route, request, reply, current!, services);
   if (workflowSchedule !== WORKFLOW_SCHEDULE_UNHANDLED) return workflowSchedule;
-  if (
-    route.path === `${services.config.apiBasePath}/notifications/read-all` &&
-    route.method === "PATCH"
-  )
-    return markAllNotificationsRead(reply, current!, services);
-  if (
-    route.path === `${services.config.apiBasePath}/notifications/:id/read` &&
-    route.method === "PATCH"
-  )
-    return markNotificationRead(request, reply, current!, services);
-  if (
-    route.path === `${services.config.apiBasePath}/notifications/:id` &&
-    route.method === "DELETE"
-  )
-    return deleteNotification(request, reply, current!, services);
-  if (
-    route.path === `${services.config.apiBasePath}/notifications` &&
-    route.method === "GET"
-  )
-    return listNotifications(reply, current!, services);
+  const notification = await handleNotificationRoute(route, request, reply, current!, services);
+  if (notification !== NOTIFICATION_UNHANDLED) return notification;
   if (
     route.path === `${services.config.apiBasePath}/profile` &&
     route.method === "GET"
@@ -680,82 +572,6 @@ async function health(
 }
 
 /*******************************************************************************
- * Function: listExecutions
- *
- * Returns visible executions filtered by the request parameters.
- ******************************************************************************/
-async function listExecutions(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  user: User & { permissions: string[] },
-  services: ApplicationServices,
-): Promise<unknown> {
-  const state = await services.repository.snapshot();
-  const query = request.query as Record<string, unknown>;
-  const traceId = stringValue(query.traceId).trim();
-  if (traceId !== "") {
-    if (!isTraceId(traceId))
-      return reply.status(400).send(fail("Invalid trace ID", null));
-    const chain = buildTraceChain(state, user, traceId);
-    return reply.send(
-      ok(chain, "OK", { traceId, count: chain.length }),
-    );
-  }
-  const chatSessionId = stringValue(query.chatSessionId).trim();
-  const all = Object.values(state.executions).filter(
-    (item) => chatSessionId === "" || item.chatSessionId === chatSessionId,
-  );
-  const visible = visibleExecutions(user, all);
-  return reply.send(
-    ok(visible.map((item) => withoutSecretFields(item)), "OK", {
-      page: 1,
-      limit: 20,
-      total: visible.length,
-      totalPages: visible.length === 0 ? 0 : 1,
-    }),
-  );
-}
-
-/*******************************************************************************
- * Function: getExecution
- *
- * Returns an execution when the current user can read it.
- ******************************************************************************/
-async function getExecution(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  user: User & { permissions: string[] },
-  services: ApplicationServices,
-): Promise<unknown> {
-  if (isRecord(request.query) && request.query.view === "reconciliation") {
-    if (Object.keys(request.query).some(key => key !== "view")) throw new HandlerFailure(400, "Unsupported reconciliation review query");
-    const review = await services.repository.readAuthoritative(state => operationReconciliationView(state, param(request, "id"), user.id));
-    return reply.send(ok(review, "Exact uncertain operation evidence only; no dispatch authority", null));
-  }
-  if (isRecord(request.query) && request.query.view === "approval") {
-    if (Object.keys(request.query).some(key => !["view", "approvalId"].includes(key)) ||
-        request.query.approvalId !== undefined && !z.string().min(1).max(256).safeParse(request.query.approvalId).success) throw new HandlerFailure(400, "Unsupported approval review query");
-    const approvalId = request.query.approvalId as string | undefined;
-    const review = await services.repository.readAuthoritative(state => runtimeApprovalView(state, param(request, "id"), user.id, approvalId));
-    return reply.send(ok(review, "Exact transaction review only; approval does not execute", null));
-  }
-  // A review-only permission is not a read grant, even if this account started
-  // the execution before its role changed. Minimum views are handled above.
-  if (!user.permissions.some(key => ["workflow:read", "execution:read_own"].includes(key)))
-    return reply.status(404).send(fail("Execution not found", null));
-  const item = await services.repository.read(
-    (state) => state.executions[param(request, "id")] ?? null,
-  );
-  if (
-    item === null ||
-    !canReadExecution(user, item)
-  )
-    return reply.status(404).send(fail("Execution not found", null));
-  return reply.send(ok(withoutSecretFields({ ...item, ...(item.runtimeApprovalSecret ? { hasRuntimeApproval: true } : {}), ...(hasOperationReconciliation(item) ? { hasOperationReconciliation: true } : {}),
-    ...(hasReportPageResolution(item) ? { hasReportPageResolution: true } : {}) }), "OK", null));
-}
-
-/*******************************************************************************
  * Function: genericRoute
  *
  * Returns the fallback response for a route without a specific handler.
@@ -764,7 +580,7 @@ async function genericRoute(
   route: RouteDefinition,
   _request: FastifyRequest,
   reply: FastifyReply,
-  _user: User | null,
+  _user: unknown,
   services: ApplicationServices,
 ): Promise<unknown> {
   if (route.method === "GET") {
@@ -779,199 +595,4 @@ async function genericRoute(
       .status(503)
       .send(fail("Semantic search service is unavailable", null));
   throw new Error(`Missing route dispatch for ${route.method} ${route.path}`);
-}
-
-/*******************************************************************************
- * Function: routePolicy
- *
- * Determines the permission required for an HTTP route.
- ******************************************************************************/
-function routePolicy(
-  route: RouteDefinition,
-): { required: string[]; any: boolean } | null {
-  const path = route.path;
-  if (path.startsWith("/api/import"))
-    return { required: ["registry:write"], any: false };
-  // Must precede the general profile self-service exemption.
-  if (path.startsWith("/api/profile/api-keys"))
-    return { required: ["settings:manage"], any: false };
-  if (
-    path.startsWith("/ws/") ||
-    path.startsWith("/api/auth/") ||
-    path.startsWith("/api/company") ||
-    path.startsWith("/api/profile") ||
-    path.startsWith("/api/notifications")
-  )
-    return null;
-  if (
-    path.startsWith("/api/users") ||
-    path.startsWith("/api/roles") ||
-    path.startsWith("/api/permissions")
-  )
-    return { required: ["user:manage"], any: false };
-  if (path.startsWith("/api/audit"))
-    return { required: ["audit:read"], any: false };
-  if (path.startsWith("/api/registry"))
-    return {
-      required: [route.method === "GET" ? "registry:read" : "registry:write"],
-      any: false,
-    };
-  if (
-    path.startsWith("/api/settings") ||
-    path.startsWith("/api/integrations") ||
-    path.includes("/api-keys")
-  )
-    return { required: ["settings:manage"], any: false };
-  if (path.startsWith("/api/providers"))
-    return { required: ["provider:manage"], any: false };
-  if (path === "/api/execution-reviews" && route.method === "GET")
-    return { required: ["execution:approve", "execution:reconcile"], any: true };
-  if (path.startsWith("/api/executions"))
-    if (path === "/api/executions/:id/report-page-resolutions") return route.method === "GET"
-      ? { required: ["workflow:read", "execution:read_own", "execution:reconcile"], any: true }
-      : { required: ["execution:reconcile"], any: false };
-  if (path.startsWith("/api/executions"))
-    if (path === "/api/executions/:id/readbacks" && route.method === "GET") return { required: ["workflow:read", "execution:read_own", "execution:reconcile"], any: true };
-  if (path.startsWith("/api/executions"))
-    if (path === "/api/executions/:id/recovery-artifacts") return route.method === "GET"
-      ? { required: ["workflow:read", "execution:read_own", "workflow:run", "workflow:run_own", "execution:reconcile"], any: true }
-      : { required: ["workflow:run", "workflow:run_own"], any: true };
-  if (path.startsWith("/api/executions"))
-    if (path === "/api/executions/:id/reconcile" && route.method === "POST") return { required: ["execution:reconcile"], any: false };
-  if (path.startsWith("/api/executions"))
-    if (path === "/api/executions/:id" && route.method === "GET" || /\/executions\/:id\/(approve|reject)$/.test(path))
-      return { required: route.method === "GET" ? ["workflow:read", "execution:read_own", "execution:approve", "execution:reconcile"] : ["workflow:run", "workflow:run_own", "execution:approve"], any: true };
-  if (path.startsWith("/api/executions"))
-    return route.method === "GET"
-      ? { required: ["workflow:read", "execution:read_own"], any: true }
-      : { required: ["workflow:run", "workflow:run_own"], any: true };
-  if (path.startsWith("/api/chat"))
-    return {
-      required:
-        route.method === "GET"
-          ? ["workflow:read", "chat:use"]
-          : ["workflow:write", "chat:use"],
-      any: true,
-    };
-  if (path.startsWith("/api/workflows") && path.endsWith("/run"))
-    return { required: ["workflow:run", "workflow:run_own"], any: true };
-  if (
-    path.startsWith("/api/workflows") ||
-    path.startsWith("/api/synthesis") ||
-    path.startsWith("/api/tools") ||
-    path.startsWith("/api/rules") ||
-    path.startsWith("/api/semantic") ||
-    path.startsWith("/api/canvas") ||
-    path.startsWith("/api/dashboard") ||
-    path.startsWith("/api/analytics") ||
-    path.startsWith("/api/upload")
-  )
-    return route.method === "GET"
-      ? { required: ["workflow:read", "workflow:read_own"], any: true }
-      : { required: ["workflow:write"], any: false };
-  // A newly registered protected route without an access policy must not
-  // silently become accessible to every authenticated account.
-  return { required: [], any: true };
-}
-
-/*******************************************************************************
- * Function: param
- *
- * Reads a named route parameter as a string.
- ******************************************************************************/
-function param(request: FastifyRequest, name: string): string {
-  return String((request.params as Record<string, unknown>)[name] ?? "");
-}
-/*******************************************************************************
- * Function: isRecord
- *
- * Checks whether a value is a non-null object other than an array.
- ******************************************************************************/
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-/*******************************************************************************
- * Function: listNotifications
- *
- * Returns notifications using this handler's visibility and ordering rules.
- ******************************************************************************/
-async function listNotifications(
-  reply: FastifyReply,
-  _user: User,
-  services: ApplicationServices,
-): Promise<unknown> {
-  const state = await services.repository.snapshot();
-  const all = Object.values(state.notifications) as Array<Record<string, unknown>>;
-  all.sort((a, b) => {
-    const ta = typeof a.createdAt === "string" ? a.createdAt : "";
-    const tb = typeof b.createdAt === "string" ? b.createdAt : "";
-    return tb.localeCompare(ta);
-  });
-  return reply.send(ok(all, "OK", { count: all.length }));
-}
-
-/*******************************************************************************
- * Function: markNotificationRead
- *
- * Marks a notification as read and records the read time.
- ******************************************************************************/
-async function markNotificationRead(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  _user: User,
-  services: ApplicationServices,
-): Promise<unknown> {
-  const id = param(request, "id");
-  const updated = await services.repository.mutate((state) => {
-    const notif = state.notifications[id];
-    if (notif === undefined) return null;
-    notif.read = true;
-    notif.readAt = new Date().toISOString();
-    return structuredClone(notif);
-  });
-  if (updated === null) return reply.status(404).send(fail("Notification not found", null));
-  return reply.send(ok(updated, "Marked as read", null));
-}
-
-/*******************************************************************************
- * Function: deleteNotification
- *
- * Deletes the requested notification.
- ******************************************************************************/
-async function deleteNotification(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  _user: User,
-  services: ApplicationServices,
-): Promise<unknown> {
-  const id = param(request, "id");
-  const existed = await services.repository.mutate((state) => {
-    if (state.notifications[id] === undefined) return false;
-    delete state.notifications[id];
-    return true;
-  });
-  // Idempotent deletion keeps the captured API contract, while the data
-  // reports whether a record actually existed.
-  return reply.send(ok({ deleted: existed }, "Notification deleted", null));
-}
-
-/*******************************************************************************
- * Function: markAllNotificationsRead
- *
- * Marks unread notifications as read and reports the updated count.
- ******************************************************************************/
-async function markAllNotificationsRead(
-  reply: FastifyReply,
-  _user: User,
-  services: ApplicationServices,
-): Promise<unknown> {
-  const now = new Date().toISOString();
-  const count = await services.repository.mutate((state) => {
-    let n = 0;
-    for (const notif of Object.values(state.notifications)) {
-      if (notif.read !== true) { notif.read = true; notif.readAt = now; n++; }
-    }
-    return n;
-  });
-  return reply.send(ok({ markedRead: count }, "All notifications marked read", null));
 }
