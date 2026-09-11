@@ -1,139 +1,70 @@
-# Realtime WebSocket API
+# Realtime and reconnect APIs
 
-Base URL: `ws://localhost:8080/ws`
+## Authoritative execution progress
 
-Clients should include the access token either as a query param during development or through a secure auth handshake:
+Execution progress uses the normal authenticated HTTP API, not the WebSocket
+route:
 
-```text
-ws://localhost:8080/ws/executions/run-4821/logs?token=<accessToken>
+```http
+GET /api/executions/:id/events?after=17&limit=100&waitMs=25000
+Authorization: Bearer <access-token>
 ```
 
-Preferred production handshake:
+`after` is the last contiguous event sequence held by the client. `limit` is
+between 1 and 100. `waitMs` is optional and bounded from 0 through 25,000 ms.
+When there is no newer event and the run is active, the server may hold the
+request until a relevant acknowledged repository commit or the timeout. A held
+request never runs, retries, resumes, cancels, or dispatches ERP work.
+
+The response is a saved evidence page:
 
 ```json
 {
-  "type": "auth",
-  "accessToken": "jwt-access-token"
-}
-```
-
-## Channels
-
-| Channel | Purpose |
-|---|---|
-| `/executions/:id/logs` | Live execution logs |
-| `/executions/:id/status` | Run status transitions |
-| `/workflows/:id/events` | Builder/canvas collaboration and workflow events |
-| `/notifications` | User notifications |
-| `/system-health` | Runtime health updates |
-
-## Shared Event Envelope
-
-```json
-{
-  "type": "execution.log.appended",
-  "id": "evt_001",
-  "timestamp": "2026-05-02T09:21:09Z",
-  "data": {}
-}
-```
-
-## Execution Log Event
-
-```json
-{
-  "type": "execution.log.appended",
-  "id": "evt_log_001",
-  "timestamp": "2026-05-02T09:21:09Z",
+  "success": true,
   "data": {
-    "executionId": "run-4821",
-    "log": {
-      "id": "log_001",
-      "level": "info",
-      "nodeId": "trigger",
-      "message": "trigger.erp_event received invoice_id=INV-99214",
-      "metadata": {
-        "invoiceId": "INV-99214"
-      }
-    }
+    "events": [],
+    "cursor": 17,
+    "lastSequence": 17,
+    "hasMore": false,
+    "status": "RUNNING",
+    "profile": "read-progress-v1",
+    "waited": true,
+    "waitedMs": 25001
   }
 }
 ```
 
-## Execution Status Event
+The server reapplies account, permission, execution-scope, cursor, and storage
+authority checks after every wake-up. Authorization loss returns not-found and
+does not return earlier evidence. Storage authority loss returns 503 without
+claiming a status. The browser drains `hasMore` pages immediately, verifies
+contiguous sequences and execution IDs, reloads the authoritative execution and
+timeline when evidence advances, and backs off after transport failures. It
+never responds to a display failure by resubmitting the workflow.
 
-```json
-{
-  "type": "execution.status.changed",
-  "id": "evt_status_001",
-  "timestamp": "2026-05-02T09:22:03Z",
-  "data": {
-    "executionId": "run-4821",
-    "workflowId": "wf-101",
-    "previousStatus": "RUNNING",
-    "status": "HEALING",
-    "activeNodeId": "repair"
-  }
-}
-```
+This is authenticated long polling with durable cursor replay. It provides
+low-delay local commit visibility without putting bearer tokens in URLs. It is
+not Server-Sent Events, WebSocket execution streaming, model-token streaming,
+or proof of a cloud/network latency SLO.
 
-## Workflow Canvas Event
+## WebSocket boundary
 
-```json
-{
-  "type": "workflow.canvas.updated",
-  "id": "evt_canvas_001",
-  "timestamp": "2026-05-02T09:25:00Z",
-  "data": {
-    "workflowId": "wf-101",
-    "operation": "node.updated",
-    "node": {
-      "id": "policy",
-      "label": "Policy Guardrail",
-      "config": {
-        "requiresApproval": true
-      }
-    },
-    "actor": {
-      "id": "usr_001",
-      "name": "Lakshan Jay"
-    }
-  }
-}
-```
+`GET /ws/*` currently authenticates the handshake and emits one
+`system.health.snapshot` every five seconds. The requested wildcard is echoed as
+the `data.channel` label, but it does not change the payload and does not provide
+execution logs, execution status, canvas collaboration, or notification events.
+No frontend product component depends on this socket.
 
-## Notification Event
+Browser WebSocket clients cannot set an `Authorization` header. Although the
+legacy handshake accepts `?token=`, applications must not use bearer tokens in
+URLs because browser history, proxies, and access logs can expose them. A future
+WebSocket product transport requires a separately issued short-lived,
+audience-scoped ticket plus channel authorization, replay cursors, gap recovery,
+backpressure, reconnect tests, and token/log redaction.
 
-```json
-{
-  "type": "notification.created",
-  "id": "evt_not_001",
-  "timestamp": "2026-05-02T09:50:00Z",
-  "data": {
-    "id": "not_001",
-    "message": "ERP connector token expires soon",
-    "tone": "warning",
-    "read": false
-  }
-}
-```
+## Separate ERPBridge streams
 
-## System Health Event
-
-```json
-{
-  "type": "system.health.changed",
-  "id": "evt_health_001",
-  "timestamp": "2026-05-02T09:55:00Z",
-  "data": {
-    "overall": "degraded",
-    "service": {
-      "name": "Execution Workers",
-      "status": "degraded",
-      "value": 88,
-      "meta": "12/14 healthy"
-    }
-  }
-}
-```
-
+ERPBridge MCP transport and its notification/SSE handling are backend-to-bridge
+protocol surfaces. They are not browser execution progress and do not replace
+the saved application event journal. Changing that upstream transport cannot by
+itself prove faster UI updates or safe replay.

@@ -44,4 +44,16 @@ describe("HTTP responsibility boundaries", () => {
     expect(executionRoutes).toContain('from "./workflow-runtime.js"');
     expect(executionRoutes).not.toContain('from "../app.js"');
   });
+
+  test("keeps authenticated execution event waiting in its dedicated handler", async () => {
+    const [executionControl, executionEvents] = await Promise.all([
+      source("src/http/handlers/execution-control.ts"),
+      source("src/http/handlers/execution-events.ts"),
+    ]);
+    expect(executionControl).toContain('from "./execution-events.js"');
+    expect(executionControl).not.toContain("observeCommits");
+    expect(executionEvents).toContain("export async function handleExecutionEvents");
+    expect(executionEvents).toContain("repository.observeCommits");
+    expect(executionEvents).toContain("repository.readAuthoritative");
+  });
 });

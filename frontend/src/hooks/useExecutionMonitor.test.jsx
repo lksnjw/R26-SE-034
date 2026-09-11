@@ -27,6 +27,17 @@ test("polls sequenced changes, keeps real answers and stops after confirmed term
   await tick(); expect(result.current.execution.status).toBe("CANCELLED"); expect(result.current.events).toHaveLength(2);
   await tick(20000); expect(executionService.getEvents).toHaveBeenCalledTimes(3);
 });
+test("uses authenticated long polling and reconnects immediately after a completed held request", async () => {
+  executionService.getEvents.mockResolvedValueOnce(page([event(1, "run.started")], "RUNNING", { waited: true, waitedMs: 18 }))
+    .mockResolvedValueOnce(page([event(2, "run.completed")], "DONE", { cursor: 2, lastSequence: 2 }));
+  executionService.get.mockResolvedValueOnce(snapshot(1)).mockResolvedValueOnce(snapshot(2, "DONE"));
+  const { result } = renderHook(() => useExecutionMonitor("run")); await flush();
+  expect(executionService.getEvents.mock.calls[0][2]).toMatchObject({ waitMs: 25000 });
+  expect(executionService.getEvents.mock.calls[0][2].signal).toBeInstanceOf(AbortSignal);
+  await tick(0);
+  expect(executionService.getEvents).toHaveBeenCalledTimes(2);
+  expect(result.current.execution.status).toBe("DONE");
+});
 test("a held HTTP read does not overlap polling and cleanup aborts reads, not execution", async () => {
   let finish;
   executionService.getEvents.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));

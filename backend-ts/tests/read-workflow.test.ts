@@ -4,7 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { loadConfig } from "../src/config/config.js";
 import { buildApp } from "../src/http/app.js";
 import { Repository, type PersistenceBackend, type RepositoryState, type Execution } from "../src/repository/store.js";
-import { ReadCheckpoints, reconcileInterruptedExecutions, newReadProgress } from "../src/runner/read-checkpoints.js";
+import { ReadCheckpoints, appendExecutionEvent, reconcileInterruptedExecutions, newReadProgress } from "../src/runner/read-checkpoints.js";
 import { ReadIterationCheckpoints, newReadIterationLedger } from "../src/runner/read-iteration-checkpoints.js";
 import { compileReadWorkflow, readCompilationReceipt } from "../src/workflows/compiled-read.js";
 import { readJobQueue } from "../src/runner/read-jobs.js";
@@ -112,6 +112,55 @@ test("iteration receipts integrate with existing scoped event replay and cancell
   const cancelled = await s.app.inject({ method: "POST", url: `/api/executions/${item.id}/cancel`, headers: s.headers, payload: {} }); expect(cancelled.statusCode, cancelled.body).toBe(202); await expect(worker.advance()).rejects.toThrow();
   const final = await worker.finish(); expect(final.status).toBe("CANCELLED"); expect(final.stepOutputs?.["each/0/lookup"]).toMatchObject({ structuredContent: { id: "confirmed-first" } }); expect(final.readProgress!.attempts["each/1/lookup"]!.status).toBe("CANCELLED");
   expect((await s.run({ input: { rows: [] } })).statusCode).toBe(422); expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled();
+});
+
+async function seedMonitoredExecution(s: Awaited<ReturnType<typeof setup>>, id: string): Promise<void> {
+  const timestamp = new Date().toISOString();
+  await s.repository.mutate((state) => {
+    const item: Execution = { id, workflowId: "read", workflowName: "Monitored read", status: "RUNNING", startedAt: timestamp, completedAt: null, durationMs: 0,
+      costUsd: 0, tokens: { input: 0, output: 0, total: 0 }, startedBy: { id: "actor", name: "Actor" }, readProgress: newReadProgress(s.repository) };
+    state.executions[id] = item; state.executionEvents[id] = []; state.timelines[id] = [];
+    appendExecutionEvent(state, item, "run.started", { profile: "read-progress-v1" });
+  });
+}
+
+test("authenticated event long poll wakes on a relevant commit and replays only saved evidence", async () => {
+  const s = await setup(); await s.app.ready(); await seedMonitoredExecution(s, "monitor-wake");
+  const observe = vi.spyOn(s.repository, "observeCommits");
+  const response = s.app.inject({ method: "GET", url: "/api/executions/monitor-wake/events?after=1&limit=100&waitMs=1000", headers: s.headers });
+  await vi.waitFor(() => expect(observe).toHaveBeenCalledTimes(1));
+  await s.repository.mutate((state) => appendExecutionEvent(state, state.executions["monitor-wake"]!, "node.completed", { outcome: "DONE" }, "lookup"));
+  const result = await response;
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data).toMatchObject({ cursor: 2, lastSequence: 2, waited: true, hasMore: false, status: "RUNNING",
+    events: [{ sequence: 2, type: "node.completed", nodeId: "lookup", payload: { outcome: "DONE" } }] });
+  expect(result.json().data.waitedMs).toBeLessThan(1000);
+});
+
+test("event long poll times out unchanged and never invents a status transition", async () => {
+  const s = await setup(); await s.app.ready(); await seedMonitoredExecution(s, "monitor-timeout");
+  const response = await s.app.inject({ method: "GET", url: "/api/executions/monitor-timeout/events?after=1&limit=100&waitMs=15", headers: s.headers });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ events: [], cursor: 1, lastSequence: 1, waited: true, status: "RUNNING" });
+  expect(response.json().data.waitedMs).toBeGreaterThanOrEqual(10);
+});
+
+test("event long poll reapplies authorization after wake and hides previously readable evidence", async () => {
+  const s = await setup(); await s.app.ready(); await seedMonitoredExecution(s, "monitor-revoked");
+  const observe = vi.spyOn(s.repository, "observeCommits");
+  const response = s.app.inject({ method: "GET", url: "/api/executions/monitor-revoked/events?after=1&waitMs=1000", headers: s.headers });
+  await vi.waitFor(() => expect(observe).toHaveBeenCalledTimes(1));
+  await s.repository.mutate((state) => { state.users.actor!.status = "Suspended"; });
+  const result = await response;
+  expect(result.statusCode, result.body).toBe(404);
+  expect(result.json().message).toBe("Execution not found");
+  expect(result.body).not.toContain("run.started");
+});
+
+test.each(["-1", "25001", "1.5", "forever"])("event long poll rejects invalid wait duration %s", async (waitMs) => {
+  const s = await setup(); await s.app.ready(); await seedMonitoredExecution(s, `monitor-invalid-${waitMs}`);
+  const response = await s.app.inject({ method: "GET", url: `/api/executions/monitor-invalid-${encodeURIComponent(waitMs)}/events?after=1&waitMs=${encodeURIComponent(waitMs)}`, headers: s.headers });
+  expect(response.statusCode, response.body).toBe(400);
 });
 
 test("collection HTTP simulation has separate iteration evidence and performs no live or persisted work", async () => {

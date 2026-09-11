@@ -133,7 +133,8 @@ export const executionService = {
     return unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}/timeline`, options), []);
   },
   async getEvents(id, after = 0, options = {}) {
-    return unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}/events`, { ...options, params: { after, limit: 100 } }));
+    const { waitMs = 25000, ...requestOptions } = options;
+    return unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}/events`, { ...requestOptions, params: { after, limit: 100, waitMs } }));
   },
   async cancel(id) {
     // 202 confirms a request, not an interrupted SDK transport or terminal run.

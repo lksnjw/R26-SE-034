@@ -1,6 +1,8 @@
 # Backend Connection Map
 
-The frontend currently uses mock services. Replace each mock service with `apiClient` calls from `frontend/src/config/axios.js`.
+The frontend service modules use the shared authenticated `apiClient`. Product
+screens must not bypass these services to invoke ERPBridge, models, or arbitrary
+URLs from the browser.
 
 ## Environment
 
@@ -27,7 +29,7 @@ VITE_ANALYTICS_ENABLED=false
 | `src/services/notification.service.js` | `/notifications` |
 | `src/services/audit.service.js` | `/audit` |
 | `src/services/upload.service.js` | `/upload` |
-| `src/hooks/useWebSocket.js` | `/ws/*` |
+| `src/hooks/useExecutionMonitor.js` | `/executions/:id/events` authenticated cursor replay/long poll |
 
 ## Required Backend Capabilities
 
@@ -37,7 +39,7 @@ VITE_ANALYTICS_ENABLED=false
 4. Workflow execution engine with async run creation and status updates.
 5. LLM synthesis service that converts natural language into YAML.
 6. Validation service for YAML schema, node graph integrity, and policy guardrails.
-7. WebSocket gateway for live logs, run status, notifications, and system health.
+7. Authenticated saved-event replay/long polling for execution progress; the existing WebSocket is health-only.
 8. Audit logging for auth, workflow, execution, user, role, setting, integration, and API-key actions.
 9. Upload/import support for YAML, JSON, CSV, and attachments.
 10. Analytics aggregation for runs, cost, token usage, latency, healing success, and validation scores.
@@ -62,7 +64,7 @@ export const workflowService = {
 3. Workflow list/detail/create/update.
 4. Synthesis and YAML validation.
 5. Execution run/create/logs.
-6. WebSocket live logs/status.
+6. Cursor-safe execution event replay and long polling.
 7. Analytics.
 8. Users/RBAC/audit.
 9. Settings/integrations/webhooks.

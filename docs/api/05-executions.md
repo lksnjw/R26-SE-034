@@ -10,8 +10,9 @@ Base path: `/api/executions`
 | `GET` | `/executions/:id` | Required | none | `ExecutionDetail` |
 | `GET` | `/executions/:id/logs` | Required | `cursor`, `limit`, `level` | `ExecutionLog[]` |
 | `GET` | `/executions/:id/timeline` | Required | none | `ExecutionStep[]` |
+| `GET` | `/executions/:id/events` | Required | `after`, `limit`, `waitMs` | `ExecutionEventPage` |
 | `GET` | `/executions/:id/healing-report` | Required | none | `HealingReport` |
-| `POST` | `/executions/:id/cancel` | Required | `{ "reason": "..." }` | `Execution` |
+| `POST` | `/executions/:id/cancel` | Required | empty object | `Execution` |
 | `POST` | `/executions/:id/retry` | Required | `RetryExecutionRequest` | `Execution` |
 | `GET` | `/workflows/:id/executions` | Required | `page`, `limit` | `Execution[]` |
 | `POST` | `/workflows/:id/run` | Required | `RunWorkflowRequest` | `Execution` |
@@ -111,6 +112,29 @@ Base path: `/api/executions`
   ],
   "message": "OK",
   "meta": null
+}
+```
+
+## Execution Event Page
+
+`after` is a non-negative contiguous sequence cursor, `limit` is 1–100, and
+`waitMs` is 0–25,000. With a positive wait and no newer saved event, an active
+run request may remain open until a relevant commit or timeout. The response is
+evidence replay only; it does not dispatch or retry the run.
+
+```json
+{
+  "success": true,
+  "data": {
+    "events": [],
+    "cursor": 12,
+    "lastSequence": 12,
+    "hasMore": false,
+    "status": "RUNNING",
+    "profile": "read-progress-v1",
+    "waited": true,
+    "waitedMs": 25000
+  }
 }
 ```
 

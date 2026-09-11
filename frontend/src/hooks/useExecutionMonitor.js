@@ -4,7 +4,7 @@ import { isActiveExecution, reconcileExecutionEvents } from "../utils/executionE
 
 // One non-overlapping poll per known execution. Re-mount/refresh replays from
 // sequence zero; cleanup aborts only HTTP reads, never an ERP execution.
-export function useExecutionMonitor(executionId, { enabled = true, interval = 2000 } = {}) {
+export function useExecutionMonitor(executionId, { enabled = true, interval = 2000, waitMs = 25000 } = {}) {
   const [frame, setFrame] = useState(null), [generation, setGeneration] = useState(0);
   const refresh = useCallback(() => setGeneration((value) => value + 1), []);
   useEffect(() => {
@@ -14,10 +14,11 @@ export function useExecutionMonitor(executionId, { enabled = true, interval = 20
     const poll = async () => {
       if (disposed || inFlight || stopped) return;
       inFlight = true;
-      let again = true, more = false, advanced = false;
+      let again = true, more = false, advanced = false, pageWaited = false;
       try {
         if (typeof navigator !== "undefined" && navigator.onLine === false) throw new Error("Browser is offline. Run updates will reconnect automatically.");
-        const page = await executionService.getEvents(executionId, cursor, { signal: controller.signal });
+        const page = await executionService.getEvents(executionId, cursor, { signal: controller.signal, waitMs });
+        pageWaited = page.waited === true;
         if (disposed) return;
         const replay = reconcileExecutionEvents(events, cursor, page, executionId);
         if (!current || replay.cursor !== cursor || current.status !== page.status || page.profile === "legacy-no-journal") {
@@ -52,7 +53,7 @@ export function useExecutionMonitor(executionId, { enabled = true, interval = 20
       inFlight = false;
       stopped = !again;
       const retryDelay = failures ? Math.min(30000, interval * 2 ** Math.min(5, failures - 1) * (0.85 + Math.random() * 0.3)) : interval;
-      if (!disposed && again) timer = setTimeout(poll, more && advanced ? 0 : retryDelay);
+      if (!disposed && again) timer = setTimeout(poll, (more && advanced) || (!failures && pageWaited) ? 0 : retryDelay);
     };
     const reconnect = () => { if (disposed || stopped || inFlight) return; clearTimeout(timer); void poll(); };
     const visible = () => { if (document.visibilityState === "visible") reconnect(); };
@@ -60,7 +61,7 @@ export function useExecutionMonitor(executionId, { enabled = true, interval = 20
     document.addEventListener("visibilitychange", visible);
     void poll();
     return () => { disposed = true; controller.abort(); clearTimeout(timer); window.removeEventListener("online", reconnect); document.removeEventListener("visibilitychange", visible); };
-  }, [executionId, enabled, interval, generation]);
+  }, [executionId, enabled, interval, waitMs, generation]);
   const active = frame?.executionId === executionId ? frame : null;
   return { execution: active?.execution ?? null, timeline: active?.timeline ?? [], events: active?.events ?? [], cursor: active?.cursor ?? 0,
     error: active?.error ?? "", denied: active?.denied ?? false, reconnecting: active?.reconnecting ?? false, checkedAt: active?.checkedAt ?? null, refresh };
