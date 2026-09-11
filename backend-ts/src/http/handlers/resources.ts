@@ -147,9 +147,9 @@ export async function handleResourceRoute(route: RouteDefinition, request: Fasti
       const runtime = services.mcpConnectionRuntime;
       if (!runtime) throw new HandlerFailure(503, "This backend has no supported MCP lifecycle service", { code: "MCP_LIFECYCLE_UNAVAILABLE" });
       if (route.method === "GET") return reply.send(ok(await runtime.status(user), "Backend-owned MCP state; initialization is not ERP delivery", null));
-      if (requestParam(request, "id") !== "erpbridge-default") throw new HandlerFailure(404, "MCP connection not found");
+      const connectionId = requestParam(request, "id");
       const action = route.path.endsWith("/disconnect") ? "disconnect" : route.path.endsWith("/test") ? "test" : "connect";
-      return reply.send(ok(await runtime.command(action, user, request.body, request), "MCP lifecycle operation acknowledged; no business tool was invoked", null));
+      return reply.send(ok(await runtime.command(action, user, request.body, request, connectionId), "MCP lifecycle operation acknowledged; no business tool was invoked", null));
     }
     const operationResponse = await handleChatOperationRoute(route, request, reply, user, services);
     if (operationResponse !== CHAT_OPERATION_UNHANDLED) return operationResponse;

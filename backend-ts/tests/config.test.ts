@@ -45,11 +45,14 @@ describe("workflow transport configuration", () => {
       mcpTransport: "erpbridge-mcp",
       erpbridgeBaseURL: "https://erpbridge.example.test",
       erpbridgeMcpToken: "scoped-token",
+      erpbridgeMcpTokenReference: "ERPBRIDGE_MCP_TOKEN",
+      erpbridgePrimaryConnectionId: "erpbridge-default",
       erpbridgeRoleMap: {
         "Workflow Builder": "workflow_builder",
         Client: "client",
       },
     });
+    expect(config.erpbridgeConnections).toEqual([expect.objectContaining({ id: "erpbridge-default", primary: true, tokenReference: "ERPBRIDGE_MCP_TOKEN" })]);
   });
 
   test("supports selecting the token from a named environment variable", () => {
@@ -60,7 +63,35 @@ describe("workflow transport configuration", () => {
       WORKFLOW_ERP_TOKEN: "selected-token",
     });
 
-    expect(config.erpbridgeMcpToken).toBe("selected-token");
+    expect(config.erpbridgeMcpToken).toBe("selected-token"); expect(config.erpbridgeMcpTokenReference).toBe("WORKFLOW_ERP_TOKEN");
+  });
+
+  test("loads up to eight backend-owned connections from named secret references with one explicit primary", () => {
+    const config = loadConfig({ APP_ENV: "test", MCP_TRANSPORT: "erpbridge-mcp", ERPBRIDGE_PRIMARY_CONNECTION_ID: "finance",
+      ERPBRIDGE_CONNECTIONS_JSON: JSON.stringify([
+        { id: "finance", baseURL: "https://finance.example.test", tokenEnv: "FINANCE_ERP_TOKEN", roleMap: { "Platform Admin": "finance_admin" } },
+        { id: "hr", baseURL: "https://hr.example.test", tokenEnv: "HR_ERP_TOKEN", roleMap: { Client: "hr_reader" } },
+      ]), FINANCE_ERP_TOKEN: "finance-private", HR_ERP_TOKEN: "hr-private" });
+    expect(config.erpbridgePrimaryConnectionId).toBe("finance");
+    expect(config.erpbridgeConnections).toEqual([
+      { id: "finance", baseURL: "https://finance.example.test", mcpToken: "finance-private", tokenReference: "FINANCE_ERP_TOKEN", roleMap: { "Platform Admin": "finance_admin" }, primary: true },
+      { id: "hr", baseURL: "https://hr.example.test", mcpToken: "hr-private", tokenReference: "HR_ERP_TOKEN", roleMap: { Client: "hr_reader" }, primary: false },
+    ]);
+    expect(config.erpbridgeBaseURL).toBe("https://finance.example.test"); expect(config.erpbridgeMcpToken).toBe("finance-private");
+  });
+
+  test.each([
+    { name: "missing primary", patch: { ERPBRIDGE_PRIMARY_CONNECTION_ID: "" } },
+    { name: "unknown primary", patch: { ERPBRIDGE_PRIMARY_CONNECTION_ID: "unknown" } },
+    { name: "missing referenced token", patch: { HR_ERP_TOKEN: "" } },
+    { name: "mixed legacy configuration", patch: { ERPBRIDGE_BASE_URL: "https://legacy.example.test" } },
+  ])("rejects unsafe multi-connection configuration: $name", ({ patch }) => {
+    const base = { APP_ENV: "test", MCP_TRANSPORT: "erpbridge-mcp", ERPBRIDGE_PRIMARY_CONNECTION_ID: "finance",
+      ERPBRIDGE_CONNECTIONS_JSON: JSON.stringify([
+        { id: "finance", baseURL: "https://finance.example.test", tokenEnv: "FINANCE_ERP_TOKEN", roleMap: { "Platform Admin": "finance_admin" } },
+        { id: "hr", baseURL: "https://hr.example.test", tokenEnv: "HR_ERP_TOKEN", roleMap: { Client: "hr_reader" } },
+      ]), FINANCE_ERP_TOKEN: "finance-private", HR_ERP_TOKEN: "hr-private" };
+    expect(() => loadConfig({ ...base, ...patch })).toThrow();
   });
 
   test("rejects an ambiguous direct token and token environment selector", () => {

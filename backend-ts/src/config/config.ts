@@ -28,6 +28,8 @@ const environmentSchema = z
     ERPBRIDGE_MCP_TOKEN: z.string().optional(),
     ERPBRIDGE_MCP_TOKEN_ENV: z.string().optional(),
     ERPBRIDGE_ROLE_MAP: z.string().optional(),
+    ERPBRIDGE_CONNECTIONS_JSON: z.string().optional(),
+    ERPBRIDGE_PRIMARY_CONNECTION_ID: z.string().optional(),
     GENERATION_BASE_URL: z.string().optional(),
     GENERATION_API_KEY: z.string().optional(),
     GENERATION_MODEL_PRIMARY: z.string().optional(),
@@ -60,6 +62,15 @@ const environmentSchema = z
 
 export type MCPTransport = "bridge-v1" | "erpbridge-mcp";
 
+export type ErpbridgeConnectionConfig = {
+  id: string;
+  baseURL: string;
+  mcpToken: string;
+  tokenReference: string;
+  roleMap: Record<string, string>;
+  primary: boolean;
+};
+
 export type AppConfig = {
   appName: string;
   environment: string;
@@ -88,7 +99,10 @@ export type AppConfig = {
   readWorkerLeaseMs: number;
   erpbridgeBaseURL: string;
   erpbridgeMcpToken: string;
+  erpbridgeMcpTokenReference: string;
   erpbridgeRoleMap: Record<string, string>;
+  erpbridgeConnections: ErpbridgeConnectionConfig[];
+  erpbridgePrimaryConnectionId: string;
   generationBaseURL?: string;
   generationAPIKey?: string;
   generationModelPrimary?: string;
@@ -146,19 +160,13 @@ export function loadConfig(
     throw new Error(
       `unsupported MCP_TRANSPORT ${JSON.stringify(mcpTransport)} (allowed values: bridge-v1 or erpbridge-mcp)`,
     );
-  const erpbridgeBaseURL = source.ERPBRIDGE_BASE_URL?.trim() ?? "";
-  const erpbridgeMcpToken =
-    mcpTransport === "erpbridge-mcp"
-      ? resolveToken(
-          env,
-          source.ERPBRIDGE_MCP_TOKEN,
-          source.ERPBRIDGE_MCP_TOKEN_ENV,
-        )
-      : "";
-  const erpbridgeRoleMap =
-    mcpTransport === "erpbridge-mcp"
-      ? parseRoleMap(source.ERPBRIDGE_ROLE_MAP)
-      : {};
+  const erpbridgeConnections = mcpTransport === "erpbridge-mcp" ? parseErpbridgeConnections(env, source) : [];
+  const primaryConnection = erpbridgeConnections.find(value => value.primary);
+  const erpbridgeBaseURL = primaryConnection?.baseURL ?? "";
+  const erpbridgeMcpToken = primaryConnection?.mcpToken ?? "";
+  const erpbridgeMcpTokenReference = primaryConnection?.tokenReference ?? "";
+  const erpbridgeRoleMap = primaryConnection?.roleMap ?? {};
+  const erpbridgePrimaryConnectionId = primaryConnection?.id ?? "erpbridge-default";
   const generationTimeoutMs = parseInteger(
     source.GENERATION_TIMEOUT_MS,
     30_000,
@@ -251,7 +259,10 @@ export function loadConfig(
     readWorkerLeaseMs,
     erpbridgeBaseURL,
     erpbridgeMcpToken,
+    erpbridgeMcpTokenReference,
     erpbridgeRoleMap,
+    erpbridgeConnections,
+    erpbridgePrimaryConnectionId,
     generationBaseURL: source.GENERATION_BASE_URL?.trim() ?? "",
     generationAPIKey: source.GENERATION_API_KEY?.trim() ?? "",
     generationModelPrimary: source.GENERATION_MODEL_PRIMARY?.trim() ?? "",
@@ -326,27 +337,26 @@ export function validateConfig(config: AppConfig): void {
   if (config.environment === "production" && config.mcpMode === "mock")
     throw new Error("MCP_MODE=mock is refused in production");
   if (config.mcpTransport === "erpbridge-mcp") {
-    if (config.erpbridgeBaseURL === "")
-      throw new Error(
-        "ERPBRIDGE_BASE_URL is required when MCP_TRANSPORT=erpbridge-mcp",
-      );
-    let endpoint: URL;
-    try {
-      endpoint = new URL(config.erpbridgeBaseURL);
-    } catch {
-      throw new Error("ERPBRIDGE_BASE_URL must be a valid URL");
+    if (config.erpbridgeConnections.length < 1 || config.erpbridgeConnections.length > 8)
+      throw new Error("ERPBridge requires between one and eight backend-owned connections");
+    const legacyDefault = config.erpbridgeConnections.length === 1 && config.erpbridgeConnections[0]?.id === "erpbridge-default";
+    if (legacyDefault && config.erpbridgeBaseURL === "") throw new Error("ERPBRIDGE_BASE_URL is required when MCP_TRANSPORT=erpbridge-mcp");
+    if (legacyDefault && config.erpbridgeMcpToken === "") throw new Error("ERPBRIDGE_MCP_TOKEN or ERPBRIDGE_MCP_TOKEN_ENV is required when MCP_TRANSPORT=erpbridge-mcp");
+    if (legacyDefault && Object.keys(config.erpbridgeRoleMap).length === 0) throw new Error("ERPBRIDGE_ROLE_MAP must contain at least one local role mapping");
+    if (new Set(config.erpbridgeConnections.map(value => value.id)).size !== config.erpbridgeConnections.length ||
+        config.erpbridgeConnections.filter(value => value.primary).length !== 1 || !config.erpbridgeConnections.some(value => value.id === config.erpbridgePrimaryConnectionId && value.primary))
+      throw new Error("ERPBridge connections require unique IDs and exactly one configured primary connection");
+    for (const connection of config.erpbridgeConnections) {
+      let endpoint: URL;
+      try { endpoint = new URL(connection.baseURL); } catch { throw new Error(`ERPBridge connection ${connection.id} must use a valid URL`); }
+      if (!/^[a-z][a-z0-9_-]{0,63}$/.test(connection.id) || !["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/")
+        throw new Error(`ERPBridge connection ${connection.id} has an unsupported ID or endpoint`);
+      if (config.environment !== "development" && endpoint.protocol !== "https:") throw new Error(`ERPBridge connection ${connection.id} must use HTTPS outside development`);
+      if (!connection.mcpToken || /[\r\n]/.test(connection.mcpToken) || connection.mcpToken.length > 16384)
+        throw new Error(`ERPBridge connection ${connection.id} requires one supported backend credential`);
+      validateRoleMap(connection.roleMap);
+      if (Object.keys(connection.roleMap).length === 0) throw new Error(`ERPBridge connection ${connection.id} requires at least one local role mapping`);
     }
-    if (config.environment !== "development" && endpoint.protocol !== "https:")
-      throw new Error("ERPBRIDGE_BASE_URL must use HTTPS outside development");
-    if (config.erpbridgeMcpToken === "")
-      throw new Error(
-        "ERPBRIDGE_MCP_TOKEN or ERPBRIDGE_MCP_TOKEN_ENV is required when MCP_TRANSPORT=erpbridge-mcp",
-      );
-    validateRoleMap(config.erpbridgeRoleMap);
-    if (Object.keys(config.erpbridgeRoleMap).length === 0)
-      throw new Error(
-        "ERPBRIDGE_ROLE_MAP must contain at least one local role mapping",
-      );
   }
   const generationConfigured = [
     config.generationBaseURL,
@@ -514,6 +524,35 @@ function resolveToken(
       "ERPBRIDGE_MCP_TOKEN_ENV must be a valid environment variable name",
     );
   return env[selected]?.trim() ?? "";
+}
+
+function parseErpbridgeConnections(env: NodeJS.ProcessEnv, source: z.infer<typeof environmentSchema>): ErpbridgeConnectionConfig[] {
+  const catalogText = source.ERPBRIDGE_CONNECTIONS_JSON?.trim() ?? "";
+  if (catalogText === "") {
+    const token = resolveToken(env, source.ERPBRIDGE_MCP_TOKEN, source.ERPBRIDGE_MCP_TOKEN_ENV);
+    return [{ id: "erpbridge-default", baseURL: source.ERPBRIDGE_BASE_URL?.trim() ?? "", mcpToken: token,
+      tokenReference: source.ERPBRIDGE_MCP_TOKEN_ENV?.trim() || "ERPBRIDGE_MCP_TOKEN", roleMap: parseRoleMap(source.ERPBRIDGE_ROLE_MAP), primary: true }];
+  }
+  if ([source.ERPBRIDGE_BASE_URL, source.ERPBRIDGE_MCP_TOKEN, source.ERPBRIDGE_MCP_TOKEN_ENV, source.ERPBRIDGE_ROLE_MAP].some(value => (value?.trim() ?? "") !== ""))
+    throw new Error("ERPBRIDGE_CONNECTIONS_JSON cannot be combined with legacy single-connection ERPBridge settings");
+  let decoded: unknown;
+  try { decoded = JSON.parse(catalogText); } catch { throw new Error("ERPBRIDGE_CONNECTIONS_JSON must be valid JSON"); }
+  if (!Array.isArray(decoded) || decoded.length < 1 || decoded.length > 8) throw new Error("ERPBRIDGE_CONNECTIONS_JSON must contain one to eight connections");
+  const primaryId = source.ERPBRIDGE_PRIMARY_CONNECTION_ID?.trim() ?? "";
+  if (decoded.length > 1 && !primaryId) throw new Error("ERPBRIDGE_PRIMARY_CONNECTION_ID is required when multiple ERPBridge connections are configured");
+  const values = decoded.map((raw, index): ErpbridgeConnectionConfig => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`ERPBridge connection ${index + 1} must be an object`);
+    const record = raw as Record<string, unknown>, allowed = new Set(["id", "baseURL", "tokenEnv", "roleMap"]);
+    if (Object.keys(record).some(key => !allowed.has(key)) || typeof record.id !== "string" || typeof record.baseURL !== "string" || typeof record.tokenEnv !== "string" ||
+        !record.roleMap || typeof record.roleMap !== "object" || Array.isArray(record.roleMap)) throw new Error(`ERPBridge connection ${index + 1} has unsupported fields`);
+    const id = record.id.trim(), tokenReference = record.tokenEnv.trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenReference)) throw new Error(`ERPBridge connection ${id || index + 1} tokenEnv must name one environment variable`);
+    const mcpToken = env[tokenReference]?.trim() ?? "";
+    return { id, baseURL: record.baseURL.trim(), mcpToken, tokenReference, roleMap: parseRoleMap(JSON.stringify(record.roleMap)), primary: id === (primaryId || String(record.id).trim()) };
+  });
+  if (!primaryId && values.length === 1) values[0]!.primary = true;
+  if (primaryId && !values.some(value => value.id === primaryId)) throw new Error("ERPBRIDGE_PRIMARY_CONNECTION_ID must identify one configured connection");
+  return values;
 }
 
 /*******************************************************************************

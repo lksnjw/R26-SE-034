@@ -11,7 +11,7 @@ import type { ToolDefinition } from "../registry/schemas.js";
 import { Repository } from "../repository/store.js";
 import { Executor } from "../runner/executor.js";
 import { GenericMCPTool } from "../tools/generic-mcp-tool.js";
-import { McpConnectionRuntime } from "../tools/mcp-connection-runtime.js";
+import { McpConnectionManager } from "../tools/mcp-connection-runtime.js";
 import {
   createGovernedMCPClient,
   type GovernedMCPClient,
@@ -98,7 +98,7 @@ const legacyMcp =
         validator,
       })
     : null;
-const mcpConnectionRuntime = await McpConnectionRuntime.open({ config, repository, registries, validator });
+const mcpConnectionRuntime = await McpConnectionManager.open({ config, repository, registries, validator });
 /*******************************************************************************
  * Function: clientFor
  *

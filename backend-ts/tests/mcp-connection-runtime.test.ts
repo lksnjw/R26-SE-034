@@ -7,7 +7,7 @@ import { toolSchema } from "../src/registry/schemas.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { loadConfig } from "../src/config/config.js";
 import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
-import { McpConnectionRuntime } from "../src/tools/mcp-connection-runtime.js";
+import { McpConnectionManager, McpConnectionRuntime } from "../src/tools/mcp-connection-runtime.js";
 import type { McpNotificationState } from "../src/tools/mcp-notification-stream.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import { capabilityContractHash, observeCapabilities, reviewCapability } from "../src/registry/capability-admission.js";
@@ -57,6 +57,56 @@ test("real runtime connect initializes/discovers without a business call or gran
   expect(s.factory).toHaveBeenCalledOnce(); expect(s.sdkClients[0]!.callTool).not.toHaveBeenCalled(); expect(Object.keys((await s.repository.snapshot()).capabilityAdmissions)).toHaveLength(0);
   await expect(dispatchReadTool(s.services, "admin", s.tool.name, { value: "fixture" })).rejects.toThrow(/admitted/);
   await s.review(); expect((await dispatchReadTool(s.services, "admin", s.tool.name, { value: "fixture" })).content).toEqual([{ type: "text", text: "Confirmed fixture result" }]); expect(s.sdkClients[0]!.callTool).toHaveBeenCalledOnce();
+});
+
+test("bounded manager owns independent revisioned connections while only the configured primary is exposed for workflow dispatch", async () => {
+  const s = await setup();
+  const multi = loadConfig({ APP_ENV: "test", JWT_SECRET: "mcp-runtime-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "remote", MCP_TRANSPORT: "erpbridge-mcp",
+    ERPBRIDGE_PRIMARY_CONNECTION_ID: "finance", ERPBRIDGE_CONNECTIONS_JSON: JSON.stringify([
+      { id: "finance", baseURL: "https://finance.example.test", tokenEnv: "FINANCE_TOKEN", roleMap: { "Platform Admin": "finance_admin" } },
+      { id: "hr", baseURL: "https://hr.example.test", tokenEnv: "HR_TOKEN", roleMap: { "Platform Admin": "hr_admin" } },
+    ]), FINANCE_TOKEN: "finance-private-credential", HR_TOKEN: "hr-private-credential", MCP_TIMEOUT_MS: "1000" });
+  const manager = await McpConnectionManager.open({ ...s.options, config: multi }); runtimes.push(manager);
+  let status = await manager.status(s.admin);
+  expect(status).toMatchObject({ primaryConnectionId: "finance", connections: [
+    { id: "finance", primary: true, dispatchSupported: true, state: "DISCONNECTED", secretReference: "FINANCE_TOKEN" },
+    { id: "hr", primary: false, dispatchSupported: false, state: "DISCONNECTED", secretReference: "HR_TOKEN" },
+  ] });
+  await manager.command("connect", s.admin, { baseRevision: 1, requestId: "finance_connect_request_0001" }, undefined, "finance");
+  await manager.command("connect", s.admin, { baseRevision: 1, requestId: "hr_connect_request_0001" }, undefined, "hr");
+  expect(manager.session).toBe(manager.sessionFor("finance")); expect(manager.sessionFor("hr")).toBeDefined(); expect(manager.sessionFor("unknown")).toBeUndefined();
+  status = await manager.status(s.admin); expect(status.connections.map(value => [value.id, value.revision, value.initialized])).toEqual([["finance", 2, true], ["hr", 2, true]]);
+  expect(status.recentOperations.map(value => value.connectionId).sort()).toEqual(["finance", "hr"]);
+  expect(JSON.stringify(status)).not.toMatch(/finance-private-credential|hr-private-credential|configurationHash|requestHash/);
+  await expect(manager.command("connect", s.admin, { baseRevision: 1, requestId: "unknown_connect_request_0001" }, undefined, "unknown")).rejects.toMatchObject({ status: 404 });
+
+  const services = { ...s.services, config: multi, mcpConnectionRuntime: manager, get erpbridgeSession() { return manager.session; } };
+  const app = await buildApp(services); apps.push(app);
+  const headers = { authorization: `Bearer ${jwt.sign({}, multi.jwtSecret, { subject: "admin", expiresIn: 3600 })}` };
+  const listed = await app.inject({ method: "GET", url: "/api/settings/mcp-connections", headers });
+  expect(listed.statusCode, listed.body).toBe(200); expect(listed.json().data.primaryConnectionId).toBe("finance");
+  const disconnected = await app.inject({ method: "POST", url: "/api/settings/mcp-connections/hr/disconnect", headers,
+    payload: { baseRevision: 2, requestId: "hr_disconnect_request_0001" } });
+  expect(disconnected.statusCode, disconnected.body).toBe(200); expect(disconnected.json().data.connection).toMatchObject({ id: "hr", revision: 3, initialized: false });
+  expect(manager.sessionFor("finance")).toBeDefined(); expect(manager.sessionFor("hr")).toBeUndefined();
+  const missing = await app.inject({ method: "POST", url: "/api/settings/mcp-connections/unknown/test", headers,
+    payload: { baseRevision: 1, requestId: "unknown_http_request_0001" } });
+  expect(missing.statusCode).toBe(404);
+
+  await manager.command("connect", s.admin, { baseRevision: 3, requestId: "hr_reconnect_request_0001" }, undefined, "hr");
+  await manager.stop();
+  const restored = await McpConnectionManager.open({ ...s.options, config: multi }); runtimes.push(restored);
+  expect(restored.sessionFor("finance")).toBeDefined(); expect(restored.sessionFor("hr")).toBeDefined();
+  await restored.stop();
+  const rotatedConfig = { ...multi, erpbridgeConnections: multi.erpbridgeConnections.map(connection => connection.id === "hr" ?
+    { ...connection, mcpToken: "rotated-hr-private-credential" } : connection) };
+  const rotated = await McpConnectionManager.open({ ...s.options, config: rotatedConfig }); runtimes.push(rotated);
+  status = await rotated.status(s.admin);
+  expect(status.connections.map(value => [value.id, value.revision, value.state, value.desiredEnabled])).toEqual([
+    ["finance", 2, "CONNECTED", true], ["hr", 5, "DISCONNECTED", false],
+  ]);
+  expect(rotated.session).toBe(rotated.sessionFor("finance")); expect(rotated.sessionFor("hr")).toBeUndefined();
+  expect(s.sdkClients.every(client => client.callTool.mock.calls.length === 0)).toBe(true);
 });
 
 test("disconnect fences captured old clients and a reconnect has a new admission identity without automatic re-review", async () => {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { boundedOperation, OperationDeadlineExceeded } from "../core/bounded-operation.js";
-import type { AppConfig } from "../config/config.js";
+import type { AppConfig, ErpbridgeConnectionConfig } from "../config/config.js";
 import type { Repository, RepositoryState } from "../repository/store.js";
 import type { RegistryService } from "../registry/service.js";
 import type { RegistryValidator } from "../validator/registry-validator.js";
@@ -13,19 +13,24 @@ import { createErpbridgeMcpSession, type ErpbridgeMcpSession } from "./erpbridge
 import type { FastifyRequest } from "fastify";
 
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const recordSchema = z.object({ id: z.literal(DEFAULT_BRIDGE_CONNECTION), revision: z.number().int().positive(), desiredEnabled: z.boolean(), configurationHash: hash, updatedAt: z.string().datetime() }).strict();
+const connectionId = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
+const recordSchema = z.object({ id: connectionId, revision: z.number().int().positive(), desiredEnabled: z.boolean(), configurationHash: hash, updatedAt: z.string().datetime() }).strict();
 const operationSchema = z.object({ id: z.string(), actorId: z.string(), action: z.enum(["connect", "disconnect", "test"]), scope: hash, requestHash: hash,
+  connectionId: connectionId.optional(),
   requestId: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
   revision: z.number().int().positive(), state: z.enum(["RUNNING", "DONE", "FAILED", "INTERRUPTED"]), startedAt: z.string().datetime(), completedAt: z.string().datetime().optional(),
   reason: z.enum(["MCP_OPERATION_FAILED", "MCP_WAIT_TIMEOUT", "MCP_OPERATION_INTERRUPTED", "MCP_ACTOR_REVOKED", "MCP_STORAGE_UNCERTAIN"]).optional(), discoveryCount: z.number().int().nonnegative().optional() }).strict();
 export const connectionCommandSchema = z.object({ baseRevision: z.number().int().positive(), requestId: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/) }).strict();
 const digest = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJSONBytes(value)).digest("hex")}`;
-const publicOperation = (raw: unknown) => { const { scope: _scope, requestHash: _hash, ...value } = operationSchema.parse(raw); return value; };
+const publicOperation = (raw: unknown) => {
+  const { scope: _scope, requestHash: _hash, ...value } = operationSchema.parse(raw);
+  return { ...value, connectionId: value.connectionId ?? DEFAULT_BRIDGE_CONNECTION };
+};
 type Operation = z.infer<typeof operationSchema>;
 type ConnectionRecord = z.infer<typeof recordSchema>;
 type RuntimeState = "UNCONFIGURED" | "DISCONNECTED" | "CONNECTING" | "CONNECTED" | "DEGRADED" | "STORAGE_UNSUPPORTED" | "STORAGE_UNCERTAIN" | "STOPPED";
 type SessionFactory = typeof createErpbridgeMcpSession;
-type RuntimeOptions = { repository: Repository; registries: RegistryService; validator: RegistryValidator; config: AppConfig; factory?: SessionFactory };
+type RuntimeOptions = { repository: Repository; registries: RegistryService; validator: RegistryValidator; config: AppConfig; connection?: ErpbridgeConnectionConfig; factory?: SessionFactory };
 
 /** One backend-owned environment-backed modern connection. This is not a
  * generic URL registry: browser/model supplied endpoints and credentials are
@@ -42,27 +47,37 @@ export class McpConnectionRuntime {
   #probeController: AbortController | undefined;
   readonly #configurationHash: string;
   readonly #configured: boolean;
+  readonly connection: ErpbridgeConnectionConfig;
   private constructor(readonly options: RuntimeOptions) {
     const config = options.config;
-    this.#configured = config.mcpTransport === "erpbridge-mcp" && Boolean(config.erpbridgeBaseURL && config.erpbridgeMcpToken);
-    if (this.#configured) validateOwnedConfiguration(config);
-    this.#configurationHash = digest([config.mcpTransport, config.erpbridgeBaseURL, config.erpbridgeMcpToken, config.erpbridgeRoleMap]);
+    // Direct runtime construction remains the compatibility path for the
+    // legacy single-connection fields. The manager always passes an explicit
+    // catalog entry, so one connection cannot silently borrow another one's
+    // endpoint or credential during configuration changes.
+    this.connection = options.connection ?? { id: DEFAULT_BRIDGE_CONNECTION, baseURL: config.erpbridgeBaseURL,
+      mcpToken: config.erpbridgeMcpToken, tokenReference: config.erpbridgeMcpTokenReference || "ERPBRIDGE_MCP_TOKEN", roleMap: config.erpbridgeRoleMap, primary: true };
+    this.#configured = config.mcpTransport === "erpbridge-mcp" && Boolean(this.connection.baseURL && this.connection.mcpToken);
+    if (this.#configured) validateOwnedConfiguration(config, this.connection);
+    this.#configurationHash = digest([config.mcpTransport, this.connection.id, this.connection.baseURL, this.connection.mcpToken, this.connection.roleMap]);
   }
   static async open(options: RuntimeOptions) {
     const runtime = new McpConnectionRuntime(options);
     if (!runtime.supportedStorage()) { runtime.#state = "STORAGE_UNSUPPORTED"; return runtime; }
     const record = await options.repository.mutate(state => {
-      const old = state.mcpConnections[DEFAULT_BRIDGE_CONNECTION];
-      let value: ConnectionRecord = old ? recordSchema.parse(old) : { id: DEFAULT_BRIDGE_CONNECTION, revision: 1, desiredEnabled: false, configurationHash: runtime.#configurationHash, updatedAt: now() };
+      const old = state.mcpConnections[runtime.connection.id];
+      let value: ConnectionRecord = old ? recordSchema.parse(old) : { id: runtime.connection.id, revision: 1, desiredEnabled: false, configurationHash: runtime.#configurationHash, updatedAt: now() };
       // No stored live socket is trusted after a process restart. Interrupted
       // admin operations require an explicit new decision, not auto-completion.
       let interrupted = false;
       for (const raw of Object.values(state.mcpConnectionOperations)) {
         const operation = operationSchema.parse(raw);
-        if (operation.state === "RUNNING") { state.mcpConnectionOperations[operation.id] = { ...operation, state: "INTERRUPTED", reason: "MCP_OPERATION_INTERRUPTED", completedAt: now() }; if (operation.action !== "test") interrupted = true; }
+        if ((operation.connectionId ?? DEFAULT_BRIDGE_CONNECTION) === runtime.connection.id && operation.state === "RUNNING") {
+          state.mcpConnectionOperations[operation.id] = { ...operation, connectionId: runtime.connection.id, state: "INTERRUPTED", reason: "MCP_OPERATION_INTERRUPTED", completedAt: now() };
+          if (operation.action !== "test") interrupted = true;
+        }
       }
       if (interrupted || value.configurationHash !== runtime.#configurationHash) value = { ...value, revision: value.revision + 1, desiredEnabled: false, configurationHash: runtime.#configurationHash, updatedAt: now() };
-      state.mcpConnections[DEFAULT_BRIDGE_CONNECTION] = value;
+      state.mcpConnections[runtime.connection.id] = value;
       return value;
     });
     runtime.#revision = record.revision; runtime.#state = runtime.#configured ? "DISCONNECTED" : "UNCONFIGURED";
@@ -75,6 +90,8 @@ export class McpConnectionRuntime {
     if (this.#state !== "CONNECTED" || this.#stopped || this.#session?.available === false) return undefined;
     return this.#session;
   }
+  sessionFor(id: string) { return id === this.connection.id ? this.session : undefined; }
+  roleMapFor(id: string) { return id === this.connection.id ? this.connection.roleMap : undefined; }
   private supportedStorage() { return this.options.repository.persistence === null || this.options.repository.persistence.readQueueDurability === "encrypted-single-writer"; }
   private requireStorage() { if (!this.supportedStorage()) throw new HandlerFailure(503, "MCP lifecycle requires supported single-writer storage", { code: "MCP_STORAGE_UNSUPPORTED" }); }
   private authority(state: Readonly<RepositoryState>, user: CurrentUser, mutation: boolean) {
@@ -93,7 +110,7 @@ export class McpConnectionRuntime {
   private async assertRevision(revision: number, epoch: number) {
     if (this.#stopped || epoch !== this.#epoch || this.#state !== "CONNECTED") throw new Error("MCP connection was superseded or disconnected");
     await this.options.repository.readAuthoritative(state => {
-      const record = recordSchema.parse(state.mcpConnections[DEFAULT_BRIDGE_CONNECTION]);
+      const record = recordSchema.parse(state.mcpConnections[this.connection.id]);
       if (!record.desiredEnabled || record.revision !== revision || record.configurationHash !== this.#configurationHash) throw new Error("MCP connection authority changed");
     });
     if (this.#stopped || epoch !== this.#epoch || this.#state !== "CONNECTED") throw new Error("MCP connection changed during admission");
@@ -101,10 +118,10 @@ export class McpConnectionRuntime {
   private async initialize(revision: number, epoch: number, controller: AbortController) {
     const { config, repository, registries, validator } = this.options;
     let candidate: ErpbridgeMcpSession | undefined;
-    const authorizer = admissionAuthorizer(repository, registries);
+    const authorizer = admissionAuthorizer(repository, registries, this.connection.id);
     return boundedOperation(async () => {
-      candidate = await (this.options.factory ?? createErpbridgeMcpSession)({ baseURL: config.erpbridgeBaseURL, token: config.erpbridgeMcpToken,
-        timeoutMs: config.mcpTimeoutMs, validator, signal: controller.signal, connectionRevision: `${DEFAULT_BRIDGE_CONNECTION}:${revision}`,
+      candidate = await (this.options.factory ?? createErpbridgeMcpSession)({ baseURL: this.connection.baseURL, token: this.connection.mcpToken,
+        timeoutMs: config.mcpTimeoutMs, validator, signal: controller.signal, connectionRevision: `${this.connection.id}:${revision}`,
         admissionAuthorizer: async (definition, binding, pin) => { await this.assertRevision(revision, epoch); await authorizer(definition, binding, pin); await this.assertRevision(revision, epoch); } });
       if (controller.signal.aborted || epoch !== this.#epoch || this.#stopped) { await this.dispose(candidate); throw new Error("MCP initialization superseded"); }
       if (candidate.available === false || candidate.requiresReviewedRevision !== true || !/^[a-f0-9]{64}$/.test(candidate.admissionBinding ?? "")) throw new Error("Unsupported initialized MCP profile");
@@ -129,7 +146,8 @@ export class McpConnectionRuntime {
   private view(record: ConnectionRecord | null) {
     const state = this.#stopped ? "STOPPED" : this.#state === "CONNECTED" && (this.#session?.available === false || !record?.desiredEnabled || record.revision !== this.#revision || record.configurationHash !== this.#configurationHash) ? "DEGRADED" : this.#state;
     const canInitialize = this.#configured && this.supportedStorage() && !this.#stopped && this.#state !== "CONNECTING" && !this.#probeBusy;
-    return { id: DEFAULT_BRIDGE_CONNECTION, transport: "erpbridge-mcp", configurationSource: "backend-environment", configured: this.#configured,
+    return { id: this.connection.id, transport: "erpbridge-mcp", configurationSource: "backend-environment", secretReference: this.connection.tokenReference,
+      primary: this.connection.primary, dispatchSupported: this.connection.primary, configured: this.#configured,
       revision: record?.revision ?? this.#revision, desiredEnabled: record?.desiredEnabled ?? false, state,
       initialized: state === "CONNECTED" && Boolean(this.session), discoveryAvailable: state === "CONNECTED" && Boolean(this.session), qualification: "Initialization/discovery only; not live ERP tool authorization or delivery",
       notificationStream: this.#session?.notificationState ?? null,
@@ -141,20 +159,21 @@ export class McpConnectionRuntime {
   async status(user: CurrentUser) {
     return this.options.repository.readAuthoritative(state => {
       this.authority(state, user, false);
-      const raw = state.mcpConnections[DEFAULT_BRIDGE_CONNECTION]; const record = raw ? recordSchema.parse(raw) : null;
-      return { connections: [this.view(record)], recentOperations: Object.values(state.mcpConnectionOperations).reverse().slice(0, 10).map(publicOperation) };
+      const raw = state.mcpConnections[this.connection.id]; const record = raw ? recordSchema.parse(raw) : null;
+      return { connections: [this.view(record)], recentOperations: Object.values(state.mcpConnectionOperations).filter(item => (operationSchema.parse(item).connectionId ?? DEFAULT_BRIDGE_CONNECTION) === this.connection.id).reverse().slice(0, 10).map(publicOperation) };
     });
   }
-  async command(action: "connect" | "disconnect" | "test", user: CurrentUser, body: unknown, request?: FastifyRequest) {
+  async command(action: "connect" | "disconnect" | "test", user: CurrentUser, body: unknown, request?: FastifyRequest, targetConnectionId = this.connection.id) {
+    if (targetConnectionId !== this.connection.id) throw new HandlerFailure(404, "MCP connection not found");
     this.requireStorage();
     const parsed = connectionCommandSchema.safeParse(body);
     if (!parsed.success) throw new HandlerFailure(400, "Provide current connection revision and stable request ID only", { code: "MCP_COMMAND_INVALID" });
-    const data = parsed.data, scope = digest([user.id, DEFAULT_BRIDGE_CONNECTION, action, data.requestId]), requestHash = digest(data);
+    const data = parsed.data, scope = digest([user.id, this.connection.id, action, data.requestId]), requestHash = digest(data);
     let transitionStarted = false;
     const claimed = await this.options.repository.mutate(state => {
       this.authority(state, user, true);
       const previous = Object.values(state.mcpConnectionOperations).find(raw => raw.scope === scope);
-      const record = recordSchema.parse(state.mcpConnections[DEFAULT_BRIDGE_CONNECTION]);
+      const record = recordSchema.parse(state.mcpConnections[this.connection.id]);
       if (previous) { const operation = operationSchema.parse(previous); if (operation.requestHash !== requestHash) throw new HandlerFailure(409, "Request ID belongs to different connection input", { code: "MCP_REQUEST_CONFLICT" }); return { operation, record, duplicate: true }; }
       if (this.#stopped) throw new HandlerFailure(503, "MCP runtime stopped", { code: "MCP_RUNTIME_STOPPED" });
       if (record.revision !== data.baseRevision) throw new HandlerFailure(409, "Connection revision changed; reload before a new operation", { code: "MCP_REVISION_CONFLICT" });
@@ -162,12 +181,12 @@ export class McpConnectionRuntime {
       if (action !== "disconnect" && (this.#state === "CONNECTING" || this.#probeBusy)) throw new HandlerFailure(409, "A bounded MCP initialization/test is already in progress", { code: "MCP_OPERATION_IN_PROGRESS" });
       if (Object.keys(state.mcpConnectionOperations).length >= 1000) throw new HandlerFailure(429, "MCP operation history retention limit reached", { code: "MCP_HISTORY_LIMIT" });
       const updated = action === "test" ? record : { ...record, revision: record.revision + 1, desiredEnabled: action === "connect", updatedAt: now() };
-      const operation: Operation = { id: nextID(state, "mcpop"), actorId: user.id, action, scope, requestHash, requestId: data.requestId, revision: updated.revision, state: "RUNNING", startedAt: now() };
+      const operation: Operation = { id: nextID(state, "mcpop"), actorId: user.id, connectionId: this.connection.id, action, scope, requestHash, requestId: data.requestId, revision: updated.revision, state: "RUNNING", startedAt: now() };
       transitionStarted = true;
       if (action !== "test") { this.invalidate(action === "connect" ? "CONNECTING" : "DISCONNECTED"); this.#revision = updated.revision; }
       else this.#probeBusy = true;
-      state.mcpConnections[DEFAULT_BRIDGE_CONNECTION] = updated; state.mcpConnectionOperations[operation.id] = operation;
-      appendAudit(state, user, `mcp.${action}.requested`, "connection", DEFAULT_BRIDGE_CONNECTION, { revision: record.revision }, { operationId: operation.id, revision: updated.revision }, request);
+      state.mcpConnections[this.connection.id] = updated; state.mcpConnectionOperations[operation.id] = operation;
+      appendAudit(state, user, `mcp.${action}.requested`, "connection", this.connection.id, { revision: record.revision }, { operationId: operation.id, revision: updated.revision }, request);
       return { operation, record: updated, duplicate: false };
     }).catch(error => { if (transitionStarted || !(error instanceof HandlerFailure)) this.invalidate("STORAGE_UNCERTAIN"); if (transitionStarted) this.#probeBusy = false; throw error; });
     if (claimed.duplicate) return { operation: publicOperation(claimed.operation), connection: this.view(claimed.record), duplicate: true };
@@ -179,18 +198,18 @@ export class McpConnectionRuntime {
       if (action !== "disconnect") initialized = await this.initialize(claimed.record.revision, epoch, controller);
       const completed = await this.options.repository.mutate(state => {
         this.authority(state, user, true);
-        const record = recordSchema.parse(state.mcpConnections[DEFAULT_BRIDGE_CONNECTION]);
+        const record = recordSchema.parse(state.mcpConnections[this.connection.id]);
         if (record.revision !== claimed.record.revision || epoch !== this.#epoch || this.#stopped) throw new HandlerFailure(409, "MCP operation superseded", { code: "MCP_OPERATION_INTERRUPTED" });
         const operation = operationSchema.parse(state.mcpConnectionOperations[claimed.operation.id]);
         if (operation.state !== "RUNNING") throw new Error("MCP operation no longer running");
         const updated = { ...operation, state: "DONE" as const, completedAt: now(), ...(initialized ? { discoveryCount: initialized.discoveryCount } : {}) };
         state.mcpConnectionOperations[operation.id] = updated;
-        appendAudit(state, user, `mcp.${action}.completed`, "connection", DEFAULT_BRIDGE_CONNECTION, null, { operationId: operation.id, revision: record.revision, discoveryCount: initialized?.discoveryCount ?? null }, request);
+        appendAudit(state, user, `mcp.${action}.completed`, "connection", this.connection.id, null, { operationId: operation.id, revision: record.revision, discoveryCount: initialized?.discoveryCount ?? null }, request);
         return updated;
       });
       if (action === "connect" && initialized && epoch === this.#epoch && !this.#stopped) { this.#session = initialized.session; this.#state = "CONNECTED"; }
       else if (initialized) await this.dispose(initialized.session);
-      const connection = await this.options.repository.readAuthoritative(state => this.view(recordSchema.parse(state.mcpConnections[DEFAULT_BRIDGE_CONNECTION])));
+      const connection = await this.options.repository.readAuthoritative(state => this.view(recordSchema.parse(state.mcpConnections[this.connection.id])));
       return { operation: publicOperation(completed), connection, duplicate: false };
     } catch (error) {
       controller.abort(); if (initialized) await this.dispose(initialized.session);
@@ -200,9 +219,9 @@ export class McpConnectionRuntime {
       try { await this.options.repository.mutate(state => {
         const operation = operationSchema.parse(state.mcpConnectionOperations[claimed.operation.id]);
         if (operation.state === "RUNNING") { state.mcpConnectionOperations[operation.id] = { ...operation, state: "FAILED", reason, completedAt: now() };
-          const record = recordSchema.parse(state.mcpConnections[DEFAULT_BRIDGE_CONNECTION]);
-          if (action === "connect" && record.revision === claimed.record.revision) state.mcpConnections[DEFAULT_BRIDGE_CONNECTION] = { ...record, desiredEnabled: false, updatedAt: now() };
-          appendAudit(state, user, `mcp.${action}.failed`, "connection", DEFAULT_BRIDGE_CONNECTION, null, { operationId: operation.id, reason }, request); }
+          const record = recordSchema.parse(state.mcpConnections[this.connection.id]);
+          if (action === "connect" && record.revision === claimed.record.revision) state.mcpConnections[this.connection.id] = { ...record, desiredEnabled: false, updatedAt: now() };
+          appendAudit(state, user, `mcp.${action}.failed`, "connection", this.connection.id, null, { operationId: operation.id, reason }, request); }
       }); } catch { this.invalidate("STORAGE_UNCERTAIN"); }
       // Upstream headers/bodies/errors may contain credentials. Never expose or
       // save them. The operation receipt is the recovery identity.
@@ -212,8 +231,42 @@ export class McpConnectionRuntime {
   async stop() { this.#stopped = true; const old = this.#session; this.invalidate("STOPPED"); if (old) await this.dispose(old); }
 }
 
-function validateOwnedConfiguration(config: AppConfig) {
-  let url: URL; try { url = new URL(config.erpbridgeBaseURL); } catch { throw new Error("Invalid backend ERPBridge endpoint"); }
-  if (!["http:", "https:"].includes(url.protocol) || (config.environment !== "development" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || url.pathname !== "/" || /[\r\n]/.test(config.erpbridgeMcpToken) || config.erpbridgeMcpToken.length > 16384)
+/** Owns a bounded set of independently revisioned backend connections. The
+ * primary session remains the only workflow dispatch path until publications
+ * carry an explicit per-node connection binding. Secondary connections can be
+ * initialized, discovered and reviewed without silently gaining dispatch. */
+export class McpConnectionManager {
+  private constructor(readonly runtimes: ReadonlyMap<string, McpConnectionRuntime>, readonly primaryConnectionId: string) {}
+  static async open(options: Omit<RuntimeOptions, "connection">) {
+    const opened = new Map<string, McpConnectionRuntime>();
+    try {
+      const connections = options.config.erpbridgeConnections.length ? options.config.erpbridgeConnections : [{ id: DEFAULT_BRIDGE_CONNECTION, baseURL: options.config.erpbridgeBaseURL,
+        mcpToken: options.config.erpbridgeMcpToken, tokenReference: options.config.erpbridgeMcpTokenReference || "ERPBRIDGE_MCP_TOKEN", roleMap: options.config.erpbridgeRoleMap, primary: true }];
+      for (const connection of connections) opened.set(connection.id, await McpConnectionRuntime.open({ ...options, connection }));
+      const primary = connections.find(value => value.primary)?.id ?? options.config.erpbridgePrimaryConnectionId;
+      if (!opened.has(primary)) throw new Error("Configured primary ERPBridge connection is unavailable");
+      return new McpConnectionManager(opened, primary);
+    } catch (error) { await Promise.allSettled([...opened.values()].map(runtime => runtime.stop())); throw error; }
+  }
+  get session() { return this.runtimes.get(this.primaryConnectionId)?.session; }
+  sessionFor(id = this.primaryConnectionId) { return this.runtimes.get(id)?.session; }
+  roleMapFor(id = this.primaryConnectionId) { return this.runtimes.get(id)?.roleMapFor(id); }
+  async status(user: CurrentUser) {
+    const parts = await Promise.all([...this.runtimes.values()].map(runtime => runtime.status(user)));
+    const connections = parts.flatMap(value => value.connections).sort((a, b) => Number(b.primary) - Number(a.primary) || a.id.localeCompare(b.id));
+    const recentOperations = parts.flatMap(value => value.recentOperations).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.id.localeCompare(a.id)).slice(0, 50);
+    return { connections, recentOperations, primaryConnectionId: this.primaryConnectionId,
+      dispatchScope: "Only the configured primary connection is currently eligible for workflow dispatch; secondary lifecycle readiness grants no execution authority" };
+  }
+  async command(action: "connect" | "disconnect" | "test", user: CurrentUser, body: unknown, request?: FastifyRequest, targetConnectionId = this.primaryConnectionId) {
+    const runtime = this.runtimes.get(targetConnectionId); if (!runtime) throw new HandlerFailure(404, "MCP connection not found");
+    return runtime.command(action, user, body, request, targetConnectionId);
+  }
+  async stop() { await Promise.allSettled([...this.runtimes.values()].map(runtime => runtime.stop())); }
+}
+
+function validateOwnedConfiguration(config: AppConfig, connection: ErpbridgeConnectionConfig) {
+  let url: URL; try { url = new URL(connection.baseURL); } catch { throw new Error("Invalid backend ERPBridge endpoint"); }
+  if (!["http:", "https:"].includes(url.protocol) || (config.environment !== "development" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || url.pathname !== "/" || /[\r\n]/.test(connection.mcpToken) || connection.mcpToken.length > 16384)
     throw new Error("Backend ERPBridge endpoint/credential is not supported by the explicit modern adapter");
 }

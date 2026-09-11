@@ -1,5 +1,7 @@
 # TypeScript backend port
 
+The [multiple ERPBridge connection lifecycle milestone](../docs/MULTI_MCP_CONNECTION_LIFECYCLE_2026-10-07.md) adds one-to-eight strict backend-owned connection catalogs, environment secret references, exact primary designation, independently persisted revisioned lifecycle state, restart restore and one-sided rotation fencing. Settings can manage every configured connection, while all current workflow/chat/runtime dispatch remains limited to the primary connection. Verification passes **1,859 tests / 75 suites**, one configured-live-provider skip, typecheck/build and the complete actual Firestore runtime campaign. Per-node connection binding, live ERPBridge qualification and production release remain unfinished.
+
 The [durable daily service-principal scheduling milestone](../docs/DURABLE_DAILY_SERVICE_PRINCIPAL_SCHEDULING_2026-10-06.md) replaces the inert legacy cron-edit path for supported reviewed sequential operations. Exact publication/timezone/local-time/service-principal/input revisions create deterministic durable occurrences; late work follows explicit `SKIP` or `FIRE_ONCE`; every effect still requires a fresh independent approval. A committed occurrence claim followed by lost acknowledgement restarts as one execution and one eventual synthetic dispatch. Verification passes **1,771 tests / 71 suites**, one configured-live-provider skip, typecheck/build and the actual guarded Firestore fault campaign. Arbitrary calendars, broader effects and live/cloud qualification remain unfinished.
 
 The [separate linked recovery-execution milestone](../docs/SEPARATE_LINKED_OPERATION_RECOVERY_EXECUTION_2026-10-06.md) admits one exact immutable `NOT_APPLIED` recovery plan as a distinct currently validated workflow/execution. It creates new approval, intent and idempotency identities, requires fresh independent approval, and uses the normal one-use SDK boundary. Direct normal reruns of the generated workflow are denied. Post-COMMIT admission acknowledgement loss recovers the one linked execution, while the source execution remains byte-for-byte unchanged and `UNKNOWN`. Verification passes **1,766 tests / 71 suites**, one configured-live-provider skip, typecheck/build and the actual guarded Firestore admission/restart/approval/one-dispatch campaign. Broader effects, scheduling and live/cloud qualification remain unfinished.
@@ -85,6 +87,28 @@ $env:ERPBRIDGE_MCP_TOKEN_ENV = "WORKFLOW_ERPBRIDGE_TOKEN"
 ```
 
 `ERPBRIDGE_MCP_TOKEN` and `ERPBRIDGE_MCP_TOKEN_ENV` are mutually exclusive. The role map is strict JSON, accepts the built-in local role names only, and rejects duplicate ERPBridge target roles. Non-development endpoints must use HTTPS. Do not include the token in logs, diagnostics, or public configuration responses.
+
+For two to eight backend-owned ERPBridge deployments, replace all four legacy
+`ERPBRIDGE_*` connection values above with one catalog and an explicit primary
+ID. The catalog contains environment-variable names, never token values:
+
+```powershell
+$env:MCP_TRANSPORT = "erpbridge-mcp"
+$env:ERPBRIDGE_PRIMARY_CONNECTION_ID = "finance"
+$env:ERPBRIDGE_CONNECTIONS_JSON = '[{"id":"finance","baseURL":"https://finance-bridge.example","tokenEnv":"FINANCE_ERPBRIDGE_TOKEN","roleMap":{"Platform Admin":"finance_admin","Workflow Builder":"finance_builder"}},{"id":"hr","baseURL":"https://hr-bridge.example","tokenEnv":"HR_ERPBRIDGE_TOKEN","roleMap":{"Platform Admin":"hr_admin"}}]'
+$env:FINANCE_ERPBRIDGE_TOKEN = "[REDACTED]"
+$env:HR_ERPBRIDGE_TOKEN = "[REDACTED]"
+npm run dev
+```
+
+Each named connection has independent desired state, revision, operation
+history, initialization session and rotation behavior. Settings may initialize,
+test and disconnect any configured connection. Workflow/chat execution still
+uses only the explicit primary connection; secondary readiness does not grant
+dispatch authority. Per-node connection binding is a separate unfinished gate.
+Catalog IDs are lowercase bounded identifiers, URLs must be host roots, and one
+to eight entries with exactly one primary are accepted. Mixing the catalog with
+legacy single-connection values is rejected.
 
 See [ERPBridge integration](docs/ERPBRIDGE_INTEGRATION.md) for the role matrix, token rotation, deployment checks, and audit boundary.
 
