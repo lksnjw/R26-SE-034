@@ -10,10 +10,11 @@ jest.unstable_mockModule("../../hooks/usePermissions", () => ({ usePermissions: 
 jest.unstable_mockModule("../../services/capability.service", () => ({ capabilityService: { catalog, discover, review, disable } }));
 const { default: Panel } = await import("./CapabilityReviewPanel.jsx");
 const entry = () => ({ capabilityId: "cap-fixture", effectiveState: "REVIEW_REQUIRED", reviewEligible: true, reviewReason: null, admission: null, revision: null,
-  observation: { id: "obs-fixture", toolId: "TOOL-1", contractHash: `sha256:${"a".repeat(64)}`, discoveredAt: "2026-10-05T01:00:00.000Z",
+  observation: { id: "obs-fixture", connectionId: "finance", toolId: "TOOL-1", contractHash: `sha256:${"a".repeat(64)}`, discoveredAt: "2026-10-05T01:00:00.000Z",
     definition: { display_name: "Read invoices", name: "erp.invoices", input_schema: { type: "object", properties: { customer: { type: "string" } } }, allowed_roles: ["Workflow Builder"],
       is_read_only: true, bridge_contract: { resource_version: "1.0.0", resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { total: { type: "number" } } } } } } });
-const page = (value = entry(), overrides = {}) => ({ capabilities: [value], persistence: "durable-single-writer", connection: { state: "INITIALIZED_NOT_QUALIFIED", discoveryAvailable: true }, offset: 0, limit: 10, hasMoreCapabilities: false, ...overrides });
+const page = (value = entry(), overrides = {}) => ({ capabilities: [value], persistence: "durable-single-writer", connection: { id: "finance", state: "INITIALIZED_NOT_QUALIFIED", discoveryAvailable: true },
+  connections: [{ id: "finance", primary: true, dispatchSupported: true }], offset: 0, limit: 10, hasMoreCapabilities: false, ...overrides });
 let clients = [];
 function mount() { const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } } }); clients.push(client); return render(<QueryClientProvider client={client}><Panel /></QueryClientProvider>); }
 async function select() { fireEvent.click(await screen.findByRole("button", { name: /Read invoices/ })); }
@@ -27,7 +28,7 @@ test("formatted inspection requires a note and explicit confirmation; discovery 
   expect(document.querySelector("pre")).toBeNull(); expect(screen.getByRole("button", { name: "Save explicit read review" }).disabled).toBe(true);
   fireEvent.change(screen.getByLabelText("Capability decision note"), { target: { value: "Review" } });
   expect(screen.getByRole("button", { name: "Save explicit read review" }).disabled).toBe(true);
-  discover.mockResolvedValue({ authorityGranted: false, blockedCount: 1, unreviewedInventory: [{ remoteName: "erp.unmapped", reason: "NO_LOCAL_REVIEW_CONTRACT" }] });
+  discover.mockResolvedValue({ connectionId: "finance", authorityGranted: false, blockedCount: 1, unreviewedInventory: [{ remoteName: "erp.unmapped", reason: "NO_LOCAL_REVIEW_CONTRACT" }] });
   fireEvent.click(screen.getByRole("button", { name: "Refresh discovery" }));
   expect(await screen.findByText(/Discovery saved; no tool enabled/)).not.toBeNull(); expect(screen.getByText(/erp.unmapped/)).not.toBeNull(); expect(review).not.toHaveBeenCalled();
 });
@@ -49,10 +50,10 @@ test("lost acknowledgement retains exact decision across remount and duplicate d
   await screen.findByText("Unconfirmed review decision"); await waitFor(() => expect(screen.getByRole("button", { name: "Retry exact decision" }).disabled).toBe(false));
   const request = review.mock.calls[0]; expect(request[1]).toMatchObject({ observationId: "obs-fixture", effectClass: "read", riskClass: "low", dataClass: "internal", retryPolicy: "never" });
   expect(request[1].decisionKey).toMatch(/^review_/); first.unmount(); mount();
-  review.mockResolvedValueOnce({ duplicate: true, revision: { capabilityId: "cap-fixture", observationId: "obs-fixture", contractHash: entry().observation.contractHash }, admission: { capabilityId: "cap-fixture", state: "DISABLED", version: 2 } });
+  review.mockResolvedValueOnce({ duplicate: true, revision: { capabilityId: "cap-fixture", connectionId: "finance", observationId: "obs-fixture", contractHash: entry().observation.contractHash }, admission: { capabilityId: "cap-fixture", state: "DISABLED", version: 2 } });
   fireEvent.click(await screen.findByRole("button", { name: "Retry exact decision" }));
   await waitFor(() => expect(review).toHaveBeenCalledTimes(2)); expect(review.mock.calls[1]).toEqual(request);
-  expect(await screen.findByText(/Review decision acknowledged/)).not.toBeNull(); expect(sessionStorage.getItem("workflow.capability-decision.admin-fixture")).toBeNull();
+  expect(await screen.findByText(/Review decision acknowledged/)).not.toBeNull(); expect(sessionStorage.getItem("workflow.capability-decision.admin-fixture.finance")).toBeNull();
   expect(screen.queryByText(/tool enabled/i)).toBeNull();
 });
 
@@ -79,21 +80,21 @@ test("disable sends exact revision/version and leaves already-sent work rollback
   const value = entry(); value.effectiveState = "AVAILABLE"; value.admission = { revisionId: "rev-current", version: 7, state: "AVAILABLE" }; catalog.mockResolvedValue(page(value));
   disable.mockResolvedValue({ capabilityId: "cap-fixture", revisionId: "rev-current", version: 8, state: "DISABLED" }); mount(); await select(); confirm();
   fireEvent.click(screen.getByRole("button", { name: "Disable new dispatch" })); expect(await screen.findByText(/already-sent remote work is not rolled back/)).not.toBeNull();
-  expect(disable).toHaveBeenCalledWith("cap-fixture", { revisionId: "rev-current", baseVersion: 7, note: "Exact read contract reviewed" });
+  expect(disable).toHaveBeenCalledWith("cap-fixture", { revisionId: "rev-current", baseVersion: 7, note: "Exact read contract reviewed" }, "finance");
 });
 
 test("invalid receipt retains pending request and status failure disables new decisions", async () => {
   review.mockResolvedValue({ admission: { capabilityId: "wrong", state: "AVAILABLE", version: 1 } }); mount(); await select(); confirm();
   fireEvent.click(screen.getByRole("button", { name: "Save explicit read review" })); expect(await screen.findByText("Unconfirmed review decision")).not.toBeNull(); await screen.findByRole("alert");
-  expect(sessionStorage.getItem("workflow.capability-decision.admin-fixture")).not.toBeNull();
+  expect(sessionStorage.getItem("workflow.capability-decision.admin-fixture.finance")).not.toBeNull();
   cleanup(); sessionStorage.clear(); catalog.mockRejectedValue(new Error("backend unavailable")); mount();
   expect(await screen.findByText(/Review status unavailable/)).not.toBeNull(); expect(screen.getByRole("button", { name: "Refresh discovery" }).disabled).toBe(true);
 });
 
 test("pagination is bounded and clears the inspector; corrupted retry records require explicit recovery", async () => {
   catalog.mockResolvedValue(page(entry(), { hasMoreCapabilities: true })); mount(); await select(); fireEvent.click(screen.getByRole("button", { name: "Next" }));
-  await waitFor(() => expect(catalog).toHaveBeenCalledWith(10)); expect(screen.queryByLabelText("Capability decision note")).toBeNull();
-  cleanup(); sessionStorage.setItem("workflow.capability-decision.admin-fixture", "invalid"); mount();
+  await waitFor(() => expect(catalog).toHaveBeenCalledWith(10, "")); expect(screen.queryByLabelText("Capability decision note")).toBeNull();
+  cleanup(); sessionStorage.setItem("workflow.capability-decision.admin-fixture.finance", "invalid"); mount();
   expect(await screen.findByText("The local decision record needs recovery.")).not.toBeNull(); expect(screen.queryByRole("button", { name: "Retry exact decision" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Reload status and end local retries" })); expect(await screen.findByText(/Local retries ended/)).not.toBeNull(); expect(sessionStorage.length).toBe(0);
 });
@@ -113,4 +114,25 @@ test("operation review preserves the observed effect/risk and mandatory independ
   fireEvent.click(await screen.findByRole("button", { name: "Retry exact decision" }));
   await waitFor(() => expect(review).toHaveBeenCalledTimes(2)); expect(review.mock.calls[1]).toEqual(request);
   expect(screen.queryByText("The local decision record needs recovery.")).toBeNull();
+});
+
+test("connection selector scopes catalog, discovery and review to the exact secondary session", async () => {
+  const finance = page(entry(), { connections: [{ id: "finance", primary: true, dispatchSupported: true }, { id: "hr", primary: false, dispatchSupported: false }] });
+  const hrEntry = entry(); hrEntry.capabilityId = "cap-hr"; hrEntry.observation = { ...hrEntry.observation, id: "obs-hr", connectionId: "hr",
+    definition: { ...hrEntry.observation.definition, display_name: "Read HR records" } };
+  const hr = page(hrEntry, { connection: { id: "hr", state: "INITIALIZED_NOT_QUALIFIED", discoveryAvailable: true }, connections: finance.connections });
+  catalog.mockImplementation(async (_offset, connectionId) => connectionId === "hr" ? hr : finance);
+  discover.mockResolvedValue({ connectionId: "hr", authorityGranted: false, blockedCount: 0, unreviewedInventory: [] });
+  review.mockResolvedValue({ revision: { capabilityId: "cap-hr", connectionId: "hr", observationId: "obs-hr", contractHash: hrEntry.observation.contractHash },
+    admission: { capabilityId: "cap-hr", state: "AVAILABLE", version: 1 } });
+  mount();
+  fireEvent.change(await screen.findByRole("combobox", { name: "Capability review connection" }), { target: { value: "hr" } });
+  expect(await screen.findByRole("button", { name: /Read HR records/ })).toBeTruthy();
+  expect(catalog).toHaveBeenCalledWith(0, "hr");
+  fireEvent.click(screen.getByRole("button", { name: "Refresh discovery" }));
+  await waitFor(() => expect(discover).toHaveBeenCalledWith("hr"));
+  fireEvent.click(screen.getByRole("button", { name: /Read HR records/ })); confirm();
+  fireEvent.click(screen.getByRole("button", { name: "Save explicit read review" }));
+  await waitFor(() => expect(review).toHaveBeenCalledWith("cap-hr", expect.objectContaining({ observationId: "obs-hr" }), "hr"));
+  expect(sessionStorage.getItem("workflow.capability-decision.admin-fixture.hr")).toBeNull();
 });

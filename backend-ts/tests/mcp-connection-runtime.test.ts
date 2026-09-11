@@ -85,6 +85,21 @@ test("bounded manager owns independent revisioned connections while only the con
   const headers = { authorization: `Bearer ${jwt.sign({}, multi.jwtSecret, { subject: "admin", expiresIn: 3600 })}` };
   const listed = await app.inject({ method: "GET", url: "/api/settings/mcp-connections", headers });
   expect(listed.statusCode, listed.body).toBe(200); expect(listed.json().data.primaryConnectionId).toBe("finance");
+  const discoveredHr = await app.inject({ method: "POST", url: "/api/registry/capabilities/discovery?connectionId=hr", headers, payload: {} });
+  expect(discoveredHr.statusCode, discoveredHr.body).toBe(200); expect(discoveredHr.json().data).toMatchObject({ connectionId: "hr", authorityGranted: false });
+  const hrObservation = discoveredHr.json().data.observations[0];
+  const reviewBody = { observationId: hrObservation.id, contractHash: hrObservation.contractHash, decisionKey: "hr_capability_review_0001",
+    effectClass: "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Exact HR read contract reviewed" };
+  const wrongConnection = await app.inject({ method: "POST", url: `/api/registry/capabilities/${hrObservation.capabilityId}/review?connectionId=finance`, headers, payload: reviewBody });
+  expect(wrongConnection.statusCode).toBe(409);
+  const reviewedHr = await app.inject({ method: "POST", url: `/api/registry/capabilities/${hrObservation.capabilityId}/review?connectionId=hr`, headers, payload: reviewBody });
+  expect(reviewedHr.statusCode, reviewedHr.body).toBe(200); expect(reviewedHr.json().data.revision.connectionId).toBe("hr");
+  const financeCatalog = await app.inject({ method: "GET", url: "/api/registry/capabilities?connectionId=finance", headers });
+  const hrCatalog = await app.inject({ method: "GET", url: "/api/registry/capabilities?connectionId=hr", headers });
+  expect(financeCatalog.statusCode, financeCatalog.body).toBe(200); expect(financeCatalog.json().data.capabilities).toHaveLength(0);
+  expect(hrCatalog.statusCode, hrCatalog.body).toBe(200); expect(hrCatalog.json().data).toMatchObject({ connection: { id: "hr" }, capabilities: [{ capabilityId: hrObservation.capabilityId, effectiveState: "AVAILABLE" }] });
+  expect(hrCatalog.body).not.toMatch(/hr-private-credential|connectionBinding|decisionHash/);
+  expect((await app.inject({ method: "GET", url: "/api/registry/capabilities?connectionId=unknown", headers })).statusCode).toBe(404);
   const disconnected = await app.inject({ method: "POST", url: "/api/settings/mcp-connections/hr/disconnect", headers,
     payload: { baseRevision: 2, requestId: "hr_disconnect_request_0001" } });
   expect(disconnected.statusCode, disconnected.body).toBe(200); expect(disconnected.json().data.connection).toMatchObject({ id: "hr", revision: 3, initialized: false });

@@ -6,7 +6,7 @@ import { fail, ok } from "../../models/schemas.js";
 import { ruleArraySchema, toolArraySchema } from "../../registry/schemas.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, queryRecord, requestParam, stringValue } from "./common.js";
-import { capabilityAdmissionCatalog, observeCapabilities, reviewCapability, disableCapability } from "../../registry/capability-admission.js";
+import { capabilityAdmissionCatalog, DEFAULT_BRIDGE_CONNECTION, disableCapability, observeCapabilities, reviewCapability } from "../../registry/capability-admission.js";
 
 export const REGISTRY_UNHANDLED = Symbol("registry-unhandled");
 
@@ -21,10 +21,13 @@ const importDrafts = new Map<string, ImportDraft>();
 export async function handleRegistryRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown | typeof REGISTRY_UNHANDLED> {
   const base = services.config.apiBasePath;
   try {
-    if (route.path === `${base}/registry/capabilities` && route.method === "GET") { const query = queryRecord(request); return reply.send(ok(await capabilityAdmissionCatalog(services.repository, Number(query.offset ?? 0), Number(query.limit ?? 10), { registries: services.registries, session: services.erpbridgeSession }), "Review records loaded; discovery is not permission", null)); }
-    if (route.path === `${base}/registry/capabilities/discovery`) return reply.send(ok(await observeCapabilities({ repository: services.repository, registries: services.registries, session: services.erpbridgeSession, user, request, ...(request.signal ? { signal: request.signal } : {}) }), "Discovery observations saved; no authority granted; drift may block existing review", null));
-    if (route.path === `${base}/registry/capabilities/:id/review`) return reply.send(ok(await reviewCapability({ repository: services.repository, registries: services.registries, session: services.erpbridgeSession, user, capabilityId: requestParam(request, "id"), body: request.body, request }), "Explicit capability review saved", null));
-    if (route.path === `${base}/registry/capabilities/:id/disable`) return reply.send(ok(await disableCapability({ repository: services.repository, user, capabilityId: requestParam(request, "id"), body: request.body, request }), "Capability disabled for new dispatch; remote rollback is not implied", null));
+    if (route.path.startsWith(`${base}/registry/capabilities`)) {
+      const selected = capabilityConnection(request, services);
+      if (route.path === `${base}/registry/capabilities` && route.method === "GET") { const query = queryRecord(request); return reply.send(ok(await capabilityAdmissionCatalog(services.repository, Number(query.offset ?? 0), Number(query.limit ?? 10), { registries: services.registries, session: selected.session, connectionId: selected.id, connections: selected.connections }), "Connection-scoped review records loaded; discovery is not permission", null)); }
+      if (route.path === `${base}/registry/capabilities/discovery`) return reply.send(ok(await observeCapabilities({ repository: services.repository, registries: services.registries, session: selected.session, connectionId: selected.id, user, request, ...(request.signal ? { signal: request.signal } : {}) }), "Connection-scoped discovery observations saved; no authority granted; drift may block existing review", null));
+      if (route.path === `${base}/registry/capabilities/:id/review`) return reply.send(ok(await reviewCapability({ repository: services.repository, registries: services.registries, session: selected.session, connectionId: selected.id, user, capabilityId: requestParam(request, "id"), body: request.body, request }), "Explicit connection-scoped capability review saved", null));
+      if (route.path === `${base}/registry/capabilities/:id/disable`) return reply.send(ok(await disableCapability({ repository: services.repository, user, connectionId: selected.id, capabilityId: requestParam(request, "id"), body: request.body, request }), "Capability disabled for this connection; remote rollback is not implied", null));
+    }
     if (route.path === `${base}/registry/status`) return registryStatus(reply, services);
     if (route.path === `${base}/registry/tools` && route.method === "POST") return createTool(request, reply, user, services);
     if (route.path === `${base}/registry/tools/:id` && route.method === "PUT") return updateTool(request, reply, user, services);
@@ -53,6 +56,18 @@ export async function handleRegistryRoute(route: RouteDefinition, request: Fasti
     return reply.status(status).send(fail(text, null));
   }
   return REGISTRY_UNHANDLED;
+}
+
+function capabilityConnection(request: FastifyRequest, services: HandlerServices) {
+  const runtime = services.mcpConnectionRuntime;
+  const requested = stringValue(queryRecord(request).connectionId).trim();
+  const fallback = runtime && "primaryConnectionId" in runtime ? runtime.primaryConnectionId : runtime?.connection.id ?? DEFAULT_BRIDGE_CONNECTION;
+  const id = requested || fallback;
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(id)) throw new HandlerFailure(400, "Invalid ERPBridge connection selection");
+  if (runtime && !runtime.hasConnection(id)) throw new HandlerFailure(404, "ERPBridge connection not found");
+  const session = runtime?.sessionFor(id) ?? (id === fallback ? services.erpbridgeSession : undefined);
+  const connections = runtime?.connectionCatalog() ?? [{ id: fallback, primary: true, dispatchSupported: true }];
+  return { id, session, connections };
 }
 
 /*******************************************************************************

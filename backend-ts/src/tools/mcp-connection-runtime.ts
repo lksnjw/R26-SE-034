@@ -90,6 +90,8 @@ export class McpConnectionRuntime {
     if (this.#state !== "CONNECTED" || this.#stopped || this.#session?.available === false) return undefined;
     return this.#session;
   }
+  hasConnection(id: string) { return id === this.connection.id; }
+  connectionCatalog() { return [{ id: this.connection.id, primary: this.connection.primary, dispatchSupported: this.connection.primary }]; }
   sessionFor(id: string) { return id === this.connection.id ? this.session : undefined; }
   roleMapFor(id: string) { return id === this.connection.id ? this.connection.roleMap : undefined; }
   private supportedStorage() { return this.options.repository.persistence === null || this.options.repository.persistence.readQueueDurability === "encrypted-single-writer"; }
@@ -249,6 +251,9 @@ export class McpConnectionManager {
     } catch (error) { await Promise.allSettled([...opened.values()].map(runtime => runtime.stop())); throw error; }
   }
   get session() { return this.runtimes.get(this.primaryConnectionId)?.session; }
+  hasConnection(id: string) { return this.runtimes.has(id); }
+  connectionCatalog() { return [...this.runtimes.values()].map(runtime => ({ id: runtime.connection.id, primary: runtime.connection.primary,
+    dispatchSupported: runtime.connection.primary })).sort((a, b) => Number(b.primary) - Number(a.primary) || a.id.localeCompare(b.id)); }
   sessionFor(id = this.primaryConnectionId) { return this.runtimes.get(id)?.session; }
   roleMapFor(id = this.primaryConnectionId) { return this.runtimes.get(id)?.roleMapFor(id); }
   async status(user: CurrentUser) {

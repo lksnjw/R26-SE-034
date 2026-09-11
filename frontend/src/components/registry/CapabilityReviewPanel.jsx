@@ -7,14 +7,14 @@ import Button from "../shared/ui/Button";
 
 const words = (value) => String(value ?? "Not recorded").replaceAll("_", " ").toLowerCase();
 const label = (value) => words(value).replace(/^./, (letter) => letter.toUpperCase());
-const storageKey = (actorId) => `workflow.capability-decision.${encodeURIComponent(actorId)}`;
-function restoreDecision(actorId) {
+const storageKey = (actorId, connectionId) => `workflow.capability-decision.${encodeURIComponent(actorId)}.${encodeURIComponent(connectionId)}`;
+function restoreDecision(actorId, connectionId) {
   try {
-    const text = sessionStorage.getItem(storageKey(actorId));
+    const text = sessionStorage.getItem(storageKey(actorId, connectionId));
     if (!text) return null;
     if (text.length > 8192) throw new Error();
     const value = JSON.parse(text);
-    if (!["review", "disable"].includes(value.action) || typeof value.capabilityId !== "string" ||
+    if (!["review", "disable"].includes(value.action) || value.connectionId !== connectionId || typeof value.capabilityId !== "string" ||
         !value.capabilityId || value.capabilityId.length > 256 || !value.body || typeof value.body.note !== "string" ||
         !value.body.note.trim() || value.body.note.length > 2000) throw new Error();
     if (value.action === "review" && (typeof value.body.observationId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.body.contractHash) ||
@@ -57,14 +57,18 @@ export default function CapabilityReviewPanel() {
 
 function ReviewWorkspace({ actorId, canReview }) {
   const [offset, setOffset] = useState(0);
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
   const [selectedId, setSelectedId] = useState(null);
-  const [pending, setPending] = useState(() => restoreDecision(actorId));
+  const [pendingByConnection, setPendingByConnection] = useState({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [inventory, setInventory] = useState([]);
   const lock = useRef(false);
-  const query = useQuery({ queryKey: ["capability-review", actorId, offset], queryFn: () => capabilityService.catalog(offset), retry: false });
+  const query = useQuery({ queryKey: ["capability-review", actorId, selectedConnectionId, offset], queryFn: () => capabilityService.catalog(offset, selectedConnectionId), retry: false });
+  const connectionId = query.data?.connection.id ?? selectedConnectionId;
+  const pending = connectionId ? Object.hasOwn(pendingByConnection, connectionId) ? pendingByConnection[connectionId] : restoreDecision(actorId, connectionId) : null;
+  const setPending = value => connectionId && setPendingByConnection(current => ({ ...current, [connectionId]: value }));
   const entries = query.data?.capabilities ?? [];
   const selected = entries.find((entry) => entry.capabilityId === selectedId) ?? null;
   const ready = !query.isFetching && !query.error && Boolean(query.data);
@@ -78,16 +82,16 @@ function ReviewWorkspace({ actorId, canReview }) {
     finally { lock.current = false; setBusy(false); }
   }
   async function sendDecision(decision) {
-    const result = await capabilityService[decision.action](decision.capabilityId, decision.body);
+    const result = await capabilityService[decision.action](decision.capabilityId, decision.body, decision.connectionId);
     const admission = decision.action === "review" ? result?.admission : result;
     if (admission?.capabilityId !== decision.capabilityId || !["AVAILABLE", "DISABLED", "BLOCKED"].includes(admission?.state) || !Number.isSafeInteger(admission?.version) ||
-        (decision.action === "review" && (result?.revision?.capabilityId !== decision.capabilityId || result?.revision?.observationId !== decision.body.observationId || result?.revision?.contractHash !== decision.body.contractHash)) ||
+        (decision.action === "review" && (result?.revision?.capabilityId !== decision.capabilityId || result?.revision?.connectionId !== decision.connectionId || result?.revision?.observationId !== decision.body.observationId || result?.revision?.contractHash !== decision.body.contractHash)) ||
         (decision.action === "disable" && (admission?.state !== "DISABLED" || admission?.revisionId !== decision.body.revisionId))) {
       throw new Error("Decision acknowledgement is invalid");
     }
     // Keep the exact request until a receipt is confirmed. Retries of a saved
     // review cannot re-enable a capability that has subsequently been disabled.
-    sessionStorage.removeItem(storageKey(actorId)); setPending(null);
+    sessionStorage.removeItem(storageKey(actorId, decision.connectionId)); setPending(null);
     setMessage(decision.action === "review" ? "Review decision acknowledged. Current authority is shown in the reloaded catalog, not inferred from this receipt." : "Disable acknowledged. New dispatch is blocked; already-sent remote work is not rolled back.");
     await query.refetch();
   }
@@ -95,7 +99,7 @@ function ReviewWorkspace({ actorId, canReview }) {
     if (!mutationAllowed || pending || busy) return;
     run("Decision", async () => {
       if (action === "review" && !entry.reviewEligible) throw new Error("Review unavailable");
-      const decision = { action, capabilityId: entry.capabilityId, body: action === "review" ? {
+      const decision = { action, capabilityId: entry.capabilityId, connectionId, body: action === "review" ? {
         observationId: entry.observation.id, contractHash: entry.observation.contractHash,
         decisionKey: `review_${crypto.randomUUID()}`, effectClass: entry.observation.definition.is_read_only ? "read" : entry.observation.definition.operation_contract?.effect_class,
         riskClass: entry.observation.definition.is_read_only ? "low" : entry.observation.definition.risk_level.toLowerCase(), dataClass: "internal", retryPolicy: "never", note: note.trim(),
@@ -103,7 +107,7 @@ function ReviewWorkspace({ actorId, canReview }) {
       } : { revisionId: entry.admission.revisionId, baseVersion: entry.admission.version, note: note.trim() } };
       // No credentials, arguments or results are stored. If local persistence
       // fails, don't submit a request whose decision identity could be lost.
-      sessionStorage.setItem(storageKey(actorId), JSON.stringify(decision)); setPending(decision);
+      sessionStorage.setItem(storageKey(actorId, connectionId), JSON.stringify(decision)); setPending(decision);
       await sendDecision(decision);
     });
   }
@@ -112,19 +116,20 @@ function ReviewWorkspace({ actorId, canReview }) {
       <div><h2 className="section-title">ERP capability review</h2><p className="mt-2 max-w-3xl text-sm text-gray-500">Discovery records evidence. An administrator reviews capability contracts; each operation still needs independent exact approval.</p></div>
       <div className="flex gap-2"><Button variant="secondary" disabled={busy} onClick={() => query.refetch()}>Reload review status</Button>
         {canReview ? <Button disabled={!ready || busy || Boolean(pending) || !query.data?.connection.discoveryAvailable} onClick={() => run("Discovery", async () => {
-          const result = await capabilityService.discover();
-          if (result?.authorityGranted !== false || !Array.isArray(result?.unreviewedInventory)) throw new Error("Unsupported discovery response");
+          const result = await capabilityService.discover(connectionId);
+          if (result?.connectionId !== connectionId || result?.authorityGranted !== false || !Array.isArray(result?.unreviewedInventory)) throw new Error("Unsupported discovery response");
           setInventory(result.unreviewedInventory); setOffset(0); setSelectedId(null);
           setMessage(`Discovery saved; no tool enabled. ${result.blockedCount ?? 0} existing admissions blocked by drift.`);
           await query.refetch();
         })}>{busy ? "Working…" : "Refresh discovery"}</Button> : null}
       </div>
     </div>
+    {query.data?.connections.length > 1 ? <label className="mt-4 block max-w-md text-sm font-medium">Reviewed ERP connection<select aria-label="Capability review connection" value={connectionId} disabled={busy || Boolean(pending)} onChange={event => { setSelectedConnectionId(event.target.value); setOffset(0); setSelectedId(null); setInventory([]); setError(""); setMessage(""); }} className="mt-2 w-full rounded-md border border-gray-300 bg-transparent px-3 py-2 dark:border-gray-700">{query.data.connections.map(item => <option key={item.id} value={item.id}>{item.id}{item.primary ? " · primary" : ""}</option>)}</select></label> : null}
     {!canReview ? <p className="mt-3 text-sm text-gray-500">Read only. Current Platform Admin registry permission is required for decisions.</p> : null}
     {query.isLoading ? <p className="mt-4" role="status">Loading capability review…</p> : null}
     {query.error ? <p className="mt-4 text-sm text-red-700" role="alert">Review status unavailable. No new decisions can be submitted.</p> : null}
     {query.data ? <div className="mt-4 flex flex-wrap gap-x-8 gap-y-2 border-y border-gray-200 py-3 text-sm dark:border-gray-800">
-      <p>Session: <strong>{label(query.data.connection.state)}</strong></p><p>Storage: <strong>{label(query.data.persistence)}</strong></p>
+      <p>Connection: <strong>{query.data.connection.id}</strong></p><p>Session: <strong>{label(query.data.connection.state)}</strong></p><p>Storage: <strong>{label(query.data.persistence)}</strong></p>
       <p className="w-full text-xs text-gray-500">Initialization is not proof of ERP authorization, delivery, or live tool readiness. {query.data.persistence === "memory-only" ? "Reviews in this mode do not survive a server restart." : "Distributed revocation is not qualified."}</p>
     </div> : null}
     {pending ? <div className="mt-4 border-l-2 border-amber-500 pl-4 text-sm" role="status">
@@ -134,7 +139,7 @@ function ReviewWorkspace({ actorId, canReview }) {
         {!pending.invalid && canReview ? <Button disabled={busy} onClick={() => run("Decision retry", () => sendDecision(pending))}>Retry exact decision</Button> : null}
         <Button variant="secondary" disabled={busy} onClick={() => run("Decision recovery", async () => {
           const result = await query.refetch(); if (result.error || !result.data) throw new Error("Status unavailable");
-          sessionStorage.removeItem(storageKey(actorId)); setPending(null);
+          sessionStorage.removeItem(storageKey(actorId, connectionId)); setPending(null);
           setMessage("Local retries ended after reloading status. This does not undo any saved decision; inspect current authority before submitting another review.");
         })}>Reload status and end local retries</Button>
       </div>

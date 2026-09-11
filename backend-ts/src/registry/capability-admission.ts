@@ -149,22 +149,24 @@ export async function observeCapabilities(input: { repository: Repository; regis
 }
 
 export async function reviewCapability(input: { repository: Repository; registries: RegistryService; session: ErpbridgeMcpSession | undefined;
-  user: CurrentUser; capabilityId: string; body: unknown; request?: FastifyRequest }) {
+  user: CurrentUser; capabilityId: string; connectionId?: string; body: unknown; request?: FastifyRequest }) {
   requireAdmissionStorage(input.repository);
   const value = reviewSchema.safeParse(input.body);
   if (!value.success) throw new HandlerFailure(400, "Invalid capability review; provide exact observation/hash, policy, note and stable decision key");
-  const data = value.data, decisionScope = digest([input.user.id, input.capabilityId, data.decisionKey]), decisionHash = digest(data);
+  const data = value.data, selectedConnectionId = input.connectionId ?? DEFAULT_BRIDGE_CONNECTION;
+  const decisionScope = digest([input.user.id, input.capabilityId, data.decisionKey]), decisionHash = digest(data);
   return input.repository.mutate(state => {
     administrator(state, input.user);
     const previous = Object.values(state.capabilityRevisions).find(item => item.decisionScope === decisionScope);
     if (previous) {
       const revision = revisionSchema.parse(previous);
+      if (revision.connectionId !== selectedConnectionId) throw new HandlerFailure(404, "Capability review not found for this connection");
       if (revision.decisionHash !== decisionHash) throw new HandlerFailure(409, "This decision key was used for different review input");
       return { revision: publicRevision(revision), admission: admissionSchema.parse(state.capabilityAdmissions[revision.capabilityId]), duplicate: true };
     }
     if (!state.capabilityObservations[data.observationId]) throw new HandlerFailure(404, "Capability observation not found");
     const observation = observationSchema.parse(state.capabilityObservations[data.observationId]);
-    if (observation.capabilityId !== input.capabilityId || observation.contractHash !== data.contractHash || !observation.remoteMatches ||
+    if (observation.capabilityId !== input.capabilityId || observation.connectionId !== selectedConnectionId || observation.contractHash !== data.contractHash || !observation.remoteMatches ||
       observation.connectionBinding !== activeBinding(input.session) || observation.discoveryGeneration !== (input.session!.discoveryGeneration ?? 0) ||
       Date.now() - Date.parse(observation.discoveredAt) > 600000 || Date.parse(observation.discoveredAt) > Date.now())
       throw new HandlerFailure(409, "Observation is stale, mismatched or drifted; refresh and review before admission");
@@ -189,7 +191,7 @@ export async function reviewCapability(input: { repository: Repository; registri
   });
 }
 
-export async function disableCapability(input: { repository: Repository; user: CurrentUser; capabilityId: string; body: unknown; request?: FastifyRequest }) {
+export async function disableCapability(input: { repository: Repository; user: CurrentUser; capabilityId: string; connectionId?: string; body: unknown; request?: FastifyRequest }) {
   requireAdmissionStorage(input.repository);
   const parsed = disableAdmissionSchema.safeParse(input.body);
   if (!parsed.success) throw new HandlerFailure(400, "Invalid disable request; provide current revision/version and note");
@@ -197,6 +199,8 @@ export async function disableCapability(input: { repository: Repository; user: C
     administrator(state, input.user);
     if (!state.capabilityAdmissions[input.capabilityId]) throw new HandlerFailure(404, "Capability admission not found");
     const admission = admissionSchema.parse(state.capabilityAdmissions[input.capabilityId]);
+    const revision = revisionSchema.parse(state.capabilityRevisions[admission.revisionId]);
+    if (revision.connectionId !== (input.connectionId ?? DEFAULT_BRIDGE_CONNECTION)) throw new HandlerFailure(404, "Capability admission not found for this connection");
     if (admission.revisionId !== parsed.data.revisionId) throw new HandlerFailure(409, "Admission revision changed; reload before disabling");
     // An acknowledgement retry of the same immediately preceding transition
     // returns its current disabled state; it never re-enables anything.
@@ -248,13 +252,19 @@ export function captureCapabilityAdmissionPin(state: Readonly<RepositoryState>, 
 }
 
 export async function capabilityAdmissionCatalog(repository: Repository, offset = 0, limit = 10,
-  context?: { registries: RegistryService; session?: ErpbridgeMcpSession | undefined }) {
+  context?: { registries: RegistryService; session?: ErpbridgeMcpSession | undefined; connectionId?: string;
+    connections?: Array<{ id: string; primary: boolean; dispatchSupported: boolean }> }) {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 10) throw new HandlerFailure(400, "Invalid review catalog page; limit must be 1–10");
   return repository.readAuthoritative(state => {
-    const observations = Object.values(state.capabilityObservations).reverse(), revisions = Object.values(state.capabilityRevisions).reverse(), admissions = Object.values(state.capabilityAdmissions);
+    const selectedConnectionId = context?.connectionId ?? DEFAULT_BRIDGE_CONNECTION;
+    const observations = Object.values(state.capabilityObservations).map(value => observationSchema.parse(value)).filter(value => value.connectionId === selectedConnectionId).reverse();
+    const revisions = Object.values(state.capabilityRevisions).map(value => revisionSchema.parse(value)).filter(value => value.connectionId === selectedConnectionId).reverse();
+    const admissions = Object.values(state.capabilityAdmissions).map(value => admissionSchema.parse(value)).filter(value => {
+      const revision = state.capabilityRevisions[value.revisionId]; return revision !== undefined && revisionSchema.parse(revision).connectionId === selectedConnectionId;
+    });
     const persistence = repository.persistence === null ? "memory-only" : repository.persistence.readQueueDurability === "encrypted-single-writer" ? "durable-single-writer" : "unsupported-for-admission";
     const session = context?.session;
-    const connection = { state: !session ? "NO_SESSION" : session.available === false ? "CLOSED" : session.requiresReviewedRevision !== true || !binding.safeParse(session.admissionBinding).success ? "UNSUPPORTED_PROFILE" : "INITIALIZED_NOT_QUALIFIED",
+    const connection = { id: selectedConnectionId, state: !session ? "NO_SESSION" : session.available === false ? "CLOSED" : session.requiresReviewedRevision !== true || !binding.safeParse(session.admissionBinding).success ? "UNSUPPORTED_PROFILE" : "INITIALIZED_NOT_QUALIFIED",
       discoveryAvailable: Boolean(session && session.available !== false && session.requiresReviewedRevision === true && binding.safeParse(session.admissionBinding).success),
       qualification: "Not a live ERP authorization or tool execution test" };
     const latest = new Map<string, ReturnType<typeof publicObservation>>();
@@ -281,6 +291,7 @@ export async function capabilityAdmissionCatalog(repository: Repository, offset 
     return { observations: observations.slice(offset, offset + limit).map(publicObservation), revisions: revisions.slice(offset, offset + limit).map(publicRevision),
       admissions: admissions.slice(offset, offset + limit).map(value => admissionSchema.parse(value)), offset, limit,
       persistence, connection, capabilities, hasMoreCapabilities: capabilityIds.length > offset + limit,
+      connections: context?.connections ?? [{ id: selectedConnectionId, primary: true, dispatchSupported: true }],
       hasMoreObservations: observations.length > offset + limit, hasMoreRevisions: revisions.length > offset + limit, hasMoreAdmissions: admissions.length > offset + limit };
   });
 }
