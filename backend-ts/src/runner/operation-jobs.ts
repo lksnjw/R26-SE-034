@@ -759,7 +759,9 @@ export class OperationJobQueue {
         if (node.effectClass === "read") output = await dispatchReadTool(services, actor.id, node.capability.action, args, { workflowId: initial.workflowId, executionId: id, signal: control.controller.signal, assertDispatch: assertContext,
           beforeDispatch: persistIntent, plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } });
         else {
-          const identity = createDispatchIdentity(actor, nodeBinding!.roleMap), resolved = await services.validator.evaluateResolvedStep(id, snapshot.yaml, index, args, gate.token, identity);
+          const identity = createDispatchIdentity(actor, nodeBinding!.roleMap), resolved = await services.validator.evaluateResolvedStep(id, snapshot.yaml, index, args, gate.token, identity, {
+            executionId: id, workflowId: initial.workflowId, traceId: initial.traceId, actor: { id: actor.id, role: actor.role },
+          });
           if (!resolved.capability || resolved.violation) throw new Error("Exact operation dispatch capability was denied");
           await persistIntent();
           const permit = await issueOperationDispatchPermit(repository, id, intentId, tool, args, identity, assertContext);

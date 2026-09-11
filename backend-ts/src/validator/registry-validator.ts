@@ -24,6 +24,7 @@ import type {
 import { effectiveStepKind } from "../models/schemas.js";
 import type { Repository } from "../repository/store.js";
 import type { DispatchIdentity } from "../tools/registry.js";
+import { definedTraceAuditMetadata, type TraceAuditMetadata } from "../trace/audit-trace.js";
 
 export type CandidateValidationResult = {
   candidate_id: string;
@@ -142,6 +143,7 @@ export class RegistryValidator {
     action: string,
     rawYAML: string,
     userRole: string,
+    auditMetadata: TraceAuditMetadata = {},
   ): Promise<{
     token: ValidationToken | null;
     result: CandidateValidationResult;
@@ -158,6 +160,7 @@ export class RegistryValidator {
       `validation.gate.${action}`,
       workflowContentHash(rawYAML),
       { path_action: action, passed: result.passed, rule_results: result },
+      auditMetadata,
     );
     return { token, result };
   }
@@ -366,6 +369,7 @@ export class RegistryValidator {
     params: Record<string, unknown>,
     token: ValidationToken | null,
     dispatchIdentity: DispatchIdentity,
+    auditMetadata: TraceAuditMetadata = {},
   ): Promise<{
     capability: DispatchCapability | null;
     violation: ResolvedPolicyViolation | null;
@@ -380,6 +384,7 @@ export class RegistryValidator {
         "",
         "validation token is missing or invalid",
         params,
+        auditMetadata,
       );
     if (token.workflow_content_hash !== workflowHash)
       return this.dispatchFailure(
@@ -390,6 +395,7 @@ export class RegistryValidator {
         "",
         "workflow content changed after validation",
         params,
+        auditMetadata,
       );
     if (token.registry_hash !== this.registries.hash())
       return this.dispatchFailure(
@@ -400,6 +406,7 @@ export class RegistryValidator {
         "",
         "registry changed after validation",
         params,
+        auditMetadata,
       );
     if (!validDispatchIdentity(dispatchIdentity))
       return this.dispatchFailure(
@@ -410,6 +417,7 @@ export class RegistryValidator {
         "",
         "dispatch identity is invalid",
         params,
+        auditMetadata,
       );
     const workflow = parseWorkflowYAMLStrict(rawYAML);
     const step = workflow.steps[stepIndex];
@@ -422,6 +430,7 @@ export class RegistryValidator {
         "",
         "validated tool step does not exist",
         params,
+        auditMetadata,
       );
     const stepAction = (step.action ?? "").trim();
     const sensitive = findSensitiveKey(params);
@@ -434,6 +443,7 @@ export class RegistryValidator {
         sensitive,
         "credential-shaped resolved parameter is not allowed",
         params,
+        auditMetadata,
       );
     for (const check of token.deferred_checks ?? []) {
       if (check.step_index !== stepIndex) continue;
@@ -448,6 +458,7 @@ export class RegistryValidator {
             check.param_key,
             "deferred rule is missing or disabled",
             params,
+            auditMetadata,
           );
         const violation = evaluateDeferredRule(rule, check.param_key, params);
         if (violation !== null)
@@ -459,6 +470,7 @@ export class RegistryValidator {
             check.param_key,
             violation,
             params,
+            auditMetadata,
           );
       }
     }
@@ -477,7 +489,7 @@ export class RegistryValidator {
       checked_rule_ids: (token.deferred_checks ?? [])
         .filter((item) => item.step_index === stepIndex)
         .flatMap((item) => item.rule_ids),
-    });
+    }, auditMetadata);
     return { capability, violation: null };
   }
 
@@ -807,6 +819,7 @@ export class RegistryValidator {
     paramKey: string,
     reason: string,
     params: Record<string, unknown>,
+    auditMetadata: TraceAuditMetadata,
   ): Promise<{ capability: null; violation: ResolvedPolicyViolation }> {
     const violation = {
       ruleId,
@@ -820,7 +833,7 @@ export class RegistryValidator {
       failed_rule_id: ruleId,
       failed_param_key: paramKey,
       reason,
-    });
+    }, auditMetadata);
     return { capability: null, violation };
   }
 
@@ -833,8 +846,9 @@ export class RegistryValidator {
     action: string,
     resourceID: string,
     after: Record<string, unknown>,
+    metadata: TraceAuditMetadata = {},
   ): Promise<void> {
-    await this.repository.mutate((state) => {
+    const append = (state: import("../repository/store.js").RepositoryState) => {
       state.auditLogs.push({
         id: `audit_${state.auditLogs.length + 1}`,
         action,
@@ -843,8 +857,12 @@ export class RegistryValidator {
         after,
         createdAt: new Date().toISOString(),
         source: "deterministic-validation-gate-ts",
+        ...definedTraceAuditMetadata(metadata),
       });
-    });
+    };
+    if (metadata.executionId !== undefined)
+      await this.repository.mutateExecution(metadata.executionId, append);
+    else await this.repository.mutate(append);
   }
 }
 

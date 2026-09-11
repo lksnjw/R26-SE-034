@@ -7,7 +7,6 @@ import type { Repository } from "../repository/store.js";
 import type { CandidateValidationResult, RegistryValidator, ValidationToken } from "../validator/registry-validator.js";
 import type { GovernanceRequest } from "./adapter.js";
 import { GovernanceService, type GovernanceDecision } from "./service.js";
-import { attachValidationAuditTrace } from "../trace/audit-trace.js";
 import { PolicyGateClient, type PolicyGateOutcome } from "./policy-gate-client.js";
 
 export type GovernanceUser = { id: string; role: string; department: string | null };
@@ -78,7 +77,9 @@ export class GovernedValidationGate implements ValidationGate {
     const outcome = await this.governance.govern(
       request,
       proposal.readOnly,
-      () => this.validator.validateAndIssueToken(action, rawYAML, user.role),
+      () => this.validator.validateAndIssueToken(action, rawYAML, user.role, {
+        ...traceMetadata(context), actor: { id: user.id, role: user.role },
+      }),
       context.signal,
     );
     if (context.signal?.aborted) throw new DOMException("Policy evaluation cancelled", "AbortError");
@@ -99,12 +100,6 @@ export class GovernedValidationGate implements ValidationGate {
       result.errors.push(`${ruleID}: ${cleanReason}`);
       attachDecision(result, outcome.decision);
       gate = { token: null, result };
-    }
-    if (outcome.allowed) {
-      await attachValidationAuditTrace(this.repository, action, rawYAML, {
-        ...context,
-        actor: { id: user.id, role: user.role },
-      });
     }
     await this.recordDecision(action, rawYAML, proposal.readOnly, outcome.decision, gate.result.passed, request, context);
     if (context.signal?.aborted) throw new DOMException("Policy evaluation cancelled", "AbortError");
@@ -144,7 +139,9 @@ export class GovernedValidationGate implements ValidationGate {
 
     let gate: ValidationGateResult;
     if (pg.outcome === "allow") {
-      gate = await this.validator.validateAndIssueToken(action, rawYAML, user.role);
+      gate = await this.validator.validateAndIssueToken(action, rawYAML, user.role, {
+        ...traceMetadata(context), actor: { id: user.id, role: user.role },
+      });
       attachDecision(gate.result, decision);
       if (decision.warning !== null) gate.result.warnings.push(`GOVERNANCE_WARNING: ${decision.warning}`);
     } else {
@@ -160,12 +157,6 @@ export class GovernedValidationGate implements ValidationGate {
       gate = { token: null, result };
     }
 
-    if (pg.outcome === "allow") {
-      await attachValidationAuditTrace(this.repository, action, rawYAML, {
-        ...context,
-        actor: { id: user.id, role: user.role },
-      });
-    }
     await this.recordDecision(action, rawYAML, proposal.readOnly, decision, gate.result.passed, request, context);
     if (context.signal?.aborted) throw new DOMException("Policy evaluation cancelled", "AbortError");
     return gate;
@@ -178,7 +169,7 @@ export class GovernedValidationGate implements ValidationGate {
    * log.
    ******************************************************************************/
   private async recordDecision(action: string, rawYAML: string, readOnly: boolean, decision: GovernanceDecision, passed: boolean, request: GovernanceRequest, context: GovernedValidationContext): Promise<void> {
-    await this.repository.mutate((state) => {
+    const append = (state: import("../repository/store.js").RepositoryState) => {
       state.auditLogs.push({
         id: `audit_${state.auditLogs.length + 1}`,
         action: `governance.gate.${action}`,
@@ -191,7 +182,10 @@ export class GovernedValidationGate implements ValidationGate {
         actor: { id: request.user.id, role: request.user.role },
         ...traceMetadata(context),
       });
-    });
+    };
+    if (context.executionId !== undefined)
+      await this.repository.mutateExecution(context.executionId, append);
+    else await this.repository.mutate(append);
   }
 }
 

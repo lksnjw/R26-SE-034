@@ -7,7 +7,6 @@ import { createDispatchIdentity } from "./registry.js";
 import { validateToolInput } from "./tool-input-schema.js";
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import type { ValidationToken } from "../validator/registry-validator.js";
-import { attachDispatchAuditTrace } from "../trace/audit-trace.js";
 import { hasReservedBridgeRole } from "./erpbridge-contract.js";
 import type { ReadAdmissionPin, CompiledReadPlan } from "../workflows/compiled-read.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
@@ -133,8 +132,7 @@ export async function dispatchReadTool(
   const identity = createDispatchIdentity(actor, bound.roleMap);
   // The original run receipt must remain authentic/current as well as the
   // fresh governance decision. Registry drift never silently rebinds a run.
-  const resolved = await services.validator.evaluateResolvedStep(context.executionId ?? "ReadToolBroker", yaml, index, parameters, plan?.token ?? gate.token, identity);
-  if (context.executionId !== undefined) await attachDispatchAuditTrace(services.repository, context.executionId, {
+  const resolved = await services.validator.evaluateResolvedStep(context.executionId ?? "ReadToolBroker", yaml, index, parameters, plan?.token ?? gate.token, identity, {
     ...metadata, actor: { id: actor.id, role: actor.role },
   });
   if (resolved.capability === null || resolved.violation !== null) throw new Error("Tool dispatch denied: no valid exact-argument capability");

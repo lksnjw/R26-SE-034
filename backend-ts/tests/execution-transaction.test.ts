@@ -82,6 +82,19 @@ describe("scoped execution checkpoints", () => {
     const snapshot = await repo.snapshot(); expect(snapshot.executions["run-one"]!.status).toBe("DONE"); expect(snapshot.executions["run-two"]!.status).toBe("RUNNING"); expect(snapshot.auditLogs).toHaveLength(2);
     expect(await Repository.open(persistence).then(value => value.snapshot())).toEqual(snapshot);
   });
+  test("atomically creates one selected execution and job without granting unrelated mutation", async () => {
+    const repo = await setup(), before = await repo.snapshot(), created = run("run-new");
+    await repo.mutateExecution(created.id, state => {
+      state.executions[created.id] = created;
+      state.readJobs[created.id] = { version: 1, executionId: created.id, actorId: "owner", admittedRole: "Platform Admin", state: "QUEUED",
+        requestFingerprint: "request", connectionFingerprint: "connection", idempotencyScope: "scope", createdAt: created.startedAt, queueSequence: 3, inputCiphertext: "private" };
+      state.timelines[created.id] = []; state.executionLogs[created.id] = []; state.executionEvents[created.id] = [];
+      state.auditLogs.push({ id: "new-run-audit" });
+    });
+    const after = await repo.snapshot();
+    expect(after.executions[created.id]).toEqual(created); expect(after.readJobs[created.id]?.queueSequence).toBe(3); expect(after.auditLogs.at(-1)?.id).toBe("new-run-audit");
+    expect(after.settings).toEqual(before.settings); expect(after.executions["run-one"]).toEqual(before.executions["run-one"]);
+  });
   test.each([
     (state: any) => { state.settings.example.deep.value = 0; },
     (state: any) => { state.settings = {}; },

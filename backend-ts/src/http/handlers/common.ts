@@ -10,7 +10,6 @@ import type { RegistryValidator } from "../../validator/registry-validator.js";
 import type { GovernedValidationContext, ValidationGateResult } from "../../governance/gate.js";
 import { projectGateExplanation, type GateExplanation } from "../../governance/explain.js";
 import { requestTraceId } from "../../trace/request-trace.js";
-import { attachValidationAuditTrace } from "../../trace/audit-trace.js";
 import type { ErpbridgeMcpSession } from "../../tools/erpbridge-mcp-client.js";
 
 export type CurrentUser = User & { role: string; permissions: string[] };
@@ -44,9 +43,13 @@ export async function validateWorkflow(
 ): Promise<EnrichedValidationResult> {
   let gate: ValidationGateResult;
   if (services.validationGate === undefined) {
-    gate = await services.validator.validateAndIssueToken(action, rawYAML, user.role);
-    await attachValidationAuditTrace(services.repository, action, rawYAML, {
-      ...context,
+    gate = await services.validator.validateAndIssueToken(action, rawYAML, user.role, {
+      traceId: context.traceId,
+      sessionId: context.sessionId,
+      messageId: context.messageId,
+      candidateId: context.candidateId,
+      workflowId: context.workflowId,
+      executionId: context.executionId,
       actor: { id: user.id, role: user.role },
     });
   } else {

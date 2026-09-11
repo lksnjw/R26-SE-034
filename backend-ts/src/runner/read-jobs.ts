@@ -103,9 +103,10 @@ export class ReadJobQueue {
     if (!item.workflowSnapshot?.yaml || this.connectionFingerprint(item.workflowSnapshot.yaml) !== admission.connectionFingerprint)
       throw new HandlerFailure(503, "Read connection identity is unavailable or changed during admission", { code: "READ_CONNECTION_BINDING_REQUIRED" });
     const inputCiphertext = this.#codec.encode(Buffer.from(JSON.stringify({ version: 1, executionId: item.id, input: admission.input }))).toString("base64");
-    if (!Number.isSafeInteger(state.counter + 1) || state.counter < 0) throw new Error("Read admission sequence is unavailable");
+    const queueSequence = Object.values(state.readJobs).reduce((highest, job) => Math.max(highest, job.queueSequence ?? 0), 0) + 1;
+    if (!Number.isSafeInteger(queueSequence) || queueSequence < 1) throw new Error("Read admission sequence is unavailable");
     state.readJobs[item.id] = { version: 1, executionId: item.id, actorId: admission.actorId, admittedRole: admission.admittedRole, state: "QUEUED", inputCiphertext,
-      requestFingerprint: admission.fingerprint, idempotencyScope: admission.scope, connectionFingerprint: admission.connectionFingerprint, createdAt: item.startedAt, queueSequence: ++state.counter };
+      requestFingerprint: admission.fingerprint, idempotencyScope: admission.scope, connectionFingerprint: admission.connectionFingerprint, createdAt: item.startedAt, queueSequence };
   }
   async start(): Promise<void> {
     if (this.#started) return;

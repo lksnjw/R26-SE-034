@@ -5,7 +5,6 @@ import type { RegistryService } from "../registry/service.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import type { CandidateValidationResult, RegistryValidator } from "../validator/registry-validator.js";
 import type { GovernanceUser, ValidationGate } from "../governance/gate.js";
-import { attachValidationAuditTrace } from "../trace/audit-trace.js";
 import { buildReadIR } from "../workflows/compiled-read.js";
 
 export type SynthesisResult = {
@@ -87,8 +86,7 @@ export class SynthesisService {
     const candidateID = "candidate_1";
     let gate;
     if (this.validationGate === undefined) {
-      gate = await this.validator.validateAndIssueToken(candidateID, yaml, input.userRole);
-      await attachValidationAuditTrace(this.validator.repository, candidateID, yaml, {
+      gate = await this.validator.validateAndIssueToken(candidateID, yaml, input.userRole, {
         traceId: input.traceId,
         sessionId: input.sessionId,
         messageId: input.messageId,
