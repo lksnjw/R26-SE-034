@@ -1,11 +1,4 @@
 import {
-  createHash,
-  createHmac,
-  randomBytes,
-  timingSafeEqual,
-} from "node:crypto";
-import {
-  canonicalJSONBytes,
   resolvedParameterHash,
   resolvedParameterHashBytes,
 } from "../core/canonical-json.js";
@@ -18,13 +11,23 @@ import type { RegistryService } from "../registry/service.js";
 import type { RuleDefinition, ToolDefinition } from "../registry/schemas.js";
 import type {
   DeferredCheck,
-  PublicValidationToken,
   WorkflowBlueprint,
 } from "../models/schemas.js";
 import { effectiveStepKind } from "../models/schemas.js";
 import type { Repository } from "../repository/store.js";
 import type { DispatchIdentity } from "../tools/registry.js";
 import { definedTraceAuditMetadata, type TraceAuditMetadata } from "../trace/audit-trace.js";
+import {
+  consumeDispatchCapability,
+  mintDispatchCapability,
+  mintValidationToken,
+  validDispatchIdentity,
+  verifyValidationToken,
+  type DispatchCapability,
+  type ValidationToken,
+} from "./capability-authority.js";
+
+export type { DispatchCapability, ValidationToken } from "./capability-authority.js";
 
 export type CandidateValidationResult = {
   candidate_id: string;
@@ -54,26 +57,6 @@ export type ResolvedPolicyViolation = {
   reason: string;
   redactedValue: string;
 };
-
-export type ValidationToken = Readonly<PublicValidationToken>;
-export type DispatchCapability = Readonly<object>;
-
-type CapabilityPayload = Readonly<{
-  workflowContentHash: string;
-  registryHash: string;
-  stepIndex: number;
-  action: string;
-  resolvedParameterHash: string;
-  dispatchIdentity: DispatchIdentity;
-  expiresAt: number;
-  proof: Buffer;
-}>;
-
-const tokenProofs = new WeakMap<object, Buffer>();
-const mintedCapabilities = new WeakSet<object>();
-const consumedCapabilities = new WeakSet<object>();
-const capabilityPayloads = new WeakMap<object, CapabilityPayload>();
-const processSigningKey = randomBytes(32);
 
 const evaluatedFamilies = new Set([
   "rbac",
@@ -346,14 +329,7 @@ export class RegistryValidator {
    * Verifies a validation token against its process-local proof.
    ******************************************************************************/
   verifyToken(token: ValidationToken | null): boolean {
-    if (token === null || typeof token !== "object") return false;
-    const proof = tokenProofs.get(token);
-    if (proof === undefined) return false;
-    const expected = tokenProof(token);
-    return (
-      proof.byteLength === expected.byteLength &&
-      timingSafeEqual(proof, expected)
-    );
+    return verifyValidationToken(token);
   }
 
   /*******************************************************************************
@@ -474,7 +450,7 @@ export class RegistryValidator {
           );
       }
     }
-    const capability = mintCapability({
+    const capability = mintDispatchCapability({
       workflowContentHash: workflowHash,
       registryHash: this.registries.hash(),
       stepIndex,
@@ -504,38 +480,12 @@ export class RegistryValidator {
     exactParameterBytes: Uint8Array,
     dispatchIdentity: DispatchIdentity,
   ): void {
-    if (
-      typeof capability !== "object" ||
-      capability === null ||
-      !mintedCapabilities.has(capability)
-    )
-      throw new Error("dispatch capability was not minted by the validator");
-    const payload = capabilityPayloads.get(capability);
-    if (payload === undefined)
-      throw new Error("dispatch capability payload is unavailable");
-    const expectedProof = capabilityProof(payload);
-    if (
-      payload.proof.byteLength !== expectedProof.byteLength ||
-      !timingSafeEqual(payload.proof, expectedProof)
-    )
-      throw new Error("dispatch capability HMAC is invalid");
-    if (Date.now() > payload.expiresAt)
-      throw new Error("dispatch capability has expired");
-    if (consumedCapabilities.has(capability))
-      throw new Error("dispatch capability has already been consumed");
-    if (
-      resolvedParameterHashBytes(exactParameterBytes) !==
-      payload.resolvedParameterHash
-    )
-      throw new Error("dispatch capability parameter hash mismatch");
-    if (payload.action !== action)
-      throw new Error("dispatch capability action mismatch");
-    if (
-      !validDispatchIdentity(dispatchIdentity) ||
-      !sameDispatchIdentity(payload.dispatchIdentity, dispatchIdentity)
-    )
-      throw new Error("dispatch capability identity mismatch");
-    consumedCapabilities.add(capability);
+    consumeDispatchCapability(
+      capability,
+      action,
+      exactParameterBytes,
+      dispatchIdentity,
+    );
   }
 
   /*******************************************************************************
@@ -864,85 +814,6 @@ export class RegistryValidator {
       await this.repository.mutateExecution(metadata.executionId, append);
     else await this.repository.mutate(append);
   }
-}
-
-/*******************************************************************************
- * Function: mintValidationToken
- *
- * Creates an immutable validation token and stores its process-local proof.
- ******************************************************************************/
-function mintValidationToken(
-  rawYAML: string,
-  registryHash: string,
-  deferredChecks: DeferredCheck[],
-): ValidationToken {
-  const token = Object.freeze({
-    workflow_content_hash: workflowContentHash(rawYAML),
-    registry_hash: registryHash,
-    passed_at: new Date().toISOString(),
-    deferred_checks: structuredClone(deferredChecks),
-  });
-  tokenProofs.set(token, tokenProof(token));
-  return token;
-}
-
-/*******************************************************************************
- * Function: tokenProof
- *
- * Computes the HMAC proof for a validation token.
- ******************************************************************************/
-function tokenProof(token: ValidationToken): Buffer {
-  return createHmac("sha256", processSigningKey)
-    .update(canonicalJSONBytes(token))
-    .digest();
-}
-
-/*******************************************************************************
- * Function: mintCapability
- *
- * Creates and records a dispatch capability bound to its execution context.
- ******************************************************************************/
-function mintCapability(
-  input: Omit<CapabilityPayload, "proof">,
-): DispatchCapability {
-  const proof = capabilityProof(input);
-  const capability = Object.freeze({
-    workflowContentHash: input.workflowContentHash,
-    registryHash: input.registryHash,
-    stepIndex: input.stepIndex,
-    action: input.action,
-    resolvedParameterHash: input.resolvedParameterHash,
-    dispatchIdentity: Object.freeze({ ...input.dispatchIdentity }),
-    expiresAt: input.expiresAt,
-    proof: proof.toString("hex"),
-  });
-  const payload = Object.freeze({ ...input, proof: Buffer.from(proof) });
-  mintedCapabilities.add(capability);
-  capabilityPayloads.set(capability, payload);
-  return capability;
-}
-
-/*******************************************************************************
- * Function: capabilityProof
- *
- * Computes the HMAC proof for dispatch capability data.
- ******************************************************************************/
-function capabilityProof(
-  input: Omit<CapabilityPayload, "proof"> | CapabilityPayload,
-): Buffer {
-  return createHmac("sha256", processSigningKey)
-    .update(
-      canonicalJSONBytes({
-        workflowContentHash: input.workflowContentHash,
-        registryHash: input.registryHash,
-        stepIndex: input.stepIndex,
-        action: input.action,
-        resolvedParameterHash: input.resolvedParameterHash,
-        dispatchIdentity: input.dispatchIdentity,
-        expiresAt: input.expiresAt,
-      }),
-    )
-    .digest();
 }
 
 /*******************************************************************************
@@ -1286,39 +1157,6 @@ function boundedValue(value: unknown): string {
   const text = String(value ?? "").trim();
   return [...text].length <= 4 ? text : [...text].slice(0, 4).join("") + "…";
 }
-/*******************************************************************************
- * Function: validDispatchIdentity
- *
- * Checks the required user and role fields of a dispatch identity.
- ******************************************************************************/
-function validDispatchIdentity(
-  identity: DispatchIdentity | null | undefined,
-): identity is DispatchIdentity {
-  return (
-    identity !== null &&
-    identity !== undefined &&
-    identity.userId.trim() !== "" &&
-    identity.localRole.trim() !== "" &&
-    (identity.erpbridgeRole === null || identity.erpbridgeRole.trim() !== "")
-  );
-}
-
-/*******************************************************************************
- * Function: sameDispatchIdentity
- *
- * Compares the user and role fields of two dispatch identities.
- ******************************************************************************/
-function sameDispatchIdentity(
-  left: DispatchIdentity,
-  right: DispatchIdentity,
-): boolean {
-  return (
-    left.userId === right.userId &&
-    left.localRole === right.localRole &&
-    left.erpbridgeRole === right.erpbridgeRole
-  );
-}
-
 /*******************************************************************************
  * Function: errorText
  *
