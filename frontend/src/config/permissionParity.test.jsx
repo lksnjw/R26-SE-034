@@ -13,6 +13,7 @@ const notify = jest.fn();
 const registryLoad = jest.fn();
 const registryCreate = jest.fn();
 const registryUpdate = jest.fn();
+const registryStatus = jest.fn();
 
 jest.unstable_mockModule("../hooks/usePermissions", () => ({
   default: () => ({ has: (permission) => permissions.has(permission), hasAny: (required) => required.some((permission) => permissions.has(permission)) }),
@@ -33,7 +34,7 @@ jest.unstable_mockModule("../services/semantic.service", () => ({
 }));
 
 jest.unstable_mockModule("../services/registry.service", () => ({
-  registryService: { load: registryLoad, create: registryCreate, update: registryUpdate },
+  registryService: { load: registryLoad, create: registryCreate, update: registryUpdate, status: registryStatus },
 }));
 
 jest.unstable_mockModule("../context/NotificationContext", () => ({
@@ -57,6 +58,7 @@ afterEach(() => {
   registryLoad.mockReset();
   registryCreate.mockReset();
   registryUpdate.mockReset();
+  registryStatus.mockReset();
   jest.restoreAllMocks();
 });
 
@@ -89,6 +91,7 @@ test("disabled semantic search hides rebuild even from a settings manager", asyn
   permissions = new Set(["registry:read", "registry:write", "settings:manage"]);
   registryLoad.mockResolvedValue({ tools: [], rules: [] });
   registryCreate.mockResolvedValue({});
+  registryStatus.mockResolvedValue({ mode: "runtime", writable: true });
   const queryClient = renderWithQuery(<RegistryPage />, true);
 
   fireEvent.click(await screen.findByRole("button", { name: "Add tool" }));

@@ -7,6 +7,7 @@ import React from "react";
 
 const bulkImport = jest.fn();
 const context = jest.fn();
+const status = jest.fn();
 
 jest.unstable_mockModule("../../hooks/usePermissions", () => ({
   default: () => ({ has: (permission) => permission === "settings:manage" }),
@@ -16,16 +17,35 @@ jest.unstable_mockModule("../../services/registry.service", () => ({
   registryService: {
     bulkImport,
     context,
+    status,
   },
 }));
 
 const { default: RegistryBulkImportPanel } = await import("./RegistryBulkImportPanel.jsx");
 const { default: RegistryGenerationContextViewer } = await import("./RegistryGenerationContextViewer.jsx");
+const { default: RegistryStatusBanner } = await import("./RegistryStatusBanner.jsx");
 
 afterEach(() => {
   cleanup();
   bulkImport.mockReset();
   context.mockReset();
+  status.mockReset();
+});
+
+test("release-managed production registry explains that file mutations require a release", async () => {
+  status.mockResolvedValue({ mode: "release-immutable", writable: false, tools: {}, rules: {} });
+  const queryClient = testQueryClient();
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RegistryStatusBanner />
+      <RegistryBulkImportPanel kind="tools" writable={false} />
+    </QueryClientProvider>,
+  );
+
+  expect(await screen.findByText("Read-only")).not.toBeNull();
+  expect(screen.getByText(/requires a reviewed application release/i)).not.toBeNull();
+  expect(screen.queryByRole("region", { name: "Registry bulk import" })).toBeNull();
+  queryClient.clear();
 });
 
 test("registry import control reports every failure from a mixed-validity batch", async () => {

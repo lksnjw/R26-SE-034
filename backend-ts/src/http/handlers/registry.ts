@@ -78,7 +78,12 @@ function capabilityConnection(request: FastifyRequest, services: HandlerServices
  ******************************************************************************/
 function requireRegistryWrite(user: CurrentUser, services: HandlerServices): void {
   if (user.role !== "Platform Admin") throw new HandlerFailure(403, "Only Platform Admin can modify the runtime registry");
+  if (!registryFilesWritable(services)) throw new HandlerFailure(403, "Production registry files are release-managed and immutable; publish a reviewed registry release instead");
   for (const path of [services.registries.toolPath, services.registries.rulePath]) if (path.toLowerCase().replaceAll("\\", "/").includes("/configs/registries/")) throw new HandlerFailure(403, "Frozen evaluation registries are read-only");
+}
+
+function registryFilesWritable(services: HandlerServices): boolean {
+  return services.config.environment !== "production";
 }
 
 /*******************************************************************************
@@ -86,7 +91,7 @@ function requireRegistryWrite(user: CurrentUser, services: HandlerServices): voi
  *
  * Reports current registry versions, counts, and policy information.
  ******************************************************************************/
-async function registryStatus(reply: FastifyReply, services: HandlerServices): Promise<unknown> { const [toolBytes, ruleBytes] = await Promise.all([readFile(services.registries.toolPath), readFile(services.registries.rulePath)]); return reply.send(ok({ mode: "runtime", writable: true, tools: { path: services.registries.toolPath, sha256: `sha256:${createHash("sha256").update(toolBytes).digest("hex")}` }, rules: { path: services.registries.rulePath, sha256: `sha256:${createHash("sha256").update(ruleBytes).digest("hex")}` } }, "Active registry status loaded", null)); }
+async function registryStatus(reply: FastifyReply, services: HandlerServices): Promise<unknown> { const [toolBytes, ruleBytes] = await Promise.all([readFile(services.registries.toolPath), readFile(services.registries.rulePath)]); const writable = registryFilesWritable(services); return reply.send(ok({ mode: writable ? "runtime" : "release-immutable", writable, tools: { path: writable ? services.registries.toolPath : "release://registry/tools", sha256: `sha256:${createHash("sha256").update(toolBytes).digest("hex")}` }, rules: { path: writable ? services.registries.rulePath : "release://registry/rules", sha256: `sha256:${createHash("sha256").update(ruleBytes).digest("hex")}` } }, "Active registry status loaded", null)); }
 
 /*******************************************************************************
  * Function: createTool
@@ -163,13 +168,13 @@ async function importRules(request: FastifyRequest, reply: FastifyReply, user: C
  *
  * Returns the current registry context document.
  ******************************************************************************/
-async function getContext(reply: FastifyReply, services: HandlerServices): Promise<unknown> { if (services.contextAvailable !== true) throw new HandlerFailure(503, "registry generation context is unavailable"); const path = contextPath(services); try { const markdown = await readFile(path, "utf8"); return reply.send(ok({ path, markdown, sha256: `sha256:${createHash("sha256").update(markdown).digest("hex")}` }, "Registry generation context loaded", null)); } catch { throw new HandlerFailure(503, "registry generation context is unavailable"); } }
+async function getContext(reply: FastifyReply, services: HandlerServices): Promise<unknown> { if (services.contextAvailable !== true) throw new HandlerFailure(503, "registry generation context is unavailable"); const path = contextPath(services); try { const markdown = await readFile(path, "utf8"); return reply.send(ok({ path: registryFilesWritable(services) ? path : "release://registry/context", markdown, sha256: `sha256:${createHash("sha256").update(markdown).digest("hex")}` }, "Registry generation context loaded", null)); } catch { throw new HandlerFailure(503, "registry generation context is unavailable"); } }
 /*******************************************************************************
  * Function: regenerateContext
  *
  * Rebuilds and stores context from the current registry snapshot.
  ******************************************************************************/
-async function regenerateContext(reply: FastifyReply, user: CurrentUser, services: HandlerServices, request: FastifyRequest): Promise<unknown> { const context = await writeContext(services); await services.repository.mutate((state) => { const entry = { id: nextID(state, "context"), ...context, createdAt: now(), createdBy: { id: user.id, name: user.name } }; state.registryContextHistory.push(entry); appendAudit(state, user, "registry.context.regenerated", "registry_context", stringValue(entry.id), null, { sha256: context.sha256 }, request); }); return reply.send(ok(context, "Registry generation context regenerated", null)); }
+async function regenerateContext(reply: FastifyReply, user: CurrentUser, services: HandlerServices, request: FastifyRequest): Promise<unknown> { requireRegistryWrite(user, services); const context = await writeContext(services); await services.repository.mutate((state) => { const entry = { id: nextID(state, "context"), ...context, createdAt: now(), createdBy: { id: user.id, name: user.name } }; state.registryContextHistory.push(entry); appendAudit(state, user, "registry.context.regenerated", "registry_context", stringValue(entry.id), null, { sha256: context.sha256 }, request); }); return reply.send(ok(context, "Registry generation context regenerated", null)); }
 /*******************************************************************************
  * Function: contextHistory
  *

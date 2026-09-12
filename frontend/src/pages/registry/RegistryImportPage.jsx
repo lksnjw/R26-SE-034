@@ -228,6 +228,8 @@ function RegistryImportPage() {
   const [selected, setSelected] = useState(new Set());
   const [commitResult, setCommitResult] = useState(null);
   const historyQuery = useQuery({ queryKey: ["registry-import-history"], queryFn: registryService.importHistory });
+  const statusQuery = useQuery({ queryKey: ["registry-status"], queryFn: registryService.status });
+  const canCommit = statusQuery.data?.writable === true;
 
 /*******************************************************************************
  * Function: analyseMutation
@@ -325,6 +327,11 @@ function RegistryImportPage() {
         </p>
       </header>
       <RegistryStatusBanner />
+      {statusQuery.data?.writable === false ? (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-100">
+          You may analyse and review a proposed import here, but this production registry cannot be changed in place. Include approved definitions in a versioned application release.
+        </section>
+      ) : null}
       <WizardSteps active={step} />
 
       {localError ? (
@@ -383,8 +390,8 @@ function RegistryImportPage() {
           ))}
           <div className="flex flex-col justify-between gap-3 sm:flex-row">
             <Button variant="secondary" onClick={() => { setStep(1); setLocalError(""); }}>Back to upload</Button>
-            <Button onClick={() => commitMutation.mutate()} disabled={!selected.size || commitMutation.isPending}>
-              {commitMutation.isPending ? "Restoring-safe commit in progress…" : `Commit ${selected.size} selected record(s)`}
+            <Button onClick={() => commitMutation.mutate()} disabled={!canCommit || !selected.size || commitMutation.isPending}>
+              {!canCommit ? "Release-managed registry" : commitMutation.isPending ? "Restoring-safe commit in progress…" : `Commit ${selected.size} selected record(s)`}
             </Button>
           </div>
           {commitMutation.isPending ? <LoadingState label="Backing up both registries and applying the confirmed records…" /> : null}

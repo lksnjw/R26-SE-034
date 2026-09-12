@@ -19,6 +19,8 @@ function RegistryContextPage() {
   const [copied, setCopied] = useState(false);
   const contextQuery = useQuery({ queryKey: ["registry-context"], queryFn: registryService.context });
   const historyQuery = useQuery({ queryKey: ["registry-context-history"], queryFn: registryService.contextHistory });
+  const statusQuery = useQuery({ queryKey: ["registry-status"], queryFn: registryService.status });
+  const canRegenerate = has("registry:write") && statusQuery.data?.writable === true;
 /*******************************************************************************
  * Function: regenerate
  *
@@ -67,7 +69,7 @@ function RegistryContextPage() {
             <Icon icon={copied ? "mdi:check" : "mdi:content-copy"} className="h-4 w-4" />
             {copied ? "Copied" : "Copy Markdown"}
           </Button>
-          {has("registry:write") ? (
+          {canRegenerate ? (
             <Button onClick={() => regenerate.mutate()} disabled={regenerate.isPending}>
               <Icon icon="mdi:refresh" className="h-4 w-4" />
               {regenerate.isPending ? "Regenerating…" : "Regenerate"}
@@ -77,6 +79,12 @@ function RegistryContextPage() {
       </header>
 
       <RegistryStatusBanner />
+
+      {statusQuery.data?.writable === false ? (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-100">
+          This context belongs to the versioned production registry and cannot be regenerated inside the running container. Publish a reviewed registry release to change it.
+        </section>
+      ) : null}
 
       {document.stale ? (
         <section className="rounded-2xl border border-red-300 bg-red-50 p-5 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">

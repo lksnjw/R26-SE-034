@@ -92,7 +92,9 @@ function RegistryPage({ initialKind = "tools" }) {
   const navigate = useNavigate();
   const { notify } = useNotifications();
   const { has } = usePermissions();
-  const canWrite = has("registry:write");
+  const statusQuery = useQuery({ queryKey: ["registry-status"], queryFn: registryService.status });
+  const releaseManaged = statusQuery.data?.writable === false;
+  const canWrite = has("registry:write") && statusQuery.data?.writable === true;
   const canRebuild = features.semanticSearch && has("settings:manage");
   const query = useQuery({ queryKey: ["admin-registry"], queryFn: registryService.load });
 
@@ -221,6 +223,12 @@ function RegistryPage({ initialKind = "tools" }) {
 
       <RegistryStatusBanner />
 
+      {releaseManaged ? (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-100">
+          Tool and rule definitions are read-only in production. Capability discovery and explicit connection-scoped review remain available below; schema changes must be shipped as a reviewed registry release.
+        </section>
+      ) : null}
+
       {kind === "tools" ? <CapabilityReviewPanel /> : null}
 
       <Tabs
@@ -235,7 +243,7 @@ function RegistryPage({ initialKind = "tools" }) {
         }}
       />
 
-      <RegistryBulkImportPanel kind={kind} />
+      <RegistryBulkImportPanel kind={kind} writable={canWrite} />
 
       {editor ? (
         <section className="surface-panel rounded-2xl p-5">

@@ -11,14 +11,14 @@ import Button from "../shared/ui/Button";
  *
  * Performs the Registry Bulk Import Panel operation on bulk import panel for the RegistryBulkImportPanel module.
  ******************************************************************************/
-function RegistryBulkImportPanel({ kind }) {
+function RegistryBulkImportPanel({ kind, writable = true }) {
   const { has } = usePermissions();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("[]");
   const [allowUpdates, setAllowUpdates] = useState(false);
   const [parseError, setParseError] = useState("");
   const [result, setResult] = useState(null);
-  const canImport = has("settings:manage");
+  const canImport = has("settings:manage") && writable;
 
 /*******************************************************************************
  * Function: mutation

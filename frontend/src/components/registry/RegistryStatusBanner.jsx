@@ -52,10 +52,15 @@ function RegistryStatusBanner() {
           <div key={label} className="min-w-0 rounded-xl bg-gray-50 p-4 dark:bg-gray-950/40">
             <dt className="text-[10px] font-bold uppercase tracking-[0.16em] text-gray-500">{label}</dt>
             <dd className="mt-2 break-all font-mono text-[11px] text-gray-700 dark:text-gray-200">{value?.path || "Path unavailable"}</dd>
-            <dd className="mt-1 break-all font-mono text-[10px] text-gray-400">sha256:{value?.sha256 || "unavailable"}</dd>
+            <dd className="mt-1 break-all font-mono text-[10px] text-gray-400">{value?.sha256 || "Hash unavailable"}</dd>
           </div>
         ))}
       </dl>
+      {!writable ? (
+        <p className="mt-4 text-xs leading-5 text-amber-800 dark:text-amber-200">
+          This environment uses a versioned release registry. You can inspect and review discovered ERPBridge capabilities, but changing tool or rule files requires a reviewed application release.
+        </p>
+      ) : null}
     </section>
   );
 }

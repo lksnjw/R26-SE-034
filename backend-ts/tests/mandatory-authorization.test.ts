@@ -14,8 +14,8 @@ import type { ProviderRuntime } from "../src/providers/runtime.js";
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
-async function setup(enabled: boolean, providerRuntime?: ProviderRuntime) {
-  const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "mandatory-auth-test-secret-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" });
+async function setup(enabled: boolean, providerRuntime?: ProviderRuntime, environment = "test") {
+  const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "mandatory-auth-test-secret-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }), environment };
   const repository = new Repository(null);
   await repository.mutate((state) => {
     state.settings.rbac = { enabled };
@@ -73,6 +73,27 @@ test("malformed or unknown-tool run is rejected before provider or ERP discovery
   expect(response.json().message).toBe("Workflow validation failed");
   expect(s.listTools).not.toHaveBeenCalled();
   expect(s.callToolDirect).not.toHaveBeenCalled();
+});
+
+test("production exposes a release-immutable registry and rejects filesystem mutations", async () => {
+  const s = await setup(false, undefined, "production");
+  const status = await s.app.inject({ method: "GET", url: "/api/registry/status", headers: s.headers("admin") });
+  expect(status.statusCode, status.body).toBe(200);
+  expect(status.json().data).toMatchObject({ mode: "release-immutable", writable: false,
+    tools: { path: "release://registry/tools" }, rules: { path: "release://registry/rules" } });
+  expect(JSON.stringify(status.json().data)).not.toContain(process.cwd());
+
+  for (const [url, payload] of [
+    ["/api/registry/tools", {}],
+    ["/api/registry/rules", {}],
+    ["/api/registry/context/regenerate", {}],
+    ["/api/import/commit", { analysisId: "untrusted" }],
+  ] as const) {
+    const response = await s.app.inject({ method: "POST", url, headers: s.headers("admin"), payload });
+    expect(response.statusCode, `${url}: ${response.body}`).toBe(403);
+    expect(response.json().message).toContain("release-managed and immutable");
+  }
+  expect((await s.repository.snapshot()).registryContextHistory).toEqual([]);
 });
 
 test("generation acceptance preserves exact YAML, version and runtime checkpoints", async () => {
