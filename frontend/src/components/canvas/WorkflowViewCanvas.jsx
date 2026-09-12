@@ -5,7 +5,7 @@ import "@xyflow/react/dist/style.css";
 import { Icon } from "@iconify/react";
 import { peekWorkflowForCanvas, clearWorkflowForCanvas, workflowYamlToCanvas, saveWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
 import { workflowService } from "../../services/workflow.service";
-import { ReadableResult } from "../chat/ReadableValue";
+import ReadableValue, { ReadableResult } from "../chat/ReadableValue";
 
 // ── Read-only step node ────────────────────────────────────────────────────────
 /*******************************************************************************
@@ -13,7 +13,7 @@ import { ReadableResult } from "../chat/ReadableValue";
  *
  * Performs the View Node operation on node for the WorkflowViewCanvas module.
  ******************************************************************************/
-function ViewNode({ data }) {
+export function ViewNode({ data }) {
   const [open, setOpen] = useState(false);
   const hasOutput = data.executionOutput !== undefined && data.executionOutput !== null;
   const hasParams = data.parameters && Object.keys(data.parameters).length > 0;
@@ -61,12 +61,9 @@ function ViewNode({ data }) {
               {hasParams && (
                 <div>
                   <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-widest text-gray-400">Parameters</p>
-                  {Object.entries(data.parameters).map(([k, v]) => (
-                    <div key={k} className="flex items-center gap-1 text-[10px]">
-                      <span className="font-mono text-gray-500">{k}:</span>
-                      <span className="truncate text-gray-700 dark:text-gray-300">{String(v)}</span>
-                    </div>
-                  ))}
+                  <div className="max-h-48 overflow-auto text-[9px]">
+                    <ReadableValue value={data.parameters} />
+                  </div>
                 </div>
               )}
               {hasOutput && (
