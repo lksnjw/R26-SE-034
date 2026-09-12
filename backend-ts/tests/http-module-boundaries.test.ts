@@ -73,4 +73,28 @@ describe("HTTP responsibility boundaries", () => {
     expect(notifications).toContain("export async function handleNotificationRoute");
     expect(administration).not.toContain("function listNotifications");
   });
+
+  test("keeps the resource dispatcher thin and delegates domain behavior", async () => {
+    const [resources, chat, company, providers, settingsIntegrations, chatJobs] = await Promise.all([
+      source("src/http/handlers/resources.ts"),
+      source("src/http/handlers/chat.ts"),
+      source("src/http/handlers/company.ts"),
+      source("src/http/handlers/providers.ts"),
+      source("src/http/handlers/settings-integrations.ts"),
+      source("src/agent/chat-jobs.ts"),
+    ]);
+    expect(resources.split(/\r?\n/).length).toBeLessThanOrEqual(100);
+    expect(chat.split(/\r?\n/).length).toBeLessThanOrEqual(900);
+    expect(resources).toContain('from "./chat.js"');
+    expect(resources).toContain('from "./company.js"');
+    expect(resources).toContain('from "./providers.js"');
+    expect(resources).toContain('from "./settings-integrations.js"');
+    expect(resources).not.toMatch(/function\s+(?:processStoredChat|createProvider|createWebhook|updateCompany)\b/);
+    expect(chat).toContain("export async function processStoredChat");
+    expect(company).toContain("export async function handleCompanyRoute");
+    expect(providers).toContain("export async function handleProviderRoute");
+    expect(settingsIntegrations).toContain("export async function handleSettingsIntegrationRoute");
+    expect(settingsIntegrations).toContain("settings/mcp-connections");
+    expect(chatJobs).toContain('from "../http/handlers/chat.js"');
+  });
 });

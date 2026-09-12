@@ -4,7 +4,7 @@ import { AESGCMCodec, decodeEncryptionKey } from "../storage/aes-gcm.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { HandlerFailure, isRecord, nextID, now, stringValue, type CurrentUser, type HandlerServices } from "../http/handlers/common.js";
 import { assertChatAuthority, requestedModel, selectProvider } from "../http/handlers/model-selection.js";
-import { processStoredChat } from "../http/handlers/resources.js";
+import { processStoredChat } from "../http/handlers/chat.js";
 import type { RuntimeProviderConfiguration } from "../providers/runtime.js";
 import { ProviderRuntime } from "../providers/runtime.js";
 import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
