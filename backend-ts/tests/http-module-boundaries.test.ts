@@ -97,4 +97,22 @@ describe("HTTP responsibility boundaries", () => {
     expect(settingsIntegrations).toContain("settings/mcp-connections");
     expect(chatJobs).toContain('from "../http/handlers/chat.js"');
   });
+
+  test("separates analytics, dashboard compatibility, and synthesis/canvas ownership", async () => {
+    const [catalog, analyticsDashboard, synthesisCanvas] = await Promise.all([
+      source("src/http/handlers/analytics-catalog.ts"),
+      source("src/http/handlers/analytics-dashboard.ts"),
+      source("src/http/handlers/synthesis-canvas.ts"),
+    ]);
+    expect(catalog.split(/\r?\n/).length).toBeLessThanOrEqual(180);
+    expect(analyticsDashboard.split(/\r?\n/).length).toBeLessThanOrEqual(450);
+    expect(synthesisCanvas.split(/\r?\n/).length).toBeLessThanOrEqual(250);
+    expect(catalog).toContain('from "./analytics-dashboard.js"');
+    expect(catalog).toContain('from "./synthesis-canvas.js"');
+    expect(catalog).not.toMatch(/function\s+(?:analytics|dashboardSummary|synthesis|canvasValidate)\b/);
+    expect(analyticsDashboard).toContain("export async function handleAnalyticsDashboardRoute");
+    expect(synthesisCanvas).toContain("export async function handleSynthesisCanvasRoute");
+    expect(catalog).toContain('route.path === `${base}/semantic-search`');
+    expect(catalog).not.toContain("async function semanticSearch");
+  });
 });
