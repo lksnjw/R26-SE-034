@@ -260,8 +260,8 @@ const NEXT_ACTION_META = {
   execute: {
     icon: "mdi:check-circle-outline",
     color: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300",
-    label: "Ready to Execute",
-    desc: "A workflow candidate passed all validation checks.",
+    label: "Candidate Validated",
+    desc: "The draft passed candidate validation. Publication, current readiness and any required approval are checked separately before execution.",
   },
 };
 
@@ -270,7 +270,7 @@ const NEXT_ACTION_META = {
  *
  * Performs the Next Action Banner operation on action banner for the ChatArtifactPanel module.
  ******************************************************************************/
-function NextActionBanner({ nextAction }) {
+export function NextActionBanner({ nextAction }) {
   const meta = NEXT_ACTION_META[nextAction] ?? {
     icon: "mdi:information-outline",
     color: "border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300",
@@ -330,9 +330,16 @@ function MiniBarChart({ vis }) {
  *
  * Performs the Query Result Panel operation on result panel for the ChatArtifactPanel module.
  ******************************************************************************/
-function QueryResultPanel({ artifact }) {
+export function QueryResultPanel({ artifact }) {
   const sources = Array.isArray(artifact.sources) ? artifact.sources : [];
-  const { visualisation, boundHit, iterationsUsed, latencyMs, intent } = artifact;
+  const { visualisation, boundHit, iterationsUsed, latencyMs, intent, stopReason } = artifact;
+  const stopMessage = stopReason === "LIMIT_REACHED"
+    ? "Preparation reached a configured bound. Saved results may be partial."
+    : stopReason === "PROVIDER_FAILED"
+      ? "Preparation stopped because the configured model provider failed. Saved read receipts may be partial."
+      : stopReason === "CANCELLED"
+        ? "Preparation was cancelled. Saved read receipts may be partial."
+        : "Preparation stopped before a complete answer was produced. Saved results may be partial.";
 
   return (
     <div className="space-y-3">
@@ -352,7 +359,7 @@ function QueryResultPanel({ artifact }) {
       {boundHit && (
         <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-300">
           <Icon icon="mdi:alert-outline" className="h-4 w-4 shrink-0" />
-          Search ended early — iteration or token limit reached.
+          {stopMessage}
         </div>
       )}
 
