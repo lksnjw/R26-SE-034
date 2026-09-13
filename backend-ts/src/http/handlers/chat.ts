@@ -1,6 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { ok } from "../../models/schemas.js";
 import { requestTraceId } from "../../trace/request-trace.js";
@@ -25,6 +23,7 @@ import { activeChatStatus, chatJobQueue } from "../../agent/chat-jobs.js";
 import { processNodeProposal } from "../../agent/node-proposals.js";
 import { chatSummary, createChat, deleteChat, getChat, listChats, updateChat } from "./chat-sessions.js";
 import { buildCapabilitiesResponse, compactWorkflowArtifacts, errorText } from "./chat-artifacts.js";
+import { checkFeasibility } from "./chat-feasibility.js";
 
 /*******************************************************************************
  * Function: buildWorkflowYamlFromSteps
@@ -44,91 +43,6 @@ function buildWorkflowYamlFromSteps(steps: ToolStep[], userPrompt: string): stri
     .join("\n");
   return `name: "${safeName}"\ndescription: "Saved from chat session"\nsteps:\n${stepsYaml}`;
 }
-// ── Workflows catalog (feasibility policy) ──────────────────────────────────
-interface CatalogWorkflow {
-  id: string;
-  name: string;
-  description: string;
-  keywords: string[];
-  allowed_roles: string[];
-  requires_write: boolean;
-  domain: string;
-  doable: boolean;
-}
-interface WorkflowsCatalog {
-  workflows: CatalogWorkflow[];
-  globally_blocked: string[];
-  role_notes: Record<string, string>;
-}
-
-let _catalogCache: WorkflowsCatalog | null = null;
-/*******************************************************************************
- * Function: loadWorkflowsCatalog
- *
- * Loads and caches the workflow catalog and blocked-request patterns.
- ******************************************************************************/
-function loadWorkflowsCatalog(): WorkflowsCatalog {
-  if (_catalogCache !== null) return _catalogCache;
-  try {
-    const path = resolve(process.cwd(), "policy/workflows_catalog.json");
-    _catalogCache = JSON.parse(readFileSync(path, "utf8")) as WorkflowsCatalog;
-  } catch {
-    _catalogCache = { workflows: [], globally_blocked: [], role_notes: {} };
-  }
-  return _catalogCache;
-}
-
-/*******************************************************************************
- * Function: checkFeasibility
- *
- * Checks a workflow request against catalog support and blocking rules.
- ******************************************************************************/
-function checkFeasibility(request: string, userRole: string): { feasible: boolean; matchedWorkflow?: CatalogWorkflow; reason?: string } {
-  const catalog = loadWorkflowsCatalog();
-  const normalized = request.toLowerCase();
-
-  // Check globally blocked phrases
-  for (const blocked of catalog.globally_blocked) {
-    if (normalized.includes(blocked.toLowerCase())) {
-      return { feasible: false, reason: `This action ("${blocked}") is globally blocked and cannot be automated in this system.` };
-    }
-  }
-
-  // Find best matching workflow by keyword scoring
-  let bestMatch: CatalogWorkflow | undefined;
-  let bestScore = 0;
-  for (const workflow of catalog.workflows) {
-    const score = workflow.keywords.reduce((acc, kw) => acc + (normalized.includes(kw.toLowerCase()) ? 1 : 0), 0);
-    if (score > bestScore) { bestScore = score; bestMatch = workflow; }
-  }
-
-  if (bestMatch === undefined || bestScore === 0) {
-    // No specific match — allow it to proceed (LLM will figure it out)
-    return { feasible: true };
-  }
-
-  if (!bestMatch.doable) {
-    return { feasible: false, matchedWorkflow: bestMatch, reason: `"${bestMatch.name}" is not supported in this ERP system.` };
-  }
-
-  const normalizedRole = userRole.trim();
-  const allowed = bestMatch.allowed_roles.some((r) => r.toLowerCase() === normalizedRole.toLowerCase()) || normalizedRole === "Platform Admin";
-  if (!allowed) {
-    const roleNote = catalog.role_notes[normalizedRole] ?? `Role "${normalizedRole}" does not have access to this workflow.`;
-    return {
-      feasible: false,
-      matchedWorkflow: bestMatch,
-      reason: `Your role (**${normalizedRole}**) is not permitted to run "${bestMatch.name}".\n\n${roleNote}`,
-    };
-  }
-
-  if (bestMatch.requires_write && normalizedRole === "Client") {
-    return { feasible: false, matchedWorkflow: bestMatch, reason: `"${bestMatch.name}" requires write access. The **Client** role is read-only.` };
-  }
-
-  return { feasible: true, matchedWorkflow: bestMatch };
-}
-
 export const CHAT_UNHANDLED = Symbol("chat-unhandled");
 
 /*******************************************************************************
