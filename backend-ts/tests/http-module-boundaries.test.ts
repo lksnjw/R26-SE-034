@@ -75,18 +75,20 @@ describe("HTTP responsibility boundaries", () => {
   });
 
   test("keeps the resource dispatcher thin and delegates domain behavior", async () => {
-    const [resources, chat, chatSessions, company, providers, settingsIntegrations, chatJobs] = await Promise.all([
+    const [resources, chat, chatSessions, chatArtifacts, company, providers, settingsIntegrations, chatJobs] = await Promise.all([
       source("src/http/handlers/resources.ts"),
       source("src/http/handlers/chat.ts"),
       source("src/http/handlers/chat-sessions.ts"),
+      source("src/http/handlers/chat-artifacts.ts"),
       source("src/http/handlers/company.ts"),
       source("src/http/handlers/providers.ts"),
       source("src/http/handlers/settings-integrations.ts"),
       source("src/agent/chat-jobs.ts"),
     ]);
     expect(resources.split(/\r?\n/).length).toBeLessThanOrEqual(100);
-    expect(chat.split(/\r?\n/).length).toBeLessThanOrEqual(760);
+    expect(chat.split(/\r?\n/).length).toBeLessThanOrEqual(650);
     expect(chatSessions.split(/\r?\n/).length).toBeLessThanOrEqual(160);
+    expect(chatArtifacts.split(/\r?\n/).length).toBeLessThanOrEqual(160);
     expect(resources).toContain('from "./chat.js"');
     expect(resources).toContain('from "./company.js"');
     expect(resources).toContain('from "./providers.js"');
@@ -94,10 +96,14 @@ describe("HTTP responsibility boundaries", () => {
     expect(resources).not.toMatch(/function\s+(?:processStoredChat|createProvider|createWebhook|updateCompany)\b/);
     expect(chat).toContain("export async function processStoredChat");
     expect(chat).toContain('from "./chat-sessions.js"');
+    expect(chat).toContain('from "./chat-artifacts.js"');
     expect(chat).not.toMatch(/function\s+(?:listChats|createChat|getChat|updateChat|deleteChat|trimRedundantRetrieval)\b/);
+    expect(chat).not.toMatch(/function\s+(?:compactWorkflowArtifacts|pickArtifactRecords|buildCapabilitiesResponse)\b/);
     expect(chatSessions).toContain("export async function getChat");
     expect(chatSessions).toContain("export async function deleteChat");
     expect(chatSessions).not.toMatch(/processStoredChat|runQueryLoop|synthesize\(/);
+    expect(chatArtifacts).toContain("export function compactWorkflowArtifacts");
+    expect(chatArtifacts).not.toMatch(/repository\.(?:read|mutate)|dispatchReadTool|runQueryLoop|synthesize\(/);
     expect(company).toContain("export async function handleCompanyRoute");
     expect(providers).toContain("export async function handleProviderRoute");
     expect(settingsIntegrations).toContain("export async function handleSettingsIntegrationRoute");
