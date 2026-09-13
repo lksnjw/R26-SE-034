@@ -127,7 +127,7 @@ export type ChatSessionRecord = {
 };
 
 export type WorkflowSchedule = {
-  profile: "workflow-daily-schedule/v1";
+  profile: "workflow-daily-schedule/v1" | "workflow-calendar-schedule/v2";
   id: string;
   workflowId: string;
   workflowVersion: number;
@@ -136,7 +136,13 @@ export type WorkflowSchedule = {
   revision: number;
   timezone: string;
   localTime: string;
-  reportingPeriod: "previous-calendar-day";
+  /** Missing only on legacy daily v1 records. */
+  cadence?: "daily" | "weekly" | "monthly";
+  /** ISO weekday (Monday=1 ... Sunday=7), present for weekly v2 records. */
+  dayOfWeek?: number;
+  /** Restricted to 1..28 so every calendar month has an occurrence. */
+  dayOfMonth?: number;
+  reportingPeriod: "previous-calendar-day" | "previous-calendar-week" | "previous-calendar-month";
   misfirePolicy: "SKIP" | "FIRE_ONCE";
   misfireGraceSeconds: number;
   servicePrincipalId: string;
@@ -153,9 +159,12 @@ export type WorkflowSchedule = {
 };
 export type ReportWindow = {
   profile: "workflow-report-window/v1";
-  reportingPeriod: "previous-calendar-day";
+  reportingPeriod: "previous-calendar-day" | "previous-calendar-week" | "previous-calendar-month";
   timezone: string;
+  /** Inclusive first local date covered by the half-open UTC interval. */
   localDate: string;
+  /** Inclusive final local date for multi-day periods; absent for legacy/day windows. */
+  localEndDate?: string;
   startAt: string;
   endAt: string;
 };

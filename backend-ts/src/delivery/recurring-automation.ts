@@ -39,7 +39,10 @@ const DELIVERY_BODY_REQUIREMENT = "Bind the delivery body to a confirmed report 
 const TIME_REQUIREMENT = "Confirm the local delivery time and IANA timezone; no timezone is inferred from this device.";
 const DELIVERY_PROOF_REQUIREMENT = "Confirm the connector's delivery-status semantics; operation acceptance is not proof that the recipient received the message.";
 const ACTIVATE_REQUIREMENT = "Publish the reviewed manual workflow, then activate recurrence through the authoritative scheduler. Each effect still requires fresh independent approval.";
-const CALENDAR_REQUIREMENT = "The authoritative scheduler currently supports daily recurrence only; retain this cadence until its exact calendar is implemented and reviewed.";
+const calendarRequirement = (cadence: RecurringDeliveryRequest["cadence"]): string[] => cadence === "weekly" ?
+  ["Confirm the exact local weekday for this weekly schedule; no weekday is inferred from the request."] : cadence === "monthly" ?
+  ["Confirm the exact local day from 1 through 28 for this monthly schedule; no day is inferred from the request."] : cadence === "custom" ?
+  ["The authoritative scheduler supports daily, weekly and monthly calendars only; retain this custom cadence as unresolved."] : [];
 
 function resourceRequirement(resource: RecurringRequestedResource): string {
   return `Add one exact reviewed ERP report capability whose business resource is ${resource} and bind it to the declared server-owned report window.`;
@@ -72,7 +75,7 @@ export function recurringDeliveryRequest(text: string): RecurringDeliveryRequest
     ...(exactRecipient ? [`Confirm data-sharing permission for the exact recipient ${exactRecipient}.`] : ["Resolve and confirm exactly one authorized recipient; do not guess a person's address."]),
     TIME_REQUIREMENT,
     DELIVERY_PROOF_REQUIREMENT,
-    ...(requestedCadence === "daily" ? [] : [CALENDAR_REQUIREMENT]),
+    ...calendarRequirement(requestedCadence),
     ACTIVATE_REQUIREMENT,
   ];
   return { profile: "recurring-delivery-request/v1", cadence: requestedCadence, channel: intent.channel,
@@ -188,7 +191,7 @@ export function inspectRecurringAutomationCandidate(rawYAML: string, request: Re
   for (const requirement of remainingRequirements) if (!unresolved.includes(requirement)) issues.push(`Required unresolved outcome was omitted: ${requirement}`);
   if (issues.length) throw new Error(`Recurring automation candidate failed its server contract: ${[...new Set(issues)].join("; ")}`);
   const everyResourceMapped = request.requestedResources.length > 0 && request.requestedResources.every(resource => reportSteps.some(report => report.resource === resource));
-  const fullyMapped = request.cadence === "daily" && request.reportRequested && everyResourceMapped && windowInputReady && relation.status !== "UNRESOLVED" &&
+  const fullyMapped = request.cadence !== "custom" && request.reportRequested && everyResourceMapped && windowInputReady && relation.status !== "UNRESOLVED" &&
     deliverySteps.length === 1 && exactRecipient !== null && recipientBound && deliveryBodyBound && !request.analysisRequested;
   return { profile: "recurring-automation-composition/v1", status: fullyMapped ? "CAPABILITIES_MAPPED" : "PARTIAL", mappedSteps,
     relatedRecords: relation, reportWindowBound: !request.reportRequested || reportSteps.length > 0 && windowInputReady,
@@ -236,7 +239,7 @@ function recurringCompositionRequirements(request: RecurringDeliveryRequest,
       recipientBound ? [`Confirm data-sharing permission for the exact recipient ${exactRecipient}.`] : [`Bind the reviewed delivery capability to the exact recipient ${exactRecipient} and confirm data-sharing permission.`]),
     TIME_REQUIREMENT,
     DELIVERY_PROOF_REQUIREMENT,
-    ...(request.cadence === "daily" ? [] : [CALENDAR_REQUIREMENT]),
+    ...calendarRequirement(request.cadence),
     ACTIVATE_REQUIREMENT,
   ];
 }

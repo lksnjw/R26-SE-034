@@ -39,7 +39,7 @@ test("activates a readable daily schedule with explicit timezone, principal, per
   fireEvent.change(screen.getByLabelText("Occurrence inputs · report"), { target: { value: "invoices" } });
   fireEvent.click(screen.getByRole("button", { name: "Activate daily schedule" }));
   await screen.findByText(/Daily schedule active/); expect(workflowScheduleService.save).toHaveBeenCalledWith("flow", expect.objectContaining({
-    profile: "workflow-daily-schedule-command/v1", workflowVersion: 2, workflowHash: h, enabled: true, timezone: "Asia/Colombo",
+    profile: "workflow-calendar-schedule-command/v2", cadence: "daily", workflowVersion: 2, workflowHash: h, enabled: true, timezone: "Asia/Colombo",
     servicePrincipalId: "owner", reportingPeriod: "previous-calendar-day", input: { report: "invoices" }, reportWindowBinding: binding }));
   expect(screen.queryByLabelText("Occurrence inputs · reportStartAt")).toBeNull();
   expect(document.querySelector("pre")).toBeNull();
@@ -72,6 +72,33 @@ test("a legacy active schedule without a window binding can still be paused", as
 test("shows the immutable local report day and exact UTC boundaries for an occurrence", async () => {
   workflowScheduleService.status.mockResolvedValue({ ...empty, schedule: saved, occurrences: [occurrence], explanation: "Active and durable." });
   render(<WorkflowSchedulePanel workflow={{ id: "flow" }} actorId="owner" />);
-  expect(await screen.findByText(/Report day 2026-10-06/)).toBeTruthy();
+  expect(await screen.findByText(/Report period 2026-10-06/)).toBeTruthy();
   expect(screen.getByRole("link", { name: "Open execution" }).getAttribute("href")).toBe("/executions/run-one");
+});
+
+test("activates a weekly calendar with an explicit local weekday and matching report period", async () => {
+  const weekly = { ...saved, profile: "workflow-calendar-schedule/v2", cadence: "weekly", dayOfWeek: 3, reportingPeriod: "previous-calendar-week" };
+  workflowScheduleService.status.mockResolvedValueOnce(empty).mockResolvedValueOnce({ ...empty, schedule: weekly, explanation: "Active and durable." });
+  workflowScheduleService.save.mockResolvedValue(weekly);
+  render(<WorkflowSchedulePanel workflow={{ id: "flow" }} actorId="owner" />); await screen.findByText("No active schedule is confirmed.");
+  fireEvent.change(screen.getByLabelText("Schedule cadence"), { target: { value: "weekly" } });
+  fireEvent.change(screen.getByLabelText("Weekly local weekday"), { target: { value: "3" } });
+  expect(screen.getByLabelText("Reporting period")).toHaveValue("previous-calendar-week");
+  selectWindowBinding(); fireEvent.click(screen.getByRole("button", { name: "Activate weekly schedule" }));
+  await screen.findByText(/Weekly schedule active/);
+  expect(workflowScheduleService.save).toHaveBeenCalledWith("flow", expect.objectContaining({ profile: "workflow-calendar-schedule-command/v2",
+    cadence: "weekly", dayOfWeek: 3, reportingPeriod: "previous-calendar-week" }));
+});
+
+test("requires a safe monthly day and derives the previous-month report period", async () => {
+  render(<WorkflowSchedulePanel workflow={{ id: "flow" }} actorId="owner" />); await screen.findByText("No active schedule is confirmed.");
+  fireEvent.change(screen.getByLabelText("Schedule cadence"), { target: { value: "monthly" } });
+  selectWindowBinding();
+  const day = screen.getByLabelText("Monthly local day"), activate = screen.getByRole("button", { name: "Activate monthly schedule" });
+  expect(screen.getByLabelText("Reporting period")).toHaveValue("previous-calendar-month");
+  fireEvent.change(day, { target: { value: "29" } }); expect(activate).toBeDisabled();
+  fireEvent.change(day, { target: { value: "15" } }); expect(activate).toBeEnabled(); fireEvent.click(activate);
+  await screen.findByText(/Monthly schedule active/);
+  expect(workflowScheduleService.save).toHaveBeenCalledWith("flow", expect.objectContaining({ cadence: "monthly", dayOfMonth: 15,
+    reportingPeriod: "previous-calendar-month" }));
 });

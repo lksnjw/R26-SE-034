@@ -20,7 +20,7 @@ import { splitFirestoreState, assembleFirestoreState } from "../src/storage/fire
 import { withoutSecretFields } from "../src/redact/secrets.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { operationReadbackQueue } from "../src/runner/operation-readback-jobs.js";
-import { reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
+import { nextCalendarOccurrence, reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { workflowContentHash } from "../src/parser/workflow.js";
 import { draftRequirements, emailDraftHash, type EmailDraft } from "../src/delivery/email-draft.js";
 import { ProviderRuntime } from "../src/providers/runtime.js";
@@ -903,6 +903,40 @@ test.each([
   expect((Date.parse(window.endAt) - Date.parse(window.startAt)) / 3_600_000).toBe(hours);
 });
 
+test("calendar schedules resolve exact previous local week/month windows and future occurrences", () => {
+  expect(reportWindowFor("UTC", "2026-10-07T09:00:00.000Z", "previous-calendar-week")).toEqual({
+    profile: "workflow-report-window/v1", reportingPeriod: "previous-calendar-week", timezone: "UTC", localDate: "2026-09-28",
+    localEndDate: "2026-10-04", startAt: "2026-09-28T00:00:00.000Z", endAt: "2026-10-05T00:00:00.000Z",
+  });
+  expect(reportWindowFor("UTC", "2026-03-15T09:00:00.000Z", "previous-calendar-month")).toEqual({
+    profile: "workflow-report-window/v1", reportingPeriod: "previous-calendar-month", timezone: "UTC", localDate: "2026-02-01",
+    localEndDate: "2026-02-28", startAt: "2026-02-01T00:00:00.000Z", endAt: "2026-03-01T00:00:00.000Z",
+  });
+  expect(nextCalendarOccurrence({ timezone: "UTC", localTime: "09:00", cadence: "weekly", dayOfWeek: 3 }, Date.parse("2026-10-05T09:00:00.000Z")))
+    .toBe("2026-10-07T09:00:00.000Z");
+  expect(nextCalendarOccurrence({ timezone: "UTC", localTime: "09:00", cadence: "monthly", dayOfMonth: 28 }, Date.parse("2026-10-28T09:00:00.000Z")))
+    .toBe("2026-11-28T09:00:00.000Z");
+  expect(nextCalendarOccurrence({ timezone: "America/New_York", localTime: "02:30", cadence: "weekly", dayOfWeek: 7 }, Date.parse("2026-03-02T00:00:00.000Z")))
+    .toBe("2026-03-15T06:30:00.000Z");
+});
+
+test("weekly calendar schedule binds its cadence and previous-week report window", async () => {
+  const s = await setup(); await prepareScheduleWorkflow(s); const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, response = await s.request("PUT", "/api/workflows/flow/schedule", {
+    profile: "workflow-calendar-schedule-command/v2", baseRevision: 0, workflowVersion: workflow.publishedVersion,
+    workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00", cadence: "weekly", dayOfWeek: 3,
+    reportingPeriod: "previous-calendar-week", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+    reportWindowBinding: scheduleReportWindowBinding,
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ profile: "workflow-calendar-schedule/v2", cadence: "weekly", dayOfWeek: 3,
+    reportingPeriod: "previous-calendar-week" });
+  const nextRunAt = response.json().data.nextRunAt as string;
+  expect(new Date(nextRunAt).getUTCDay()).toBe(3);
+  expect(reportWindowFor("UTC", nextRunAt, "previous-calendar-week")).toMatchObject({ reportingPeriod: "previous-calendar-week", localEndDate: expect.any(String) });
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
 test("daily schedule skips an expired occurrence and never calls the SDK", async () => {
   const s = await setup(); await prepareScheduleWorkflow(s); const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
   const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
@@ -929,6 +963,10 @@ test("schedule activation rejects invented timezones, stale publications and una
   expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, input: { reportStartAt: "browser override" } })).statusCode).toBe(422);
   expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, reportWindowBinding: { ...scheduleReportWindowBinding, endAtInput: "unusedWindow" } })).statusCode).toBe(422);
   expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...base, reportWindowBinding: { ...scheduleReportWindowBinding, endAtInput: "count" } })).statusCode).toBe(422);
+  const weekly = { ...base, profile: "workflow-calendar-schedule-command/v2", cadence: "weekly", dayOfWeek: 1, reportingPeriod: "previous-calendar-week" };
+  expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...weekly, reportingPeriod: "previous-calendar-day" })).statusCode).toBe(422);
+  expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...weekly, dayOfWeek: null })).statusCode).toBe(422);
+  expect((await s.request("PUT", "/api/workflows/flow/schedule", { ...weekly, dayOfMonth: 1 })).statusCode).toBe(422);
   const legacy = await s.request("PATCH", "/api/workflows/flow", { trigger: { type: "schedule", config: { cron: "0 9 * * *" } } });
   expect(legacy.statusCode, legacy.body).toBe(422); expect(legacy.body).toContain("LEGACY_SCHEDULE_TRIGGER_REJECTED");
   expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(Object.keys((await s.repository.snapshot()).schedules)).toHaveLength(0);
@@ -960,12 +998,13 @@ test("an exact-revision pause remains available after publication and service-pr
   expect(s.sdk.callTool).not.toHaveBeenCalled();
 });
 
-test("schedule occurrence claim acknowledgement loss resumes after restart as one execution without effect dispatch", async () => {
+test("calendar schedule occurrence claim acknowledgement loss resumes after restart as one execution without effect dispatch", async () => {
   const storage = new Records(), s = await setup(storage); await prepareScheduleWorkflow(s); const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
-  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120_000).toISOString().slice(11, 16);
-  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
-    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
-    reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
+  const workflow = (await s.repository.snapshot()).workflows.flow!, future = new Date(Date.now() + 120_000), localTime = future.toISOString().slice(11, 16);
+  const dayOfWeek = future.getUTCDay() || 7;
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-calendar-schedule-command/v2", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime, cadence: "weekly", dayOfWeek,
+    reportingPeriod: "previous-calendar-week", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {},
     reportWindowBinding: scheduleReportWindowBinding });
   const scheduledFor = saved.json().data.nextRunAt as string;
   storage.loseWhen = state => Object.values(state.scheduleOccurrences).some(value => value.state === "ADMITTING");
@@ -982,6 +1021,8 @@ test("schedule occurrence claim acknowledgement loss resumes after restart as on
   await vi.waitFor(async () => { const state = await repository.snapshot(), occurrence = Object.values(state.scheduleOccurrences)[0];
     expect(occurrence?.state).toBe("ADMITTED"); expect(Object.values(state.executions).filter(run => run.scheduleSource)).toHaveLength(1); }, { timeout: 4000 });
   const state = await repository.snapshot(), execution = Object.values(state.executions).find(run => run.scheduleSource)!;
+  expect(state.schedules["schedule-flow"]).toMatchObject({ profile: "workflow-calendar-schedule/v2", cadence: "weekly", dayOfWeek,
+    reportingPeriod: "previous-calendar-week" });
   await vi.waitFor(async () => expect((await repository.snapshot()).executions[execution.id]?.status).toBe("AWAITING_APPROVAL"), { timeout: 4000 });
   expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead)]);
   expect(Object.values((await repository.snapshot()).executions).filter(run => run.scheduleSource)).toHaveLength(1);

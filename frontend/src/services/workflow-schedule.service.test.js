@@ -39,3 +39,21 @@ test("saves only the explicit schedule command and rejects malformed server stat
   put.mockResolvedValue(envelope({ ...saved(), nextRunAt: "not-a-date" })); await expect(workflowScheduleService.save("flow/one", command)).rejects.toThrow();
   await expect(workflowScheduleService.save("flow/one", { ...command, reportWindowBinding: { ...binding, endAtInput: "reportStartAt" } })).rejects.toThrow();
 });
+
+test("validates calendar v2 cadence fields and multi-day report windows", async () => {
+  const weekly = { ...saved(), profile: "workflow-calendar-schedule/v2", cadence: "weekly", dayOfWeek: 3, reportingPeriod: "previous-calendar-week" };
+  const command = { profile: "workflow-calendar-schedule-command/v2", baseRevision: 0, workflowVersion: 2, workflowHash: h, enabled: true,
+    timezone: "Asia/Colombo", localTime: "09:00", cadence: "weekly", dayOfWeek: 3, reportingPeriod: "previous-calendar-week",
+    misfirePolicy: "SKIP", misfireGraceSeconds: 900, servicePrincipalId: "service-user", input: {}, reportWindowBinding: binding };
+  const put = jest.spyOn(apiClient, "put").mockResolvedValue(envelope(weekly));
+  expect(await workflowScheduleService.save("flow/one", command)).toEqual(weekly);
+  expect(put).toHaveBeenCalledWith("/workflows/flow%2Fone/schedule", command);
+  await expect(workflowScheduleService.save("flow/one", { ...command, reportingPeriod: "previous-calendar-day" })).rejects.toThrow();
+  await expect(workflowScheduleService.save("flow/one", { ...command, dayOfWeek: 8 })).rejects.toThrow();
+
+  const weeklyView = view(), reportWindow = { ...weeklyView.occurrences[0].reportWindow, reportingPeriod: "previous-calendar-week",
+    localDate: "2026-09-28", localEndDate: "2026-10-04", startAt: "2026-09-27T18:30:00.000Z", endAt: "2026-10-04T18:30:00.000Z" };
+  jest.spyOn(apiClient, "get").mockResolvedValue(envelope({ ...weeklyView, schedule: weekly,
+    occurrences: [{ ...weeklyView.occurrences[0], scheduleId: weekly.id, reportWindow }] }));
+  expect((await workflowScheduleService.status("flow/one")).occurrences[0].reportWindow).toEqual(reportWindow);
+});

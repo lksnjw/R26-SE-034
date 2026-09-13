@@ -98,12 +98,12 @@ test("composition requires the current role and a low or medium notification ris
     .toThrow(/not a reviewed report or email-delivery capability/);
 });
 
-test("weekly recurrence remains partial with an exact unsupported-calendar gate", async () => {
+test("weekly recurrence maps supported capabilities but retains an exact weekday requirement", async () => {
   const request = recurringDeliveryRequest("Get invoice and order details and email the report to manager@example.test every week")!;
   const { tools, workflow } = await fixture();
   workflow.metadata.automation_request = recurringAutomationCandidateContext(request).automation_request;
-  workflow.metadata.unresolved_requirements.push("The authoritative scheduler currently supports daily recurrence only; retain this cadence until its exact calendar is implemented and reviewed.");
+  workflow.metadata.unresolved_requirements.push("Confirm the exact local weekday for this weekly schedule; no weekday is inferred from the request.");
   const result = inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin");
-  expect(result.status).toBe("PARTIAL");
-  expect(result.remainingRequirements).toContain("The authoritative scheduler currently supports daily recurrence only; retain this cadence until its exact calendar is implemented and reviewed.");
+  expect(result.status).toBe("CAPABILITIES_MAPPED");
+  expect(result.remainingRequirements).toContain("Confirm the exact local weekday for this weekly schedule; no weekday is inferred from the request.");
 });
