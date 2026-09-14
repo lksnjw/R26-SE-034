@@ -8,7 +8,7 @@ import { workspaceKey, writeWorkspaceValue } from "../../utils/workspaceSession"
 import { useChat } from "../../hooks/useChat";
 import { useChatSessions } from "../../hooks/useChatSessions";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { peekWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
+import { clearWorkflowForChatEdit, peekWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
 
 /*******************************************************************************
  * Function: ChatPage
@@ -27,6 +27,7 @@ function ChatPage() {
   const [pendingDraftKey, setPendingDraftKey] = useState(null);
   const composerKey = pendingDraftKey || draftKey;
   const [nodeContext, setNodeContext] = useState(null);
+  const [initialWorkflowContext] = useState(() => peekWorkflowForChatEdit());
   const chatPaneRef = useRef(null);
   const focusChat = useCallback(() => {
     chatPaneRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -75,7 +76,7 @@ function ChatPage() {
           workflowId: activeNodeContext.workflowId, nodeId: activeNodeContext.nodeId,
           baseVersion: activeNodeContext.version, baseHash: activeNodeContext.contentHash,
         } });
-        if (result) writeWorkspaceValue(workspaceKey(user, `draft.${sid}`), "");
+        if (result) { writeWorkspaceValue(workspaceKey(user, `draft.${sid}`), ""); clearWorkflowForChatEdit(); }
         return result;
       }
       if (creating) {
@@ -137,7 +138,7 @@ function ChatPage() {
         />
       </div>
       <div className="h-[75svh] min-h-[520px] min-w-0 shrink-0 lg:h-full lg:min-h-0 lg:flex-1" data-testid="workspace-canvas-pane">
-        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} sessionId={sessions.selectedSessionId} canEdit={user?.permissions?.includes("workflow:write")} canControl={user?.permissions?.some((key) => ["workflow:run", "workflow:run_own"].includes(key))} onChatChanged={onChatChanged} onNodeContext={onNodeContext} onFocusChat={focusChat} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
+        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} initialWorkflowContext={initialWorkflowContext} sessionId={sessions.selectedSessionId} canEdit={user?.permissions?.includes("workflow:write")} canControl={user?.permissions?.some((key) => ["workflow:run", "workflow:run_own"].includes(key))} onChatChanged={onChatChanged} onNodeContext={onNodeContext} onFocusChat={focusChat} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
       </div>
     </div>
   );

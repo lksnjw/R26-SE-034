@@ -5,8 +5,13 @@ import WorkflowWorkspaceEditor from "./WorkflowWorkspaceEditor";
 import ReadableValue from "./ReadableValue";
 const ChatArtifactPanel = lazy(() => import("./ChatArtifactPanel"));
 
-export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey, sessionId, canEdit = false, canControl = false, onChatChanged, onNodeContext, onFocusChat }) {
-  const drafts = useMemo(() => workflowArtifacts(messages), [messages]);
+export default function WorkflowWorkspaceCanvas({ messages, initialWorkflowContext = null, selectionStorageKey, sessionId, canEdit = false, canControl = false, onChatChanged, onNodeContext, onFocusChat }) {
+  const drafts = useMemo(() => {
+    const saved = workflowArtifacts(messages);
+    const workflowId = initialWorkflowContext?.workflowId;
+    if (!workflowId || saved.some((draft) => draft.artifact.workflowId === workflowId)) return saved;
+    return [{ key: `handoff:${workflowId}`, artifact: { workflowId, ...(initialWorkflowContext.yaml ? { yaml: initialWorkflowContext.yaml } : {}), ...(initialWorkflowContext.selectedNodeId ? { nodeId: initialWorkflowContext.selectedNodeId } : {}) } }, ...saved];
+  }, [messages, initialWorkflowContext]);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [selection, setSelection] = useState(() => {
     try {
@@ -37,7 +42,7 @@ export default function WorkflowWorkspaceCanvas({ messages, selectionStorageKey,
           </select>
         )}
       </header>
-      {current?.artifact.workflowId ? <WorkflowWorkspaceEditor key={current.artifact.workflowId} workflowId={current.artifact.workflowId} sessionId={sessionId} canEdit={canEdit} canControl={canControl} selectionStorageKey={selectionStorageKey} onChatChanged={onChatChanged} onNodeContext={onNodeContext} onFocusChat={onFocusChat} savedProposals={messages.map((item) => item.artifacts?.proposal).filter(Boolean)} /> : <div className="flex-1 overflow-y-auto px-5 py-6">
+      {current?.artifact.workflowId ? <WorkflowWorkspaceEditor key={current.artifact.workflowId} workflowId={current.artifact.workflowId} sessionId={sessionId} canEdit={canEdit} canControl={canControl} initialSelectedNodeId={current.artifact.nodeId ?? current.artifact.proposal?.nodeId ?? ""} selectionStorageKey={selectionStorageKey} onChatChanged={onChatChanged} onNodeContext={onNodeContext} onFocusChat={onFocusChat} savedProposals={messages.map((item) => item.artifacts?.proposal).filter(Boolean)} /> : <div className="flex-1 overflow-y-auto px-5 py-6">
         {!current ? (
           <div className="mx-auto max-w-sm py-12 text-center">
             <h3 className="text-lg font-semibold">Your workflow starts here</h3>

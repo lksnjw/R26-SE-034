@@ -81,9 +81,12 @@ function NodeInspector({ node, canEdit, busy, onPreview, sessionId, context, onP
   </aside>;
 }
 
-export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit = false, canControl = false, selectionStorageKey, onChatChanged, savedProposals = [], onNodeContext, onFocusChat }) {
+export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit = false, canControl = false, initialSelectedNodeId = "", selectionStorageKey, onChatChanged, savedProposals = [], onNodeContext, onFocusChat }) {
   const [record, setRecord] = useState(null), [error, setError] = useState(""), [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState(() => readWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, ""));
+  const [selected, setSelected] = useState(() => {
+    const stored = readWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, null);
+    return stored === null ? initialSelectedNodeId : stored;
+  });
   const [proposal, setProposal] = useState(null), [showHistory, setShowHistory] = useState(false);
   const [resolvedProposals, setResolvedProposals] = useState([]), [notice, setNotice] = useState("");
   const [run, setRun] = useState(null), [timeline, setTimeline] = useState([]), [runInput, setRunInput] = useState({});

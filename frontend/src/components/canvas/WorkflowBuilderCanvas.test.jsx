@@ -2,7 +2,7 @@
 
 import { afterEach, expect, jest, test } from "@jest/globals";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { dump } from "js-yaml";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -10,6 +10,7 @@ import { apiClient } from "../../config/axios.js";
 import { workflowService } from "../../services/workflow.service.js";
 import { executionService } from "../../services/execution.service.js";
 
+let mockReactFlowProps;
 jest.unstable_mockModule("@xyflow/react", () => {
   const Container = ({ children }) => React.createElement("div", null, children);
   return {
@@ -22,7 +23,7 @@ jest.unstable_mockModule("@xyflow/react", () => {
     MarkerType: { ArrowClosed: "arrow-closed" },
     MiniMap: () => null,
     Position: { Left: "left", Right: "right" },
-    ReactFlow: Container,
+    ReactFlow: (props) => { mockReactFlowProps = props; return React.createElement("div", null, props.children); },
     ReactFlowProvider: Container,
     useReactFlow: () => ({
       fitView: jest.fn(),
@@ -85,9 +86,9 @@ test("writable builder loads and renders the registered tool catalog", async () 
 });
 
 const source = "name: report\ntrigger:\n  type: manual\nsteps:\n - id: first\n   action: demo.echo\n   parameters:\n     value: original\n";
-function builder(workflowId) {
+function builder(workflowId, props = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
-  const view = render(<QueryClientProvider client={queryClient}><MemoryRouter><WorkflowBuilderCanvas workflowId={workflowId} embedded /></MemoryRouter></QueryClientProvider>);
+  const view = render(<QueryClientProvider client={queryClient}><MemoryRouter><WorkflowBuilderCanvas workflowId={workflowId} embedded {...props} /></MemoryRouter></QueryClientProvider>);
   return { queryClient, view };
 }
 function mockSaved() {
@@ -159,6 +160,26 @@ test("explicit structured flow validates preserved source and directs structural
   await screen.findByText("Canvas passed the full validation gate");
   expect(workflowService.validateCanvas).toHaveBeenCalledWith({ yaml: structuredSource });
   expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+  queryClient.clear();
+});
+
+test("selected canvas node is preserved in the governed chat handoff", async () => {
+  mockSaved(); const { queryClient } = builder("report");
+  await screen.findByRole("button", { name: "Edit in Chat" });
+  act(() => mockReactFlowProps.onNodeClick({}, mockReactFlowProps.nodes[0]));
+  fireEvent.click(await screen.findByRole("button", { name: "Edit first in Chat" }));
+  expect(JSON.parse(localStorage.getItem("workflow.pendingChatEdit"))).toEqual({ workflowId: "report", workflowName: "report", selectedNodeId: "first" });
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+  queryClient.clear();
+});
+
+test("read-only structured canvas never offers an edit handoff", async () => {
+  mockSaved();
+  const structuredSource = dump({ name: "report", trigger: { type: "manual" }, steps: [{ id: "first", action: "demo.echo", parameters: {} }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] } } } });
+  workflowService.getYAML.mockResolvedValue({ yaml: structuredSource });
+  const { queryClient } = builder("report", { readOnly: true });
+  await screen.findByText("Editing requires workflow-write permission.");
+  expect(screen.queryByRole("button", { name: /Edit.*in Chat/i })).toBeNull();
   queryClient.clear();
 });
 

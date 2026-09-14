@@ -2,9 +2,10 @@
 import React from "react";
 import { expect, test, afterEach, jest } from "@jest/globals";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-jest.unstable_mockModule("./WorkflowWorkspaceEditor", () => ({ default: () => null }));
+const editorProps = jest.fn();
+jest.unstable_mockModule("./WorkflowWorkspaceEditor", () => ({ default: (props) => { editorProps(props); return React.createElement("div", { "data-testid": "saved-workflow-editor" }); } }));
 const { default: WorkflowWorkspaceCanvas } = await import("./WorkflowWorkspaceCanvas");
-afterEach(() => { cleanup(); sessionStorage.clear(); });
+afterEach(() => { cleanup(); sessionStorage.clear(); editorProps.mockClear(); });
 
 test("canvas is present before generation", () => {
   render(<WorkflowWorkspaceCanvas messages={[]} />);
@@ -35,4 +36,15 @@ test("restores selected draft and node after Settings navigation remount", () =>
   view.unmount();
   render(<WorkflowWorkspaceCanvas messages={messages} selectionStorageKey="canvas.account.session" />);
   expect(screen.getByRole("button", { name: /fetch/ }).getAttribute("aria-pressed")).toBe("true");
+});
+
+test("canvas handoff opens the exact saved workflow and selected node", () => {
+  render(<WorkflowWorkspaceCanvas messages={[]} initialWorkflowContext={{ workflowId: "report", yaml: "name: Report\nsteps: []", selectedNodeId: "invoices" }} sessionId="chat" />);
+  expect(screen.getByTestId("saved-workflow-editor")).toBeTruthy();
+  expect(editorProps).toHaveBeenLastCalledWith(expect.objectContaining({ workflowId: "report", sessionId: "chat", initialSelectedNodeId: "invoices" }));
+});
+
+test("durable node-edit messages restore workflow and node context without YAML", () => {
+  render(<WorkflowWorkspaceCanvas messages={[{ id: "request", artifacts: { intent: "NODE_EDIT_REQUEST", workflowId: "report", nodeId: "invoices" } }]} sessionId="chat" />);
+  expect(editorProps).toHaveBeenLastCalledWith(expect.objectContaining({ workflowId: "report", initialSelectedNodeId: "invoices" }));
 });

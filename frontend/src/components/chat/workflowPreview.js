@@ -25,8 +25,13 @@ export function parseWorkflowPreview(source) {
 }
 
 export function workflowArtifacts(messages = []) {
-  return messages.filter((message) => typeof workflowSource(message.artifacts) === "string" && workflowSource(message.artifacts).trim())
-    .map((message, index) => ({ key: String(message.id ?? index), artifact: message.artifacts }));
+  return messages.flatMap((message, index) => {
+    const artifact = message.artifacts;
+    const workflowId = artifact?.workflowId ?? artifact?.proposal?.workflowId;
+    const hasSource = typeof workflowSource(artifact) === "string" && workflowSource(artifact).trim();
+    if (!hasSource && !(typeof workflowId === "string" && workflowId.trim())) return [];
+    return [{ key: String(message.id ?? index), artifact: workflowId && artifact?.workflowId !== workflowId ? { ...artifact, workflowId } : artifact }];
+  });
 }
 
 export function workflowSource(artifact) {

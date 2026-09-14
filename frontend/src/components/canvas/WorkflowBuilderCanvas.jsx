@@ -93,7 +93,9 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
   const [showResultPanel, setShowResultPanel] = useState(false);
   const [canvasValidation, setCanvasValidation] = useState(null);
   const [isValidating, setIsValidating] = useState(false);
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
   const structuredCanvas = workflow.canvasProfile === "structured-control-flow/v1";
+  const effectiveSelectedNodeId = selectedNodeId && nodes.some((node) => node.id === selectedNodeId) ? selectedNodeId : null;
   const { notify } = useNotifications();
 /*******************************************************************************
  * Function: catalogQuery
@@ -342,9 +344,11 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
     if (!yaml && nodes.length > 0) {
       try { yaml = workflowYAML(); } catch { /* cycle or empty */ }
     }
-    saveWorkflowForChatEdit({ yaml, workflowId: workflow.id ?? null, workflowName: workflow.name });
+    saveWorkflowForChatEdit(workflow.id
+      ? { workflowId: workflow.id, workflowName: workflow.name, ...(effectiveSelectedNodeId ? { selectedNodeId: effectiveSelectedNodeId } : {}) }
+      : { yaml, workflowId: null, workflowName: workflow.name });
     navigate("/chat?new=1");
-  }, [workflow, nodes, workflowYAML, navigate]);
+  }, [workflow, nodes, workflowYAML, navigate, effectiveSelectedNodeId]);
 
   return (
     <div className={`${embedded ? "relative h-full" : "fixed inset-y-0 right-0 left-0 z-50 md:left-16"} flex overflow-hidden bg-slate-100 text-slate-950`}>
@@ -360,10 +364,11 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
           readOnly={readOnly}
           statusCounts={statusCounts}
           workflow={workflow}
-          onEditInChat={nodes.length > 0 || workflow.yaml ? handleEditInChat : undefined}
+          editNodeId={effectiveSelectedNodeId}
+          onEditInChat={!readOnly && (nodes.length > 0 || workflow.yaml) ? handleEditInChat : undefined}
         />
         <CanvasValidationBanner result={canvasValidation} onClose={() => setCanvasValidation(null)} />
-        {structuredCanvas ? <StructuredCanvasNotice onEditInChat={handleEditInChat} /> : null}
+        {structuredCanvas ? <StructuredCanvasNotice onEditInChat={readOnly ? undefined : handleEditInChat} /> : null}
         {runError ? <div className="shrink-0 bg-white px-6 py-2"><GateRejectionAlert details={runError} /></div> : null}
         {initialCanvasState.sourceError && <div role="alert" className="shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-3 text-xs text-amber-800"><p>Import cannot be represented: {initialCanvasState.sourceError}. Its source is preserved; nothing was saved or published.</p><details className="mt-2"><summary>Original source</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{workflow.yaml}</pre></details><button className="mt-2 underline" onClick={handleEditInChat}>Review source in chat</button></div>}
         <div className="min-h-0 flex-1 bg-slate-100 p-4">
@@ -376,6 +381,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
               edges={edges}
               nodeTypes={nodeTypes}
               onNodesChange={readOnly ? undefined : onNodesChange}
+              onNodeClick={(_event, node) => setSelectedNodeId(node.id)}
               onEdgesChange={readOnly || structuredCanvas ? undefined : onEdgesChange}
               onConnect={readOnly || structuredCanvas ? undefined : onConnect}
               onDrop={readOnly || structuredCanvas ? undefined : handleDrop}

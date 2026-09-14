@@ -155,6 +155,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
       if (result) {
         setDraft("");
         writeWorkspaceValue(draftStorageKey, "");
+        if (nodeContext) { clearWorkflowForChatEdit(); setEditContext(null); }
       }
     } catch (cause) {
       setSendError(`${cause?.response?.data?.message || "Could not send the message."} Your draft has been kept. Reload the workflow if the selected revision changed.`);
@@ -163,7 +164,7 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
     }
     // refocus after send
     setTimeout(() => inputRef.current?.focus(), 50);
-  }, [draft, loading, submitting, scopePending, onSend, selectedModel, draftStorageKey]);
+  }, [draft, loading, submitting, scopePending, onSend, selectedModel, draftStorageKey, nodeContext]);
 
 /*******************************************************************************
  * Function: handleKeyDown

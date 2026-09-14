@@ -19,7 +19,7 @@ jest.unstable_mockModule("../../hooks/useChatSessions", () => ({ useChatSessions
 jest.unstable_mockModule("../../hooks/useChat", () => ({ useChat: () => ({ messages, send: normalSend, loading: false }) }));
 jest.unstable_mockModule("../../components/chat/ChatMessage", () => ({ default: () => null }));
 const { default: ChatPage } = await import("./ChatPage");
-afterEach(() => { cleanup(); sessionStorage.clear(); jest.restoreAllMocks(); normalSend.mockClear(); });
+afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); jest.restoreAllMocks(); normalSend.mockClear(); messages = [{ id: "saved", role: "assistant", artifacts: { workflowId: "report", yaml: source } }]; });
 
 test("chat is left of canvas and first on mobile; selecting a node routes the main composer to a revision-bound proposal, never direct execution", async () => {
   HTMLElement.prototype.scrollIntoView = jest.fn(); // jsdom has no layout/scroll implementation.
@@ -51,5 +51,23 @@ test("chat is left of canvas and first on mobile; selecting a node routes the ma
   fireEvent.change(screen.getByRole("textbox", { name: "Message to workflow assistant" }), { target: { value: "Discuss the whole workflow" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await waitFor(() => expect(normalSend).toHaveBeenCalledWith("Discuss the whole workflow", "chat", expect.any(Object)));
+  client.clear();
+});
+
+test("canvas handoff restores selected workflow node and clears it only after admission", async () => {
+  HTMLElement.prototype.scrollIntoView = jest.fn();
+  messages = [];
+  localStorage.setItem("workflow.pendingChatEdit", JSON.stringify({ workflowId: "report", workflowName: "Report", yaml: source, selectedNodeId: "invoices" }));
+  jest.spyOn(workflowService, "readiness").mockResolvedValue(record);
+  jest.spyOn(executionService, "list").mockResolvedValue([]);
+  jest.spyOn(settingsService, "providers").mockResolvedValue([]);
+  jest.spyOn(chatService, "models").mockResolvedValue({ configured: true, binding: { model: "model-b" }, models: ["model-b"] });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  render(<QueryClientProvider client={client}><MemoryRouter><ChatPage /></MemoryRouter></QueryClientProvider>);
+  await screen.findByText("Editing node · invoices");
+  fireEvent.change(screen.getByRole("textbox", { name: "Message to workflow assistant" }), { target: { value: "Make this label clearer" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(normalSend).toHaveBeenCalledWith("Make this label clearer", "chat", { model: "model-b", nodeContext: { workflowId: "report", nodeId: "invoices", baseVersion: 4, baseHash: record.contentHash } }));
+  await waitFor(() => expect(localStorage.getItem("workflow.pendingChatEdit")).toBeNull());
   client.clear();
 });

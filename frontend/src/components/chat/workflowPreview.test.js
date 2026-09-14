@@ -20,6 +20,16 @@ test("keeps previous workflow drafts when a query answer arrives", () => {
   expect(workflowArtifacts([{ id: "draft", artifacts: artifact }, { id: "answer", artifacts: { intent: "QUERY" } }])).toEqual([{ key: "draft", artifact }]);
 });
 
+test("keeps durable saved-workflow references from node requests and proposals", () => {
+  expect(workflowArtifacts([
+    { id: "request", artifacts: { intent: "NODE_EDIT_REQUEST", workflowId: "report", nodeId: "read" } },
+    { id: "proposal", artifacts: { intent: "NODE_PATCH_PROPOSAL", proposal: { workflowId: "report", nodeId: "read" } } },
+  ])).toEqual([
+    { key: "request", artifact: { intent: "NODE_EDIT_REQUEST", workflowId: "report", nodeId: "read" } },
+    { key: "proposal", artifact: { intent: "NODE_PATCH_PROPOSAL", workflowId: "report", proposal: { workflowId: "report", nodeId: "read" } } },
+  ]);
+});
+
 test("bounds preview source and step count", () => {
   expect(parseWorkflowPreview("x".repeat(200001)).error).toMatch(/too large/);
   expect(parseWorkflowPreview(`steps:\n${Array.from({ length: 201 }, (_, i) => ` - id: s${i}`).join("\n")}`).error).toMatch(/limit/);

@@ -160,12 +160,12 @@ export function StructuredCanvasNotice({ onEditInChat }) {
   return (
     <div role="note" className="shrink-0 border-b border-blue-200 bg-blue-50 px-6 py-2 text-xs text-blue-900">
       This canvas reflects explicit saved branch/collection semantics. Structure is not inferred from draggable edges.{" "}
-      <button type="button" className="font-bold underline" onClick={onEditInChat}>Edit structure in governed chat</button>
+      {onEditInChat ? <button type="button" className="font-bold underline" onClick={onEditInChat}>Edit structure in governed chat</button> : <span>Editing requires workflow-write permission.</span>}
     </div>
   );
 }
 
-export function BuilderHeader({ executionState, isExecuting, isValidating, onValidate, onRun, onDeploy, readOnly, statusCounts, workflow, onEditInChat }) {
+export function BuilderHeader({ executionState, isExecuting, isValidating, onValidate, onRun, onDeploy, readOnly, statusCounts, workflow, editNodeId, onEditInChat }) {
   const stateCopy = {
     idle: "Draft · readiness not checked",
     running: "Running workflow",
@@ -189,7 +189,7 @@ export function BuilderHeader({ executionState, isExecuting, isValidating, onVal
         {onEditInChat ? (
           <button type="button" onClick={onEditInChat} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50">
             <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-none stroke-current stroke-2"><path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
-            Edit in Chat
+            {editNodeId ? `Edit ${editNodeId} in Chat` : "Edit in Chat"}
           </button>
         ) : null}
         <BuilderModeControls readOnly={readOnly} isExecuting={isExecuting} isValidating={isValidating} onValidate={onValidate} onDeploy={onDeploy} onRun={onRun} />
