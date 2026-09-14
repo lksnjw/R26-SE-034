@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { FastifyRequest } from "fastify";
 import type { ApplicationServices } from "./application-services.js";
+import { isMcpConfigured } from "../config/config.js";
 
 type HealthSocket = {
   readyState: number;
@@ -33,7 +34,7 @@ async function sendSystemHealthSnapshot(socket: HealthSocket, channel: string, s
       workflows,
       executions: executions.length,
       runningExecutions,
-      mcpConfigured: services.config.mcpMode === "mock" || services.config.mcpBaseURL !== "",
+      mcpConfigured: isMcpConfigured(services.config),
     },
   }));
 }

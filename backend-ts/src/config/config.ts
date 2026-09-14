@@ -126,6 +126,22 @@ export type AppConfig = {
   platformAdminPassword: string;
 };
 
+type McpConfigurationStatus = Pick<
+  AppConfig,
+  "mcpMode" | "mcpTransport" | "mcpBaseURL" | "erpbridgeConnections"
+>;
+
+/** Reports configured transport bindings only. This is not a live connection,
+ * capability-admission or compatibility check. */
+export function isMcpConfigured(config: McpConfigurationStatus): boolean {
+  if (config.mcpMode === "mock") return true;
+  if (config.mcpTransport === "erpbridge-mcp")
+    return config.erpbridgeConnections.length > 0 && config.erpbridgeConnections.every(
+      (connection) => connection.baseURL !== "" && connection.mcpToken !== "",
+    );
+  return config.mcpBaseURL !== "";
+}
+
 /*******************************************************************************
  * Function: loadConfig
  *
@@ -310,6 +326,8 @@ export function loadConfig(
  * Checks application configuration for invalid or incompatible settings.
  ******************************************************************************/
 export function validateConfig(config: AppConfig): void {
+  if (!["development", "test", "production"].includes(config.environment))
+    throw new Error("APP_ENV must be development, test, or production");
   if (config.port < 1 || config.port > 65_535)
     throw new Error("PORT must be between 1 and 65535");
   if (config.jwtSecret.length < 16)
@@ -331,6 +349,7 @@ export function validateConfig(config: AppConfig): void {
   if (
     config.mcpMode === "remote" &&
     config.environment === "production" &&
+    config.mcpTransport === "bridge-v1" &&
     config.mcpBaseURL === ""
   )
     throw new Error("MCP_BASE_URL is required in production remote mode");
@@ -424,6 +443,56 @@ export function validateConfig(config: AppConfig): void {
     config.platformAdminPassword === "change-me-development-password"
   )
     throw new Error("PLATFORM_ADMIN_PASSWORD must be configured in production");
+  if (config.environment === "production") validateProductionReleaseConfig(config);
+}
+
+function validateProductionReleaseConfig(config: AppConfig): void {
+  if (config.storageDriver !== "firestore-records")
+    throw new Error("Production requires STORAGE_DRIVER=firestore-records; memory, SQL and legacy Firestore are not the selected qualified release store");
+  if (config.firestoreKeyFile || config.firestoreKeyJson)
+    throw new Error("Production Firestore credentials must use workload identity/ADC; key files and inline key JSON are refused");
+  if (config.mcpMode !== "remote" || config.mcpTransport !== "erpbridge-mcp")
+    throw new Error("Production requires the reviewed remote ERPBridge MCP transport; legacy bridge-v1 and mock fallback are refused");
+  if (!isMcpConfigured(config))
+    throw new Error("Production requires at least one completely configured ERPBridge connection");
+  if (Buffer.byteLength(config.jwtSecret, "utf8") < 32 || config.jwtSecret === "development-only-change-me")
+    throw new Error("Production JWT_SECRET must contain at least 32 bytes and cannot use the development default");
+  if (config.platformAdminEmail === "admin@example.test")
+    throw new Error("PLATFORM_ADMIN_EMAIL must be explicitly configured in production");
+  if (Buffer.byteLength(config.platformAdminPassword, "utf8") < 16)
+    throw new Error("PLATFORM_ADMIN_PASSWORD must contain at least 16 bytes in production");
+  if (config.corsOrigins.length < 1)
+    throw new Error("Production requires at least one exact HTTPS CORS origin");
+  for (const origin of config.corsOrigins) validateProductionOrigin(origin, "CORS_ORIGINS");
+  for (const [name, value] of [
+    ["GENERATION_BASE_URL", config.generationBaseURL],
+    ["GOVERNANCE_URL", config.governanceURL],
+    ["GOVERNANCE_SECONDARY_URL", config.governanceSecondaryURL],
+    ["POLICY_GATE_URL", config.policyGateURL],
+  ] as const) {
+    if ((value ?? "") !== "") validateProductionServiceURL(value!, name);
+  }
+}
+
+function parseProductionURL(value: string, name: string): URL {
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error(`${name} must contain a valid HTTPS URL in production`); }
+  if (url.protocol !== "https:" || url.username || url.password || url.hash)
+    throw new Error(`${name} must contain a credential-free HTTPS URL in production`);
+  return url;
+}
+
+function validateProductionOrigin(value: string, name: string): void {
+  const url = parseProductionURL(value, name);
+  if (url.pathname !== "/" || url.search)
+    throw new Error(`${name} entries must be exact HTTPS origins without a path, query, credentials, or fragment`);
+}
+
+function validateProductionServiceURL(value: string, name: string): void {
+  const url = parseProductionURL(value, name);
+  if (url.search)
+    throw new Error(`${name} cannot contain a query string in production`);
 }
 
 /*******************************************************************************

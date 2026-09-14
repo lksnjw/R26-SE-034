@@ -72,6 +72,7 @@ import {
 } from "./handlers/workflow-runtime.js";
 import { routePolicy } from "./route-policy.js";
 import { attachSystemHealthSocket } from "./system-health-websocket.js";
+import { isMcpConfigured } from "../config/config.js";
 import { EXECUTION_QUERY_UNHANDLED, handleExecutionQueryRoute } from "./handlers/execution-queries.js";
 import { handleNotificationRoute, NOTIFICATION_UNHANDLED } from "./handlers/notifications.js";
 
@@ -557,8 +558,7 @@ async function health(
       status: storage.healthy ? "healthy" : "unhealthy",
     },
     mcpMode: services.config.mcpMode,
-    mcpBackend:
-      services.config.mcpBaseURL === "" ? "unconfigured" : "configured",
+    mcpBackend: isMcpConfigured(services.config) ? "configured" : "unconfigured",
     time: new Date().toISOString(),
   };
   return storage.healthy
