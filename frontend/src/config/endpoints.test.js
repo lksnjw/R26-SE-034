@@ -3,6 +3,7 @@ import { createAppConfig, validateEndpoint } from "./endpoints";
 
 test("local development retains same-origin API and ws routing", () => {
   expect(createAppConfig({ DEV: true }, "http://localhost:5173")).toMatchObject({ apiBaseUrl: "/api", wsBaseUrl: "ws://localhost:5173/ws", pipelineUploadEnabled: false });
+  expect(createAppConfig({ DEV: true }, "http://127.0.0.1:5173")).toMatchObject({ apiBaseUrl: "/api", wsBaseUrl: "ws://127.0.0.1:5173/ws", pipelineUploadEnabled: false });
 });
 test("a separate HTTPS backend supplies the default event origin, not static Hosting", () => {
   expect(createAppConfig({ VITE_API_BASE_URL: "https://backend.example.test/api/", MODE: "hosting" }, "https://site.web.app")).toMatchObject({ apiBaseUrl: "https://backend.example.test/api", wsBaseUrl: "wss://backend.example.test/ws", pipelineUploadEnabled: false });

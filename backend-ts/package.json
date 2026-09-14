@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "node --env-file=.env --import tsx/esm --watch src/entrypoints/production.ts",
+    "demo:local": "node --import tsx/esm scripts/workspace-qa-server.mjs",
     "start": "node dist/production/server.mjs",
     "build": "npm run build:prod",
     "build:prod": "node scripts/build.mjs",

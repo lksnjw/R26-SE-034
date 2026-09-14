@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { hostingBindings, generateHostingConfig } from "./hosting-config.mjs";
 import { assertRelease, jsonHash } from "./hosting-artifact.mjs";
+import presentationConfig from "../vite.presentation.config.js";
 
 const cloud = { LCWE_FIREBASE_PROJECT_ID: "example-approved-project", VITE_API_BASE_URL: "https://backend.example.test/api", VITE_WS_BASE_URL: "wss://backend.example.test/ws" };
 const local = { LCWE_HOSTING_EMULATOR: "1", VITE_API_BASE_URL: "http://127.0.0.1:8081/api", VITE_WS_BASE_URL: "ws://127.0.0.1:8081/ws" };
@@ -57,9 +58,20 @@ test("a verified demo artifact is still refused by the actual deployment guard",
   assert.deepEqual(assertRelease(inputs), bindings);
   assert.throws(() => assertRelease({ ...inputs, deployProject: "demo-lcwe-hosting" }), /cannot be deployed/);
 });
+test("presentation runtime ignores owner env files and stays on the governed loopback proxy", () => {
+  const config = presentationConfig({ command: "serve", mode: "presentation", isSsrBuild: false, isPreview: false });
+  assert.equal(config.envDir, false);
+  assert.equal(config.envPrefix, "LCWE_PRESENTATION_");
+  assert.equal(config.server.host, "127.0.0.1");
+  assert.equal(config.server.strictPort, true);
+  assert.deepEqual(Object.keys(config.server.proxy), ["/api", "/ws"]);
+  assert.equal(config.server.proxy["/api"].target, "http://localhost:8081");
+  assert.equal(config.server.proxy["/ws"].target, "ws://localhost:8081");
+});
 test("development and container frontends cannot proxy directly to connector services", async () => {
   const files = await Promise.all([
     readFile(new URL("../vite.config.js", import.meta.url), "utf8"),
+    readFile(new URL("../vite.presentation.config.js", import.meta.url), "utf8"),
     readFile(new URL("../nginx.conf.template", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
   ]);
@@ -67,5 +79,5 @@ test("development and container frontends cannot proxy directly to connector ser
     assert.doesNotMatch(source, /ERP_PIPELINE_API|azurewebsites|\/api\/pipeline/);
   }
   assert.match(files[0], /target: "http:\/\/localhost:8081"/);
-  assert.match(files[1], /proxy_pass http:\/\/backend/);
+  assert.match(files[2], /proxy_pass http:\/\/backend/);
 });

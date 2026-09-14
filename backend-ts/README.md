@@ -42,6 +42,24 @@ This folder contains the isolated TypeScript backend. It listens on `:8081` by d
 
 Requirements: Node.js 22 or newer.
 
+For a safe local presentation, start the explicit memory-only fixture. This
+command does not read `.env`, connect to ERPBridge or Firestore, call a model
+provider, or send email:
+
+```powershell
+npm ci
+npm run demo:local
+```
+
+Sign in with `qa@example.test` / `Local-QA-only-2026!`. The fixture binds only
+to `127.0.0.1:8081`; its records disappear when the process stops. Start the
+frontend separately with `npm run demo:local` from `frontend` and open
+`http://127.0.0.1:5173/`.
+
+The configured development runtime below reads `backend-ts/.env` and can use
+external services. Run it only after reviewing and authorizing every configured
+ERPBridge, provider and storage endpoint:
+
 ```powershell
 npm install
 npm run dev
