@@ -227,6 +227,17 @@ describe("complete HTTP route graph", () => {
         expect(actualMessage).toBe(scenario.id === "authenticated-malformed-json" ? "Cancellation accepts an empty body" : "Execution not found");
         continue;
       }
+      // Named product change: the canvas endpoint now accepts a versioned
+      // semantic node/edge graph. Empty input fails the new graph contract;
+      // the frozen Go capture remains historical evidence of the old stub.
+      if (route.method === "POST" && route.pattern === "/api/canvas/validate-workflow" && scenario.id === "authenticated-default") {
+        expect(scenario.status).toBe(422);
+        expect(expectedMessage).toBe("Canvas node/edge to YAML conversion is not implemented yet. Provide yaml for validation.");
+        expect(response.statusCode).toBe(422);
+        expect(actualMessage).toBe("Canvas graph cannot be converted without changing its meaning");
+        expect(isRecord(actualBody) && isRecord(actualBody.meta) ? actualBody.meta.code : null).toBe("CANVAS_GRAPH_INVALID");
+        continue;
+      }
       if (
         response.statusCode !== scenario.status ||
         actualMessage !== expectedMessage

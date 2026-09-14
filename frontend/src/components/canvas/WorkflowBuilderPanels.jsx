@@ -139,7 +139,24 @@ export function ExecutionResultPanel({ result, onClose }) {
   );
 }
 
-export function BuilderHeader({ executionState, isExecuting, onRun, onDeploy, readOnly, statusCounts, workflow, onEditInChat }) {
+export function CanvasValidationBanner({ result, onClose }) {
+  if (!result) return null;
+  const passed = result.passed === true;
+  return (
+    <div role="status" className={`shrink-0 border-b px-6 py-3 text-xs ${passed ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+      <div className="flex items-start justify-between gap-4">
+        <div><p className="font-bold">{passed ? "Canvas passed the full validation gate" : "Canvas needs review"}</p>
+          <p className="mt-1">{passed ? "Nothing was saved, published or executed." : result.message || "Fix the findings before publication."}</p></div>
+        <button type="button" onClick={onClose} className="font-bold underline">Dismiss</button>
+      </div>
+      {!passed && result.findings?.length ? <ul className="mt-2 list-disc space-y-1 pl-5">{result.findings.slice(0, 8).map((item, index) => (
+        <li key={`${item.node_id || "workflow"}-${index}`}>{item.node_id ? `${item.node_id}: ` : ""}{item.message || String(item)}</li>
+      ))}</ul> : null}
+    </div>
+  );
+}
+
+export function BuilderHeader({ executionState, isExecuting, isValidating, onValidate, onRun, onDeploy, readOnly, statusCounts, workflow, onEditInChat }) {
   const stateCopy = {
     idle: "Draft · readiness not checked",
     running: "Running workflow",
@@ -166,7 +183,7 @@ export function BuilderHeader({ executionState, isExecuting, onRun, onDeploy, re
             Edit in Chat
           </button>
         ) : null}
-        <BuilderModeControls readOnly={readOnly} isExecuting={isExecuting} onDeploy={onDeploy} onRun={onRun} />
+        <BuilderModeControls readOnly={readOnly} isExecuting={isExecuting} isValidating={isValidating} onValidate={onValidate} onDeploy={onDeploy} onRun={onRun} />
       </div>
     </header>
   );

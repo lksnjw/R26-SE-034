@@ -1,6 +1,6 @@
 import { expect, test } from "@jest/globals";
 import { dump } from "js-yaml";
-import { readCanvasBlueprint, serializeSourceOrderCanvas, sameWorkflowSource } from "./builderSerialization";
+import { readCanvasBlueprint, serializeSourceOrderCanvas, sameWorkflowSource, sourceOrderCanvasValidationPayload } from "./builderSerialization";
 
 const blueprint = { name: "Preserved", metadata: { unresolved_requirements: ["recipient"] }, trigger: { type: "schedule", cron: "0 9 * * *", timezone: "Asia/Colombo" }, steps: [
   { id: "first", action: "demo.echo", parameters: { nested: { value: [false, null, 7] } }, condition: "{{input.enabled}}", retryCount: 2 },
@@ -15,6 +15,12 @@ test("source-order serialization retains typed nested data, approval/control fie
   expect(readCanvasBlueprint(output)).toEqual(blueprint);
   expect(sameWorkflowSource(workflow.yaml, output)).toBe(true);
   expect(readCanvasBlueprint(serializeSourceOrderCanvas(workflow, nodes.map((node) => node.id === "first" ? { ...node, data: { ...node.data, parameters: { value: "changed" } } } : node), edges)).steps[0]).toEqual({ ...blueprint.steps[0], parameters: { value: "changed" } });
+});
+test("semantic validation projection excludes UI decoration and preserves explicit workflow metadata", () => {
+  expect(sourceOrderCanvasValidationPayload({ ...workflow, name: "Preserved" }, nodes.map(node => ({ ...node, position: { x: 1, y: 2 }, data: { ...node.data, status: "idle", label: "UI only" } })), edges)).toEqual({
+    profile: "source-order-canvas/v1", name: "Preserved", trigger: blueprint.trigger, metadata: blueprint.metadata,
+    nodes: blueprint.steps, edges,
+  });
 });
 test.each([
   [{ source: "first", target: "approval" }, { source: "first", target: "last" }],

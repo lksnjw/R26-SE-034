@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { ok } from "../../models/schemas.js";
-import { parseWorkflowYAMLStrict } from "../../parser/workflow.js";
+import { parseWorkflowYAMLStrict, workflowContentHash } from "../../parser/workflow.js";
 import { requestTraceId } from "../../trace/request-trace.js";
 import { discoverTools } from "../../agent/tool-discovery.js";
 import type { RouteDefinition } from "../generated-routes.js";
@@ -17,6 +17,8 @@ import {
   requestedModel,
   selectProvider,
 } from "./model-selection.js";
+import { CanvasConversionFailure, canvasStepErrors, convertSourceOrderCanvas } from "../../workflows/canvas-source-order.js";
+import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 
 export const SYNTHESIS_CANVAS_UNHANDLED = Symbol("synthesis-canvas-unhandled");
 
@@ -168,16 +170,19 @@ async function canvasValidate(
 ): Promise<unknown> {
   const body = bodyRecord(request);
   if (body === null) throw new HandlerFailure(400, "Invalid request body");
-  const yaml = stringValue(body.yaml);
+  let yaml = stringValue(body.yaml), conversion: ReturnType<typeof convertSourceOrderCanvas> | null = null;
+  const hasGraph = Object.hasOwn(body, "profile") || Object.hasOwn(body, "nodes") || Object.hasOwn(body, "edges");
+  if (yaml.trim() !== "" && hasGraph) throw new HandlerFailure(400, "Provide either yaml or one source-order canvas graph, not both");
   if (yaml.trim() === "") {
-    throw new HandlerFailure(
-      422,
-      "Canvas node/edge to YAML conversion is not implemented yet. Provide yaml for validation.",
-      {
-        code: "YAML_REQUIRED",
-        suggested_fix: "Provide a non-empty yaml field",
-      },
-    );
+    try { conversion = convertSourceOrderCanvas(body); yaml = conversion.yaml; }
+    catch (error) {
+      if (error instanceof CanvasConversionFailure)
+        throw new HandlerFailure(422, "Canvas graph cannot be converted without changing its meaning", {
+          code: "CANVAS_GRAPH_INVALID", issues: error.issues,
+          suggested_fix: "Use one connected source-order chain, or author explicit branch/control-flow semantics in the workflow editor",
+        });
+      throw error;
+    }
   }
   const gate = await validateWorkflow(
     services,
@@ -186,11 +191,22 @@ async function canvasValidate(
     user,
     { traceId: requestTraceId(request) },
   );
-  const stepErrors = gate.result.errors.map((message) => ({ message }));
+  const blueprint = conversion?.blueprint ?? (() => { try { return parseWorkflowYAMLStrict(yaml); } catch { return null; } })();
+  const workspace = validateWorkspaceDraft("CanvasValidateWorkflow", yaml, user.role, services.validator, services.registries.snapshot().tools);
+  const validation = { ...gate.result,
+    passed: gate.result.passed && workspace.passed,
+    schema_ok: gate.result.schema_ok && workspace.schema_ok,
+    score: Math.min(gate.result.score, workspace.score),
+    failed_rules: [...new Set([...gate.result.failed_rules, ...workspace.failed_rules])].sort(),
+    errors: [...new Set([...gate.result.errors, ...workspace.errors])],
+    metadata: { ...gate.result.metadata, ...workspace.metadata },
+  };
+  const stepErrors = blueprint ? canvasStepErrors(blueprint.steps, validation.errors) : validation.errors.map(message => ({ scope: "workflow", node_id: null, action: null, message }));
   return reply.send(
     ok(
-      { validation: gate.result, step_errors: stepErrors },
-      gate.result.passed ? "Workflow is valid" : "Workflow is invalid",
+      { validation, step_errors: stepErrors,
+        conversion: conversion ? { profile: conversion.profile, node_order: conversion.nodeOrder, source_hash: workflowContentHash(yaml) } : null },
+      validation.passed ? "Workflow is valid" : "Workflow is invalid",
       null,
     ),
   );

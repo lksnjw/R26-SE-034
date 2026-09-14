@@ -98,6 +98,7 @@ function mockSaved() {
   jest.spyOn(workflowService, "create").mockResolvedValue({ id: "new", name: "new" });
   jest.spyOn(workflowService, "command").mockResolvedValue({ ...revision, version: 2 });
   jest.spyOn(workflowService, "run").mockResolvedValue({ id: "run", status: "DONE", stepOutputs: {} });
+  jest.spyOn(workflowService, "validateCanvas").mockResolvedValue({ validation: { passed: true, errors: [] }, step_errors: [], conversion: { profile: "source-order-canvas/v1" } });
   jest.spyOn(executionService, "getTimeline").mockResolvedValue([{ nodeId: "first", status: "DONE" }]);
   return revision;
 }
@@ -126,6 +127,17 @@ test("explicit publication passes the exact acknowledged command revision", asyn
   await waitFor(() => expect(workflowService.publish).toHaveBeenCalledWith("report", "Published from visual builder", expect.objectContaining({ version: 2 })));
   expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({ type: "restoreDraft" }));
   expect(workflowService.run).not.toHaveBeenCalled(); queryClient.clear();
+});
+
+test("Check canvas validates the semantic graph without saving, publishing or running", async () => {
+  mockSaved(); const { queryClient } = builder("report");
+  fireEvent.click(await screen.findByRole("button", { name: "Check canvas" }));
+  await screen.findByText("Canvas passed the full validation gate");
+  expect(workflowService.validateCanvas).toHaveBeenCalledWith(expect.objectContaining({
+    profile: "source-order-canvas/v1", name: "report", nodes: [expect.objectContaining({ id: "first", action: "demo.echo" })], edges: [],
+  }));
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+  queryClient.clear();
 });
 
 test("malformed imported source is quarantined without consuming the handoff or rewriting source", async () => {

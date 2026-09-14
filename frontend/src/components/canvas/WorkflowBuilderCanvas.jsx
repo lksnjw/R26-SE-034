@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { serializeSourceOrderCanvas, sameWorkflowSource } from "../../utils/builderSerialization";
+import { serializeSourceOrderCanvas, sameWorkflowSource, sourceOrderCanvasValidationPayload } from "../../utils/builderSerialization";
 import {
   addEdge,
   applyEdgeChanges,
@@ -32,6 +32,7 @@ import { BuilderSidebar, WorkflowToolNode } from "./WorkflowBuilderCatalog";
 import {
   BuilderHeader,
   BuilderLoadState,
+  CanvasValidationBanner,
   ExecutionResultPanel,
 } from "./WorkflowBuilderPanels";
 
@@ -89,6 +90,8 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
   const [runError, setRunError] = useState(null);
   const [executionResult, setExecutionResult] = useState(null);
   const [showResultPanel, setShowResultPanel] = useState(false);
+  const [canvasValidation, setCanvasValidation] = useState(null);
+  const [isValidating, setIsValidating] = useState(false);
   const { notify } = useNotifications();
 /*******************************************************************************
  * Function: catalogQuery
@@ -131,6 +134,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
  * Performs the on Nodes Change operation on nodes change for the WorkflowBuilderCanvas module.
  ******************************************************************************/
   const onNodesChange = useCallback((changes) => {
+    setCanvasValidation(null);
     setNodes((currentNodes) => applyNodeChanges(changes, currentNodes));
   }, []);
 
@@ -140,6 +144,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
  * Performs the on Edges Change operation on edges change for the WorkflowBuilderCanvas module.
  ******************************************************************************/
   const onEdgesChange = useCallback((changes) => {
+    setCanvasValidation(null);
     setEdges((currentEdges) => applyEdgeChanges(changes, currentEdges));
   }, []);
 
@@ -149,6 +154,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
  * Performs the on Connect operation on connect for the WorkflowBuilderCanvas module.
  ******************************************************************************/
   const onConnect = useCallback((connection) => {
+    setCanvasValidation(null);
     setEdges((currentEdges) =>
       addEdge(
         {
@@ -180,6 +186,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
   const handleDrop = useCallback(
     (event) => {
       event.preventDefault();
+      setCanvasValidation(null);
 
       const rawTool = event.dataTransfer.getData("application/agentic-tool");
       if (!rawTool) return;
@@ -315,6 +322,18 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
     finally { setIsExecuting(false); }
   }, [deployWorkflow, notify]);
 
+  const validateCanvas = useCallback(async () => {
+    setIsValidating(true); setCanvasValidation(null);
+    try {
+      const result = await workflowService.validateCanvas(sourceOrderCanvasValidationPayload(workflow, nodes, edges));
+      setCanvasValidation({ passed: result.validation?.passed === true, findings: result.step_errors || [], message: result.validation?.errors?.[0] });
+    } catch (error) {
+      const details = error?.response ? apiErrorDetails(error, "Canvas validation failed.") : { message: error.message || "Canvas validation failed.", meta: null };
+      const issues = Array.isArray(details.meta?.issues) ? details.meta.issues.map((message) => ({ node_id: null, message })) : [];
+      setCanvasValidation({ passed: false, findings: issues, message: details.message });
+    } finally { setIsValidating(false); }
+  }, [edges, nodes, workflow]);
+
   const handleEditInChat = useCallback(() => {
     let yaml = workflow.yaml || "";
     if (!yaml && nodes.length > 0) {
@@ -331,6 +350,8 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
         <BuilderHeader
           executionState={executionState}
           isExecuting={isExecuting}
+          isValidating={isValidating}
+          onValidate={validateCanvas}
           onRun={executeWorkflow}
           onDeploy={handleDeploy}
           readOnly={readOnly}
@@ -338,6 +359,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
           workflow={workflow}
           onEditInChat={nodes.length > 0 || workflow.yaml ? handleEditInChat : undefined}
         />
+        <CanvasValidationBanner result={canvasValidation} onClose={() => setCanvasValidation(null)} />
         {runError ? <div className="shrink-0 bg-white px-6 py-2"><GateRejectionAlert details={runError} /></div> : null}
         {initialCanvasState.sourceError && <div role="alert" className="shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-3 text-xs text-amber-800"><p>Import cannot be represented: {initialCanvasState.sourceError}. Its source is preserved; nothing was saved or published.</p><details className="mt-2"><summary>Original source</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{workflow.yaml}</pre></details><button className="mt-2 underline" onClick={handleEditInChat}>Review source in chat</button></div>}
         <div className="min-h-0 flex-1 bg-slate-100 p-4">

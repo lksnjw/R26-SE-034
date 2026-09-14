@@ -25,6 +25,9 @@ export function normalizeWorkflow(workflow) {
 }
 
 export const workflowService = {
+  async validateCanvas(payload) {
+    return unwrap(await apiClient.post("/canvas/validate-workflow", payload));
+  },
   async simulate(id, revision, input, outputs, profile = "read-fixtures/v1") {
     if (!["read-fixtures/v1", "read-fixtures/v2"].includes(profile)) throw new Error("Unsupported fixture profile");
     // Separate from real runs: no mode, approval, retry or idempotency receipt.

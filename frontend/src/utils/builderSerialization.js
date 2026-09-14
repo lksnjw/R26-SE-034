@@ -31,14 +31,30 @@ export function serializeSourceOrderCanvas(workflow, nodes, edges) {
   if (ordered.length !== nodes.length) throw new Error("Every node must belong to the source-order sequence.");
   const original = workflow.yaml ? readCanvasBlueprint(workflow.yaml) : { name: workflow.name, description: workflow.description, trigger: { type: "manual" }, steps: [] };
   const originals = new Map(original.steps.map((step) => [step.id, step]));
-  const steps = ordered.map((node) => {
-    const source = originals.get(node.id) ?? node.data.source ?? {};
-    const next = { ...source, id: node.id };
-    if (!source.kind || source.kind === "tool") { next.action = node.data.action; next.parameters = node.data.parameters ?? {}; }
-    if (node.data.description || source.description !== undefined) next.description = node.data.description ?? source.description;
-    return next;
-  });
+  const steps = ordered.map((node) => semanticStep(node, originals));
   return dump({ ...original, steps }, { noRefs: true, lineWidth: 100 });
+}
+
+export function sourceOrderCanvasValidationPayload(workflow, nodes, edges) {
+  const original = workflow.yaml ? readCanvasBlueprint(workflow.yaml) : { name: workflow.name, description: workflow.description, trigger: { type: "manual" }, steps: [] };
+  const originals = new Map(original.steps.map((step) => [step.id, step]));
+  return {
+    profile: "source-order-canvas/v1",
+    name: workflow.name || original.name || "Untitled workflow",
+    ...(workflow.description || original.description ? { description: workflow.description || original.description } : {}),
+    trigger: original.trigger ?? { type: "manual" },
+    ...(original.metadata === undefined ? {} : { metadata: original.metadata }),
+    nodes: nodes.map((node) => semanticStep(node, originals)),
+    edges: edges.map((edge) => ({ source: edge.source, target: edge.target })),
+  };
+}
+
+function semanticStep(node, originals) {
+  const source = originals.get(node.id) ?? node.data.source ?? {};
+  const next = { ...source, id: node.id };
+  if (!source.kind || source.kind === "tool") { next.action = node.data.action; next.parameters = node.data.parameters ?? {}; }
+  if (node.data.description || source.description !== undefined) next.description = node.data.description ?? source.description;
+  return next;
 }
 
 function stable(value) {
