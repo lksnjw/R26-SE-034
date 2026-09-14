@@ -121,7 +121,7 @@ export function WorkflowToolNode({ data, selected }) {
       </div>
       <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-[11px] font-bold uppercase tracking-wide text-slate-400">
         <span>{data.role}</span>
-        <span>{data.status === "running" ? "Executing" : "ERP Tool"}</span>
+        <span>{data.status === "running" ? "Executing" : data.nodeTypeLabel || "ERP Tool"}</span>
       </div>
       <Handle
         type="source"

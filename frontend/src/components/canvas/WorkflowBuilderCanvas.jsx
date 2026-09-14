@@ -34,6 +34,7 @@ import {
   BuilderLoadState,
   CanvasValidationBanner,
   ExecutionResultPanel,
+  StructuredCanvasNotice,
 } from "./WorkflowBuilderPanels";
 
 /*******************************************************************************
@@ -92,6 +93,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
   const [showResultPanel, setShowResultPanel] = useState(false);
   const [canvasValidation, setCanvasValidation] = useState(null);
   const [isValidating, setIsValidating] = useState(false);
+  const structuredCanvas = workflow.canvasProfile === "structured-control-flow/v1";
   const { notify } = useNotifications();
 /*******************************************************************************
  * Function: catalogQuery
@@ -101,7 +103,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
   const catalogQuery = useQuery({
     queryKey: ["tool-catalog-groups"],
     queryFn: () => catalogService.toolGroups(),
-    enabled: !readOnly && !embedded,
+    enabled: !readOnly && !embedded && !structuredCanvas,
   });
 /*******************************************************************************
  * Function: nodeTypes
@@ -135,8 +137,8 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
  ******************************************************************************/
   const onNodesChange = useCallback((changes) => {
     setCanvasValidation(null);
-    setNodes((currentNodes) => applyNodeChanges(changes, currentNodes));
-  }, []);
+    setNodes((currentNodes) => applyNodeChanges(structuredCanvas ? changes.filter((change) => ["select", "dimensions"].includes(change.type)) : changes, currentNodes));
+  }, [structuredCanvas]);
 
 /*******************************************************************************
  * Function: onEdgesChange
@@ -217,7 +219,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
  *
  * Performs the workflow YAML operation on yaml for the WorkflowBuilderCanvas module.
  ******************************************************************************/
-  const workflowYAML = useCallback(() => serializeSourceOrderCanvas(workflow, nodes, edges), [edges, nodes, workflow]);
+  const workflowYAML = useCallback(() => structuredCanvas ? workflow.yaml : serializeSourceOrderCanvas(workflow, nodes, edges), [edges, nodes, structuredCanvas, workflow]);
 
 /*******************************************************************************
  * Function: deployWorkflow
@@ -325,14 +327,15 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
   const validateCanvas = useCallback(async () => {
     setIsValidating(true); setCanvasValidation(null);
     try {
-      const result = await workflowService.validateCanvas(sourceOrderCanvasValidationPayload(workflow, nodes, edges));
+      const payload = structuredCanvas ? { yaml: workflow.yaml } : sourceOrderCanvasValidationPayload(workflow, nodes, edges);
+      const result = await workflowService.validateCanvas(payload);
       setCanvasValidation({ passed: result.validation?.passed === true, findings: result.step_errors || [], message: result.validation?.errors?.[0] });
     } catch (error) {
       const details = error?.response ? apiErrorDetails(error, "Canvas validation failed.") : { message: error.message || "Canvas validation failed.", meta: null };
       const issues = Array.isArray(details.meta?.issues) ? details.meta.issues.map((message) => ({ node_id: null, message })) : [];
       setCanvasValidation({ passed: false, findings: issues, message: details.message });
     } finally { setIsValidating(false); }
-  }, [edges, nodes, workflow]);
+  }, [edges, nodes, structuredCanvas, workflow]);
 
   const handleEditInChat = useCallback(() => {
     let yaml = workflow.yaml || "";
@@ -345,7 +348,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
 
   return (
     <div className={`${embedded ? "relative h-full" : "fixed inset-y-0 right-0 left-0 z-50 md:left-16"} flex overflow-hidden bg-slate-100 text-slate-950`}>
-      {!readOnly && !embedded ? <BuilderSidebar groups={catalogQuery.data || []} loading={catalogQuery.isLoading} error={catalogQuery.error} /> : null}
+      {!readOnly && !embedded && !structuredCanvas ? <BuilderSidebar groups={catalogQuery.data || []} loading={catalogQuery.isLoading} error={catalogQuery.error} /> : null}
       <section className="flex min-w-0 flex-1 flex-col">
         <BuilderHeader
           executionState={executionState}
@@ -360,6 +363,7 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
           onEditInChat={nodes.length > 0 || workflow.yaml ? handleEditInChat : undefined}
         />
         <CanvasValidationBanner result={canvasValidation} onClose={() => setCanvasValidation(null)} />
+        {structuredCanvas ? <StructuredCanvasNotice onEditInChat={handleEditInChat} /> : null}
         {runError ? <div className="shrink-0 bg-white px-6 py-2"><GateRejectionAlert details={runError} /></div> : null}
         {initialCanvasState.sourceError && <div role="alert" className="shrink-0 border-b border-amber-200 bg-amber-50 px-6 py-3 text-xs text-amber-800"><p>Import cannot be represented: {initialCanvasState.sourceError}. Its source is preserved; nothing was saved or published.</p><details className="mt-2"><summary>Original source</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{workflow.yaml}</pre></details><button className="mt-2 underline" onClick={handleEditInChat}>Review source in chat</button></div>}
         <div className="min-h-0 flex-1 bg-slate-100 p-4">
@@ -372,12 +376,12 @@ function WorkflowBuilderSurface({ readOnly = false, initialState = null, embedde
               edges={edges}
               nodeTypes={nodeTypes}
               onNodesChange={readOnly ? undefined : onNodesChange}
-              onEdgesChange={readOnly ? undefined : onEdgesChange}
-              onConnect={readOnly ? undefined : onConnect}
-              onDrop={readOnly ? undefined : handleDrop}
-              onDragOver={readOnly ? undefined : handleDragOver}
-              nodesDraggable={!readOnly}
-              nodesConnectable={!readOnly}
+              onEdgesChange={readOnly || structuredCanvas ? undefined : onEdgesChange}
+              onConnect={readOnly || structuredCanvas ? undefined : onConnect}
+              onDrop={readOnly || structuredCanvas ? undefined : handleDrop}
+              onDragOver={readOnly || structuredCanvas ? undefined : handleDragOver}
+              nodesDraggable={!readOnly && !structuredCanvas}
+              nodesConnectable={!readOnly && !structuredCanvas}
               elementsSelectable={!readOnly}
               fitView
               defaultEdgeOptions={{

@@ -3,6 +3,7 @@
 import { afterEach, expect, jest, test } from "@jest/globals";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { dump } from "js-yaml";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { apiClient } from "../../config/axios.js";
@@ -136,6 +137,27 @@ test("Check canvas validates the semantic graph without saving, publishing or ru
   expect(workflowService.validateCanvas).toHaveBeenCalledWith(expect.objectContaining({
     profile: "source-order-canvas/v1", name: "report", nodes: [expect.objectContaining({ id: "first", action: "demo.echo" })], edges: [],
   }));
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+  queryClient.clear();
+});
+
+test("explicit structured flow validates preserved source and directs structural edits to chat", async () => {
+  mockSaved();
+  const structuredSource = dump({ name: "report", trigger: { type: "manual" }, steps: [
+    { id: "first", action: "demo.echo", parameters: {} },
+    { id: "yesPath", action: "demo.echo", parameters: {} },
+    { id: "noPath", action: "demo.echo", parameters: {} },
+  ], metadata: { controlFlow: { schemaVersion: "read-control-flow/v2", root: { kind: "sequence", nodes: [
+    { kind: "action", nodeId: "first" },
+    { kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "yesPath" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "noPath" }] } },
+  ] } } } });
+  workflowService.getYAML.mockResolvedValue({ yaml: structuredSource });
+  const { queryClient } = builder("report");
+  expect(await screen.findByText(/reflects explicit saved branch\/collection semantics/i)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Edit structure in governed chat" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Check canvas" }));
+  await screen.findByText("Canvas passed the full validation gate");
+  expect(workflowService.validateCanvas).toHaveBeenCalledWith({ yaml: structuredSource });
   expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
   queryClient.clear();
 });

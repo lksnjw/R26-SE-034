@@ -1,5 +1,6 @@
 import { MarkerType } from "@xyflow/react";
 import { readCanvasBlueprint } from "./builderSerialization";
+import { projectStructuredControlFlow } from "./structuredCanvasProjection";
 
 const CANVAS_WORKFLOW_KEY = "workflow.pendingCanvasWorkflow";
 const CHAT_EDIT_KEY = "workflow.pendingChatEdit";
@@ -138,6 +139,21 @@ export function parseWorkflowYaml(yaml = "") {
  ******************************************************************************/
 export function workflowYamlToCanvas(yaml, metadata = {}) {
   const workflow = parseWorkflowYaml(yaml);
+  const structured = projectStructuredControlFlow(workflow, MarkerType.ArrowClosed);
+  if (structured) return {
+    ...structured,
+    workflow: {
+      id: metadata.workflowId ?? null,
+      name: workflow.name || metadata.name || "Generated workflow",
+      description: workflow.description || metadata.description || "",
+      yaml,
+      canvasProfile: structured.profile,
+      candidateId: metadata.candidateId,
+      chatSessionId: metadata.chatSessionId,
+      chatMessageId: metadata.chatMessageId,
+      traceId: metadata.traceId,
+    },
+  };
 /*******************************************************************************
  * Function: nodes
  *

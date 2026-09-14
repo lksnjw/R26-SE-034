@@ -156,6 +156,15 @@ export function CanvasValidationBanner({ result, onClose }) {
   );
 }
 
+export function StructuredCanvasNotice({ onEditInChat }) {
+  return (
+    <div role="note" className="shrink-0 border-b border-blue-200 bg-blue-50 px-6 py-2 text-xs text-blue-900">
+      This canvas reflects explicit saved branch/collection semantics. Structure is not inferred from draggable edges.{" "}
+      <button type="button" className="font-bold underline" onClick={onEditInChat}>Edit structure in governed chat</button>
+    </div>
+  );
+}
+
 export function BuilderHeader({ executionState, isExecuting, isValidating, onValidate, onRun, onDeploy, readOnly, statusCounts, workflow, onEditInChat }) {
   const stateCopy = {
     idle: "Draft · readiness not checked",

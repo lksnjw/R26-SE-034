@@ -6,17 +6,20 @@ import { render, screen } from "@testing-library/react";
 import React from "react";
 import { ExecutionResultPanel } from "./WorkflowBuilderPanels.jsx";
 
-test("keeps builder orchestration separate from catalog and presentation components", async () => {
-  const [canvas, catalog, panels] = await Promise.all([
+test("keeps builder orchestration separate from catalog, projection, and presentation components", async () => {
+  const [canvas, catalog, panels, projection] = await Promise.all([
     readFile(new URL("./WorkflowBuilderCanvas.jsx", import.meta.url), "utf8"),
     readFile(new URL("./WorkflowBuilderCatalog.jsx", import.meta.url), "utf8"),
     readFile(new URL("./WorkflowBuilderPanels.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../../utils/structuredCanvasProjection.js", import.meta.url), "utf8"),
   ]);
   expect(canvas.split(/\r?\n/).length).toBeLessThanOrEqual(500);
   expect(catalog.split(/\r?\n/).length).toBeLessThanOrEqual(225);
   expect(panels.split(/\r?\n/).length).toBeLessThanOrEqual(225);
+  expect(projection.split(/\r?\n/).length).toBeLessThanOrEqual(150);
   expect(canvas).toContain('from "./WorkflowBuilderCatalog"');
   expect(canvas).toContain('from "./WorkflowBuilderPanels"');
+  expect(canvas).not.toMatch(/function\s+projectStructuredControlFlow\b/);
   expect(canvas).not.toMatch(/function\s+(?:WorkflowToolNode|BuilderSidebar|ExecutionResultPanel|BuilderHeader|BuilderLoadState)\b/);
 });
 
