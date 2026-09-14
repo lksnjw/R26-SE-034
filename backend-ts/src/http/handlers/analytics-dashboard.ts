@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { isMcpConfigured } from "../../config/config.js";
 import { ok } from "../../models/schemas.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import {
@@ -340,11 +341,7 @@ async function dashboardHealth(
 ): Promise<unknown> {
   const storage = await services.repository.persistenceStatus();
   const checked = new Date().toISOString();
-  const mcpEndpoint =
-    services.config.mcpTransport === "erpbridge-mcp"
-      ? services.config.erpbridgeBaseURL
-      : services.config.mcpBaseURL;
-  const mcpConfigured = services.config.mcpMode === "mock" || mcpEndpoint !== "";
+  const mcpConfigured = isMcpConfigured(services.config);
   const servicesList = [
     {
       name: "API",
@@ -362,18 +359,18 @@ async function dashboardHealth(
     },
     {
       name: "MCP Bridge",
-      status: mcpConfigured ? "healthy" : "degraded",
-      value: mcpConfigured ? 100 : 0,
-      meta: mcpEndpoint || "mock",
+      status: mcpConfigured ? "configured" : "unconfigured",
+      value: null,
+      meta: mcpConfigured ? "Configured; live readiness unverified" : "Not configured",
       lastCheckedAt: checked,
     },
   ];
   return reply.send(
     ok(
       {
-        overall: servicesList.every((item) => item.status === "healthy")
-          ? "healthy"
-          : "degraded",
+        overall: storage.healthy ? "healthy" : "degraded",
+        scope: "local-runtime",
+        externalDependencies: "not_checked",
         services: servicesList,
       },
       "OK",

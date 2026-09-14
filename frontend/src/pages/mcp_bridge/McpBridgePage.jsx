@@ -50,7 +50,7 @@ function McpBridgePage() {
       <section className="grid gap-4 md:grid-cols-3">
         <Metric label="Reported service health" value={mcp?.status || "unknown"} />
         <Metric label="Local registered tools (not admissions)" value={query.data.tools.length} />
-        <Metric label="Platform health" value={query.data.health.overall || "unknown"} />
+        <Metric label="Local runtime health" value={query.data.health.overall || "unknown"} />
       </section>
 
       <section className="surface-panel rounded-2xl p-6">
@@ -71,9 +71,9 @@ function McpBridgePage() {
       </section>
 
       <section className="surface-panel rounded-2xl p-5">
-        <h2 className="section-title">Runtime endpoint</h2>
+        <h2 className="section-title">Runtime configuration</h2>
         <p className="mt-2 break-all font-mono text-sm text-gray-500">{mcp?.meta || "not configured"}</p>
-        <p className="mt-3 text-xs text-gray-500">The bridge address is managed by backend environment configuration and is never invented or stored in the browser.</p>
+        <p className="mt-3 text-xs text-gray-500">Configuration does not prove a live connection, compatible tool contract, capability admission or ERP authorization. Those checks remain in the managed connection and review workflow.</p>
       </section>
     </div>
   );

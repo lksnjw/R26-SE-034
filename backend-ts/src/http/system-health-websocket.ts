@@ -20,21 +20,41 @@ export function attachSystemHealthSocket(socket: HealthSocket, request: FastifyR
 
 async function sendSystemHealthSnapshot(socket: HealthSocket, channel: string, services: ApplicationServices): Promise<void> {
   if (socket.readyState !== 1) return;
-  const state = await services.repository.snapshot();
-  const workflows = Object.values(state.workflows).filter((item) => !item.archived).length;
-  const executions = Object.values(state.executions);
-  const runningExecutions = executions.filter((item) => item.status === "RUNNING").length;
-  socket.send(JSON.stringify({
+  socket.send(JSON.stringify(await buildSystemHealthSnapshot(channel, services)));
+}
+
+/** Builds one bounded configuration/local-runtime snapshot. External MCP
+ * readiness is deliberately not inferred from configured credentials. */
+export async function buildSystemHealthSnapshot(channel: string, services: ApplicationServices): Promise<Record<string, unknown>> {
+  const base = {
     type: "system.health.snapshot",
     id: `event_${randomBytes(8).toString("hex")}`,
     timestamp: new Date().toISOString(),
-    data: {
-      channel,
-      overall: "healthy",
+  };
+  const mcpConfigured = isMcpConfigured(services.config);
+  try {
+    const [state, storage] = await Promise.all([
+      services.repository.snapshot(),
+      services.repository.persistenceStatus(),
+    ]);
+    const workflows = Object.values(state.workflows).filter((item) => !item.archived).length;
+    const executions = Object.values(state.executions);
+    return { ...base, data: {
+      channel, overall: storage.healthy ? "healthy" : "degraded", scope: "local-runtime",
       workflows,
       executions: executions.length,
-      runningExecutions,
-      mcpConfigured: isMcpConfigured(services.config),
-    },
-  }));
+      runningExecutions: executions.filter((item) => item.status === "RUNNING").length,
+      storage: { durable: storage.durable, status: storage.healthy ? "healthy" : "unhealthy" },
+      mcpConfigured,
+      mcpLiveStatus: "not_checked",
+    } };
+  } catch {
+    return { ...base, data: {
+      channel, overall: "degraded", scope: "local-runtime", workflows: null,
+      executions: null, runningExecutions: null,
+      storage: { durable: null, status: "unavailable" },
+      mcpConfigured,
+      mcpLiveStatus: "not_checked",
+    } };
+  }
 }
