@@ -3,8 +3,8 @@ import { appConfig } from "../config/app";
 const BASE = `${appConfig.apiBaseUrl}/pipeline`;
 const TERMINAL_JOB_STATES = new Set(["succeeded", "failed", "partial", "interrupted"]);
 
-function requireDevelopmentProxy() {
-  if (!appConfig.pipelineUploadEnabled) throw { error: { code: "PIPELINE_UNAVAILABLE", message: "Pipeline uploads require a governed backend integration. The development-only proxy is unavailable in this build." } };
+function requireGovernedBackendContract() {
+  if (!appConfig.pipelineUploadEnabled) throw { error: { code: "PIPELINE_UNAVAILABLE", message: "Pipeline uploads are unavailable until an authenticated, audited backend/ERPBridge contract is implemented and reviewed." } };
 }
 
 /*******************************************************************************
@@ -29,7 +29,7 @@ export const pipelineService = {
  * the boundary.
  ******************************************************************************/
   async uploadCsv(file) {
-    requireDevelopmentProxy();
+    requireGovernedBackendContract();
     const payload = new FormData();
     payload.append("file", file);
     const response = await fetch(`${BASE}/v1/files/csv`, { method: "POST", body: payload });
@@ -44,7 +44,7 @@ export const pipelineService = {
  * from the filename.
  ******************************************************************************/
   async uploadDocument(file, metadata = {}) {
-    requireDevelopmentProxy();
+    requireGovernedBackendContract();
     const payload = new FormData();
     payload.append("file", file);
     for (const [name, value] of Object.entries(metadata)) {
@@ -60,7 +60,7 @@ export const pipelineService = {
  * Fetches the current status of a schema-indexing or document-indexing job.
  ******************************************************************************/
   async getJob(jobId) {
-    requireDevelopmentProxy();
+    requireGovernedBackendContract();
     const response = await fetch(`${BASE}/v1/jobs/${encodeURIComponent(jobId)}`);
     return parseJsonResponse(response);
   },

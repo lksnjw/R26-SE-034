@@ -24,8 +24,9 @@ export function createAppConfig(env = {}, browserOrigin = "http://localhost") {
     name: env.VITE_APP_NAME ?? "Agentic Workflow Engine",
     version: "0.1.0", apiBaseUrl, wsBaseUrl,
     analyticsEnabled: env.VITE_ANALYTICS_ENABLED === "true",
-    // The legacy Vite upload proxy is not an authenticated backend contract.
-    // Static Hosting must never display it as a working production feature.
-    pipelineUploadEnabled: env.DEV === true && env.MODE !== "hosting" && apiBaseUrl === "/api",
+    // No authenticated, audited backend contract exists for document-pipeline
+    // uploads. Keep this unavailable in every build until that contract is
+    // implemented through the governed backend/ERPBridge boundary.
+    pipelineUploadEnabled: false,
   });
 }

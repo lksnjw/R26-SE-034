@@ -57,3 +57,15 @@ test("a verified demo artifact is still refused by the actual deployment guard",
   assert.deepEqual(assertRelease(inputs), bindings);
   assert.throws(() => assertRelease({ ...inputs, deployProject: "demo-lcwe-hosting" }), /cannot be deployed/);
 });
+test("development and container frontends cannot proxy directly to connector services", async () => {
+  const files = await Promise.all([
+    readFile(new URL("../vite.config.js", import.meta.url), "utf8"),
+    readFile(new URL("../nginx.conf.template", import.meta.url), "utf8"),
+    readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
+  ]);
+  for (const source of files) {
+    assert.doesNotMatch(source, /ERP_PIPELINE_API|azurewebsites|\/api\/pipeline/);
+  }
+  assert.match(files[0], /target: "http:\/\/localhost:8081"/);
+  assert.match(files[1], /proxy_pass http:\/\/backend/);
+});
