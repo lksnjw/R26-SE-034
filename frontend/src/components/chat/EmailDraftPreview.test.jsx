@@ -93,3 +93,8 @@ test("offline recurring draft explains missing reads and never implies an active
   expect(screen.queryByRole("button", { name: "Request independent approval" })).toBeNull();
   expect(screen.getByText(/must be created and reviewed as a scheduled workflow/)).toBeTruthy();
 });
+test("directory recipient resolution is rendered as readable provenance, not raw JSON", () => {
+  render(<EmailDraftPreview draft={{ ...draft, recipientReference: "my manager", recipientResolution: { profile: "recipient-directory-resolution/v1", requestedLabel: "my manager", status: "RESOLVED", source: "DIRECT_MANAGER", userId: "manager", userName: "Maya Perera", email: "manager@example.test", reason: "Resolved from the requester's assigned active manager." } }} />);
+  expect(screen.getByText(/Recipient resolved from the company directory: Maya Perera/)).toBeTruthy();
+  expect(screen.queryByText(/recipient-directory-resolution\/v1/)).toBeNull();
+});

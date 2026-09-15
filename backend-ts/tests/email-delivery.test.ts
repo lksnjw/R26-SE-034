@@ -67,6 +67,18 @@ test("person or multiple-address request never guesses or silently picks a recip
     expect(createEmailDraft("draft", "chat", "owner", text, intent).to).toBe("");
   }
 });
+test("an assigned active manager resolves server-side without model or SDK identity guessing", async () => {
+  const s = await setup();
+  await s.repository.mutate((state) => { state.users.owner!.managerId = "other"; state.users.other!.name = "Finance Manager"; state.users.other!.email = "finance.manager@example.test"; });
+  const result = await s.send("Please email this to my manager");
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data.assistantMessage.artifacts.emailDraft).toMatchObject({
+    to: "finance.manager@example.test", recipientReference: "my manager",
+    recipientResolution: { profile: "recipient-directory-resolution/v1", status: "RESOLVED", source: "DIRECT_MANAGER", userId: "other", userName: "Finance Manager" },
+    state: "DRAFT_NOT_SENT",
+  });
+  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+});
 test("offline recurring request saves an incomplete workflow in the canvas without model, SDK dispatch or active schedule", async () => {
   const s = await setup(); const result = await s.send(requestText + " every day");
   expect(result.statusCode, result.body).toBe(200);
@@ -80,6 +92,20 @@ test("offline recurring request saves an incomplete workflow in the canvas witho
   expect(workflows[0]!.yaml).toContain("unresolved_requirements"); expect((await s.repository.snapshot()).schedules).toEqual({});
   const restored = await s.app.inject({ method: "GET", url: `/api/chat/sessions/${s.sessionId}`, headers: s.headers });
   expect(restored.json().data.messages[1].artifacts.automationRequest.scheduleActive).toBe(false);
+});
+test("assigned manager resolution is preserved in a recurring workflow draft without activating or sending", async () => {
+  const s = await setup();
+  await s.repository.mutate((state) => { state.users.owner!.managerId = "other"; state.users.other!.name = "Maya Perera"; state.users.other!.email = "maya@example.test"; });
+  const result = await s.send("Get invoice details and email the report to my manager every day");
+  expect(result.statusCode, result.body).toBe(200);
+  const artifacts = result.json().data.assistantMessage.artifacts;
+  expect(artifacts).toMatchObject({ intent: "WORKFLOW", can_execute: false, automationRequest: {
+    requestedAddresses: ["maya@example.test"], recipientReference: "my manager",
+    recipientResolution: { status: "RESOLVED", source: "DIRECT_MANAGER", userId: "other" }, scheduleActive: false,
+  } });
+  expect(artifacts.blocking_errors).toContain("Confirm data-sharing permission for the exact recipient maya@example.test.");
+  expect(artifacts.blocking_errors).not.toContain("Resolve and confirm exactly one authorized recipient; do not guess a person's address.");
+  expect((await s.repository.snapshot()).schedules).toEqual({}); expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
 });
 test("connected recurrence skips model latency when discovery has no reviewed report or delivery contract", async () => {
   const s = await setup({ bridge: true }); const result = await s.send(requestText + " every day");

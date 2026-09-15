@@ -449,6 +449,25 @@ test("an exact chat email draft requests independent approval and dispatches onl
   expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
 });
 
+test("directory-resolved email admission rejects a changed manager identity before creating an operation", async () => {
+  const s = await setup(null, true, false, true);
+  await s.repository.mutate((state) => { state.users.requester!.managerId = "observer"; state.users.observer!.name = "Finance Manager"; state.users.observer!.email = "finance.manager@example.test"; });
+  const created = await s.request("POST", "/api/chat/sessions", { title: "Manager email review" });
+  const sessionId = created.json().data.id as string;
+  const prepared = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { content: "Email this to my manager" });
+  expect(prepared.statusCode, prepared.body).toBe(200);
+  const draft = prepared.json().data.assistantMessage.artifacts.emailDraft as EmailDraft;
+  expect(draft).toMatchObject({ to: "finance.manager@example.test", recipientResolution: { status: "RESOLVED", source: "DIRECT_MANAGER", userId: "observer" } });
+  const edit = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDraftCommand: { draftId: draft.id, baseVersion: draft.version,
+    baseHash: draft.contentHash, commandId: "directory-email-edit-0001", patch: { to: draft.to, subject: "Daily review", body: "Reviewed summary." } } });
+  const saved = edit.json().data.assistantMessage.artifacts.emailDraft as EmailDraft;
+  await s.repository.mutate((state) => { state.users.observer!.email = "new.manager@example.test"; });
+  const admitted = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { emailDeliveryCommand: { profile: "email-delivery-admission-command/v1",
+    draftId: saved.id, baseVersion: saved.version, baseHash: saved.contentHash, idempotencyKey: "directory-email-admission-0001", sharingConfirmed: true } });
+  expect(admitted.statusCode, admitted.body).toBe(409); expect(admitted.json()).toMatchObject({ meta: { code: "EMAIL_RECIPIENT_STALE" } });
+  expect(Object.values((await s.repository.snapshot()).emailDeliveryAdmissions)).toHaveLength(0); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
 test.each(["missing-sharing", "recurring", "browser-tool", "ambiguous-connector"])("email admission denies %s before SDK dispatch", async scenario => {
   const s = await setup(null, true, false, true), created = await s.request("POST", "/api/chat/sessions", {}), sessionId = created.json().data.id as string;
   const prepared = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, { content: "Email manager@example.test" });

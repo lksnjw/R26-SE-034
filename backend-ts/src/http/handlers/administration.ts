@@ -85,7 +85,8 @@ async function createUser(request: FastifyRequest, reply: FastifyReply, actor: C
     const role = state.roles[roleID]; if (role === undefined) throw new HandlerFailure(400, "Unknown role");
     if (role.permissions.some((permission) => !actor.permissions.includes(permission))) throw new HandlerFailure(403, "Cannot grant permissions the current user does not hold");
     if (Object.values(state.users).some((item) => item.email.toLowerCase() === email)) throw new HandlerFailure(409, "A user with this email already exists");
-    const id = nextID(state, "usr"); const user = { id, name, email, roleId: roleID, permissionOverrides: [], status: "Active", initials: initials(name), departmentId: typeof body.departmentId === "string" ? body.departmentId : null, lastLoginAt: null, createdAt: now() };
+    const id = nextID(state, "usr"); const user = { id, name, email, roleId: roleID, permissionOverrides: [], status: "Active", initials: initials(name), departmentId: typeof body.departmentId === "string" ? body.departmentId : null, managerId: null as string | null, lastLoginAt: null, createdAt: now() };
+    applyManagerChange(state, user, body.managerId);
     state.users[id] = user; state.passwordHashes[id] = passwordHash; appendAudit(state, actor, "user.created", "user", id, null, publicUser(user), request); appendAudit(state, actor, "user.role_assigned", "user", id, null, { roleId: roleID }, request); return user;
   });
   return reply.status(201).send(ok(publicUser(created), "User created", null));
@@ -110,6 +111,7 @@ async function updateUser(request: FastifyRequest, reply: FastifyReply, actor: C
     assertCanManageUser(state, target, actor);
     if (typeof body.name === "string") { target.name = body.name; target.initials = initials(body.name); }
     if (typeof body.departmentId === "string" || body.departmentId === null) target.departmentId = body.departmentId;
+    if (typeof body.managerId === "string" || body.managerId === null) applyManagerChange(state, target, body.managerId);
     if (typeof body.roleId === "string") applyRoleChange(state, target, body.roleId, actor);
     if (typeof body.status === "string") applyStatus(state, target, body.status, actor);
     if (target.status.toLowerCase() !== "active") revokeUserSessions(state, target.id);
@@ -144,7 +146,7 @@ async function setUserStatus(request: FastifyRequest, reply: FastifyReply, actor
  ******************************************************************************/
 async function deleteUser(request: FastifyRequest, reply: FastifyReply, actor: CurrentUser, services: HandlerServices): Promise<unknown> {
   const id = requestParam(request, "id"); if (id === actor.id) throw new HandlerFailure(403, "You cannot delete your own account");
-  await services.repository.mutate((state) => { const target = state.users[id]; if (target === undefined) throw new HandlerFailure(404, "User not found"); assertCanManageUser(state, target, actor); if (target.roleId === "role_admin" && target.status.toLowerCase() === "active" && activeAdminCount(state) <= 1) throw new HandlerFailure(409, "The last active Platform Admin cannot be deleted"); const before = publicUser(target); delete state.users[id]; delete state.passwordHashes[id]; revokeUserSessions(state, id); appendAudit(state, actor, "user.deleted", "user", id, before, null, request); });
+  await services.repository.mutate((state) => { const target = state.users[id]; if (target === undefined) throw new HandlerFailure(404, "User not found"); assertCanManageUser(state, target, actor); if (target.roleId === "role_admin" && target.status.toLowerCase() === "active" && activeAdminCount(state) <= 1) throw new HandlerFailure(409, "The last active Platform Admin cannot be deleted"); const before = publicUser(target); for (const subordinate of Object.values(state.users)) if (subordinate.managerId === id) subordinate.managerId = null; delete state.users[id]; delete state.passwordHashes[id]; revokeUserSessions(state, id); appendAudit(state, actor, "user.deleted", "user", id, before, null, request); });
   return reply.send(ok({ deleted: true }, "User deleted", null));
 }
 
@@ -308,6 +310,28 @@ function stringArray(value: unknown): string[] { return Array.isArray(value) ? v
  * Rejects unknown permissions and grants beyond the caller's authority.
  ******************************************************************************/
 function validatePermissions(state: { permissions: { key: string }[] }, keys: string[]): void { const known = new Set(state.permissions.map((item) => item.key)); const unknown = keys.find((key) => !known.has(key)); if (unknown !== undefined) throw new HandlerFailure(400, `Unknown permission ${unknown}`); }
+/*******************************************************************************
+ * Function: applyManagerChange
+ *
+ * Stores an explicit reporting-line edge. Recipient resolution may consume
+ * this edge later, so missing, inactive, self-referential and cyclic edges are
+ * rejected here instead of being repaired by inference at delivery time.
+ ******************************************************************************/
+function applyManagerChange(state: RepositoryState, target: RepositoryState["users"][string], rawManagerID: unknown): void {
+  const managerID = typeof rawManagerID === "string" ? rawManagerID.trim() : "";
+  if (rawManagerID === null || managerID === "") { target.managerId = null; return; }
+  if (managerID === target.id) throw new HandlerFailure(400, "A user cannot be their own manager");
+  const manager = state.users[managerID];
+  if (!manager || manager.status.toLowerCase() !== "active") throw new HandlerFailure(400, "Manager must be an active directory user");
+  const visited = new Set<string>([target.id]);
+  let cursor: typeof manager | undefined = manager;
+  while (cursor) {
+    if (visited.has(cursor.id)) throw new HandlerFailure(400, "Manager assignment would create a reporting cycle");
+    visited.add(cursor.id);
+    cursor = cursor.managerId ? state.users[cursor.managerId] : undefined;
+  }
+  target.managerId = managerID;
+}
 /*******************************************************************************
  * Function: applyRoleChange
  *

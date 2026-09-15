@@ -6,7 +6,9 @@ import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, requestParam, stringValue } from "./common.js";
 import { classifyIntent } from "../../agent/intent-classifier.js";
 import { editEmailDraft, prepareEmailDraft } from "../../delivery/email-chat.js";
+import { deliveryIntent } from "../../delivery/email-draft.js";
 import { admitEmailDelivery } from "../../delivery/email-operation.js";
+import { resolveRecipientReference } from "../../delivery/recipient-resolution.js";
 import { hasRecurringCompositionCapability, inspectRecurringAutomationCandidate, recurringAutomationCandidateContext,
   recurringAutomationShell, recurringDeliveryRequest, type RecurringAutomationComposition, type RecurringDeliveryRequest } from "../../delivery/recurring-automation.js";
 import { runQueryLoop, type ToolStep } from "../../agent/query-loop.js";
@@ -122,7 +124,10 @@ export async function processStoredChat(input: {
   }
   const provider = services.providerRuntime;
   const intent = classifyIntent(content);
-  const automationRequest = recurringDeliveryRequest(content);
+  const parsedDeliveryIntent = deliveryIntent(content);
+  const directoryResolution = parsedDeliveryIntent?.recipientReference ?
+    await services.repository.read((state) => resolveRecipientReference(state, user.id, parsedDeliveryIntent.recipientReference!)) : null;
+  const automationRequest = recurringDeliveryRequest(content, directoryResolution);
   const bodyWorkflowCtx = isRecord(body.workflowContext) ? body.workflowContext : null;
   const workflowContextYaml = typeof bodyWorkflowCtx?.yaml === "string" && bodyWorkflowCtx.yaml.trim() ? bodyWorkflowCtx.yaml.trim() : null;
   const workflowContextName = typeof bodyWorkflowCtx?.name === "string" && bodyWorkflowCtx.name ? bodyWorkflowCtx.name : "Workflow";

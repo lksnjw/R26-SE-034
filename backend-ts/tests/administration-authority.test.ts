@@ -74,3 +74,14 @@ test("assigned-role deletion returns the field consumed by the confirmation UI",
   expect(response.statusCode).toBe(409);
   expect(response.json()).toMatchObject({ message: "Role is still assigned to users", meta: { assignedUsers: 1 } });
 });
+
+test("manager assignments are explicit, cycle-safe, and cleared when the manager is deleted", async () => {
+  const s = await setup();
+  const assigned = await s.app.inject({ method: "PATCH", url: "/api/users/holder", headers: s.headers("delegated"), payload: { managerId: "system" } });
+  expect(assigned.statusCode, assigned.body).toBe(200); expect(assigned.json().data.managerId).toBe("system");
+  const cycle = await s.app.inject({ method: "PATCH", url: "/api/users/system", headers: s.headers("delegated"), payload: { managerId: "holder" } });
+  expect(cycle.statusCode).toBe(400); expect(cycle.json().message).toContain("reporting cycle");
+  const removed = await s.app.inject({ method: "DELETE", url: "/api/users/system", headers: s.headers("delegated") });
+  expect(removed.statusCode, removed.body).toBe(200);
+  expect((await s.repository.snapshot()).users.holder?.managerId).toBeNull();
+});

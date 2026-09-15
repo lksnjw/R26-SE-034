@@ -15,6 +15,9 @@ export type User = {
   initials: string;
   timezone?: string;
   departmentId: string | null;
+  /** Optional authoritative reporting-line relationship used for safe
+   * recipient resolution. It is never inferred from role names. */
+  managerId?: string | null;
   lastLoginAt: string | null;
   createdAt: string;
   twoFactorEnabled?: boolean;

@@ -11,8 +11,8 @@ import { useNotifications } from "../../context/NotificationContext";
  *
  * Performs the User Form operation on form for the UserForm module.
  ******************************************************************************/
-function UserForm({ roles = [], departments = [], onCreated }) {
-  const emptyForm = { name: "", email: "", password: "", roleId: "role_builder", departmentId: "" };
+function UserForm({ roles = [], departments = [], users = [], onCreated }) {
+  const emptyForm = { name: "", email: "", password: "", roleId: "role_builder", departmentId: "", managerId: "" };
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const { notify } = useNotifications();
@@ -34,6 +34,7 @@ function UserForm({ roles = [], departments = [], onCreated }) {
     try {
       const payload = { ...form };
       if (!payload.departmentId) delete payload.departmentId;
+      if (!payload.managerId) delete payload.managerId;
       await userService.create(payload);
       setForm(emptyForm);
       notify("User created.", "success");
@@ -44,7 +45,7 @@ function UserForm({ roles = [], departments = [], onCreated }) {
       setSaving(false);
     }
   };
-  return <form className="space-y-3" onSubmit={submit}><Input value={form.name} onChange={change("name")} placeholder="Full name" required /><Input type="email" value={form.email} onChange={change("email")} placeholder="Email address" required /><Input type="password" value={form.password} onChange={change("password")} placeholder="Temporary password (8+ characters)" minLength={8} required /><Select aria-label="Role" value={form.roleId} onChange={change("roleId")}>{assignableRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</Select><Select aria-label="Department" value={form.departmentId} onChange={change("departmentId")}><option value="">No department</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</Select><Button type="submit" disabled={saving || assignableRoles.length === 0}>{saving ? "Creating..." : "Create User"}</Button></form>;
+  return <form className="space-y-3" onSubmit={submit}><Input value={form.name} onChange={change("name")} placeholder="Full name" required /><Input type="email" value={form.email} onChange={change("email")} placeholder="Email address" required /><Input type="password" value={form.password} onChange={change("password")} placeholder="Temporary password (8+ characters)" minLength={8} required /><Select aria-label="Role" value={form.roleId} onChange={change("roleId")}>{assignableRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</Select><Select aria-label="Department" value={form.departmentId} onChange={change("departmentId")}><option value="">No department</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</Select><Select aria-label="Manager" value={form.managerId} onChange={change("managerId")}><option value="">No manager</option>{users.filter((candidate) => String(candidate.status).toLowerCase() === "active").map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</Select><Button type="submit" disabled={saving || assignableRoles.length === 0}>{saving ? "Creating..." : "Create User"}</Button></form>;
 }
 
 export default UserForm;

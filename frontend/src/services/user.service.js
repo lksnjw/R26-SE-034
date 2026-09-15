@@ -94,6 +94,15 @@ export const userService = {
     return normalizeUser(unwrap(await apiClient.patch(`/users/${userId}`, { departmentId: departmentId || null })));
   },
 /*******************************************************************************
+ * Function: updateManager
+ *
+ * Stores the explicit directory reporting line used by safe chat recipient
+ * resolution. Clearing the selection removes the relationship.
+ ******************************************************************************/
+  async updateManager(userId, managerId) {
+    return normalizeUser(unwrap(await apiClient.patch(`/users/${userId}`, { managerId: managerId || null })));
+  },
+/*******************************************************************************
  * Function: deleteUser
  *
  * Permanently removes an account after the caller has confirmed the action.

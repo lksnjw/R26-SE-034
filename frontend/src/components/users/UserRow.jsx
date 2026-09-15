@@ -11,7 +11,7 @@ import { apiErrorMessage } from "../../services/api";
  *
  * Performs the User Row operation on row for the UserRow module.
  ******************************************************************************/
-function UserRow({ user, roles = [], departments = [], isCurrentUser = false, canManage = false, busy = false, onRoleChange, onStatusChange, onDepartmentChange, onDelete }) {
+function UserRow({ user, users = [], roles = [], departments = [], isCurrentUser = false, canManage = false, busy = false, onRoleChange, onStatusChange, onDepartmentChange, onManagerChange, onDelete }) {
   const suspended = String(user.status).toLowerCase() === "suspended";
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -54,6 +54,16 @@ function UserRow({ user, roles = [], departments = [], isCurrentUser = false, ca
               onChange={(event) => onRoleChange?.(user.id, event.target.value)}
             >
               {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+            </Select>
+            <Select
+              aria-label={`Manager for ${user.name}`}
+              className="max-w-48"
+              value={user.managerId || ""}
+              disabled={busy}
+              onChange={(event) => onManagerChange?.(user.id, event.target.value)}
+            >
+              <option value="">No manager</option>
+              {users.filter((candidate) => candidate.id !== user.id && String(candidate.status).toLowerCase() === "active").map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
             </Select>
             <Select
               aria-label={`Department for ${user.name}`}

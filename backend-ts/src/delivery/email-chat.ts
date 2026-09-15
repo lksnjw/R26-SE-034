@@ -7,6 +7,7 @@ import { dispatchReadTool } from "../tools/read-tool-broker.js";
 import type { RepositoryState } from "../repository/store.js";
 import { appendAudit, HandlerFailure, isRecord, nextID, now, type CurrentUser, type HandlerServices } from "../http/handlers/common.js";
 import { createEmailDraft, deliveryIntent, draftRequirements, emailDraftCommandSchema, emailDraftHash, emailDraftMessage, type EmailDraft } from "./email-draft.js";
+import { resolveRecipientReference } from "./recipient-resolution.js";
 import type { ChatProcessingHooks } from "../agent/chat-context.js";
 
 function assertOwner(state: RepositoryState, sessionId: string, user: CurrentUser) {
@@ -38,7 +39,9 @@ export async function editEmailDraft(services: HandlerServices, user: CurrentUse
     if (Object.values(state.emailDeliveryAdmissions).some(item => item.sessionId === sessionId && item.draftId === original.id))
       throw new HandlerFailure(409, "This exact draft already has an approval request and is immutable");
     if (original.version !== command.baseVersion || original.contentHash !== command.baseHash) throw new HandlerFailure(409, "The email draft changed. Reload the conversation before editing");
-    const draft: EmailDraft = { ...structuredClone(original), ...command.patch, version: original.version + 1, updatedAt: now(), state: "DRAFT_NOT_SENT", reportStatus: "USER_EDITED" };
+    const recipientChanged = command.patch.to !== original.to;
+    const draft: EmailDraft = { ...structuredClone(original), ...command.patch,
+      ...(recipientChanged ? { recipientResolution: null } : {}), version: original.version + 1, updatedAt: now(), state: "DRAFT_NOT_SENT", reportStatus: "USER_EDITED" };
     draft.requirements = draftRequirements(draft); draft.contentHash = emailDraftHash(draft);
     const userMessage = { id: nextID(state, "msg"), role: "user", text: "Save email draft changes", createdAt: now() };
     const message = { id: nextID(state, "msg"), role: "assistant", text: emailDraftMessage(draft), artifacts: { intent: "EMAIL_DELIVERY", emailDraft: draft, can_execute: false,
@@ -78,7 +81,8 @@ export async function prepareEmailDraft(services: HandlerServices, user: Current
   return services.repository.mutate((state) => {
     hooks?.assertCurrent(state);
     const chat = assertOwner(state, sessionId, user);
-    const draft = createEmailDraft(nextID(state, "email_draft"), sessionId, user.id, content, intent, report);
+    const recipientResolution = intent.recipientReference ? resolveRecipientReference(state, user.id, intent.recipientReference) : null;
+    const draft = createEmailDraft(nextID(state, "email_draft"), sessionId, user.id, content, intent, report, recipientResolution);
     const text = emailDraftMessage(draft);
     const message = { id: nextID(state, "msg"), role: "assistant", text, modelBinding: services.providerRuntime?.binding ?? null, ...(context.traceId ? { traceId: context.traceId } : {}), artifacts: { intent: "EMAIL_DELIVERY", emailDraft: draft, can_execute: false, reportReason: reason,
       ...(report ? { sources: report.toolCallLog, toolSteps: report.toolSteps, readOutcome: report.readOutcome, boundHit: report.boundHit, stopReason: report.stopReason } : {}) }, createdAt: now() };

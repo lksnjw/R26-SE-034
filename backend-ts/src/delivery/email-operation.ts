@@ -14,6 +14,7 @@ import { runtimeApprovalPolicyHash } from "../runner/runtime-approvals.js";
 import { resolveReadBinding } from "../workflows/compiled-read.js";
 import { assertOperationPublicationCurrent, prepareOperationPublication } from "../workflows/operation-compilation-lifecycle.js";
 import { emailDraftHash, type EmailDraft } from "./email-draft.js";
+import { recipientResolutionIsCurrent } from "./recipient-resolution.js";
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -58,6 +59,11 @@ function latestDraft(state: Readonly<RepositoryState>, sessionId: string, draftI
   if (!draft || draft.profile !== "email-draft-v1" || draft.ownerId !== user.id || draft.sessionId !== sessionId || draft.state !== "DRAFT_NOT_SENT" || emailDraftHash(draft) !== draft.contentHash)
     deny("The exact authoritative email draft is unavailable", 404);
   return draft;
+}
+function requireCurrentRecipientResolution(state: Readonly<RepositoryState>, draft: EmailDraft, actorId: string): void {
+  const resolution = draft.recipientResolution;
+  if (resolution?.status === "RESOLVED" && !recipientResolutionIsCurrent(state, actorId, resolution))
+    deny("The directory recipient changed or is no longer active. Create a new draft or explicitly confirm a current address", 409, "EMAIL_RECIPIENT_STALE");
 }
 function binding(tool: ToolDefinition, draft: EmailDraft): Record<string, string> {
   try { supportedOperation(tool); } catch { deny("The email connector does not have a supported reviewed operation contract", 422); }
@@ -120,6 +126,7 @@ export async function admitEmailDelivery(services: HandlerServices, user: Curren
     if (draft.version !== command.baseVersion || draft.contentHash !== command.baseHash) deny("The email draft changed. Reload before requesting approval");
     const linked = linkedAdmission(state, user, draft, keyHash, command.idempotencyKey);
     if (linked) return { draft, linked, selected: null };
+    requireCurrentRecipientResolution(state, draft, user.id);
     if (draft.recurring) deny("Recurring delivery must be built and reviewed as a scheduled workflow; a chat draft cannot activate recurrence", 422);
     if (draft.channel !== "email" || !z.email().safeParse(draft.to).success || !draft.subject.trim() || !draft.body.trim())
       deny("A complete email channel, recipient, subject and body are required", 422);
@@ -143,6 +150,7 @@ export async function admitEmailDelivery(services: HandlerServices, user: Curren
           !z.email().safeParse(draft.to).success || !draft.subject.trim() || !draft.body.trim()) deny("The exact complete email draft changed before admission");
       const linked = linkedAdmission(state, user, draft, keyHash, command.idempotencyKey);
       if (linked) return { assistantMessage: null, emailDelivery: publicReceipt(linked.admission, linked.execution, true) };
+      requireCurrentRecipientResolution(state, draft, user.id);
       const current = candidate(services, role.name, draft);
       if (current.tool.tool_id !== selected.tool.tool_id || current.contractHash !== selected.contractHash || !canonicalJSONBytes(current.args).equals(canonicalJSONBytes(selected.args)))
         deny("The email connector or exact draft binding changed before admission");

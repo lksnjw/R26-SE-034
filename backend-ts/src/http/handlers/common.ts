@@ -219,6 +219,7 @@ export function publicUser(user: User): Record<string, unknown> {
     initials: user.initials,
     ...(user.timezone === undefined ? {} : { timezone: user.timezone }),
     departmentId: user.departmentId,
+    managerId: user.managerId ?? null,
     lastLoginAt: user.lastLoginAt,
     createdAt: user.createdAt,
     ...(user.twoFactorEnabled === undefined ? {} : { twoFactorEnabled: user.twoFactorEnabled }),

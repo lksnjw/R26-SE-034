@@ -80,6 +80,16 @@ test("a named-person request may retain useful exact report steps but cannot inv
   expect(result.remainingRequirements).toContain("Resolve and confirm exactly one authorized recipient; do not guess a person's address.");
 });
 
+test("an authoritative directory resolution becomes the exact reviewed recipient candidate", async () => {
+  const resolution = { profile: "recipient-directory-resolution/v1" as const, requestedLabel: "my manager", status: "RESOLVED" as const,
+    source: "DIRECT_MANAGER" as const, userId: "manager", userName: "Maya Perera", email: "maya@example.test", reason: "Assigned active manager." };
+  const request = recurringDeliveryRequest("Get invoice and order details and email the report to my manager every day", resolution)!;
+  expect(request).toMatchObject({ requestedAddresses: ["maya@example.test"], recipientReference: "my manager", recipientResolution: resolution });
+  expect(recurringAutomationCandidateContext(request).automation_request).toMatchObject({ requested_addresses: ["maya@example.test"], recipient_reference: "my manager",
+    recipient_resolution: { source: "DIRECT_MANAGER", userId: "manager" } });
+  expect(request.requirements).toContain("Confirm data-sharing permission for the exact recipient maya@example.test.");
+});
+
 test("a structurally valid report for the wrong business resource is rejected", async () => {
   const { request, tools, workflow } = await fixture();
   tools[0]!.report_coverage_contract!.business_resource = "customers";

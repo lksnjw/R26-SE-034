@@ -2,6 +2,7 @@ import { stringify } from "yaml";
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { deliveryIntent } from "./email-draft.js";
+import type { RecipientResolution } from "./recipient-resolution.js";
 
 export type RecurringRequestedResource = "invoices" | "orders";
 
@@ -10,6 +11,8 @@ export type RecurringDeliveryRequest = {
   cadence: "daily" | "weekly" | "monthly" | "custom";
   channel: "email" | "unspecified";
   requestedAddresses: string[];
+  recipientReference: string | null;
+  recipientResolution: RecipientResolution | null;
   reportRequested: boolean;
   requestedResources: RecurringRequestedResource[];
   analysisRequested: boolean;
@@ -59,11 +62,13 @@ function cadence(text: string): RecurringDeliveryRequest["cadence"] {
 /** A recurrence phrase is workflow-design intent, never authority for an
  * immediate delivery. This contract preserves exactly what the server can
  * derive without inventing a person, timezone, report window or connector. */
-export function recurringDeliveryRequest(text: string): RecurringDeliveryRequest | null {
+export function recurringDeliveryRequest(text: string, directoryResolution?: RecipientResolution | null): RecurringDeliveryRequest | null {
   const intent = deliveryIntent(text);
   if (!intent?.recurring) return null;
   const normalized = text.toLowerCase();
-  const exactRecipient = intent.requestedAddresses.length === 1 ? intent.requestedAddresses[0] : null;
+  const resolvedAddress = directoryResolution?.status === "RESOLVED" ? directoryResolution.email : undefined;
+  const requestedAddresses = intent.requestedAddresses.length > 0 ? [...intent.requestedAddresses] : resolvedAddress ? [resolvedAddress] : [];
+  const exactRecipient = requestedAddresses.length === 1 ? requestedAddresses[0] : null;
   const requestedResources: RecurringRequestedResource[] = [
     ...(/\binvoices?\b/.test(normalized) ? ["invoices" as const] : []),
     ...(/\borders?\b/.test(normalized) ? ["orders" as const] : []),
@@ -79,7 +84,8 @@ export function recurringDeliveryRequest(text: string): RecurringDeliveryRequest
     ACTIVATE_REQUIREMENT,
   ];
   return { profile: "recurring-delivery-request/v1", cadence: requestedCadence, channel: intent.channel,
-    requestedAddresses: [...intent.requestedAddresses], reportRequested: intent.reportRequested, requestedResources,
+    requestedAddresses, recipientReference: intent.recipientReference, recipientResolution: directoryResolution ?? null,
+    reportRequested: intent.reportRequested, requestedResources,
     analysisRequested: /\banaly[sz](?:e|es|ed|ing|is)\b/.test(normalized), scheduleActive: false, requirements };
 }
 
@@ -210,9 +216,7 @@ export function recurringAutomationShell(text: string, request: RecurringDeliver
     trigger: { type: "manual" },
     steps: [],
     metadata: {
-      automation_request: { profile: request.profile, cadence: request.cadence, channel: request.channel,
-        requested_addresses: request.requestedAddresses, report_requested: request.reportRequested, requested_resources: request.requestedResources,
-        analysis_requested: request.analysisRequested, schedule_active: false },
+      automation_request: automationMetadata(request),
       unresolved_requirements: request.requirements,
     },
   }).trim();
@@ -220,6 +224,7 @@ export function recurringAutomationShell(text: string, request: RecurringDeliver
 
 function automationMetadata(request: RecurringDeliveryRequest): Record<string, unknown> {
   return { profile: request.profile, cadence: request.cadence, channel: request.channel, requested_addresses: request.requestedAddresses,
+    recipient_reference: request.recipientReference, recipient_resolution: request.recipientResolution,
     report_requested: request.reportRequested, requested_resources: request.requestedResources, analysis_requested: request.analysisRequested, schedule_active: false };
 }
 

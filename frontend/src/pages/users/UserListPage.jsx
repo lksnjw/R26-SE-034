@@ -186,11 +186,16 @@ function UserListPage({ view = "directory" }) {
               () => userService.updateDepartment(userId, departmentId),
               "User department updated."
             )}
+            onManagerChange={(userId, managerId) => updateUser(
+              userId,
+              () => userService.updateManager(userId, managerId),
+              managerId ? "User manager updated." : "User manager cleared."
+            )}
             onDelete={deleteUser}
           />
           <Card>
             <h2 className="section-title mb-5">Create User</h2>
-            <UserForm roles={assignableRoles} departments={data?.departments} onCreated={reload} />
+            <UserForm roles={assignableRoles} departments={data?.departments} users={data?.users} onCreated={reload} />
           </Card>
         </section>
       ) : null}

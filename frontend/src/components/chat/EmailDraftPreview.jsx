@@ -71,6 +71,12 @@ export default function EmailDraftPreview({ draft: initialDraft, emailDelivery: 
       <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">{delivery ? "Approval requested · not sent" : "Not sent"} · revision {shownDraft.version}</span>
     </div>
     <p className="mt-1 text-xs text-gray-500">{reportLabels[shownDraft.reportStatus] ?? "Review required"}{shownDraft.recurring ? " · no schedule active" : ""}</p>
+    {shownDraft.recipientResolution?.status === "RESOLVED" && <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
+      Recipient resolved from the company directory: {shownDraft.recipientResolution.userName}. The exact address remains editable and will be rechecked before approval admission.
+    </p>}
+    {shownDraft.recipientReference && shownDraft.recipientResolution?.status !== "RESOLVED" && <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+      Could not safely resolve “{shownDraft.recipientReference}”: {shownDraft.recipientResolution?.reason ?? "confirm one exact address."}
+    </p>}
     {shownDraft.reportStatus === "NOT_PREPARED" && reasonLabels[reportReason] && <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">{reasonLabels[reportReason]}</p>}
     <form onSubmit={save} className="mt-3 space-y-3">
       <div><label htmlFor={`${id}-to`} className="text-xs font-medium text-gray-600 dark:text-gray-300">Recipient email</label>
