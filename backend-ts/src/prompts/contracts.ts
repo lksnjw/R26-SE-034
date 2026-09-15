@@ -147,6 +147,8 @@ Describe required inter-step mappings in a concise numbered review, at most 300 
 /** Exact code-owned version routes: an unknown version never grants a role. */
 export function systemInstructionsFor(version?: string): string {
   switch (version) {
+    case "prompt/query/v2": return QUERY_SYSTEM_PROMPT;
+    case "prompt/action/v2": return ACTION_SYSTEM_PROMPT;
     case "prompt/candidate/v3": return CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v4": return STRUCTURED_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v5": return VALUE_CANDIDATE_SYSTEM_PROMPT;
@@ -164,6 +166,18 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/execution-analysis/v2": return EXECUTION_ANALYSIS_SYSTEM_PROMPT;
     case "prompt/data-flow/v2": return DATA_FLOW_SYSTEM_PROMPT;
     default: return SAFETY_CONTRACT;
+  }
+}
+
+/** Tool-enabled turns have a smaller exact allow-list than one-shot
+ * generation. Returning null lets the provider boundary reject a caller that
+ * omitted or invented its privileged prompt contract. */
+export function toolQuerySystemInstructionsFor(version?: string): string | null {
+  switch (version) {
+    case "prompt/query/v2": return QUERY_SYSTEM_PROMPT;
+    case "prompt/action/v2": return ACTION_SYSTEM_PROMPT;
+    case "prompt/runtime-agent/v1": return RUNTIME_AGENT_SYSTEM_PROMPT;
+    default: return null;
   }
 }
 

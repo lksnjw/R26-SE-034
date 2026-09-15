@@ -4,7 +4,7 @@ import type { Repository, StoredRecord } from "../repository/store.js";
 import type { Executor } from "../runner/executor.js";
 import { isGenerationFallbackEligible, OpenAICompatibleClient, OpenAICompatibleError } from "./openai-compatible.js";
 import type { QueryMessage, QueryOptions, QueryToolDefinition, QueryTurnResult } from "../analysisprovider/query-types.js";
-import { generationPromptHash } from "../prompts/contracts.js";
+import { generationPromptHash, toolQuerySystemInstructionsFor } from "../prompts/contracts.js";
 import { assertModelEgress, normalizeModelEgressPolicy, type ModelEgressPolicy } from "./egress-policy.js";
 
 export const ANALYSIS_PROMPT_VERSION = "prompt/analysis/v2";
@@ -170,6 +170,7 @@ export class ProviderRuntime {
    ******************************************************************************/
   async queryWithTools(messages: QueryMessage[], tools: QueryToolDefinition[], options: QueryOptions): Promise<QueryTurnResult> {
     if (this.#rawClient === null || this.#configuration === null) throw new Error("LLM provider is not configured");
+    assertToolQueryPromptContract(messages, options.promptTemplateVersion);
     this.assertEgress(options.context?.egress);
     const client = this.#rawClient, configuration = structuredClone(this.#configuration), revision = this.#revision;
     const model = options.model?.trim() || configuration.model;
@@ -206,6 +207,18 @@ export class ProviderRuntime {
     const provider = new ProvenanceAnalysisProvider(createProviderClient(configuration, this.fetchImplementation), this.repository, configuration);
     return provider.generate("Reply with exactly OK.", configuration.model, signal, { promptTemplateVersion: "prompt/provider-test/v1" });
   }
+}
+
+/** The caller may add assistant/tool evidence after the first turn, but it
+ * cannot replace, duplicate or dynamically construct the privileged system
+ * message. This is a structural boundary; validators and brokers still own
+ * all authorization and dispatch decisions. */
+function assertToolQueryPromptContract(messages: readonly QueryMessage[], version?: string): void {
+  const expected = toolQuerySystemInstructionsFor(version);
+  if (expected === null) throw new Error("Known tool-query prompt version is required before provider entry");
+  if (messages.length < 2 || messages[0]?.role !== "system" || messages[0].content !== expected ||
+      messages.slice(1).some(message => message.role === "system") || !messages.slice(1).some(message => message.role === "user"))
+    throw new Error("Tool-query messages must retain exactly one code-owned system instruction and untrusted user data");
 }
 
 export class ProvenanceAnalysisProvider implements AnalysisProvider {

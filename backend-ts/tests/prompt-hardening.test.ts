@@ -31,7 +31,7 @@ const turn = (calls: Array<{ id: string; name: string; arguments: Record<string,
 const call = (name = read.mcp_tool_name, args: Record<string, unknown> = { id: "x" }, id = "call1") => ({ id, name, arguments: args });
 afterEach(() => vi.unstubAllGlobals());
 
-test.each(["prompt/candidate/v3", "prompt/candidate/v4", "prompt/candidate/v5", "prompt/candidate/v6", "prompt/candidate/v7", "prompt/node-patch/v2", "prompt/analysis-node-patch/v1", "prompt/condition-patch/v1", "prompt/return-patch/v1", "prompt/collection-patch/v1", "prompt/workflow-modifier/v2", "prompt/analysis/v2",
+test.each(["prompt/query/v2", "prompt/action/v2", "prompt/runtime-agent/v1", "prompt/candidate/v3", "prompt/candidate/v4", "prompt/candidate/v5", "prompt/candidate/v6", "prompt/candidate/v7", "prompt/node-patch/v2", "prompt/analysis-node-patch/v1", "prompt/condition-patch/v1", "prompt/return-patch/v1", "prompt/collection-patch/v1", "prompt/workflow-modifier/v2", "prompt/analysis/v2",
   "prompt/execution-analysis/v2", "prompt/data-flow/v2", "prompt/provider-test/v1"])("%s has an independent trusted instruction channel", async (version) => {
   const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: "ok" } }] }));
   const client = new OpenAICompatibleClient({ ...configuration, fetchImplementation });
@@ -57,6 +57,32 @@ test("unknown version cannot inject privileged instructions, and prompt provenan
   expect(provenance.promptSha256).toBe(generationPromptHash(attack, "prompt/analysis/v2"));
   expect(provenance.promptSha256).not.toBe(generationPromptHash(attack, "prompt/candidate/v3"));
   expect(JSON.stringify(provenance)).not.toContain("attacker@example.test");
+});
+
+test.each(["wrong-system", "extra-system", "unknown-version", "missing-user"])("provider boundary rejects a non-canonical tool-query prompt before network entry: %s", async (scenario) => {
+  const fetchImplementation = vi.fn<typeof fetch>();
+  const runtime = new ProviderRuntime(new Repository(), { setAnalysisProvider() {} } as unknown as Executor, fetchImplementation);
+  runtime.activate(configuration);
+  const messages: any[] = [{ role: "system", content: QUERY_SYSTEM_PROMPT }, { role: "user", content: promptData({ USER_REQUEST: "Read invoice x" }) }];
+  let promptTemplateVersion = "prompt/query/v2";
+  if (scenario === "wrong-system") messages[0].content = attack;
+  if (scenario === "extra-system") messages.push({ role: "system", content: QUERY_SYSTEM_PROMPT });
+  if (scenario === "unknown-version") promptTemplateVersion = attack;
+  if (scenario === "missing-user") messages.splice(1, 1);
+  await expect(runtime.queryWithTools(messages, [], { promptTemplateVersion,
+    context: { egress: { purpose: "interactive", dataClass: "restricted" } } })).rejects.toThrow(/prompt|system instruction|user data/i);
+  expect(fetchImplementation).not.toHaveBeenCalled();
+});
+
+test("provider boundary accepts the exact code-owned tool-query system contract", async () => {
+  const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ finish_reason: "stop", message: { content: "No confirmed ERP data." } }], usage: { prompt_tokens: 2, completion_tokens: 3 } }));
+  const runtime = new ProviderRuntime(new Repository(), { setAnalysisProvider() {} } as unknown as Executor, fetchImplementation);
+  runtime.activate(configuration);
+  const messages = [{ role: "system" as const, content: QUERY_SYSTEM_PROMPT }, { role: "user" as const, content: promptData({ USER_REQUEST: "Read invoice x" }) }];
+  const result = await runtime.queryWithTools(messages, [], { promptTemplateVersion: "prompt/query/v2",
+    context: { egress: { purpose: "interactive", dataClass: "restricted" } } });
+  expect(result.text).toBe("No confirmed ERP data."); expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  const body = JSON.parse(String(fetchImplementation.mock.calls[0]![1]!.body)); expect(body.messages).toEqual(messages);
 });
 
 test("candidate request/history/catalog stay data; an explicitly empty live catalog stays empty", async () => {
