@@ -26,6 +26,10 @@ import {
   type DispatchCapability,
   type ValidationToken,
 } from "./capability-authority.js";
+import {
+  validateAgentStepStructure,
+  validateAnalysisStepStructure,
+} from "./step-structure.js";
 
 export type { DispatchCapability, ValidationToken } from "./capability-authority.js";
 
@@ -203,11 +207,11 @@ export class RegistryValidator {
         result.errors.push(`SCHEMA_INVALID: step ${stepIndex + 1} requires id`);
       }
       if (kind === "analysis") {
-        this.validateAnalysisStructure(workflow, stepIndex, result);
+        validateAnalysisStepStructure(workflow, stepIndex, result);
         return;
       }
       if (kind === "agent") {
-        this.validateAgentStructure(workflow, stepIndex, result);
+        validateAgentStepStructure(workflow, stepIndex, result);
         for (const action of step.allowed_actions ?? []) {
           actions.push(action);
           const tool = this.registries.findTool(action);
@@ -505,89 +509,6 @@ export class RegistryValidator {
         (a, b) =>
           a.family.localeCompare(b.family) || a.ruleId.localeCompare(b.ruleId),
       );
-  }
-
-  /*******************************************************************************
-   * Function: validateAnalysisStructure
-   *
-   * Checks required fields and safety constraints for an analysis step.
-   ******************************************************************************/
-  private validateAnalysisStructure(
-    workflow: WorkflowBlueprint,
-    stepIndex: number,
-    result: CandidateValidationResult,
-  ): void {
-    const step = workflow.steps[stepIndex];
-    if (step === undefined) return;
-    if ((step.instruction ?? "").trim() === "") {
-      result.schema_ok = false;
-      result.errors.push(
-        `ANALYSIS_INSTRUCTION_REQUIRED: step ${step.id} requires instruction`,
-      );
-    }
-    if ((step.max_input_items ?? 0) < 0 || (step.max_input_chars ?? 0) < 0 || (step.max_output_tokens ?? 0) < 0) {
-      result.schema_ok = false;
-      result.errors.push(
-        `ANALYSIS_INPUT_LIMIT_INVALID: step ${step.id} has a negative input limit`,
-      );
-    }
-    if (!step.output_schema || step.output_schema.type !== "object") {
-      result.schema_ok = false;
-      result.errors.push(`ANALYSIS_OUTPUT_SCHEMA_REQUIRED: step ${step.id} requires an object output_schema`);
-    }
-    if (!step.data_class) {
-      result.schema_ok = false;
-      result.errors.push(`ANALYSIS_DATA_CLASS_REQUIRED: step ${step.id} requires data_class`);
-    }
-    const match =
-      /^\{\{\s*([a-zA-Z0-9_-]+)\.(?:output|structuredContent)(?:\.[a-zA-Z0-9_.-]+)?\s*\}\}$/.exec(
-        (step.input ?? "").trim(),
-      );
-    if (match?.[1] === undefined) {
-      result.schema_ok = false;
-      result.errors.push(
-        `ANALYSIS_INPUT_INVALID: step ${step.id} input must reference prior output`,
-      );
-      return;
-    }
-    if (
-      !workflow.steps.slice(0, stepIndex).some((prior) => prior.id === match[1])
-    ) {
-      result.schema_ok = false;
-      result.errors.push(
-        `ANALYSIS_INPUT_SOURCE_UNDECLARED: step ${step.id} references ${match[1]}`,
-      );
-    }
-  }
-
-  /*******************************************************************************
-   * Function: validateAgentStructure
-   *
-   * Checks the declarative bounds of a runtime agent node. Exact reviewed
-   * contracts and arguments are rechecked by compilation and on every call.
-   ******************************************************************************/
-  private validateAgentStructure(
-    workflow: WorkflowBlueprint,
-    stepIndex: number,
-    result: CandidateValidationResult,
-  ): void {
-    const step = workflow.steps[stepIndex];
-    if (!step) return;
-    const fail = (code: string, message: string) => { result.schema_ok = false; result.errors.push(`${code}: ${message}`); };
-    if (!(step.instruction ?? "").trim()) fail("AGENT_INSTRUCTION_REQUIRED", `step ${step.id} requires instruction`);
-    if (!Array.isArray(step.allowed_actions) || step.allowed_actions.length < 1 || step.allowed_actions.length > 8 || new Set(step.allowed_actions).size !== step.allowed_actions.length)
-      fail("AGENT_ALLOWLIST_INVALID", `step ${step.id} requires 1–8 unique actions`);
-    if (!step.output_schema || step.output_schema.type !== "object") fail("AGENT_OUTPUT_SCHEMA_REQUIRED", `step ${step.id} requires an object output_schema`);
-    if (!step.completion_predicate || !Array.isArray(step.completion_predicate.path) || !Object.hasOwn(step.completion_predicate, "equals"))
-      fail("AGENT_COMPLETION_REQUIRED", `step ${step.id} requires an exact completion_predicate`);
-    if (!step.data_class) fail("AGENT_DATA_CLASS_REQUIRED", `step ${step.id} requires data_class`);
-    const match = /^\{\{\s*([a-zA-Z0-9_-]+)\.(?:output|structuredContent)(?:\.[a-zA-Z0-9_.-]+)?\s*\}\}$/.exec((step.input ?? "").trim());
-    if (!match?.[1]) fail("AGENT_INPUT_INVALID", `step ${step.id} input must reference prior output`);
-    else if (!workflow.steps.slice(0, stepIndex).some(prior => prior.id === match[1])) fail("AGENT_INPUT_SOURCE_UNDECLARED", `step ${step.id} references ${match[1]}`);
-    const bounds = [step.max_input_items, step.max_input_chars, step.max_output_tokens, step.max_total_tokens, step.max_rounds, step.max_tool_calls, step.max_wall_time_ms]
-      .filter(value => value !== undefined);
-    if (bounds.some(value => !Number.isInteger(value) || value! < 0) || step.max_concurrency !== undefined && step.max_concurrency !== 1)
-      fail("AGENT_LIMIT_INVALID", `step ${step.id} has unsupported execution limits`);
   }
 
   /*******************************************************************************
