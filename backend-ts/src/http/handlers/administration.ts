@@ -107,10 +107,11 @@ async function updateUser(request: FastifyRequest, reply: FastifyReply, actor: C
   const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const id = requestParam(request, "id");
   const updated = await services.repository.mutate((state) => {
     const target = state.users[id]; if (target === undefined) throw new HandlerFailure(404, "User not found"); const before = publicUser(target);
+    assertCanManageUser(state, target, actor);
     if (typeof body.name === "string") { target.name = body.name; target.initials = initials(body.name); }
     if (typeof body.departmentId === "string" || body.departmentId === null) target.departmentId = body.departmentId;
     if (typeof body.roleId === "string") applyRoleChange(state, target, body.roleId, actor);
-    if (typeof body.status === "string") applyStatus(target, body.status, actor);
+    if (typeof body.status === "string") applyStatus(state, target, body.status, actor);
     if (target.status.toLowerCase() !== "active") revokeUserSessions(state, target.id);
     appendAudit(state, actor, "user.updated", "user", id, before, publicUser(target), request); return structuredClone(target);
   });
@@ -143,7 +144,7 @@ async function setUserStatus(request: FastifyRequest, reply: FastifyReply, actor
  ******************************************************************************/
 async function deleteUser(request: FastifyRequest, reply: FastifyReply, actor: CurrentUser, services: HandlerServices): Promise<unknown> {
   const id = requestParam(request, "id"); if (id === actor.id) throw new HandlerFailure(403, "You cannot delete your own account");
-  await services.repository.mutate((state) => { const target = state.users[id]; if (target === undefined) throw new HandlerFailure(404, "User not found"); if (target.roleId === "role_admin" && activeAdminCount(state) <= 1) throw new HandlerFailure(409, "The last active Platform Admin cannot be deleted"); const before = publicUser(target); delete state.users[id]; delete state.passwordHashes[id]; revokeUserSessions(state, id); appendAudit(state, actor, "user.deleted", "user", id, before, null, request); });
+  await services.repository.mutate((state) => { const target = state.users[id]; if (target === undefined) throw new HandlerFailure(404, "User not found"); assertCanManageUser(state, target, actor); if (target.roleId === "role_admin" && target.status.toLowerCase() === "active" && activeAdminCount(state) <= 1) throw new HandlerFailure(409, "The last active Platform Admin cannot be deleted"); const before = publicUser(target); delete state.users[id]; delete state.passwordHashes[id]; revokeUserSessions(state, id); appendAudit(state, actor, "user.deleted", "user", id, before, null, request); });
   return reply.send(ok({ deleted: true }, "User deleted", null));
 }
 
@@ -173,7 +174,7 @@ async function getRole(request: FastifyRequest, reply: FastifyReply, services: H
 async function updateRole(request: FastifyRequest, reply: FastifyReply, actor: CurrentUser, services: HandlerServices): Promise<unknown> {
   const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const id = requestParam(request, "id");
   const roleName = typeof body.name === "string" ? body.name : undefined;
-  const role = await services.repository.mutate((state) => { const item = state.roles[id]; if (item === undefined) throw new HandlerFailure(404, "Role not found"); const before = structuredClone(item); if (roleName !== undefined) { if (roleName.trim() === "") throw new HandlerFailure(400, "Role name is required"); if (Object.values(state.roles).some((other) => other.id !== id && other.name.toLowerCase() === roleName.toLowerCase())) throw new HandlerFailure(409, "A role with this name already exists"); item.name = roleName; } if (typeof body.description === "string") item.description = body.description; if (Array.isArray(body.permissions)) { const permissions = stringArray(body.permissions); validatePermissions(state, permissions); if (permissions.some((key) => !actor.permissions.includes(key))) throw new HandlerFailure(403, "Cannot grant permissions the current user does not hold"); if (id === "role_admin" && state.permissions.some((permission) => !permissions.includes(permission.key))) throw new HandlerFailure(403, "Platform Admin permissions cannot be reduced"); item.permissions = permissions; } appendAudit(state, actor, "role.updated", "role", id, before, item, request); return structuredClone(item); });
+  const role = await services.repository.mutate((state) => { const item = state.roles[id]; if (item === undefined) throw new HandlerFailure(404, "Role not found"); if (item.permissions.some((permission) => !actor.permissions.includes(permission))) throw new HandlerFailure(403, "Cannot manage a role with permissions the current user does not hold"); const before = structuredClone(item); if (roleName !== undefined) { const normalizedName = roleName.trim(); if (normalizedName === "") throw new HandlerFailure(400, "Role name is required"); if (builtInRoleIDs.has(id) && normalizedName !== item.name) throw new HandlerFailure(403, "Built-in role names cannot be changed"); if (Object.values(state.roles).some((other) => other.id !== id && other.name.toLowerCase() === normalizedName.toLowerCase())) throw new HandlerFailure(409, "A role with this name already exists"); item.name = normalizedName; } if (typeof body.description === "string") item.description = body.description.trim(); if (Array.isArray(body.permissions)) { const permissions = stringArray(body.permissions); validatePermissions(state, permissions); if (permissions.some((key) => !actor.permissions.includes(key))) throw new HandlerFailure(403, "Cannot grant permissions the current user does not hold"); if (id === "role_admin" && state.permissions.some((permission) => !permissions.includes(permission.key))) throw new HandlerFailure(403, "Platform Admin permissions cannot be reduced"); item.permissions = permissions; } appendAudit(state, actor, "role.updated", "role", id, before, item, request); return structuredClone(item); });
   return reply.send(ok(role, "Role updated", null));
 }
 
@@ -182,7 +183,7 @@ async function updateRole(request: FastifyRequest, reply: FastifyReply, actor: C
  *
  * Deletes a role when its protection and assignment rules permit it.
  ******************************************************************************/
-async function deleteRole(request: FastifyRequest, reply: FastifyReply, actor: CurrentUser, services: HandlerServices): Promise<unknown> { const id = requestParam(request, "id"); if (builtInRoleIDs.has(id)) throw new HandlerFailure(403, "Built-in roles cannot be deleted"); await services.repository.mutate((state) => { const role = state.roles[id]; if (role === undefined) throw new HandlerFailure(404, "Role not found"); const users = Object.values(state.users).filter((item) => item.roleId === id).length; if (users > 0) throw new HandlerFailure(409, "Role is still assigned to users", { users }); delete state.roles[id]; appendAudit(state, actor, "role.deleted", "role", id, role, null, request); }); return reply.send(ok({ deleted: true }, "Role deleted", null)); }
+async function deleteRole(request: FastifyRequest, reply: FastifyReply, actor: CurrentUser, services: HandlerServices): Promise<unknown> { const id = requestParam(request, "id"); if (builtInRoleIDs.has(id)) throw new HandlerFailure(403, "Built-in roles cannot be deleted"); await services.repository.mutate((state) => { const role = state.roles[id]; if (role === undefined) throw new HandlerFailure(404, "Role not found"); if (role.permissions.some((permission) => !actor.permissions.includes(permission))) throw new HandlerFailure(403, "Cannot manage a role with permissions the current user does not hold"); const users = Object.values(state.users).filter((item) => item.roleId === id).length; if (users > 0) throw new HandlerFailure(409, "Role is still assigned to users", { assignedUsers: users }); delete state.roles[id]; appendAudit(state, actor, "role.deleted", "role", id, role, null, request); }); return reply.send(ok({ deleted: true }, "Role deleted", null)); }
 
 /*******************************************************************************
  * Function: permissionMatrix
@@ -312,13 +313,25 @@ function validatePermissions(state: { permissions: { key: string }[] }, keys: st
  *
  * Applies a role change while enforcing administrator protection rules.
  ******************************************************************************/
-function applyRoleChange(state: { roles: Record<string, { permissions: string[] }> }, target: { id: string; roleId: string }, roleID: string, actor: CurrentUser): void { const role = state.roles[roleID]; if (role === undefined) throw new HandlerFailure(400, "Unknown role"); if (target.id === actor.id && roleID !== target.roleId) throw new HandlerFailure(403, "You cannot change your own role"); if (role.permissions.some((permission) => !actor.permissions.includes(permission))) throw new HandlerFailure(403, "Cannot grant permissions the current user does not hold"); target.roleId = roleID; }
+function applyRoleChange(state: { roles: Record<string, { permissions: string[] }>; users: Record<string, { roleId: string; status: string }> }, target: { id: string; roleId: string; status: string }, roleID: string, actor: CurrentUser): void { const role = state.roles[roleID]; if (role === undefined) throw new HandlerFailure(400, "Unknown role"); if (target.id === actor.id && roleID !== target.roleId) throw new HandlerFailure(403, "You cannot change your own role"); if (target.roleId === "role_admin" && roleID !== "role_admin" && target.status.toLowerCase() === "active" && activeAdminCount(state) <= 1) throw new HandlerFailure(409, "The last active Platform Admin cannot be reassigned"); if (role.permissions.some((permission) => !actor.permissions.includes(permission))) throw new HandlerFailure(403, "Cannot grant permissions the current user does not hold"); target.roleId = roleID; }
 /*******************************************************************************
  * Function: applyStatus
  *
  * Applies an account status change and its session-revocation rules.
  ******************************************************************************/
-function applyStatus(target: { id: string; status: string }, status: string, actor: CurrentUser): void { if (!["active", "suspended"].includes(status.toLowerCase())) throw new HandlerFailure(400, "Status must be Active or Suspended"); if (target.id === actor.id && status.toLowerCase() !== "active") throw new HandlerFailure(403, "You cannot suspend your own account"); target.status = status.toLowerCase() === "active" ? "Active" : "Suspended"; }
+function applyStatus(state: { users: Record<string, { roleId: string; status: string }> }, target: { id: string; roleId: string; status: string }, status: string, actor: CurrentUser): void { if (!["active", "suspended"].includes(status.toLowerCase())) throw new HandlerFailure(400, "Status must be Active or Suspended"); if (target.id === actor.id && status.toLowerCase() !== "active") throw new HandlerFailure(403, "You cannot suspend your own account"); if (target.roleId === "role_admin" && target.status.toLowerCase() === "active" && status.toLowerCase() !== "active" && activeAdminCount(state) <= 1) throw new HandlerFailure(409, "The last active Platform Admin cannot be suspended"); target.status = status.toLowerCase() === "active" ? "Active" : "Suspended"; }
+
+/*******************************************************************************
+ * Function: assertCanManageUser
+ *
+ * Prevents a lower-authority administrator from mutating or deleting an
+ * account whose effective permissions exceed the administrator's own set.
+ ******************************************************************************/
+function assertCanManageUser(state: { roles: Record<string, { permissions: string[] }> }, target: { id: string; roleId: string; permissionOverrides?: string[] }, actor: CurrentUser): void {
+  if (target.id === actor.id) return;
+  const targetPermissions = [...(state.roles[target.roleId]?.permissions ?? []), ...(target.permissionOverrides ?? [])];
+  if (targetPermissions.some((permission) => !actor.permissions.includes(permission))) throw new HandlerFailure(403, "Cannot manage a user with permissions the current user does not hold");
+}
 /*******************************************************************************
  * Function: revokeUserSessions
  *

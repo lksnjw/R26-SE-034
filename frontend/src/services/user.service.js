@@ -6,7 +6,25 @@ import { unwrap } from "./api";
  *
  * Normalizes user for the user service module.
  ******************************************************************************/
-const normalizeUser = (user) => ({ ...user, role: user.role?.name || user.role || "Unassigned" });
+const normalizeUser = (user, roles = []) => {
+  const resolvedRole = roles.find((role) => role.id === user?.roleId);
+  return { ...user, role: user?.role?.name || resolvedRole?.name || user?.role || "Unassigned" };
+};
+
+export function normalizeAdministrationUsers(users, roles) {
+  if (!Array.isArray(users)) return [];
+  const safeRoles = Array.isArray(roles) ? roles : [];
+  return users.map((user) => normalizeUser(user, safeRoles));
+}
+
+export function normalizePermissionMatrix(payload) {
+  if (!payload || !Array.isArray(payload.roles) || !payload.matrix || typeof payload.matrix !== "object") return [];
+  return payload.roles.map((role) => ({
+    role: role.name || role.id,
+    roleId: role.id,
+    permissions: payload.matrix[role.id] && typeof payload.matrix[role.id] === "object" ? payload.matrix[role.id] : {},
+  }));
+}
 
 export const userService = {
 /*******************************************************************************
@@ -15,18 +33,19 @@ export const userService = {
  * Loads administration for the user service module.
  ******************************************************************************/
   async loadAdministration() {
-    const [users, roles, permissions, matrix, departments] = await Promise.all([
+    const [users, roles, permissions, matrixResponse, departments] = await Promise.all([
       apiClient.get("/users"),
       apiClient.get("/roles"),
       apiClient.get("/permissions"),
       apiClient.get("/permissions/matrix"),
       apiClient.get("/company/departments"),
     ]);
+    const roleRows = unwrap(roles, []);
     return {
-      users: (unwrap(users, []) || []).map(normalizeUser),
-      roles: unwrap(roles, []),
+      users: normalizeAdministrationUsers(unwrap(users, []), roleRows),
+      roles: roleRows,
       permissions: unwrap(permissions, []),
-      matrix: unwrap(matrix, []),
+      matrix: normalizePermissionMatrix(unwrap(matrixResponse, null)),
       departments: unwrap(departments, []),
     };
   },
@@ -73,6 +92,14 @@ export const userService = {
  ******************************************************************************/
   async updateDepartment(userId, departmentId) {
     return normalizeUser(unwrap(await apiClient.patch(`/users/${userId}`, { departmentId: departmentId || null })));
+  },
+/*******************************************************************************
+ * Function: deleteUser
+ *
+ * Permanently removes an account after the caller has confirmed the action.
+ ******************************************************************************/
+  async deleteUser(userId) {
+    return unwrap(await apiClient.delete(`/users/${userId}`));
   },
 /*******************************************************************************
  * Function: updateRoleDefinition

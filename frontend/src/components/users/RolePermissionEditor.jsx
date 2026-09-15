@@ -3,6 +3,7 @@ import { EmptyState, LoadingState } from "../shared/ResourceState";
 import Button from "../shared/ui/Button";
 import Card from "../shared/ui/Card";
 import Checkbox from "../shared/ui/Checkbox";
+import Input from "../shared/ui/Input";
 import Modal from "../shared/ui/Modal";
 import Select from "../shared/ui/Select";
 import { apiErrorMessage } from "../../services/api";
@@ -27,6 +28,7 @@ function RolePermissionEditor({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [saveError, setSaveError] = useState("");
 /*******************************************************************************
  * Function: role
  *
@@ -44,10 +46,19 @@ function RolePermissionEditor({
  *
  * Performs the selected operation on the application for the RolePermissionEditor module.
  ******************************************************************************/
-  const selected = (role
-    ? drafts[role.id] ?? (Array.isArray(role.permissions) ? role.permissions : [])
-    : []).filter((permission) => availableKeys.has(permission));
+  const draft = role ? drafts[role.id] ?? {
+    name: role.name || "",
+    description: role.description || "",
+    permissions: Array.isArray(role.permissions) ? role.permissions : [],
+  } : null;
+  const selected = (draft?.permissions || []).filter((permission) => availableKeys.has(permission));
   const builtIn = role ? BUILT_IN_ROLE_IDS.has(role.id) : false;
+
+  const updateDraft = (patch) => {
+    if (!role || !draft) return;
+    setDrafts((current) => ({ ...current, [role.id]: { ...draft, ...patch } }));
+    setSaveError("");
+  };
 
 /*******************************************************************************
  * Function: toggle
@@ -56,12 +67,24 @@ function RolePermissionEditor({
  ******************************************************************************/
   const toggle = (permissionKey) => {
     if (!role) return;
-    setDrafts((current) => ({
-      ...current,
-      [role.id]: selected.includes(permissionKey)
-        ? selected.filter((item) => item !== permissionKey)
-        : [...selected, permissionKey],
-    }));
+    updateDraft({ permissions: selected.includes(permissionKey)
+      ? selected.filter((item) => item !== permissionKey)
+      : [...selected, permissionKey] });
+  };
+
+  const save = async () => {
+    if (!role || !draft) return;
+    setSaveError("");
+    try {
+      await onSave?.(role.id, { name: draft.name.trim(), description: draft.description.trim(), permissions: selected });
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[role.id];
+        return next;
+      });
+    } catch (error) {
+      setSaveError(apiErrorMessage(error, "Could not update role."));
+    }
   };
 
 /*******************************************************************************
@@ -88,7 +111,7 @@ function RolePermissionEditor({
       await onDelete?.(role.id);
       setDeleteOpen(false);
     } catch (error) {
-      const holders = error?.response?.data?.meta?.holders;
+      const holders = error?.response?.data?.meta?.assignedUsers;
       setDeleteError(Number.isInteger(holders)
         ? `This role is assigned to ${holders} user${holders === 1 ? "" : "s"} and cannot be deleted.`
         : apiErrorMessage(error, "Could not delete role."));
@@ -110,6 +133,29 @@ function RolePermissionEditor({
       </div>
       {role ? (
         <>
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <label className="block text-sm font-semibold text-gray-700 dark:text-gray-200">
+              Role name
+              <Input
+                className="mt-2"
+                aria-label="Role name"
+                value={draft?.name || ""}
+                disabled={!canManage || saving || builtIn}
+                onChange={(event) => updateDraft({ name: event.target.value })}
+              />
+              {builtIn ? <span className="mt-1 block text-xs font-normal text-gray-500">Built-in role names are fixed so policy and ERPBridge mappings remain stable.</span> : null}
+            </label>
+            <label className="block text-sm font-semibold text-gray-700 dark:text-gray-200">
+              Description
+              <Input
+                className="mt-2"
+                aria-label="Role description"
+                value={draft?.description || ""}
+                disabled={!canManage || saving}
+                onChange={(event) => updateDraft({ description: event.target.value })}
+              />
+            </label>
+          </div>
           {permissions.length === 0 ? (
             <div className="mt-5">
               <EmptyState title="No permissions available" description="This role can be saved with zero permissions." />
@@ -141,11 +187,12 @@ function RolePermissionEditor({
                   Delete role
                 </Button>
               </span>
-              <Button disabled={!canManage || saving} onClick={() => onSave?.(role.id, selected)}>
-                {saving ? "Saving..." : "Save Permissions"}
+              <Button disabled={!canManage || saving || !draft?.name.trim()} onClick={save}>
+                {saving ? "Saving..." : "Save role"}
               </Button>
             </div>
           </div>
+          {saveError ? <p role="alert" className="mt-3 text-sm font-semibold text-red-600 dark:text-red-300">{saveError}</p> : null}
         </>
       ) : (
         <div className="mt-5">

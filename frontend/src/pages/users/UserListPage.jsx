@@ -91,20 +91,35 @@ function UserListPage({ view = "directory" }) {
     }
   };
 
+  const deleteUser = async (userId) => {
+    setBusyUserId(userId);
+    try {
+      await userService.deleteUser(userId);
+      notify("User deleted.", "success");
+      await reload();
+    } catch (requestError) {
+      notify(apiErrorMessage(requestError, "Could not delete user."), "error");
+      throw requestError;
+    } finally {
+      setBusyUserId("");
+    }
+  };
+
 /*******************************************************************************
  * Function: saveRole
  *
  * Saves role for the UserListPage module.
  ******************************************************************************/
-  const saveRole = async (selectedRoleId, permissions) => {
+  const saveRole = async (selectedRoleId, payload) => {
     setSavingRole(true);
     try {
-      await userService.updateRoleDefinition(selectedRoleId, { permissions });
+      await userService.updateRoleDefinition(selectedRoleId, payload);
       await refreshUser();
-      notify("Role permissions updated.", "success");
+      notify("Role updated.", "success");
       await reload();
     } catch (requestError) {
-      notify(apiErrorMessage(requestError, "Could not update role permissions."), "error");
+      notify(apiErrorMessage(requestError, "Could not update role."), "error");
+      throw requestError;
     } finally {
       setSavingRole(false);
     }
@@ -171,6 +186,7 @@ function UserListPage({ view = "directory" }) {
               () => userService.updateDepartment(userId, departmentId),
               "User department updated."
             )}
+            onDelete={deleteUser}
           />
           <Card>
             <h2 className="section-title mb-5">Create User</h2>
