@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FirestoreRecordPersistence } from "../src/storage/firestore-records.js";
 import { FirestoreRecordCodec } from "../src/storage/firestore-record-codec.js";
@@ -6,6 +8,7 @@ import { executionTransaction } from "../src/repository/execution-transaction.js
 import { Database, FakeClient } from "./fixtures/fake-firestore.js";
 import { loadConfig } from "../src/config/config.js";
 import { openApplicationRepository } from "../src/storage/open-repository.js";
+import { AESGCMCodec } from "../src/storage/aes-gcm.js";
 
 const runtime = vi.hoisted(() => ({ db: null as any, clients: [] as any[] }));
 vi.mock("@google-cloud/firestore", () => ({ Firestore: class { constructor(settings: any) { const client = new FakeClient(runtime.db, settings); runtime.clients.push(client); return client; } } }));
@@ -121,6 +124,40 @@ test("legacy aggregate detection refuses silent empty initialization and does no
   const legacy = { profile: "legacy", payload: Buffer.from("synthetic-old-state") }; db.documents.set("runtime/state", legacy);
   const persistence = await open(); await expect(Repository.open(persistence)).rejects.toThrow("explicit backed-up migration");
   expect(db.documents.get("runtime/state")).toEqual(legacy); expect(db.documents.has(persistence.records.headPath)).toBe(false);
+});
+
+test("explicit exact-hash legacy cutover preserves the source and activates a lossless empty target", async () => {
+  const original = initialState(); original.settings.migrated = { answer: false }; original.executions.run = run("run"); original.timelines.run = [];
+  const plaintext = Buffer.from(JSON.stringify(original)), encrypted = new AESGCMCodec(key).encode(gzipSync(plaintext));
+  const legacy = { payload: encrypted.toString("base64"), encrypted: true, compression: "gzip", updatedAt: "2026-10-08T00:00:00.000Z" };
+  db.documents.set("runtime/state", legacy); const startup = await open();
+  await expect(Repository.open(startup)).rejects.toThrow("explicit backed-up migration");
+  const persistence = await open();
+  await expect(persistence.migrateLegacy(`sha256:${"0".repeat(64)}`)).rejects.toThrow("backup hash");
+  expect(db.documents.has(persistence.records.headPath)).toBe(false);
+  const sourceHash = `sha256:${createHash("sha256").update(plaintext).digest("hex")}`, report = await persistence.migrateLegacy(sourceHash);
+  expect(report).toMatchObject({ sourceHash, sourceBytes: plaintext.length }); expect(report.recordCount).toBeGreaterThan(1); expect(report.recordFingerprint).toMatch(/^sha256:[a-f0-9]{64}$/);
+  expect(await Repository.open(persistence).then(value => value.snapshot())).toEqual(original); expect(db.documents.get("runtime/state")).toEqual(legacy);
+  await expect(persistence.migrateLegacy(sourceHash)).rejects.toThrow("empty target");
+});
+
+test.each([
+  ["unknown legacy metadata", { payload: Buffer.from("{}").toString("base64"), encrypted: false, unexpected: true }],
+  ["claimed encryption with plaintext", { payload: Buffer.from("{}").toString("base64"), encrypted: true }],
+  ["invalid compression", { payload: Buffer.from("{}").toString("base64"), encrypted: false, compression: "zip" }],
+])("%s is rejected without activating any normalized records", async (_name, legacy) => {
+  db.documents.set("runtime/state", legacy); const persistence = await open();
+  await expect(persistence.migrateLegacy(`sha256:${"0".repeat(64)}`)).rejects.toThrow();
+  expect(db.documents.has(persistence.records.headPath)).toBe(false); expect(db.documents.get("runtime/state")).toEqual(legacy);
+});
+
+test("an oversized legacy cutover is rejected before staging and requires the future staged migration path", async () => {
+  const original = initialState(); for (let at = 0; at < 450; at++) original.settings[`field_${at}`] = at;
+  const plaintext = Buffer.from(JSON.stringify(original));
+  db.documents.set("runtime/state", { payload: plaintext.toString("base64"), encrypted: false });
+  const persistence = await open(), version = db.version;
+  await expect(persistence.migrateLegacy(`sha256:${createHash("sha256").update(plaintext).digest("hex")}`)).rejects.toThrow("staged migration");
+  expect(db.version).toBe(version); expect(db.documents.has(persistence.records.headPath)).toBe(false); persistence.records.assertWriterActive();
 });
 
 test.each(["users", "roles", "capabilityAdmissions"])("a malformed %s map is not silently repaired into authoritative defaults", async field => {

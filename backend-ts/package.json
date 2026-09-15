@@ -19,6 +19,8 @@
     "test": "vitest run",
     "verify:firestore-records": "node --import tsx/esm scripts/verify-firestore-records.mjs",
     "verify:firestore-runtime": "node --import tsx/esm scripts/verify-firestore-runtime.mjs",
+    "verify:firestore-cutover": "node --import tsx/esm scripts/verify-firestore-cutover.mjs",
+    "cutover:firestore": "node --import tsx/esm scripts/firestore-cutover.mjs",
     "verify:container": "node scripts/verify-container-artifact.mjs",
     "measure:local-latency": "node --import tsx/esm scripts/measure-local-latency.mjs",
     "verify:local-latency": "node --import tsx/esm scripts/measure-local-latency.mjs --enforce",

@@ -7,13 +7,15 @@ import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { checkpointRecords, recordKey, type RuntimeRecord } from "./execution-record-layout.js";
 import { assembleFirestoreState, splitFirestoreState, firestoreExecutionRecordScope } from "./firestore-record-layout.js";
 import { FirestoreRecordStore, type FirestoreRecordSnapshot } from "./firestore-record-store.js";
-import type { FirestoreNamespace } from "./firestore-record-codec.js";
+import { FIRESTORE_RECORD_BOUNDS, type FirestoreNamespace } from "./firestore-record-codec.js";
 import { FIRESTORE_WRITER_BOUNDS, type FirestoreWriterClock } from "./firestore-writer-ownership.js";
+import { assertFirestoreLegacyBackupHash, prepareFirestoreLegacyCutover } from "./firestore-legacy-cutover.js";
 
 type Cached = { record: RuntimeRecord; json: string };
 type Options = Pick<Settings, "keyFilename" | "credentials"> & {
   writerDuration?: number; clock?: FirestoreWriterClock; initializationTimeoutMs?: number; signal?: AbortSignal;
 };
+class FirestoreLegacyMigrationRequired extends Error {}
 const cached = (record: RuntimeRecord): Cached => ({ record: structuredClone(record), json: canonicalJSONBytes(record).toString("utf8") });
 function checkedState(payload: Uint8Array): RepositoryState {
   const decoded: unknown = JSON.parse(Buffer.from(payload).toString("utf8")), restored = restoreState(payload);
@@ -44,12 +46,12 @@ export class FirestoreRecordPersistence implements PersistenceBackend {
   #renewal: Promise<void> | undefined;
   #closing: Promise<void> | undefined;
   #unsubscribe: (() => void) | undefined;
-  private constructor(readonly records: FirestoreRecordStore, readonly duration: number) {}
+  private constructor(readonly records: FirestoreRecordStore, readonly duration: number, readonly encryptionKey: string, readonly namespace: FirestoreNamespace) {}
 
   static async open(encryptionKey: string, namespace: FirestoreNamespace, options: Options = {}): Promise<FirestoreRecordPersistence> {
     const timeout = options.initializationTimeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new Error("Invalid Firestore initialization deadline");
-    const adapter = new FirestoreRecordPersistence(FirestoreRecordStore.create(encryptionKey, namespace, options), options.writerDuration ?? FIRESTORE_WRITER_BOUNDS.duration);
+    const adapter = new FirestoreRecordPersistence(FirestoreRecordStore.create(encryptionKey, namespace, options), options.writerDuration ?? FIRESTORE_WRITER_BOUNDS.duration, encryptionKey, namespace);
     let rejectCancelled!: (error: Error) => void;
     const cancelled = new Promise<never>((_, reject) => { rejectCancelled = reject; });
     const abort = () => {
@@ -122,14 +124,47 @@ export class FirestoreRecordPersistence implements PersistenceBackend {
         const snapshot = await this.records.load(), records = this.records.readRecords(snapshot);
         let payload: Buffer | null = null;
         if (!records.length) {
-          if ((await this.records.db.doc("runtime/state").get()).exists) throw new Error("Legacy Firestore aggregate exists; explicit backed-up migration is required");
+          if ((await this.records.db.doc("runtime/state").get()).exists) throw new FirestoreLegacyMigrationRequired("Legacy Firestore aggregate exists; explicit backed-up migration is required");
         } else payload = Buffer.from(JSON.stringify(checkedState(Buffer.from(JSON.stringify(assembleFirestoreState(records))))));
         this.records.assertWriterActive(); this.assertOwner();
         const values = records.map(record => [recordKey(record.path), cached(record)] as const);
         this.#records.clear(); this.#scopes.clear(); for (const [key, value] of values) this.install(key, value);
         this.#snapshot = snapshot; this.#loaded = true; this.#uncertain = false; this.#denialNotified = false;
         return payload;
-      } catch (error) { this.#uncertain = true; this.deny(); throw error; }
+      } catch (error) {
+        if (error instanceof FirestoreLegacyMigrationRequired) throw error;
+        this.#uncertain = true; this.deny(); throw error;
+      }
+    });
+  }
+  /** Explicit bounded cutover only. The legacy aggregate is retained and the
+   * normalized target must be empty. The caller must first retain an external
+   * backup and provide its decompressed plaintext SHA-256. */
+  async migrateLegacy(expectedSourceHash: string): Promise<Readonly<{ sourceHash: string; sourceBytes: number; recordCount: number; recordFingerprint: string }>> {
+    return this.#mutex.runExclusive(async () => {
+      this.assertOwner();
+      if (!/^sha256:[a-f0-9]{64}$/.test(expectedSourceHash)) throw new Error("An explicit legacy Firestore backup hash is required");
+      const snapshot = await this.records.load();
+      if (snapshot.recordCount || snapshot.revision) throw new Error("Record migration requires an empty target; existing records are not overwritten");
+      const row = await this.records.db.doc("runtime/state").get();
+      if (!row.exists) throw new Error("Legacy Firestore source is unavailable");
+      const prepared = prepareFirestoreLegacyCutover(row.data(), this.encryptionKey, this.namespace);
+      assertFirestoreLegacyBackupHash(prepared.sourceHash, expectedSourceHash);
+      // The authoritative head consumes one write in the same transaction.
+      if (prepared.recordCount >= FIRESTORE_RECORD_BOUNDS.transactionWrites)
+        throw new Error("Legacy Firestore source exceeds the bounded atomic cutover record limit; staged migration is required");
+      let activated: FirestoreRecordSnapshot;
+      try {
+        activated = await this.records.commit(snapshot, { transitionId: `legacy_cutover_${expectedSourceHash.slice("sha256:".length)}`, upsert: prepared.records });
+      } catch (error) {
+        if (this.records.writeUncertain) { this.#uncertain = true; this.deny(); }
+        throw error;
+      }
+      this.records.assertWriterActive(); this.assertOwner();
+      this.#records.clear(); this.#scopes.clear();
+      for (const record of prepared.records) this.install(recordKey(record.path), cached(record));
+      this.#snapshot = activated; this.#loaded = true; this.#uncertain = false; this.#denialNotified = false;
+      return Object.freeze({ sourceHash: prepared.sourceHash, sourceBytes: prepared.sourceBytes, recordCount: prepared.recordCount, recordFingerprint: prepared.recordFingerprint });
     });
   }
   async save(payload: Uint8Array): Promise<void> {

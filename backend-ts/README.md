@@ -67,6 +67,11 @@ npm run dev
 
 The default memory storage is intentionally non-durable. The owner-selected database is Cloud Firestore; the new opt-in `STORAGE_DRIVER=firestore-records` adapter has locally verified normalized encrypted persistence, exclusive-writer heartbeat and normal chat/read/collection integration. It requires explicit `FIRESTORE_PROJECT_ID`, `FIRESTORE_DATABASE_ID` (including `(default)` when intended), `FIRESTORE_WORKSPACE_ID` and a valid 32-byte server-held `STORAGE_ENCRYPTION_KEY` encoded as base64, hex, or a literal value. Leave legacy `FIRESTORE_ENCRYPTION_KEY` unset or exactly match that key. Server credentials never belong in frontend configuration. See the [configuration, emulator evidence and remaining migration/release gates](../docs/FIRESTORE_APPLICATION_RUNTIME_INTEGRATION_2026-10-06.md) before selecting it against any retained data.
 
+Legacy aggregate data is never imported automatically. The bounded cutover tool
+supports `export`, `verify` and `migrate`, requires a separate backup key and
+refuses a changed source or nonempty normalized target. It retains the legacy
+document. Read the complete [cutover contract and operator sequence](../docs/FIRESTORE_RECOVERABLE_CUTOVER_2026-10-08.md) before using `npm run cutover:firestore -- <mode>`. The current atomic path rejects sources requiring 400 or more activation writes; it is not a substitute for the remaining large staged migration, cloud restore/rollback and IAM qualification.
+
 Existing `postgres` / `postgres-records` drivers and data remain available for regression/explicit migration, using `DATABASE_URL` and `STORAGE_ENCRYPTION_KEY`. Legacy `STORAGE_DRIVER=firestore` is still the unqualified aggregate/mirror adapter; it must not be substituted for verified execution storage. No driver selection implicitly imports or resets data, creates a cloud project or completes production qualification. Runtime registry files are created under `configs/runtime/` from the frozen copies stored in this folder's parity fixtures.
 
 Supported published read workflows can use `mode: "async-read"` with a 16–128 character idempotency key. `READ_WORKER_CONCURRENCY` defaults to 2 (1–8), `READ_WORKER_PER_ACTOR` to 1 (1–worker count), and `READ_WORKER_LEASE_MS` to 30000 (5000–300000). Independent principals share bounded fair slots; actions inside a workflow remain ordered. Authenticated private leases are renewed and checked at SDK entry. Interrupted/expired/uncertain jobs require recovery, not automatic replay. This is exclusive-writer local concurrency, not distributed failover or full collection/effect/schedule support. See [worker behavior and verification](../docs/FAIR_READ_WORKERS_AND_SDK_LEASE_FENCES_2026-10-06.md).
@@ -138,8 +143,11 @@ See [ERPBridge integration](docs/ERPBRIDGE_INTEGRATION.md) for the role matrix, 
 
 ```powershell
 npm run verify
+firebase emulators:exec --only firestore --project demo-lcwe-records --config firestore.emulator.json "npm run verify:firestore-cutover"
 ```
 
-That command type-checks, runs the test suite, and builds the production artifact.
+The first command type-checks, runs the test suite, and builds the production
+artifact. The second is a separate guarded, synthetic, loopback-only Firestore
+cutover rehearsal; ports 23671–23674 must be free.
 
 The runtime security claims are deliberately narrower than the Go compile-time claims; see [docs/INVARIANTS.md](docs/INVARIANTS.md) and [docs/MIGRATION.md](docs/MIGRATION.md).
