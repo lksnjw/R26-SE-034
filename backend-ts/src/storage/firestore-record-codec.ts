@@ -10,7 +10,8 @@ export type EncodedFirestoreRecord = { key: string; record: RuntimeRecord; bytes
 export type DecodedRecordChunk = { key: string; hash: string; bytes: number; index: number; count: number; body: Buffer };
 // Application budgets, not platform quotas. Activate only bounded metadata in
 // one commit; prepare the larger immutable encrypted bodies separately.
-export const FIRESTORE_RECORD_BOUNDS = Object.freeze({ chunkBytes: 384_000, recordBytes: 8_000_000, documentBytes: 786_432, imageBytes: 256_000_000, recordCount: 100_000, chunkCount: 100_000, transactionWrites: 400, transactionBytes: 3_000_000, mutationBytes: 32_000_000, stagingConcurrency: 4, readBatch: 100 });
+export const FIRESTORE_RECORD_BOUNDS = Object.freeze({ chunkBytes: 384_000, recordBytes: 8_000_000, documentBytes: 786_432, imageBytes: 256_000_000, recordCount: 100_000, chunkCount: 100_000, transactionWrites: 400, transactionBytes: 3_000_000, mutationBytes: 32_000_000, stagingConcurrency: 4, readBatch: 100,
+  migrationRecords: 5_000, migrationManifestBytes: 6_000_000 });
 const chunkMagic = Buffer.from("LCWE_FS_CHUNK_V1", "ascii"), MAX_HEADER = 24_000;
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const invalid = () => new Error("Invalid authenticated Firestore record or scope");

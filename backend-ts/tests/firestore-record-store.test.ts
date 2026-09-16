@@ -151,6 +151,48 @@ test("unreferenced stage packets do not activate even in an empty workspace, but
   await expect(storage.load()).rejects.toThrow("no authoritative head");
 });
 
+test("staged initialization publishes more than one transaction of records with one final authoritative head", async () => {
+  const storage = store(), records = Array.from({ length: B.transactionWrites + 25 }, (_, at) => record(`migration_${at}`, at % 3 === 0 ? false : at));
+  const saved = await storage.initializeStaged(records, "staged-migration-large");
+  expect(saved).toMatchObject({ revision: 1, recordCount: records.length });
+  expect(db.writes.at(-1)).toHaveLength(1); expect(db.writes.at(-1)![0]!.path).toBe(storage.headPath);
+  const reopened = store(), loaded = await reopened.load();
+  expect(reopened.readRecords(loaded).sort((a, b) => recordKey(a.path).localeCompare(recordKey(b.path)))).toEqual([...records].sort((a, b) => recordKey(a.path).localeCompare(recordKey(b.path))));
+});
+
+test("partial staged manifests stay unavailable and an exact fresh-store retry safely completes activation", async () => {
+  const storage = store(), records = Array.from({ length: 40 }, (_, at) => record(`recover_${at}`, { at }));
+  db.stageFaultAt = records.length + 5;
+  await expect(storage.initializeStaged(records, "staged-migration-retry")).rejects.toThrow("staging failure");
+  expect(db.documents.has(storage.headPath)).toBe(false); await expect(store().load()).rejects.toThrow("no authoritative head");
+  const successor = store(), saved = await successor.initializeStaged(records, "staged-migration-retry");
+  expect(saved).toMatchObject({ revision: 1, recordCount: records.length });
+  expect(successor.readRecords(await successor.load()).sort((a, b) => recordKey(a.path).localeCompare(recordKey(b.path)))).toEqual([...records].sort((a, b) => recordKey(a.path).localeCompare(recordKey(b.path))));
+});
+
+test("staged activation lost acknowledgement never republishes and authoritative reopen reveals the exact outcome", async () => {
+  const storage = store(), records = Array.from({ length: 20 }, (_, at) => record(`ack_${at}`, at)); db.fault = "after-commit";
+  await expect(storage.initializeStaged(records, "staged-migration-lost-ack")).rejects.toThrow("acknowledgement");
+  expect(storage.writeUncertain).toBe(true); const reopened = store(), loaded = await reopened.load();
+  expect(loaded).toMatchObject({ revision: 1, recordCount: records.length });
+  expect(reopened.readRecords(loaded).sort((a, b) => recordKey(a.path).localeCompare(recordKey(b.path)))).toEqual([...records].sort((a, b) => recordKey(a.path).localeCompare(recordKey(b.path))));
+  await expect(reopened.initializeStaged(records, "staged-migration-lost-ack")).rejects.toThrow("empty target");
+});
+
+test("staged initialization refuses its record bound before any SDK write", async () => {
+  const storage = store(), records = Array.from({ length: B.migrationRecords + 1 }, (_, at) => record(`bounded_${at}`, at)), version = db.version;
+  await expect(storage.initializeStaged(records, "staged-migration-too-many")).rejects.toThrow("Invalid bounded");
+  expect(db.version).toBe(version); expect(db.documents.size).toBe(0);
+});
+
+test("an unrelated orphan manifest prevents staged head publication instead of being adopted", async () => {
+  const storage = store(), codec = new FirestoreRecordCodec(key, scope), alien = codec.encodeRecord(record("alien", true));
+  db.documents.set(`${storage.collectionPath}/${codec.manifestId(alien.key)}`, codec.encodeHead({ profile: "firestore-record-manifest/v1", key: alien.key,
+    hash: alien.hash, bytes: alien.bytes.length, chunks: alien.chunks.map(chunk => chunk.id) }));
+  await expect(storage.initializeStaged([record("wanted", false)], "staged-migration-extra")).rejects.toThrow("manifest set differs");
+  expect(db.documents.has(storage.headPath)).toBe(false);
+});
+
 test("close waits for in-flight staging and refuses subsequent activation or cached success", async () => {
   const { storage, first } = await setup(), head = clone(db.documents.get(storage.headPath)); let resume!: () => void, started!: () => void;
   const hold = new Promise<void>(resolve => { resume = resolve; }), entered = new Promise<void>(resolve => { started = resolve; });

@@ -2,12 +2,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Firestore } from "@google-cloud/firestore";
 import { decodeEncryptionKey } from "../src/storage/aes-gcm.js";
-import { validateFirestoreNamespace } from "../src/storage/firestore-record-codec.js";
+import { canonicalJSONBytes } from "../src/core/canonical-json.js";
+import { FirestoreRecordCodec, validateFirestoreNamespace } from "../src/storage/firestore-record-codec.js";
 import { FirestoreRecordPersistence } from "../src/storage/firestore-records.js";
-import { createFirestoreLegacyBackup, verifyFirestoreLegacyBackup } from "../src/storage/firestore-legacy-cutover.js";
+import { assembleFirestoreState } from "../src/storage/firestore-record-layout.js";
+import { createFirestoreLegacyBackup, prepareFirestoreLegacyCutover, verifyFirestoreLegacyBackup } from "../src/storage/firestore-legacy-cutover.js";
 
-const command = process.argv[2], allowed = new Set(["export", "verify", "migrate"]);
-if (!allowed.has(command)) throw new Error("Usage: firestore-cutover.mjs export|verify|migrate");
+const command = process.argv[2], allowed = new Set(["export", "verify", "status", "migrate"]);
+if (!allowed.has(command)) throw new Error("Usage: firestore-cutover.mjs export|verify|status|migrate");
 const required = name => { const value = process.env[name]?.trim(); if (!value) throw new Error(`${name} is required`); return value; };
 const backupPath = resolve(required("FIRESTORE_CUTOVER_BACKUP_PATH"));
 const storageKey = required("STORAGE_ENCRYPTION_KEY"), backupKey = required("FIRESTORE_CUTOVER_BACKUP_KEY");
@@ -42,6 +44,26 @@ if (command === "export") {
     console.log(JSON.stringify({ status: "exported", path: backupPath, namespace: backup.namespace, sourceHash: backup.sourceHash,
       sourceBytes: backup.sourceBytes, recordCount: backup.recordCount, recordFingerprint: backup.recordFingerprint }));
   } finally { await db.terminate(); }
+} else if (command === "status") {
+  const backup = verifyFirestoreLegacyBackup(await readFile(backupPath), storageKey, backupKey);
+  if (backup.namespace.projectId !== namespace.projectId || backup.namespace.databaseId !== namespace.databaseId || backup.namespace.workspaceId !== namespace.workspaceId)
+    throw new Error("Backup namespace differs from the explicit status target");
+  const prepared = prepareFirestoreLegacyCutover(backup.document, storageKey, namespace), persistence = await FirestoreRecordPersistence.open(storageKey, namespace, authentication);
+  try {
+    const snapshot = await persistence.records.load();
+    if (!snapshot.recordCount || !snapshot.revision) {
+      console.log(JSON.stringify({ status: "not-active", namespace, sourceHash: backup.sourceHash })); process.exitCode = 2;
+    } else {
+      const state = assembleFirestoreState(persistence.records.readRecords(snapshot));
+      const expectedTransition = new FirestoreRecordCodec(storageKey, namespace).identity("transition", `legacy_cutover_${backup.sourceHash.slice("sha256:".length)}`);
+      if (snapshot.transitionIdentity !== expectedTransition || snapshot.recordCount !== backup.recordCount || !canonicalJSONBytes(state).equals(canonicalJSONBytes(prepared.state)))
+        throw new Error("Active Firestore target differs from the authenticated backup");
+      const legacy = await persistence.records.db.doc("runtime/state").get(), legacySourceRetained = legacy.exists &&
+        canonicalJSONBytes(legacy.data()).equals(canonicalJSONBytes(backup.document));
+      console.log(JSON.stringify({ status: "active", namespace, sourceHash: backup.sourceHash, sourceBytes: backup.sourceBytes,
+        recordCount: snapshot.recordCount, recordFingerprint: backup.recordFingerprint, revision: snapshot.revision, legacySourceRetained }));
+    }
+  } finally { await persistence.close(); }
 } else {
   const backup = verifyFirestoreLegacyBackup(await readFile(backupPath), storageKey, backupKey);
   if (backup.namespace.projectId !== namespace.projectId || backup.namespace.databaseId !== namespace.databaseId || backup.namespace.workspaceId !== namespace.workspaceId)

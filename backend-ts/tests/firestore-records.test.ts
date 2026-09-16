@@ -151,13 +151,22 @@ test.each([
   expect(db.documents.has(persistence.records.headPath)).toBe(false); expect(db.documents.get("runtime/state")).toEqual(legacy);
 });
 
-test("an oversized legacy cutover is rejected before staging and requires the future staged migration path", async () => {
+test("a legacy image larger than one normal transaction stages and publishes one authoritative head", async () => {
   const original = initialState(); for (let at = 0; at < 450; at++) original.settings[`field_${at}`] = at;
   const plaintext = Buffer.from(JSON.stringify(original));
-  db.documents.set("runtime/state", { payload: plaintext.toString("base64"), encrypted: false });
-  const persistence = await open(), version = db.version;
-  await expect(persistence.migrateLegacy(`sha256:${createHash("sha256").update(plaintext).digest("hex")}`)).rejects.toThrow("staged migration");
-  expect(db.version).toBe(version); expect(db.documents.has(persistence.records.headPath)).toBe(false); persistence.records.assertWriterActive();
+  const legacy = { payload: plaintext.toString("base64"), encrypted: false }; db.documents.set("runtime/state", legacy);
+  const persistence = await open(), report = await persistence.migrateLegacy(`sha256:${createHash("sha256").update(plaintext).digest("hex")}`);
+  expect(report.recordCount).toBeGreaterThan(400); expect(db.documents.has(persistence.records.headPath)).toBe(true);
+  expect(await Repository.open(persistence).then(value => value.snapshot())).toEqual(original); expect(db.documents.get("runtime/state")).toEqual(legacy);
+});
+
+test("a legacy source change during staging denies authoritative activation", async () => {
+  const original = initialState(); original.settings.saved = { value: 1 }; const plaintext = Buffer.from(JSON.stringify(original));
+  const legacy = { payload: plaintext.toString("base64"), encrypted: false, updatedAt: "2026-10-08T00:00:00.000Z" }; db.documents.set("runtime/state", legacy);
+  const persistence = await open(); let changed = false;
+  db.stageHook = async () => { if (!changed) { changed = true; db.documents.set("runtime/state", { ...legacy, updatedAt: "2026-10-08T00:01:00.000Z" }); db.version++; } };
+  await expect(persistence.migrateLegacy(`sha256:${createHash("sha256").update(plaintext).digest("hex")}`)).rejects.toThrow("source changed");
+  expect(db.documents.has(persistence.records.headPath)).toBe(false);
 });
 
 test.each(["users", "roles", "capabilityAdmissions"])("a malformed %s map is not silently repaired into authoritative defaults", async field => {

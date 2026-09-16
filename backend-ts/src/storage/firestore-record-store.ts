@@ -210,6 +210,77 @@ export class FirestoreRecordStore {
     }));
     const failure = results.find(result => result.status === "rejected"); if (failure?.status === "rejected") throw failure.reason;
   }
+  /** One-time empty-target initializer for images larger than a normal atomic
+   * checkpoint. Immutable encrypted bodies and manifests are prepared first;
+   * one writer-fenced transaction verifies the complete exact manifest set and
+   * publishes the authoritative head last. A crash before that head remains
+   * unavailable to normal load and an exact retry may reuse identical packets. */
+  async initializeStaged(records: readonly RuntimeRecord[], transitionId: string,
+    sourceGuard?: Readonly<{ path: "runtime/state"; document: unknown }>): Promise<FirestoreRecordSnapshot> {
+    return this.#mutex.runExclusive(() => this.withWriter(async () => {
+      this.assertOpen();
+      if (this.#uncertain) throw new Error("Firestore must be authoritatively reopened after an uncertain staged migration");
+      if (typeof transitionId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(transitionId) || !Array.isArray(records) || !records.length || records.length > B.migrationRecords)
+        throw new Error("Invalid bounded Firestore staged migration");
+      if (sourceGuard && (sourceGuard.path !== "runtime/state" || !sourceGuard.document || typeof sourceGuard.document !== "object" || Array.isArray(sourceGuard.document)))
+        throw new Error("Invalid Firestore staged migration source guard");
+      const entries = new Map<string, Entry>(), manifests = new Map<string, PrivateFirestoreDocument>();
+      let index = new RuntimeRecordIndex(), totalBytes = 0, chunkCount = 0, manifestBytes = 0;
+      for (const record of records) {
+        const encoded = this.#codec.encodeRecord(record), key = encoded.key, id = this.#codec.manifestId(key);
+        if (entries.has(key) || manifests.has(id)) throw new Error("Duplicate Firestore staged migration address");
+        totalBytes += encoded.bytes.length; chunkCount += encoded.chunks.length; index = index.with(key, encoded.hash);
+        // Conservative read-side serialized document allowance. The normal
+        // write budget uses a larger per-write allowance; activation reads the
+        // prepared manifests and writes only the head.
+        const manifest = this.#codec.encodeHead(this.manifestValue(encoded)); manifestBytes += manifest.payload.length + 1024;
+        if (totalBytes > B.imageBytes || chunkCount > B.chunkCount || manifestBytes > B.migrationManifestBytes)
+          throw new Error("Firestore staged migration budget exceeded");
+        entries.set(key, { ...encoded, manifest }); manifests.set(id, manifest);
+      }
+      const emptyFingerprint = new RuntimeRecordIndex().fingerprint;
+      const transition: Transition = { identity: this.#codec.identity("transition", transitionId), inputHash: this.#codec.identity("migration", {
+        fingerprint: index.fingerprint, records: entries.size, chunks: chunkCount, bytes: totalBytes }), previousRevision: 0, previousFingerprint: emptyFingerprint };
+      const head: Head = { profile: "firestore-record-head/v2", revision: 1, records: entries.size, chunks: chunkCount, bytes: totalBytes,
+        fingerprint: index.fingerprint, writerGeneration: this.#writer?.generation ?? null, transition }, headDocument = this.#codec.encodeHead(head);
+      try {
+        const headRow = await this.db.doc(this.headPath).get();
+        if (headRow.exists) throw new Error("Staged migration requires an empty target; existing records are not overwritten");
+        await this.stage([...entries.values()].flatMap(entry => entry.chunks)); this.assertOpen();
+        const pending = [...manifests.entries()];
+        for (let offset = 0; offset < pending.length; offset += B.stagingConcurrency) await Promise.all(pending.slice(offset, offset + B.stagingConcurrency).map(async ([id, document]) => {
+          const ref = this.db.collection(this.collectionPath).doc(id);
+          try { await ref.create(document); }
+          catch (error) {
+            if (!error || typeof error !== "object" || !("code" in error) || error.code !== 6) throw error;
+            const existing = await ref.get();
+            if (!existing.exists || !same(this.manifest(id, existing.data()), this.manifest(id, document))) throw new Error("Firestore staged manifest address already contains different data");
+            const acknowledged = copyDocument(existing.data() as PrivateFirestoreDocument), key = this.manifest(id, acknowledged).key, entry = entries.get(key);
+            if (!entry) throw new Error("Firestore staged manifest address is outside the authenticated migration");
+            manifests.set(id, acknowledged); entries.set(key, { ...entry, manifest: acknowledged });
+          }
+          this.assertOpen(); this.#writer?.assertTransactionDeadline();
+        }));
+        await this.db.runTransaction(async transaction => {
+          await this.assertWriterTransaction(transaction);
+          const actualHead = await transaction.get(this.db.doc(this.headPath));
+          if (actualHead.exists) throw new Error("Staged migration requires an empty target; existing records are not overwritten");
+          if (sourceGuard) {
+            const source = await transaction.get(this.db.doc(sourceGuard.path));
+            if (!source.exists || !same(source.data(), sourceGuard.document)) throw new Error("Legacy Firestore source changed after backup verification; activation denied");
+          }
+          const rows = await transaction.get(this.db.collection(this.collectionPath).limit(entries.size + 1));
+          if (rows.size !== entries.size) throw new Error("Firestore staged manifest set differs from the authenticated migration");
+          for (const row of rows.docs) {
+            const expected = manifests.get(row.id);
+            if (!expected || !sameDocument(row.data(), expected)) throw new Error("Firestore staged manifest set differs from the authenticated migration");
+          }
+          this.assertOpen(); this.#writer?.assertTransactionDeadline(); transaction.set(this.db.doc(this.headPath), headDocument); return null;
+        }, { maxAttempts: 5 });
+        this.assertOpen(); return this.snapshot({ head, index, entries });
+      } catch (error) { this.#uncertain = true; throw error; }
+    }));
+  }
   async commit(snapshot: FirestoreRecordSnapshot, mutation: FirestoreRecordMutation): Promise<FirestoreRecordSnapshot> {
     return this.#mutex.runExclusive(() => this.withWriter(async () => {
       this.assertOpen();

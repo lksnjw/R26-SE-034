@@ -7,7 +7,7 @@ import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { checkpointRecords, recordKey, type RuntimeRecord } from "./execution-record-layout.js";
 import { assembleFirestoreState, splitFirestoreState, firestoreExecutionRecordScope } from "./firestore-record-layout.js";
 import { FirestoreRecordStore, type FirestoreRecordSnapshot } from "./firestore-record-store.js";
-import { FIRESTORE_RECORD_BOUNDS, type FirestoreNamespace } from "./firestore-record-codec.js";
+import type { FirestoreNamespace } from "./firestore-record-codec.js";
 import { FIRESTORE_WRITER_BOUNDS, type FirestoreWriterClock } from "./firestore-writer-ownership.js";
 import { assertFirestoreLegacyBackupHash, prepareFirestoreLegacyCutover } from "./firestore-legacy-cutover.js";
 
@@ -144,18 +144,20 @@ export class FirestoreRecordPersistence implements PersistenceBackend {
     return this.#mutex.runExclusive(async () => {
       this.assertOwner();
       if (!/^sha256:[a-f0-9]{64}$/.test(expectedSourceHash)) throw new Error("An explicit legacy Firestore backup hash is required");
-      const snapshot = await this.records.load();
-      if (snapshot.recordCount || snapshot.revision) throw new Error("Record migration requires an empty target; existing records are not overwritten");
       const row = await this.records.db.doc("runtime/state").get();
       if (!row.exists) throw new Error("Legacy Firestore source is unavailable");
       const prepared = prepareFirestoreLegacyCutover(row.data(), this.encryptionKey, this.namespace);
       assertFirestoreLegacyBackupHash(prepared.sourceHash, expectedSourceHash);
-      // The authoritative head consumes one write in the same transaction.
-      if (prepared.recordCount >= FIRESTORE_RECORD_BOUNDS.transactionWrites)
-        throw new Error("Legacy Firestore source exceeds the bounded atomic cutover record limit; staged migration is required");
       let activated: FirestoreRecordSnapshot;
       try {
-        activated = await this.records.commit(snapshot, { transitionId: `legacy_cutover_${expectedSourceHash.slice("sha256:".length)}`, upsert: prepared.records });
+        const transitionId = `legacy_cutover_${expectedSourceHash.slice("sha256:".length)}`;
+        activated = await this.records.initializeStaged(prepared.records, transitionId, { path: "runtime/state", document: row.data() });
+        const authoritative = await this.records.load(), reloaded = this.records.readRecords(authoritative);
+        if (authoritative.transitionIdentity !== activated.transitionIdentity || authoritative.fingerprint !== activated.fingerprint || authoritative.recordCount !== prepared.recordCount ||
+            prepareFirestoreLegacyCutover(row.data(), this.encryptionKey, this.namespace).recordFingerprint !== prepared.recordFingerprint ||
+            !canonicalJSONBytes(assembleFirestoreState(reloaded)).equals(canonicalJSONBytes(prepared.state)))
+          throw new Error("Activated Firestore migration differs from the authenticated source");
+        activated = authoritative;
       } catch (error) {
         if (this.records.writeUncertain) { this.#uncertain = true; this.deny(); }
         throw error;
