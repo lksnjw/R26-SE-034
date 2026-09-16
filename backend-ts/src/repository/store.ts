@@ -115,6 +115,8 @@ export type ChatOperation = { version: 1; id: string; sessionId: string; actorId
   modelBinding: { providerId: string; providerName: string; model: string; configurationRevision: string } | null;
   workerId?: string; cancellationRequested?: boolean; reason?: string; attempts: ChatAttempt[];
   nodeContext?: { workflowId: string; nodeId: string; baseVersion: number; baseHash: string };
+  requestRevision?: import("../agent/chat-request-revisions.js").ChatRequestRevision;
+  revisionContextCiphertext?: string;
   artifactRefs?: Array<{ type: "workflow-draft" | "node-proposal"; id: string }> };
 export type ChatOperationEvent = { version: 1; operationId: string; sessionId: string; sequence: number; timestamp: string; stage: string; type: string; attemptId?: string; status?: string };
 export type StoredRecord = Record<string, unknown>;

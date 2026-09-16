@@ -11,6 +11,7 @@ import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
 import type { ChatProcessingHooks, StoredChatInput } from "./chat-context.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { assertNodeContext, assertCurrentWorkflowEditor, nodeContextSchema } from "../workflows/commands.js";
+import { assertChatRevisionSource, chatRequestRevisionSchema, revisionPriorContext } from "./chat-request-revisions.js";
 
 const queues = new WeakMap<Repository, ChatJobQueue>();
 export const activeChatStatus = (status: string) => ["QUEUED", "RUNNING"].includes(status);
@@ -38,7 +39,7 @@ export function publicChatOperation(op: ChatOperation) {
   return { id: op.id, sessionId: op.sessionId, userMessageId: op.userMessageId, assistantMessageId: op.assistantMessageId ?? null,
     status: op.status, stage: op.stage, epoch: op.epoch, lastSequence: op.lastSequence, createdAt: op.createdAt, updatedAt: op.updatedAt,
     finishedAt: op.finishedAt ?? null, traceId: op.traceId, persistence: op.persistence, modelBinding: op.modelBinding,
-    cancellationRequested: op.cancellationRequested === true, reason: op.reason ?? null, nodeContext: op.nodeContext ?? null, artifactRefs: op.artifactRefs ?? [], attempts: op.attempts.map(a => ({ id: a.id, toolName: a.toolName, status: a.status, startedAt: a.startedAt, completedAt: a.completedAt ?? null,
+    cancellationRequested: op.cancellationRequested === true, reason: op.reason ?? null, nodeContext: op.nodeContext ?? null, requestRevision: op.requestRevision ?? null, artifactRefs: op.artifactRefs ?? [], attempts: op.attempts.map(a => ({ id: a.id, toolName: a.toolName, status: a.status, startedAt: a.startedAt, completedAt: a.completedAt ?? null,
       ...(["DONE", "FAILED"].includes(a.status) && a.output !== undefined ? { output: a.output } : {}) })) };
 }
 function event(state: RepositoryState, op: ChatOperation, type: string, attemptId?: string) {
@@ -80,12 +81,32 @@ export class ChatJobQueue {
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new HandlerFailure(400, "Provide a 16–128 character chat idempotency key", { code: "CHAT_JOB_KEY_REQUIRED" });
     const content = (stringValue(raw.content) || stringValue(raw.message)).trim();
     if (!content) throw new HandlerFailure(400, "message is required");
-    if (Object.keys(raw).some(k => !["content", "message", "model", "mode", "workflowContext", "nodeContext", "delivery", "idempotencyKey"].includes(k))) throw new HandlerFailure(400, "Unsupported asynchronous chat input");
-    const parsedContext = raw.nodeContext === undefined ? undefined : nodeContextSchema.safeParse(raw.nodeContext);
+    if (Object.keys(raw).some(k => !["content", "message", "model", "mode", "workflowContext", "nodeContext", "requestRevision", "delivery", "idempotencyKey"].includes(k))) throw new HandlerFailure(400, "Unsupported asynchronous chat input");
+    const parsedRevision = raw.requestRevision === undefined ? undefined : chatRequestRevisionSchema.safeParse(raw.requestRevision);
+    if (parsedRevision && !parsedRevision.success) throw new HandlerFailure(400, "Invalid saved request revision");
+    const requestRevision = parsedRevision?.success ? parsedRevision.data : undefined;
+    const body = structuredClone(raw); delete body.idempotencyKey; delete body.delivery;
+    let sourceCiphertext: string | undefined;
+    if (requestRevision) {
+      if (raw.workflowContext !== undefined || raw.mode !== undefined) throw new HandlerFailure(400, "A revision preserves the original request scope; it cannot replace workflow context or mode");
+      const original = await this.services.repository.readAuthoritative(state => {
+        const { source, operation } = assertChatRevisionSource(state, user, sessionId, requestRevision);
+        sourceCiphertext = operation.revisionContextCiphertext;
+        try {
+          const input = JSON.parse(this.#codec.decode(Buffer.from(operation.revisionContextCiphertext!, "base64")).toString("utf8")) as { version: number; operationId: string; userMessageId: string; body: Record<string, unknown>; content: string };
+          if (input.version !== 1 || input.operationId !== operation.id || input.userMessageId !== source.id || input.content !== source.text ||
+              !isRecord(input.body) || this.fingerprint(input.body) !== operation.requestFingerprint) throw new Error("Invalid context");
+          return input.body;
+        } catch { throw new HandlerFailure(409, "Original request context could not be authenticated. No revision was saved", { code: "CHAT_REVISION_CONTEXT_UNAVAILABLE" }); }
+      });
+      if (!canonicalJSONBytes(raw.nodeContext ?? null).equals(canonicalJSONBytes(original.nodeContext ?? null)))
+        throw new HandlerFailure(409, "A revision must retain the exact original node scope", { code: "CHAT_REVISION_SCOPE_CHANGED" });
+      for (const field of ["workflowContext", "mode", "nodeContext"] as const) if (original[field] !== undefined) body[field] = structuredClone(original[field]);
+    }
+    const parsedContext = body.nodeContext === undefined ? undefined : nodeContextSchema.safeParse(body.nodeContext);
     if (parsedContext && !parsedContext.success) throw new HandlerFailure(400, "Invalid selected node context");
     const nodeContext = parsedContext?.success ? parsedContext.data : undefined;
-    if (nodeContext && (content.length > 4000 || raw.workflowContext !== undefined || raw.mode !== undefined)) throw new HandlerFailure(400, "A node prompt must contain at most 4000 characters and a single node scope");
-    const body = structuredClone(raw); delete body.idempotencyKey; delete body.delivery;
+    if (nodeContext && (content.length > 4000 || body.workflowContext !== undefined || body.mode !== undefined)) throw new HandlerFailure(400, "A node prompt must contain at most 4000 characters and a single node scope");
     const bytes = JSON.stringify(body);
     if (Buffer.byteLength(bytes) > 200_000) throw new HandlerFailure(413, "Chat request exceeds 200 KB");
     const scope = this.fingerprint([user.id, sessionId, key]);
@@ -108,25 +129,33 @@ export class ChatJobQueue {
       if (chat.ownerId !== user.id) throw new HandlerFailure(404, "Chat session not found");
       const duplicate = Object.values(state.chatOperations).find(op => op.idempotencyScope === scope);
       if (duplicate) return this.receipt(authorizeChatOperation(state, duplicate, user), fingerprint, user, state);
+      if (requestRevision && assertChatRevisionSource(state, user, sessionId, requestRevision).operation.revisionContextCiphertext !== sourceCiphertext)
+        throw new HandlerFailure(409, "Saved request context changed. Reload before revising", { code: "CHAT_REVISION_SOURCE_CHANGED" });
       if (nodeContext) assertNodeContext(state, nodeContext, user);
       const pending = Object.values(state.chatOperations).filter(op => activeChatStatus(op.status));
       if (pending.some(op => op.sessionId === sessionId)) throw new HandlerFailure(409, "This conversation already has an active operation", { code: "CHAT_OPERATION_ACTIVE" });
       if (pending.length >= 100) throw new HandlerFailure(429, "Chat queue is full; no message was admitted", { code: "CHAT_QUEUE_FULL" });
       const id = nextID(state, "chatop"), timestamp = now();
       const userMessage = { id: nextID(state, "msg"), role: "user", text: content, createdAt: timestamp, traceId, operationId: id, ...(binding ? { modelBinding: binding } : {}),
+        ...(requestRevision ? { requestRevision } : {}),
         ...(nodeContext ? { artifacts: { intent: "NODE_EDIT_REQUEST", ...nodeContext } } : {}) };
       const stored = { session: { id: chat.id, title: chat.title, selectedModel: binding?.model ?? chat.selectedModel }, userMessage,
-        priorMessages: chat.messages.slice(-10).map(m => `${stringValue(m.role)}: ${stringValue(m.text)}`) };
+        priorMessages: revisionPriorContext(chat, requestRevision) };
       const privateInput: PrivateInput = { version: 1, operationId: id, body, content, user: structuredClone(user), stored, provider: configuration };
       const privateBytes = Buffer.from(JSON.stringify(privateInput));
       if (privateBytes.length > 500_000) throw new HandlerFailure(413, "Chat context exceeds 500 KB; shorten the workflow context or start a new conversation");
+      // Retain only authenticated request context for explicit future revisions,
+      // never the provider credentials/configuration erased at job completion.
+      const revisionContextCiphertext = this.#codec.encode(Buffer.from(JSON.stringify({ version: 1, operationId: id, userMessageId: userMessage.id, body, content }))).toString("base64");
       const op: ChatOperation = { version: 1, id, sessionId, actorId: user.id, userMessageId: userMessage.id, status: "QUEUED", stage: "QUEUED", epoch: 1, lastSequence: 0,
         createdAt: timestamp, updatedAt: timestamp, traceId, persistence: this.services.repository.persistence === null ? "memory-only" : "durable", modelBinding: binding,
-        inputCiphertext: this.#codec.encode(privateBytes).toString("base64"), idempotencyScope: scope, requestFingerprint: fingerprint, connectionFingerprint: connection, contractFingerprint: contracts, authorityFingerprint: authorityFingerprint(user), attempts: [], ...(nodeContext ? { nodeContext } : {}) };
+        inputCiphertext: this.#codec.encode(privateBytes).toString("base64"), revisionContextCiphertext, idempotencyScope: scope, requestFingerprint: fingerprint, connectionFingerprint: connection, contractFingerprint: contracts, authorityFingerprint: authorityFingerprint(user), attempts: [], ...(nodeContext ? { nodeContext } : {}), ...(requestRevision ? { requestRevision } : {}) };
       state.chatOperations[id] = op;
       chat.messages.push(userMessage); chat.messageCount = chat.messages.length; chat.updatedAt = timestamp;
       if (binding) chat.selectedModel = binding.model;
       event(state, op, "operation.queued"); audit(state, op, "chat.operation.admitted");
+      if (requestRevision) state.auditLogs.push({ id: nextID(state, "audit"), actor: { id: user.id, name: user.name }, action: "chat.request.revised", resource: { type: "chat", id: sessionId },
+        before: { sourceMessageId: requestRevision.messageId, sourceHash: requestRevision.sourceHash }, after: { messageId: userMessage.id, operationId: id }, createdAt: timestamp, traceId });
       return { operation: publicChatOperation(op), userMessage, session: stored.session };
     });
     this.kick(); return admitted;

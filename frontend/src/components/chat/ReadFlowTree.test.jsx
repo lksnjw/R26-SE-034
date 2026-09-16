@@ -10,6 +10,18 @@ const flow = sequence({ kind: "if", id: "gate", predicate: { kind: "ref", source
 const steps = ["yes", "no", "after"].map(id => ({ id }));
 const renderAction = step => <li key={step.id}><button>{step.id}</button></li>;
 
+test("decision nodes have a distinct diamond, literal meaning and keyboard-selectable chat scope", () => {
+  const select = jest.fn(), literalFlow = JSON.parse(JSON.stringify(flow));
+  literalFlow.nodes[0].predicate = { kind: "literal", value: false };
+  render(<ReadFlowTree flow={literalFlow} steps={steps} renderAction={renderAction} onSelectCondition={select} selectedId="gate" />);
+  expect(screen.getByTestId("decision-node-icon").getAttribute("aria-hidden")).toBe("true");
+  expect(screen.getByText("Literal condition · always chooses No.")).toBeTruthy();
+  const button = screen.getByRole("button", { name: "Select condition gate" });
+  expect(button.getAttribute("aria-pressed")).toBe("true");
+  fireEvent.click(button); expect(select).toHaveBeenCalledWith("gate");
+  expect(screen.getByText("No decision recorded for this snapshot")).toBeTruthy();
+});
+
 const collection = maxItems => sequence({ kind: "foreach", id: "each", maxItems, items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "array", items: [] } }, collect: { schema: { type: "string" }, value: { kind: "literal", value: "" } }, body: flow });
 test("collections remain nested and selectable without inventing real iteration answers", () => {
   const select = jest.fn(); render(<ReadFlowTree flow={collection(3)} steps={steps} renderAction={renderAction} onSelectCondition={select} values={{ each: { kind: "collection", status: "DONE" } }} valueOutputs={{ each: { value: "forged receipt" } }} />);

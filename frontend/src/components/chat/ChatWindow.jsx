@@ -80,7 +80,7 @@ const QUICK_PROMPTS = [
  *
  * Performs the Chat Window operation on window for the ChatWindow module.
  ******************************************************************************/
-function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, savedModel, nodeContext, onClearNodeContext, onChatChanged, operation, operationEvents, operationError, reconnecting, onCancelOperation, cancelling, onRefreshOperation }) {
+function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, savedModel, nodeContext, onClearNodeContext, onChatChanged, operation, operationEvents, operationError, reconnecting, onCancelOperation, cancelling, onRefreshOperation }) {
   const [draft, setDraft] = useState(() => readWorkspaceValue(draftStorageKey));
   const [sendError, setSendError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -247,7 +247,8 @@ function ChatWindow({ messages, onSend, loading, error, hasMoreMessages, loading
           )}
 
           {messages.map((msg, idx) => (
-            <ChatMessage key={msg.id ?? `${msg.role}-${idx}`} message={msg} onChatChanged={onChatChanged} />
+            <ChatMessage key={msg.id ?? `${msg.role}-${idx}`} message={msg} onChatChanged={onChatChanged} busy={busy} draftStorageKey={draftStorageKey}
+              onRevise={onRevise ? (message, text) => onRevise(message, text, { model: selectedModel || undefined }) : undefined} />
           ))}
 
           {(operation || operationError) && <ChatOperationProgress operation={operation} events={operationEvents} error={operationError} reconnecting={reconnecting} onCancel={onCancelOperation} cancelling={cancelling} onRefresh={onRefreshOperation} />}

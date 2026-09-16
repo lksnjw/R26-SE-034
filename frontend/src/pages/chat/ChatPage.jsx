@@ -97,6 +97,15 @@ function ChatPage() {
     }
   };
 
+  const handleRevise = async (message, text, options = {}) => {
+    const source = message.revisionSource, sid = sessions.selectedSessionId;
+    if (!sid || source?.messageId !== message.id) throw new Error("Reload this saved conversation before revising.");
+    // Use the ORIGINAL scope, never the currently selected canvas node or a
+    // legacy Edit-in-Chat context. The backend authenticates and rechecks it.
+    return chat.send(text, sid, { ...options, requestRevision: { messageId: source.messageId, sourceHash: source.sourceHash },
+      ...(source.nodeContext ? { nodeContext: source.nodeContext } : {}) });
+  };
+
   return (
     <div className="flex min-h-full flex-col lg:h-full lg:min-h-0 lg:flex-row">
       <div ref={chatPaneRef} className="flex h-[65svh] min-h-[420px] min-w-0 shrink-0 flex-col border-b border-gray-200 dark:border-gray-700 lg:h-full lg:min-h-0 lg:w-[45%] lg:border-b-0 lg:border-r" data-testid="workspace-chat-pane">
@@ -121,6 +130,7 @@ function ChatPage() {
           savedModel={chat.selectedModel}
           messages={chat.messages}
           onSend={handleSend}
+          onRevise={handleRevise}
           loading={chat.loading}
           error={chat.error}
           operation={chat.operation}

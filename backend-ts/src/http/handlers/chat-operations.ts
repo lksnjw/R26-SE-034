@@ -14,7 +14,7 @@ export async function handleChatOperationRoute(route: RouteDefinition, request: 
       if (!permissions.some(value => ["chat:use", "workflow:write"].includes(value))) throw new HandlerFailure(403, "Chat authority is not available");
     });
     const supported = supportsChatJobs(services);
-    return reply.send(ok({ profile: "chat-admission-v1", asyncChat: supported, nodeProposals: supported, localDraftEdits: true }, "Chat admission capabilities; not provider or ERP readiness", null));
+    return reply.send(ok({ profile: "chat-admission-v1", asyncChat: supported, nodeProposals: supported, requestRevisions: supported, localDraftEdits: true }, "Chat admission capabilities; not provider or ERP readiness", null));
   }
   if (route.path === `${base}/chat/sessions/:id/operations`) {
     const values = await services.repository.read(state => {

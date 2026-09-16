@@ -87,3 +87,20 @@ test("a selected-node acknowledgement exposes saved progress, not an invented pr
   await waitFor(() => expect(result.current.operation?.nodeContext).toEqual(context));
   expect(result.current.messages).toEqual([userMessage]);
 });
+
+test("revision support is negotiated before sending; older servers cannot silently treat it as a new unscoped prompt", async () => {
+  const { result } = renderHook(() => useChat("chat"), { wrapper });
+  await act(async () => { expect(await result.current.send("Revised", undefined, { requestRevision: { messageId: "old", sourceHash: "hash" } })).toBeNull(); });
+  expect(service.sendMessage).not.toHaveBeenCalled();
+});
+test("wrong revision acknowledgements preserve retry identity and never install mismatched evidence", async () => {
+  service.capabilities.mockResolvedValue({ profile: "chat-admission-v1", asyncChat: true, requestRevisions: true });
+  const requestRevision = { messageId: "old", sourceHash: "hash" }, options = { requestRevision };
+  service.sendMessage.mockResolvedValue({ operation: { ...op(), requestRevision: { ...requestRevision, messageId: "wrong" } },
+    session: { id: "chat" }, userMessage: { id: "user-message", operationId: "job", role: "user", text: "Revised", requestRevision } });
+  const { result } = renderHook(() => useChat("chat"), { wrapper });
+  await act(async () => { expect(await result.current.send("Revised", undefined, options)).toBeNull(); });
+  const key = service.sendMessage.mock.calls[0][2].idempotencyKey;
+  await act(async () => { expect(await result.current.send("Revised", undefined, options)).toBeNull(); });
+  expect(service.sendMessage.mock.calls[1][2].idempotencyKey).toBe(key); expect(result.current.messages).toEqual([]);
+});

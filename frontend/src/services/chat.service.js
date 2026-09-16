@@ -88,6 +88,7 @@ export const chatService = {
     });
     if (options.workflowContext) payload.workflowContext = options.workflowContext;
     if (options.nodeContext) payload.nodeContext = options.nodeContext;
+    if (options.requestRevision) payload.requestRevision = options.requestRevision;
     if (options.emailDraftCommand) payload.emailDraftCommand = options.emailDraftCommand;
     if (options.emailDeliveryCommand) payload.emailDeliveryCommand = options.emailDeliveryCommand;
     // Read loops can use multiple provider turns. Draft edits themselves do

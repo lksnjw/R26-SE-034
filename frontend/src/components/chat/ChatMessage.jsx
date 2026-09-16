@@ -9,6 +9,7 @@ import { workflowArtifactStatus } from "./workflowArtifactStatus";
 import { ReadableResult } from "./ReadableValue";
 import EmailDraftPreview from "./EmailDraftPreview";
 import { InlineSources, InlineVisualisation } from "./ChatMessageVisualisation";
+import ChatRequestRevision from "./ChatRequestRevision";
 
 // ── Inline validation badge ─────────────────────────────────────────────────
 /*******************************************************************************
@@ -294,7 +295,7 @@ function AutomationRequestBanner({ request, composition }) {
  *
  * Performs the Chat Message operation on message for the ChatMessage module.
  ******************************************************************************/
-function ChatMessage({ message, onChatChanged }) {
+function ChatMessage({ message, onChatChanged, onRevise, busy, draftStorageKey }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const artifacts = message.artifacts;
@@ -326,7 +327,8 @@ function ChatMessage({ message, onChatChanged }) {
   // ── User message ──
   if (isUser) {
     return (
-      <div className="flex flex-col items-end gap-1">
+      <div id={`chat-message-${encodeURIComponent(message.id || "")}`} className="flex flex-col items-end gap-1">
+        {message.requestRevision && <p className="text-xs text-gray-500">Revised request · <a className="underline" href={`#chat-message-${encodeURIComponent(message.requestRevision.messageId)}`}>original kept in history</a></p>}
         <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-4 py-3 text-sm leading-6 text-white">
           <p className="whitespace-pre-wrap">{message.text}</p>
         </div>
@@ -335,6 +337,7 @@ function ChatMessage({ message, onChatChanged }) {
             {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </span>
         )}
+        <ChatRequestRevision message={message} onRevise={onRevise} busy={busy} draftStorageKey={draftStorageKey} />
       </div>
     );
   }

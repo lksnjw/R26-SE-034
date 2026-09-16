@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { activeChatStatus } from "../../agent/chat-jobs.js";
+import { chatRequestSourceHash } from "../../agent/chat-request-revisions.js";
 import { ok } from "../../models/schemas.js";
 import { assertChatAuthority, requestedModel, selectProvider } from "./model-selection.js";
 import { bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, numberValue, paginate, queryRecord, requestParam, stringValue } from "./common.js";
@@ -63,6 +64,12 @@ export async function getChat(request: FastifyRequest, reply: FastifyReply, user
     const value = state.chats[requestParam(request, "id")];
     if (value === undefined || (!user.permissions.includes("workflow:read") && value.ownerId !== user.id)) return null;
     const copy = structuredClone(value);
+    copy.messages = copy.messages.map(message => {
+      const operation = state.chatOperations[stringValue(message.operationId)];
+      return message.role === "user" && value.ownerId === user.id && operation?.actorId === user.id && operation.sessionId === value.id && operation.userMessageId === message.id && operation.revisionContextCiphertext
+        ? { ...message, revisionSource: { messageId: message.id, sourceHash: chatRequestSourceHash(message), nodeContext: operation.nodeContext ?? null } }
+        : message;
+    });
     for (const message of copy.messages) {
       if (!isRecord(message.artifacts) || !isRecord(message.artifacts.emailDelivery)) continue;
       const executionId = stringValue(message.artifacts.emailDelivery.executionId), execution = state.executions[executionId];

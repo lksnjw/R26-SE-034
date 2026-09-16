@@ -24,6 +24,7 @@ import { assertActorAuthority, assertChatAuthority, requestedModel, selectProvid
 import { activeChatStatus, chatJobQueue } from "../../agent/chat-jobs.js";
 import { processNodeProposal } from "../../agent/node-proposals.js";
 import { chatSummary, createChat, deleteChat, getChat, listChats, updateChat } from "./chat-sessions.js";
+import { effectiveChatContext, revisionPriorContext } from "../../agent/chat-request-revisions.js";
 import { buildCapabilitiesResponse, compactWorkflowArtifacts, errorText } from "./chat-artifacts.js";
 import { checkFeasibility } from "./chat-feasibility.js";
 
@@ -74,6 +75,7 @@ export async function handleChatRoute(route: RouteDefinition, request: FastifyRe
 async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   const body = bodyRecord(request);
   if (body === null) throw new HandlerFailure(400, "Invalid request body");
+  if (body.requestRevision !== undefined && (body.emailDraftCommand !== undefined || body.emailDeliveryCommand !== undefined)) throw new HandlerFailure(400, "Request revisions cannot be combined with delivery or draft commands");
   if (Object.hasOwn(body, "emailDeliveryCommand")) return reply.status(202).send(ok(
     await admitEmailDelivery(services, user, requestParam(request, "id"), body.emailDeliveryCommand, requestTraceId(request), request),
     "Independent approval requested for the exact draft; nothing has been sent", null));
@@ -81,7 +83,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
   if (body.delivery === "async-chat") return reply.status(202).send(ok(
     await chatJobQueue(services).admit(requestParam(request, "id"), user, body, requestTraceId(request)), "Chat operation acknowledged; no business completion is implied", null));
   if (body.delivery !== undefined) throw new HandlerFailure(400, "Unsupported chat delivery mode");
-  if (Object.hasOwn(body, "nodeContext")) throw new HandlerFailure(400, "Selected node prompts require saved asynchronous chat admission");
+  if (Object.hasOwn(body, "nodeContext") || Object.hasOwn(body, "requestRevision")) throw new HandlerFailure(400, "Node prompts and request revisions require saved asynchronous chat admission");
   const content = stringValue(body.content).trim() === "" ? stringValue(body.message).trim() : stringValue(body.content).trim();
   if (content === "") throw new HandlerFailure(400, "message is required");
   const previousModel = await services.repository.read((state) => state.chats[requestParam(request, "id")]?.selectedModel);
@@ -98,7 +100,7 @@ async function sendChatMessage(request: FastifyRequest, reply: FastifyReply, use
     if (chat.ownerId !== user.id && (intent === "EMAIL_DELIVERY" || !user.permissions.includes("workflow:write"))) throw new HandlerFailure(404, "Chat session not found");
     assertChatAuthority(state, user, id);
     if (provider?.binding) chat.selectedModel = provider.binding.model;
-    const priorMessages = chat.messages.map((message) => `${stringValue(message.role)}: ${stringValue(message.text)}`);
+    const priorMessages = revisionPriorContext(chat);
     const userMessage = { id: nextID(state, "msg"), role: "user", text: content, createdAt: now(), traceId, ...(provider?.binding ? { modelBinding: provider.binding } : {}) };
     chat.messages.push(userMessage); chat.messageCount = chat.messages.length; chat.updatedAt = now();
     return { session: chatSummary(chat), userMessage, priorMessages };
@@ -348,8 +350,9 @@ export async function processStoredChat(input: {
     const lastWorkflowYaml = await services.repository.read((state) => {
       const chat = state.chats[sessionId];
       if (chat === undefined) return null;
-      for (let i = chat.messages.length - 1; i >= 0; i--) {
-        const msg = chat.messages[i] as Record<string, unknown>;
+      const context = effectiveChatContext(chat.messages);
+      for (let i = context.length - 1; i >= 0; i--) {
+        const msg = context[i] as Record<string, unknown>;
         const artifacts = msg.artifacts as Record<string, unknown> | undefined;
         const yaml = artifacts?.yaml ?? artifacts?.selected_workflow_yaml ?? artifacts?.workflowDraft;
         if (typeof yaml === "string" && yaml.trim().length > 0) return yaml;

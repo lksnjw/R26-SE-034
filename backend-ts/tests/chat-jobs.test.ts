@@ -15,6 +15,7 @@ import { chatJobQueue } from "../src/agent/chat-jobs.js";
 import { workflowContentHash } from "../src/parser/workflow.js";
 import { stringify } from "yaml";
 import type { Workflow } from "../src/models/schemas.js";
+import { AESGCMCodec } from "../src/storage/aes-gcm.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); });
@@ -74,6 +75,133 @@ async function nodeSetup(options: Parameters<typeof setup>[0] = {}) {
   s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: '{"description":"Proposed label"}' } }] }));
   return { ...s, nodeContext };
 }
+
+async function savedRevisionSource(s: Awaited<ReturnType<typeof setup>>, sourceMessageId: string) {
+  const session = await s.app.inject({ method: "GET", url: `/api/chat/sessions/${s.sessionId}`, headers: s.headers() });
+  return session.json().data.messages.find((message: { id: string }) => message.id === sourceMessageId).revisionSource;
+}
+test("explicit request revision keeps original evidence, removes later answers from context and has one idempotent admission", async () => {
+  const s = await setup({ persistence: new Persistence() });
+  const first = (await s.send("Show me invoices ORIGINAL-724")).json().data;
+  await s.terminal(first.operation.id);
+  const before = structuredClone((await s.repository.snapshot()).chats[s.sessionId]!.messages);
+  const source = await savedRevisionSource(s, first.userMessage.id), requestRevision = { messageId: source.messageId, sourceHash: source.sourceHash };
+  s.fetchImplementation.mockClear(); s.callTool.mockClear();
+  const response = await s.send("Show me purchase orders REVISED-815", { idempotencyKey: "revision-request-fixture-0001", requestRevision });
+  expect(response.statusCode, response.body).toBe(202);
+  const receipt = response.json().data;
+  expect(receipt.operation.requestRevision).toEqual(requestRevision); expect(receipt.userMessage.requestRevision).toEqual(requestRevision);
+  await s.terminal(receipt.operation.id);
+  const state = await s.repository.snapshot();
+  expect(state.chats[s.sessionId]!.messages.slice(0, before.length)).toEqual(before);
+  expect(state.chatOperations[first.operation.id]?.inputCiphertext).toBeUndefined();
+  expect(state.chatOperations[first.operation.id]?.revisionContextCiphertext).toBeTruthy();
+  const privateRequest = new AESGCMCodec(s.services.config.storageEncryptionKey).decode(Buffer.from(state.chatOperations[first.operation.id]!.revisionContextCiphertext!, "base64")).toString("utf8");
+  expect(privateRequest).not.toContain("private-fixture-key"); expect(privateRequest).not.toContain("egressPolicy");
+  expect(JSON.stringify(s.fetchImplementation.mock.calls)).not.toContain("ORIGINAL-724"); expect(JSON.stringify(s.fetchImplementation.mock.calls)).not.toContain("Confirmed fixture read.");
+  const duplicate = await s.send("Show me purchase orders REVISED-815", { idempotencyKey: "revision-request-fixture-0001", requestRevision });
+  expect(duplicate.json().data.operation.id).toBe(receipt.operation.id);
+  expect(s.callTool).toHaveBeenCalledTimes(1);
+  expect(state.auditLogs).toContainEqual(expect.objectContaining({ action: "chat.request.revised", before: { sourceMessageId: first.userMessage.id, sourceHash: source.sourceHash } }));
+  expect(response.body).not.toContain("Ciphertext");
+});
+test("request revision retains exact saved node scope and produces only a fresh unapplied proposal", async () => {
+  const s = await nodeSetup(), first = (await s.send("Describe this node", { nodeContext: s.nodeContext })).json().data;
+  await s.terminal(first.operation.id);
+  const source = await savedRevisionSource(s, first.userMessage.id), requestRevision = { messageId: source.messageId, sourceHash: source.sourceHash };
+  const noScope = await s.send("Send an email", { idempotencyKey: "revision-node-fixture-0001", requestRevision });
+  expect(noScope.statusCode).toBe(409); expect(noScope.json().meta.code).toBe("CHAT_REVISION_SCOPE_CHANGED");
+  const response = await s.send("Send an email", { idempotencyKey: "revision-node-fixture-0001", requestRevision, nodeContext: s.nodeContext });
+  expect(response.statusCode, response.body).toBe(202);
+  const operation = await s.terminal(response.json().data.operation.id);
+  expect(operation).toMatchObject({ status: "ANSWERED", nodeContext: s.nodeContext, requestRevision, attempts: [] });
+  expect((await s.repository.snapshot()).workflows.report!.draftVersion).toBe(1); expect(s.callTool).not.toHaveBeenCalled();
+});
+test("stale source, assistant source and foreign-owner revisions fail before provider/tool entry", async () => {
+  const s = await setup(), first = (await s.send()).json().data;
+  await s.terminal(first.operation.id);
+  const source = await savedRevisionSource(s, first.userMessage.id), requestRevision = { messageId: source.messageId, sourceHash: source.sourceHash };
+  s.fetchImplementation.mockClear(); s.callTool.mockClear();
+  const foreign = await s.app.inject({ method: "POST", url: `/api/chat/sessions/${s.sessionId}/messages`, headers: s.headers("other"), payload: { content: "Show invoices", delivery: "async-chat", idempotencyKey: "revision-owner-fixture-0001", requestRevision } });
+  expect(foreign.statusCode).toBe(404);
+  const foreignView = await s.app.inject({ method: "GET", url: `/api/chat/sessions/${s.sessionId}`, headers: s.headers("other") });
+  expect(foreignView.json().data.messages.some((message: Record<string, unknown>) => message.revisionSource)).toBe(false);
+  const assistant = (await s.repository.snapshot()).chats[s.sessionId]!.messages.find(message => message.role === "assistant")!;
+  expect((await s.send("Show invoices", { idempotencyKey: "revision-assistant-fixture-01", requestRevision: { ...requestRevision, messageId: assistant.id } })).statusCode).toBe(404);
+  await s.repository.mutate(state => { state.chats[s.sessionId]!.messages[0]!.text = "Changed"; });
+  const stale = await s.send("Show invoices", { idempotencyKey: "revision-stale-fixture-0001", requestRevision });
+  expect(stale.statusCode).toBe(409); expect(stale.json().meta.code).toBe("CHAT_REVISION_SOURCE_CHANGED");
+  expect(Object.keys((await s.repository.snapshot()).chatOperations)).toHaveLength(1);
+  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+});
+test("original workflow context is authenticated and retained but cannot be replaced by a revision", async () => {
+  const s = await setup({ persistence: new Persistence() }), context = { yaml, name: "Original workflow" }, first = (await s.send("Create a workflow", { workflowContext: context })).json().data;
+  await s.terminal(first.operation.id);
+  const source = await savedRevisionSource(s, first.userMessage.id), requestRevision = { messageId: source.messageId, sourceHash: source.sourceHash };
+  const wrong = await s.send("Modify the workflow", { idempotencyKey: "revision-context-fixture-0001", requestRevision, workflowContext: { yaml: "different" } });
+  expect(wrong.statusCode).toBe(400);
+  const response = await s.send("Modify the workflow", { idempotencyKey: "revision-context-fixture-0001", requestRevision });
+  expect(response.statusCode, response.body).toBe(202);
+  const operation = await s.terminal(response.json().data.operation.id);
+  const saved = JSON.parse(new AESGCMCodec(s.services.config.storageEncryptionKey).decode(Buffer.from(operation.revisionContextCiphertext!, "base64")).toString("utf8"));
+  expect(saved.body.workflowContext).toEqual(context);
+});
+test("legacy/missing or corrupted encrypted revision context cannot fabricate a fresh scope", async () => {
+  for (const damage of ["legacy", "tamper"] as const) {
+    const s = await setup(), first = (await s.send()).json().data; await s.terminal(first.operation.id);
+    const source = await savedRevisionSource(s, first.userMessage.id), requestRevision = { messageId: source.messageId, sourceHash: source.sourceHash };
+    await s.repository.mutate(state => { const operation = state.chatOperations[first.operation.id]!;
+      if (damage === "legacy") delete operation.revisionContextCiphertext; else operation.revisionContextCiphertext = "tampered"; });
+    s.fetchImplementation.mockClear(); s.callTool.mockClear();
+    const response = await s.send("Show invoices", { idempotencyKey: "revision-corrupt-fixture-0001", requestRevision });
+    expect(response.statusCode).toBe(409); expect(response.json().meta.code).toBe("CHAT_REVISION_CONTEXT_UNAVAILABLE");
+    expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+  }
+});
+test("request revision remains available after a durable reopen without provider credentials or original job replay", async () => {
+  const persistence = new Persistence(), first = await setup({ persistence }), receipt = (await first.send()).json().data;
+  await first.terminal(receipt.operation.id);
+  const source = await savedRevisionSource(first, receipt.userMessage.id), requestRevision = { messageId: source.messageId, sourceHash: source.sourceHash };
+  await first.app.close(); apps.splice(apps.indexOf(first.app), 1);
+  const next = await setup({ persistence });
+  const response = await next.app.inject({ method: "POST", url: `/api/chat/sessions/${first.sessionId}/messages`, headers: next.headers(), payload: {
+    content: "Show purchase orders", delivery: "async-chat", idempotencyKey: "revision-reopen-fixture-0001", requestRevision } });
+  expect(response.statusCode, response.body).toBe(202); await next.terminal(response.json().data.operation.id);
+  expect(next.callTool).toHaveBeenCalledTimes(1); expect((await next.repository.snapshot()).chatOperations[receipt.operation.id]!.status).toBe("ANSWERED");
+});
+test.each(["source-context", "actor"])("revision rechecks %s inside the final admission transaction", async damage => {
+  const s = await setup(), first = (await s.send()).json().data; await s.terminal(first.operation.id);
+  const source = await savedRevisionSource(s, first.userMessage.id), requestRevision = { messageId: source.messageId, sourceHash: source.sourceHash };
+  const snapshot = s.runtime.snapshot.bind(s.runtime);
+  vi.spyOn(s.runtime, "snapshot").mockImplementationOnce(model => {
+    const result = snapshot(model);
+    void s.repository.mutate(state => { if (damage === "actor") state.users.owner!.status = "Suspended"; else state.chatOperations[first.operation.id]!.revisionContextCiphertext = "Changed during provider selection"; });
+    return result;
+  });
+  s.fetchImplementation.mockClear(); s.callTool.mockClear();
+  const response = await s.send("Show revised invoices", { idempotencyKey: "revision-race-fixture-0001", requestRevision });
+  expect(response.statusCode).toBe(damage === "actor" ? 403 : 409);
+  expect(Object.keys((await s.repository.snapshot()).chatOperations)).toHaveLength(1);
+  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+});
+test("revision cannot silently adopt a newer node version or synchronous delivery", async () => {
+  const s = await nodeSetup(), first = (await s.send("Edit", { nodeContext: s.nodeContext })).json().data; await s.terminal(first.operation.id);
+  const source = await savedRevisionSource(s, first.userMessage.id), requestRevision = { messageId: source.messageId, sourceHash: source.sourceHash };
+  await s.repository.mutate(state => { state.workflows.report!.draftVersion++; });
+  s.fetchImplementation.mockClear(); s.callTool.mockClear();
+  const response = await s.send("Edit again", { idempotencyKey: "revision-stale-node-fixture-1", requestRevision, nodeContext: s.nodeContext });
+  expect(response.statusCode).toBe(409);
+  expect((await s.send("Edit again", { delivery: undefined, requestRevision })).statusCode).toBe(400);
+  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
+});
+test("an active source operation blocks revision instead of cancelling or replaying it", async () => {
+  const s = await setup(), queue = chatJobQueue(s.services), kick = vi.spyOn(queue, "kick").mockImplementation(() => {});
+  const first = (await s.send()).json().data, source = await savedRevisionSource(s, first.userMessage.id);
+  const response = await s.send("Show revised invoices", { idempotencyKey: "revision-active-fixture-0001", requestRevision: { messageId: source.messageId, sourceHash: source.sourceHash } });
+  expect(response.statusCode).toBe(409); expect(response.json().meta.code).toBe("CHAT_OPERATION_ACTIVE");
+  expect((await s.repository.snapshot()).chatOperations[first.operation.id]!.status).toBe("QUEUED");
+  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled(); kick.mockRestore();
+});
 
 test("node scope overrides action prose, saves a reviewable proposal atomically and never dispatches ERP or edits a draft", async () => {
   const s = await nodeSetup(), content = "Get invoices and send an email to manager@example.test";
@@ -217,7 +345,7 @@ test("a committed node answer with lost storage acknowledgement is restored with
 test("capabilities identify admission support without external discovery, and node context cannot fall back to synchronous chat", async () => {
   const s = await nodeSetup();
   const capability = await s.app.inject({ method: "GET", url: "/api/chat/capabilities", headers: s.headers() });
-  expect(capability.statusCode).toBe(200); expect(capability.json().data).toEqual({ profile: "chat-admission-v1", asyncChat: true, nodeProposals: true, localDraftEdits: true });
+  expect(capability.statusCode).toBe(200); expect(capability.json().data).toEqual({ profile: "chat-admission-v1", asyncChat: true, nodeProposals: true, requestRevisions: true, localDraftEdits: true });
   const response = await s.send("Send an email", { delivery: undefined, nodeContext: s.nodeContext });
   expect(response.statusCode).toBe(400); expect(s.fetchImplementation).not.toHaveBeenCalled(); expect(s.callTool).not.toHaveBeenCalled();
 });
