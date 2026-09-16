@@ -50,6 +50,18 @@ test("repeated same transition is a read-only acknowledgement and retains actual
   const next = await storage.commit(repeat, { transitionId: "after-repeat-one", upsert: [record("one", 1)] });
   expect(next.revision).toBe(2); expect(storage.readRecords(await storage.load())).toContainEqual(record("one", 1));
 });
+test("rollback readiness atomically binds the loaded head and exact retained legacy source", async () => {
+  const { storage, first } = await setup(), source = { payload: "retained", encrypted: true };
+  db.documents.set("runtime/state", clone(source)); await storage.acquireWriter();
+  await expect(storage.probeWriterAndLegacySource(first, { path: "runtime/state", document: source })).resolves.toBeUndefined();
+  expect(storage.writeUncertain).toBe(false);
+});
+test("rollback readiness fences the store when the retained legacy source differs", async () => {
+  const { storage, first } = await setup(), source = { payload: "retained", encrypted: true };
+  db.documents.set("runtime/state", { payload: "changed", encrypted: true }); await storage.acquireWriter();
+  await expect(storage.probeWriterAndLegacySource(first, { path: "runtime/state", document: source })).rejects.toThrow("differs from the authenticated backup");
+  expect(storage.writeUncertain).toBe(true);
+});
 test("same identity with different content is rejected and fences cached reads/writes", async () => {
   const { storage, empty, first } = await setup();
   await expect(storage.commit(empty, { transitionId: "initial-records", upsert: [record("one", 2), record("two", 0)] })).rejects.toThrow("identity was reused");

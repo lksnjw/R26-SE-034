@@ -99,6 +99,31 @@ export class FirestoreRecordStore {
       } catch (error) { this.#uncertain = true; throw error; }
     }));
   }
+  /** Final cutover/rollback readiness probe. It binds the caller's already
+   * loaded normalized head and the exact retained legacy source in one
+   * writer-fenced read transaction; it never changes routing or either image. */
+  async probeWriterAndLegacySource(snapshot: FirestoreRecordSnapshot,
+    source: Readonly<{ path: "runtime/state"; document: unknown }>): Promise<void> {
+    await this.#mutex.runExclusive(() => this.withWriter(async () => {
+      this.assertWriterActive();
+      if (source.path !== "runtime/state" || !source.document || typeof source.document !== "object" || Array.isArray(source.document))
+        throw new Error("Invalid legacy Firestore source guard");
+      const expected = this.view(snapshot).head;
+      if (!expected) throw new Error("Rollback readiness requires an authoritative normalized target");
+      try {
+        await this.db.runTransaction(async transaction => {
+          await this.assertWriterTransaction(transaction);
+          const rows = await transaction.getAll(this.db.doc(this.headPath), this.db.doc(source.path));
+          const headRow = rows[0]!, sourceRow = rows[1]!;
+          const actual = headRow.exists ? this.head(headRow.data()) : null;
+          if (!same(actual, expected)) throw new Error("Firestore authoritative image changed; reload is required");
+          if (!sourceRow.exists || !same(sourceRow.data(), source.document)) throw new Error("Legacy Firestore rollback source differs from the authenticated backup");
+          this.#writer!.assertTransactionDeadline();
+        }, { readOnly: true });
+        this.assertWriterActive();
+      } catch (error) { this.#uncertain = true; throw error; }
+    }));
+  }
   private view(snapshot: FirestoreRecordSnapshot): View {
     const view = this.#views.get(snapshot); if (!view) throw new Error("Firestore snapshot does not belong to this store"); return view;
   }

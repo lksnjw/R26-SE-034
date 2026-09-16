@@ -29,7 +29,7 @@ const cli = fileURLToPath(new URL("./firestore-cutover.mjs", import.meta.url)), 
 const environment = { ...process.env, FIRESTORE_PROJECT_ID: namespace.projectId, FIRESTORE_DATABASE_ID: namespace.databaseId,
   FIRESTORE_WORKSPACE_ID: namespace.workspaceId, STORAGE_ENCRYPTION_KEY: storageKey, FIRESTORE_CUTOVER_BACKUP_KEY: backupKey,
   FIRESTORE_CUTOVER_BACKUP_PATH: backupPath };
-const run = command => execute(process.execPath, ["--import", "tsx/esm", cli, command], { env: environment, maxBuffer: 1_000_000 });
+const run = (command, extra = {}) => execute(process.execPath, ["--import", "tsx/esm", cli, command], { env: { ...environment, ...extra }, maxBuffer: 1_000_000 });
 try {
   await db.doc("runtime/state").create(document);
   const exported = JSON.parse((await run("export")).stdout), artifact = await readFile(backupPath);
@@ -40,10 +40,17 @@ try {
   const migrated = JSON.parse((await run("migrate")).stdout); assert.equal(migrated.status, "migrated"); assert.equal(migrated.legacySourceRetained, true);
   const status = JSON.parse((await run("status")).stdout); assert.equal(status.status, "active"); assert.equal(status.sourceHash, sourceHash);
   assert.equal(status.recordCount, migrated.recordCount); assert.equal(status.legacySourceRetained, true);
+  await assert.rejects(run("rollback-readiness"), /exact target workspace confirmation/);
+  const rollbackEnvironment = { FIRESTORE_CUTOVER_CONFIRM_ROLLBACK_READINESS: namespace.workspaceId };
+  const rollbackReady = JSON.parse((await run("rollback-readiness", rollbackEnvironment)).stdout);
+  assert.equal(rollbackReady.status, "rollback-ready-no-post-cutover-writes"); assert.equal(rollbackReady.routingChanged, false);
   persistence = await FirestoreRecordPersistence.open(storageKey, namespace);
   const repository = await Repository.open(persistence); assert.deepEqual(await repository.snapshot(), state);
   assert.deepEqual((await db.doc("runtime/state").get()).data(), document);
+  await repository.mutate(current => { current.settings.postCutoverWrite = true; });
   await assert.rejects(persistence.migrateLegacy(sourceHash), /empty target/);
+  await persistence.close(); persistence = undefined;
+  await assert.rejects(run("rollback-readiness", rollbackEnvironment), /post-cutover changes/);
   const cleanupNamespace = { ...namespace, workspaceId: `cleanup_${randomUUID().replaceAll("-", "")}` };
   const cleanupEnvironment = { ...environment, FIRESTORE_WORKSPACE_ID: cleanupNamespace.workspaceId,
     FIRESTORE_CUTOVER_BACKUP_PATH: cleanupBackupPath };
@@ -87,6 +94,7 @@ try {
   const restoredRepository = await Repository.open(restored); assert.deepEqual(await restoredRepository.snapshot(), state);
   console.log(`PASS: operator CLI authenticated legacy export/verify/migrate/status (${migrated.recordCount} records, ${migrated.sourceBytes} plaintext bytes)`);
   console.log(`PASS: normalized reopen matched the complete source; overwrite was denied and the legacy source remained retained`);
+  console.log(`PASS: rollback readiness required exact confirmation and denied rollback after one normalized post-cutover write`);
   console.log(`PASS: confirmation-gated cleanup removed only abandoned headless staging, retained the legacy source, and permitted an exact retry`);
   console.log(`PASS: authenticated backup restored into a separately confirmed quarantined workspace without relying on the changed live source`);
   console.log(`Firestore cutover rehearsal complete in synthetic workspace ${namespace.workspaceId}. No cloud project, application data, ERP/model/email call, source deletion or production activation was used.`);

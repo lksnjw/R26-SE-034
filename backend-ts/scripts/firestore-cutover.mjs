@@ -8,8 +8,8 @@ import { FirestoreRecordPersistence } from "../src/storage/firestore-records.js"
 import { assembleFirestoreState } from "../src/storage/firestore-record-layout.js";
 import { createFirestoreLegacyBackup, prepareFirestoreLegacyCutover, verifyFirestoreLegacyBackup } from "../src/storage/firestore-legacy-cutover.js";
 
-const command = process.argv[2], allowed = new Set(["export", "verify", "status", "migrate", "clear-staging", "restore-rehearsal", "restore-status"]);
-if (!allowed.has(command)) throw new Error("Usage: firestore-cutover.mjs export|verify|status|migrate|clear-staging|restore-rehearsal|restore-status");
+const command = process.argv[2], allowed = new Set(["export", "verify", "status", "migrate", "clear-staging", "restore-rehearsal", "restore-status", "rollback-readiness"]);
+if (!allowed.has(command)) throw new Error("Usage: firestore-cutover.mjs export|verify|status|migrate|clear-staging|restore-rehearsal|restore-status|rollback-readiness");
 const required = name => { const value = process.env[name]?.trim(); if (!value) throw new Error(`${name} is required`); return value; };
 const backupPath = resolve(required("FIRESTORE_CUTOVER_BACKUP_PATH"));
 const storageKey = required("STORAGE_ENCRYPTION_KEY"), backupKey = required("FIRESTORE_CUTOVER_BACKUP_KEY");
@@ -35,6 +35,8 @@ const authentication = {
 };
 if (command === "clear-staging" && process.env.FIRESTORE_CUTOVER_CONFIRM_CLEAR_STAGING !== "I_CONFIRM_CLEAR_UNACTIVATED_STAGING")
   throw new Error("Staging cleanup requires FIRESTORE_CUTOVER_CONFIRM_CLEAR_STAGING=I_CONFIRM_CLEAR_UNACTIVATED_STAGING");
+if (command === "rollback-readiness" && process.env.FIRESTORE_CUTOVER_CONFIRM_ROLLBACK_READINESS !== namespace.workspaceId)
+  throw new Error("Rollback readiness requires exact target workspace confirmation");
 const restoreCommand = command === "restore-rehearsal" || command === "restore-status";
 const validateRestoreScope = backup => {
   if (backup.namespace.projectId !== namespace.projectId || backup.namespace.databaseId !== namespace.databaseId)
@@ -75,6 +77,22 @@ if (command === "export") {
       console.log(JSON.stringify({ status: "active", namespace, sourceHash: backup.sourceHash, sourceBytes: backup.sourceBytes,
         recordCount: snapshot.recordCount, recordFingerprint: backup.recordFingerprint, revision: snapshot.revision, legacySourceRetained }));
     }
+  } finally { await persistence.close(); }
+} else if (command === "rollback-readiness") {
+  const backup = verifyFirestoreLegacyBackup(await readFile(backupPath), storageKey, backupKey);
+  if (backup.namespace.projectId !== namespace.projectId || backup.namespace.databaseId !== namespace.databaseId || backup.namespace.workspaceId !== namespace.workspaceId)
+    throw new Error("Backup namespace differs from the explicit rollback-readiness target");
+  const prepared = prepareFirestoreLegacyCutover(backup.document, storageKey, namespace), persistence = await FirestoreRecordPersistence.open(storageKey, namespace, authentication);
+  try {
+    const snapshot = await persistence.records.load(), state = snapshot.recordCount ? assembleFirestoreState(persistence.records.readRecords(snapshot)) : null;
+    const expectedTransition = new FirestoreRecordCodec(storageKey, namespace).identity("transition", `legacy_cutover_${backup.sourceHash.slice("sha256:".length)}`);
+    if (snapshot.revision !== 1) throw new Error("Rollback is not ready: normalized target contains post-cutover changes");
+    if (!state || snapshot.transitionIdentity !== expectedTransition || snapshot.recordCount !== backup.recordCount ||
+        !canonicalJSONBytes(state).equals(canonicalJSONBytes(prepared.state))) throw new Error("Rollback readiness target differs from the authenticated cutover");
+    await persistence.records.probeWriterAndLegacySource(snapshot, { path: "runtime/state", document: backup.document });
+    console.log(JSON.stringify({ status: "rollback-ready-no-post-cutover-writes", namespace, sourceHash: backup.sourceHash,
+      recordCount: snapshot.recordCount, revision: snapshot.revision, legacySourceRetained: true,
+      postCutoverWrites: false, routingChanged: false, operatorRoutingRequired: true }));
   } finally { await persistence.close(); }
 } else if (command === "migrate") {
   const backup = verifyFirestoreLegacyBackup(await readFile(backupPath), storageKey, backupKey);
