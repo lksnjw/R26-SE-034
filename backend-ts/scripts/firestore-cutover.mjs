@@ -8,8 +8,8 @@ import { FirestoreRecordPersistence } from "../src/storage/firestore-records.js"
 import { assembleFirestoreState } from "../src/storage/firestore-record-layout.js";
 import { createFirestoreLegacyBackup, prepareFirestoreLegacyCutover, verifyFirestoreLegacyBackup } from "../src/storage/firestore-legacy-cutover.js";
 
-const command = process.argv[2], allowed = new Set(["export", "verify", "status", "migrate", "clear-staging"]);
-if (!allowed.has(command)) throw new Error("Usage: firestore-cutover.mjs export|verify|status|migrate|clear-staging");
+const command = process.argv[2], allowed = new Set(["export", "verify", "status", "migrate", "clear-staging", "restore-rehearsal", "restore-status"]);
+if (!allowed.has(command)) throw new Error("Usage: firestore-cutover.mjs export|verify|status|migrate|clear-staging|restore-rehearsal|restore-status");
 const required = name => { const value = process.env[name]?.trim(); if (!value) throw new Error(`${name} is required`); return value; };
 const backupPath = resolve(required("FIRESTORE_CUTOVER_BACKUP_PATH"));
 const storageKey = required("STORAGE_ENCRYPTION_KEY"), backupKey = required("FIRESTORE_CUTOVER_BACKUP_KEY");
@@ -35,6 +35,16 @@ const authentication = {
 };
 if (command === "clear-staging" && process.env.FIRESTORE_CUTOVER_CONFIRM_CLEAR_STAGING !== "I_CONFIRM_CLEAR_UNACTIVATED_STAGING")
   throw new Error("Staging cleanup requires FIRESTORE_CUTOVER_CONFIRM_CLEAR_STAGING=I_CONFIRM_CLEAR_UNACTIVATED_STAGING");
+const restoreCommand = command === "restore-rehearsal" || command === "restore-status";
+const validateRestoreScope = backup => {
+  if (backup.namespace.projectId !== namespace.projectId || backup.namespace.databaseId !== namespace.databaseId)
+    throw new Error("Restore rehearsal must remain in the authenticated backup project and database");
+  if (backup.namespace.workspaceId === namespace.workspaceId || !/^restore_[a-z0-9_]{8,120}$/.test(namespace.workspaceId))
+    throw new Error("Restore rehearsal requires a different quarantined restore_ workspace");
+  if (process.env.FIRESTORE_CUTOVER_CONFIRM_RESTORE_SOURCE_WORKSPACE !== backup.namespace.workspaceId ||
+      process.env.FIRESTORE_CUTOVER_CONFIRM_DISPOSABLE_RESTORE !== namespace.workspaceId)
+    throw new Error("Restore rehearsal requires exact source and disposable target workspace confirmations");
+};
 
 if (command === "export") {
   const db = new Firestore({ projectId: namespace.projectId, databaseId: namespace.databaseId, ...authentication });
@@ -77,7 +87,7 @@ if (command === "export") {
       throw new Error("Activated migration report differs from the authenticated backup");
     console.log(JSON.stringify({ status: "migrated", namespace, ...report, legacySourceRetained: true }));
   } finally { await persistence.close(); }
-} else {
+} else if (command === "clear-staging") {
   const backup = verifyFirestoreLegacyBackup(await readFile(backupPath), storageKey, backupKey);
   if (backup.namespace.projectId !== namespace.projectId || backup.namespace.databaseId !== namespace.databaseId || backup.namespace.workspaceId !== namespace.workspaceId)
     throw new Error("Backup namespace differs from the explicit staging-cleanup target");
@@ -97,5 +107,27 @@ if (command === "export") {
     console.log(JSON.stringify({ status: "cleared", namespace, backupSourceHash: backup.sourceHash,
       legacySourceMatchesBackup: canonicalJSONBytes(sourceBefore).equals(canonicalJSONBytes(backup.document)),
       manifestsRemoved: report.manifests, chunksRemoved: report.chunks, legacySourceRetained: true }));
+  } finally { await persistence.close(); }
+} else if (restoreCommand) {
+  const backup = verifyFirestoreLegacyBackup(await readFile(backupPath), storageKey, backupKey); validateRestoreScope(backup);
+  const prepared = prepareFirestoreLegacyCutover(backup.document, storageKey, namespace);
+  if (prepared.sourceHash !== backup.sourceHash || prepared.sourceBytes !== backup.sourceBytes || prepared.recordCount !== backup.recordCount ||
+      prepared.recordFingerprint !== backup.recordFingerprint) throw new Error("Restore conversion differs from the authenticated backup");
+  const persistence = await FirestoreRecordPersistence.open(storageKey, namespace, authentication);
+  try {
+    const transitionId = `legacy_restore_${backup.sourceHash.slice("sha256:".length)}`;
+    if (command === "restore-rehearsal") await persistence.records.initializeStaged(prepared.records, transitionId);
+    const snapshot = await persistence.records.load();
+    const state = snapshot.recordCount ? assembleFirestoreState(persistence.records.readRecords(snapshot)) : null;
+    const expectedTransition = new FirestoreRecordCodec(storageKey, namespace).identity("transition", transitionId);
+    if (!state || snapshot.transitionIdentity !== expectedTransition || snapshot.recordCount !== backup.recordCount ||
+        !canonicalJSONBytes(state).equals(canonicalJSONBytes(prepared.state))) {
+      if (command === "restore-status" && !snapshot.recordCount) {
+        console.log(JSON.stringify({ status: "not-restored", sourceNamespace: backup.namespace, targetNamespace: namespace,
+          sourceHash: backup.sourceHash, quarantineRequired: true })); process.exitCode = 2;
+      } else throw new Error("Disposable restore target differs from the authenticated backup");
+    } else console.log(JSON.stringify({ status: "restored-for-verification", sourceNamespace: backup.namespace, targetNamespace: namespace,
+      sourceHash: backup.sourceHash, sourceBytes: backup.sourceBytes, recordCount: snapshot.recordCount,
+      recordFingerprint: backup.recordFingerprint, revision: snapshot.revision, quarantineRequired: true }));
   } finally { await persistence.close(); }
 }

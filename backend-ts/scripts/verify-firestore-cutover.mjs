@@ -23,7 +23,7 @@ for (let at = 0; at < 450; at++) state.settings[`staged_${at}`] = { value: at % 
 const plaintext = Buffer.from(JSON.stringify(state)), sourceHash = `sha256:${createHash("sha256").update(plaintext).digest("hex")}`;
 const document = { payload: new AESGCMCodec(storageKey).encode(gzipSync(plaintext)).toString("base64"), encrypted: true,
   compression: "gzip", updatedAt: new Date().toISOString() };
-const db = new Firestore({ projectId, databaseId: "(default)" }); let persistence, abandoned, recovered;
+const db = new Firestore({ projectId, databaseId: "(default)" }); let persistence, abandoned, recovered, restored;
 const directory = await mkdtemp(join(tmpdir(), "lcwe-firestore-cutover-")), backupPath = join(directory, "backup.json"), cleanupBackupPath = join(directory, "cleanup-backup.json");
 const cli = fileURLToPath(new URL("./firestore-cutover.mjs", import.meta.url)), execute = promisify(execFile);
 const environment = { ...process.env, FIRESTORE_PROJECT_ID: namespace.projectId, FIRESTORE_DATABASE_ID: namespace.databaseId,
@@ -68,10 +68,28 @@ try {
   const recoveredMigration = JSON.parse((await cleanupRun("migrate")).stdout); assert.equal(recoveredMigration.status, "migrated");
   recovered = await FirestoreRecordPersistence.open(storageKey, cleanupNamespace);
   const recoveredRepository = await Repository.open(recovered); assert.deepEqual(await recoveredRepository.snapshot(), state);
+  const restoreNamespace = { ...namespace, workspaceId: `restore_${randomUUID().replaceAll("-", "")}` };
+  const restoreEnvironment = { ...environment, FIRESTORE_WORKSPACE_ID: restoreNamespace.workspaceId,
+    FIRESTORE_CUTOVER_CONFIRM_RESTORE_SOURCE_WORKSPACE: namespace.workspaceId,
+    FIRESTORE_CUTOVER_CONFIRM_DISPOSABLE_RESTORE: restoreNamespace.workspaceId };
+  const restoreRun = (command, overrides = {}) => execute(process.execPath, ["--import", "tsx/esm", cli, command],
+    { env: { ...restoreEnvironment, ...overrides }, maxBuffer: 1_000_000 });
+  await db.doc("runtime/state").set({ payload: "deliberately-invalid-live-source", encrypted: true });
+  await assert.rejects(execute(process.execPath, ["--import", "tsx/esm", cli, "restore-rehearsal"],
+    { env: { ...environment, FIRESTORE_CUTOVER_CONFIRM_RESTORE_SOURCE_WORKSPACE: namespace.workspaceId,
+      FIRESTORE_CUTOVER_CONFIRM_DISPOSABLE_RESTORE: namespace.workspaceId }, maxBuffer: 1_000_000 }), /different quarantined/);
+  await assert.rejects(restoreRun("restore-rehearsal", { FIRESTORE_CUTOVER_CONFIRM_DISPOSABLE_RESTORE: "wrong_target" }), /exact source and disposable target/);
+  const restoredReport = JSON.parse((await restoreRun("restore-rehearsal")).stdout);
+  assert.equal(restoredReport.status, "restored-for-verification"); assert.equal(restoredReport.quarantineRequired, true);
+  assert.equal(restoredReport.sourceNamespace.workspaceId, namespace.workspaceId); assert.equal(restoredReport.targetNamespace.workspaceId, restoreNamespace.workspaceId);
+  const restoreStatus = JSON.parse((await restoreRun("restore-status")).stdout); assert.equal(restoreStatus.status, "restored-for-verification");
+  restored = await FirestoreRecordPersistence.open(storageKey, restoreNamespace);
+  const restoredRepository = await Repository.open(restored); assert.deepEqual(await restoredRepository.snapshot(), state);
   console.log(`PASS: operator CLI authenticated legacy export/verify/migrate/status (${migrated.recordCount} records, ${migrated.sourceBytes} plaintext bytes)`);
   console.log(`PASS: normalized reopen matched the complete source; overwrite was denied and the legacy source remained retained`);
   console.log(`PASS: confirmation-gated cleanup removed only abandoned headless staging, retained the legacy source, and permitted an exact retry`);
+  console.log(`PASS: authenticated backup restored into a separately confirmed quarantined workspace without relying on the changed live source`);
   console.log(`Firestore cutover rehearsal complete in synthetic workspace ${namespace.workspaceId}. No cloud project, application data, ERP/model/email call, source deletion or production activation was used.`);
 } finally {
-  await recovered?.close(); await abandoned?.close(); await persistence?.close(); await db.terminate(); await rm(directory, { recursive: true, force: true });
+  await restored?.close(); await recovered?.close(); await abandoned?.close(); await persistence?.close(); await db.terminate(); await rm(directory, { recursive: true, force: true });
 }
