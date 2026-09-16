@@ -93,20 +93,31 @@ async function createTemplate(request: FastifyRequest, reply: FastifyReply, serv
  * Creates a workflow using the selected template.
  ******************************************************************************/
 async function useTemplate(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
-  const template = await services.repository.read((state) => state.templates[requestParam(request, "id")] ?? null);
+  const templateId = requestParam(request, "id");
+  const template = await services.repository.readAuthoritative((state) => structuredClone(state.templates[templateId] ?? null));
   if (template === null) throw new HandlerFailure(404, "Template not found");
   const yaml = stringValue(template.yaml);
   let blueprint;
   try { blueprint = parseWorkflowYAMLStrict(yaml); } catch (error) { throw new HandlerFailure(422, "Workflow validation failed", { error: errorText(error) }); }
   const traceId = requestTraceId(request);
+  const registryHash = services.registries.hash();
   const gate = await validateWorkflow(services, "UseTemplate", yaml, user, { traceId });
   if (!gate.result.passed) throw new HandlerFailure(422, "Workflow validation failed", { ...gate.result, traceId });
+  const validation = validateWorkspaceDraft("UseTemplate", yaml, user.role, services.validator, services.registries.snapshot().tools);
+  if (!validation.passed) throw new HandlerFailure(422, "Workflow validation failed", validation);
   const body = request.body === undefined ? {} : bodyRecord(request);
   if (body === null) throw new HandlerFailure(400, "Invalid request body");
   const requestedName = stringValue(body.name).trim();
   const workflow = await services.repository.mutate((state) => {
+    const permissions = assertActorAuthority(state, user);
+    if (!permissions.includes("workflow:write")) throw new HandlerFailure(403, "Current workflow write authority is required");
+    if (services.registries.hash() !== registryHash) throw new HandlerFailure(409, "Registry changed during validation; validate the draft again", { code: "DRAFT_REGISTRY_CHANGED" });
+    const current = state.templates[templateId];
+    if (!current || stringValue(current.yaml) !== yaml) throw new HandlerFailure(409, "Template changed during validation; reload before creating a workflow", { code: "TEMPLATE_CHANGED" });
     const value = newWorkflow(state, requestedName === "" ? blueprint.name : requestedName, blueprint.description ?? "", yaml, blueprint, user);
     state.workflows[value.id] = value;
+    appendAudit(state, user, "workflow.created_from_template", "workflow", value.id, null,
+      { sourceTemplateId: templateId, sourceHash: workflowContentHash(yaml), draftVersion: value.draftVersion, canRun: value.canRun }, request);
     return value;
   });
   return reply.status(201).send(ok(publicWorkflow(workflow), "Template converted to workflow", null));
@@ -177,17 +188,39 @@ async function duplicateWorkflow(request: FastifyRequest, reply: FastifyReply, u
   const body = request.body === undefined ? {} : bodyRecord(request);
   if (body === null) throw new HandlerFailure(400, "Invalid request body");
   const sourceID = requestParam(request, "id");
+  const source = await services.repository.readAuthoritative((state) => {
+    const value = state.workflows[sourceID];
+    if (!value || !permittedWorkflow(value, user, false)) return null;
+    assertWorkflowMutable(value);
+    return structuredClone(value);
+  });
+  if (source === null) throw new HandlerFailure(404, "Workflow not found");
+  let blueprint;
+  try { blueprint = parseWorkflowYAMLStrict(source.yaml); }
+  catch (error) { throw new HandlerFailure(422, "Workflow validation failed", { error: errorText(error) }); }
+  const traceId = requestTraceId(request);
+  const registryHash = services.registries.hash();
+  const gate = await validateWorkflow(services, "DuplicateWorkflow", source.yaml, user, { traceId, workflowId: sourceID });
+  if (!gate.result.passed) throw new HandlerFailure(422, "Workflow validation failed", { ...gate.result, traceId });
+  const validation = validateWorkspaceDraft("DuplicateWorkflow", source.yaml, user.role, services.validator, services.registries.snapshot().tools);
+  if (!validation.passed) throw new HandlerFailure(422, "Workflow validation failed", validation);
+  const sourceHash = workflowContentHash(source.yaml), sourceVersion = source.draftVersion;
   const copy = await services.repository.mutate((state) => {
-    const source = state.workflows[sourceID];
-    if (source === undefined) throw new HandlerFailure(404, "Workflow not found");
-    assertWorkflowMutable(source);
-    const id = nextID(state, "wf");
-    const createdAt = now();
+    const permissions = assertActorAuthority(state, user);
+    if (!permissions.includes("workflow:write")) throw new HandlerFailure(403, "Current workflow write authority is required");
+    if (services.registries.hash() !== registryHash) throw new HandlerFailure(409, "Registry changed during validation; validate the draft again", { code: "DRAFT_REGISTRY_CHANGED" });
+    const current = state.workflows[sourceID];
+    if (!current || !permittedWorkflow(current, user, false)) throw new HandlerFailure(404, "Workflow not found");
+    assertWorkflowMutable(current);
+    if (current.draftVersion !== sourceVersion || workflowContentHash(current.yaml) !== sourceHash)
+      throw new HandlerFailure(409, "Source workflow changed during validation; reload before duplicating", { code: "WORKFLOW_CHANGED" });
     const providedName = stringValue(body.name).trim();
-    const value: Workflow = structuredClone(source);
-    value.id = id; value.name = providedName === "" ? `${source.name} Copy` : providedName; value.owner = { id: user.id, name: user.name }; value.status = "PENDING"; value.assignedUserIds = []; value.publishedVersion = 0; value.draftVersion = 1; value.lastRunAt = null; value.createdAt = createdAt; value.updatedAt = createdAt; value.archived = false;
-    if (value.canvas !== undefined) value.canvas.workflowId = id;
-    state.workflows[id] = value;
+    const value = newWorkflow(state, providedName === "" ? `${source.name} Copy` : providedName, source.description, source.yaml, blueprint, user);
+    value.tags = structuredClone(source.tags);
+    value.domainTags = structuredClone(source.domainTags);
+    state.workflows[value.id] = value;
+    appendAudit(state, user, "workflow.duplicated", "workflow", value.id, null,
+      { sourceWorkflowId: sourceID, sourceVersion, sourceHash, draftVersion: value.draftVersion, canRun: value.canRun }, request);
     return structuredClone(value);
   });
   return reply.status(201).send(ok(publicWorkflow(copy), "Workflow duplicated", null));
@@ -555,7 +588,7 @@ async function workflowExecutions(request: FastifyRequest, reply: FastifyReply, 
  ******************************************************************************/
 function newWorkflow(state: Parameters<typeof nextID>[0], name: string, description: string, yaml: string, blueprint: ReturnType<typeof parseWorkflowYAMLStrict>, user: CurrentUser): Workflow {
   const id = nextID(state, "wf"); const createdAt = now();
-  return { id, name, description, owner: { id: user.id, name: user.name }, assignedUserIds: [], status: "PENDING", trigger: blueprint.trigger as unknown as Record<string, unknown>, steps: blueprint.steps.length, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [], canRun: true, createdAt, updatedAt: createdAt, yaml, archived: false, canvas: canvasFromBlueprint(id, blueprint) };
+  return { id, name, description, owner: { id: user.id, name: user.name }, assignedUserIds: [], status: "PENDING", trigger: blueprint.trigger as unknown as Record<string, unknown>, steps: blueprint.steps.length, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [], canRun: false, createdAt, updatedAt: createdAt, yaml, archived: false, canvas: canvasFromBlueprint(id, blueprint) };
 }
 
 /*******************************************************************************

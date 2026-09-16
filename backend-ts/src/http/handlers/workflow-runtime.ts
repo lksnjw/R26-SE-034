@@ -5,7 +5,7 @@ import { z } from "zod";
 import { fail, ok, runWorkflowRequestSchema, type Workflow } from "../../models/schemas.js";
 import { parseWorkflowYAMLStrict } from "../../parser/workflow.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
-import type { Execution, User } from "../../repository/store.js";
+import type { Execution, User, RepositoryState } from "../../repository/store.js";
 import { operationJobQueue } from "../../runner/operation-jobs.js";
 import { readJobQueue } from "../../runner/read-jobs.js";
 import { inspectReadWorkflow } from "../../runner/read-workflow.js";
@@ -13,7 +13,9 @@ import { isTraceId, requestTraceId } from "../../trace/request-trace.js";
 import { canViewWorkflow } from "../../workflows/commands.js";
 import type { ApplicationServices } from "../application-services.js";
 import { INVALID_JSON_BODY } from "../request-body.js";
-import { stringValue, validateWorkflow as validateWithGovernance } from "./common.js";
+import { HandlerFailure, type CurrentUser, stringValue, validateWorkflow as validateWithGovernance } from "./common.js";
+import { assertActorAuthority } from "./model-selection.js";
+import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 import { runVerifiedRead } from "./read-execution.js";
 import { boundedReadFixtureRequest, handleReadFixtureSimulation } from "./read-simulation.js";
 
@@ -39,7 +41,7 @@ export async function listWorkflows(
 export async function createWorkflow(
   request: FastifyRequest,
   reply: FastifyReply,
-  user: User & { role: string },
+  user: CurrentUser,
   services: ApplicationServices,
 ): Promise<unknown> {
   if (request.body === INVALID_JSON_BODY)
@@ -47,9 +49,9 @@ export async function createWorkflow(
   const parsed = z.object({
     name: z.string().default(""),
     description: z.string().default(""),
-    yaml: z.string().optional(),
+    yaml: z.string().max(200000).optional(),
     candidate: z.object({
-      yaml: z.string(),
+      yaml: z.string().max(200000),
       candidate_id: z.string().optional(),
       id: z.string().optional(),
       chatSessionId: z.string().optional(),
@@ -74,14 +76,15 @@ export async function createWorkflow(
   const traceId = requestTraceId(request, linkedTraceId === "" ? undefined : linkedTraceId);
   if ((chatSessionId === "") !== (chatMessageId === ""))
     return reply.status(400).send(fail("Chat session and message IDs must be provided together", null));
+  const originExists = (state: Readonly<RepositoryState>) => {
+    if (chatSessionId === "") return true;
+    const chat = state.chats[chatSessionId];
+    if (chat === undefined || (chat.ownerId !== user.id && !user.permissions.includes("workflow:read")))
+      return false;
+    return chat.messages.some((message) => message.id === chatMessageId && stringValue(message.role) === "user");
+  };
   if (chatSessionId !== "") {
-    const originExists = await services.repository.read((state) => {
-      const chat = state.chats[chatSessionId];
-      if (chat === undefined || (chat.ownerId !== user.id && !(user as User & { permissions?: string[] }).permissions?.includes("workflow:read")))
-        return false;
-      return chat.messages.some((message) => message.id === chatMessageId && stringValue(message.role) === "user");
-    });
-    if (!originExists)
+    if (!await services.repository.readAuthoritative(originExists))
       return reply.status(400).send(fail("Chat candidate origin not found", null));
   }
   let blueprint;
@@ -89,6 +92,7 @@ export async function createWorkflow(
   catch (error) {
     return reply.status(422).send(fail("Workflow validation failed", { error: errorText(error) }));
   }
+  const registryHash = services.registries.hash();
   const gate = await validateWithGovernance(services, "CreateWorkflow", rawYAML, user, {
     traceId,
     ...(chatSessionId === "" ? {} : { sessionId: chatSessionId }),
@@ -97,7 +101,13 @@ export async function createWorkflow(
   });
   if (!gate.result.passed)
     return reply.status(422).send(fail("Workflow validation failed", { ...gate.result, traceId }));
+  const validation = validateWorkspaceDraft("CreateWorkflow", rawYAML, user.role, services.validator, services.registries.snapshot().tools);
+  if (!validation.passed) return reply.status(422).send(fail("Workflow validation failed", validation));
   const workflow = await services.repository.mutate((state) => {
+    const permissions = assertActorAuthority(state, user);
+    if (!permissions.includes("workflow:write")) throw new HandlerFailure(403, "Current workflow write authority is required");
+    if (services.registries.hash() !== registryHash) throw new HandlerFailure(409, "Registry changed during validation; validate the draft again", { code: "DRAFT_REGISTRY_CHANGED" });
+    if (!originExists(state)) throw new HandlerFailure(409, "Chat candidate origin changed during validation; reload before saving", { code: "CHAT_ORIGIN_CHANGED" });
     state.counter += 1;
     const id = `wf_${state.counter}_${randomBytes(4).toString("hex")}`;
     const now = new Date().toISOString();

@@ -14,6 +14,8 @@ import { requestTraceId } from "../../trace/request-trace.js";
 import { runWorkflowFor, resumeWorkflowApproval } from "./workflow-runtime.js";
 import { decideRuntimeApproval } from "../../runner/runtime-approvals.js";
 import { assertCurrentRunController } from "../../runner/read-checkpoints.js";
+import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
+import { assertActorAuthority } from "./model-selection.js";
 import {
   appendAudit,
   bodyRecord,
@@ -218,10 +220,16 @@ async function importWorkflow(
     });
   }
   const traceId = requestTraceId(request);
+  const registryHash = services.registries.hash();
   const gate = await validateWorkflow(services, "ImportWorkflow", yaml, user, { traceId });
   if (!gate.result.passed)
     throw new HandlerFailure(422, "Workflow validation failed", { ...gate.result, traceId, ...(gate.gateExplanation !== undefined ? { gateExplanation: gate.gateExplanation } : {}) }); // SAFETY: the strict workflow parser guarantees trigger.config is JSON-compatible; Workflow stores the same value as a generic object.
+  const validation = validateWorkspaceDraft("ImportWorkflow", yaml, user.role, services.validator, services.registries.snapshot().tools);
+  if (!validation.passed) throw new HandlerFailure(422, "Workflow validation failed", validation);
   const workflow = await services.repository.mutate((state) => {
+    const permissions = assertActorAuthority(state, user);
+    if (!permissions.includes("workflow:write")) throw new HandlerFailure(403, "Current workflow write authority is required");
+    if (services.registries.hash() !== registryHash) throw new HandlerFailure(409, "Registry changed during validation; validate the draft again", { code: "DRAFT_REGISTRY_CHANGED" });
     const id = nextID(state, "wf");
     const createdAt = now();
     const value: Workflow = {
@@ -239,7 +247,7 @@ async function importWorkflow(
       draftVersion: 1,
       tags: [],
       domainTags: [],
-      canRun: true,
+      canRun: false,
       createdAt,
       updatedAt: createdAt,
       yaml,

@@ -10,6 +10,8 @@ import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import type { Workflow } from "../src/models/schemas.js";
 import type { ProviderRuntime } from "../src/providers/runtime.js";
+import { stringify } from "yaml";
+import { parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -141,6 +143,184 @@ test("accepting a valid candidate creates a draft, not an executable publication
   expect(run.statusCode, run.body).toBe(409);
   expect(run.json().meta.code).toBe("WORKFLOW_NOT_PUBLISHED");
   expect(s.listTools).not.toHaveBeenCalled();
+});
+
+test("duplicate revalidates the exact source and creates a clean non-runnable draft without provenance or execution state", async () => {
+  const s = await setup(false);
+  await s.repository.mutate((state) => {
+    state.workflows.other = {
+      ...workflow("other", "admin", readYaml),
+      name: "Reviewed source",
+      publishedVersion: 7,
+      draftVersion: 9,
+      canRun: true,
+      tags: ["finance"],
+      domainTags: ["invoices"],
+      lastRunAt: new Date().toISOString(),
+      chatSessionId: "chat-private",
+      chatMessageId: "message-private",
+      traceId: "trace-private",
+      pendingGenerationApproval: { steps: [{ stepId: "old", description: "Old proposal evidence" }], requestedAt: new Date().toISOString() },
+      generationApprovals: [{ approvedBy: { id: "admin", name: "admin" }, approvedAt: new Date().toISOString() }],
+      canvas: { workflowId: "other", nodes: [{ id: "read", status: "succeeded", result: { private: true } }], edges: [] },
+    };
+  });
+  const validation = vi.spyOn(s.validator, "validateAndIssueToken");
+  const response = await s.app.inject({ method: "POST", url: "/api/workflows/other/duplicate", headers: s.headers("admin"), payload: { name: "Safe copy" } });
+  expect(response.statusCode, response.body).toBe(201);
+  expect(validation).toHaveBeenCalledWith("DuplicateWorkflow", readYaml, "Platform Admin", expect.objectContaining({ workflowId: "other" }));
+  const id = response.json().data.id as string, state = await s.repository.snapshot(), copy = state.workflows[id]!;
+  expect(copy).toMatchObject({ name: "Safe copy", owner: { id: "admin" }, assignedUserIds: [], publishedVersion: 0, draftVersion: 1,
+    canRun: false, lastRunAt: null, tags: ["finance"], domainTags: ["invoices"], yaml: readYaml, archived: false });
+  expect(copy).not.toHaveProperty("chatSessionId");
+  expect(copy).not.toHaveProperty("chatMessageId");
+  expect(copy).not.toHaveProperty("traceId");
+  expect(copy).not.toHaveProperty("pendingGenerationApproval");
+  expect(copy).not.toHaveProperty("generationApprovals");
+  expect(copy.canvas).toMatchObject({ workflowId: id, nodes: [{ id: "read", status: "idle" }] });
+  expect(JSON.stringify(copy.canvas)).not.toContain("private");
+  expect(state.versions[id]).toBeUndefined();
+  expect(state.auditLogs).toContainEqual(expect.objectContaining({ action: "workflow.duplicated", resource: { type: "workflow", id },
+    after: expect.objectContaining({ sourceWorkflowId: "other", sourceVersion: 9, canRun: false }) }));
+  const run = await s.app.inject({ method: "POST", url: `/api/workflows/${id}/run`, headers: s.headers("admin"), payload: {} });
+  expect(run.statusCode, run.body).toBe(409);
+  expect(run.json().meta.code).toBe("WORKFLOW_NOT_PUBLISHED");
+  expect(s.listTools).not.toHaveBeenCalled();
+});
+
+test("duplicate rejects invalid, changed, and authority-revoked sources without creating a copy", async () => {
+  const invalid = await setup(false);
+  const denied = await invalid.app.inject({ method: "POST", url: "/api/workflows/other/duplicate", headers: invalid.headers("admin"), payload: {} });
+  expect(denied.statusCode, denied.body).toBe(422);
+  expect(Object.keys((await invalid.repository.snapshot()).workflows)).toEqual(["other"]);
+
+  const changed = await setup(false);
+  await changed.repository.mutate((state) => { state.workflows.other = workflow("other", "admin", readYaml); });
+  const changedOriginal = changed.validator.validateAndIssueToken.bind(changed.validator);
+  vi.spyOn(changed.validator, "validateAndIssueToken").mockImplementationOnce(async (...args) => {
+    const result = await changedOriginal(...args);
+    await changed.repository.mutate((state) => { state.workflows.other!.yaml = readYaml.replace("value: test", "value: changed"); state.workflows.other!.draftVersion++; });
+    return result;
+  });
+  const conflict = await changed.app.inject({ method: "POST", url: "/api/workflows/other/duplicate", headers: changed.headers("admin"), payload: {} });
+  expect(conflict.statusCode, conflict.body).toBe(409);
+  expect(conflict.json().meta.code).toBe("WORKFLOW_CHANGED");
+  expect(Object.keys((await changed.repository.snapshot()).workflows)).toEqual(["other"]);
+
+  const revoked = await setup(false);
+  await revoked.repository.mutate((state) => { state.workflows.other = workflow("other", "admin", readYaml); });
+  const revokedOriginal = revoked.validator.validateAndIssueToken.bind(revoked.validator);
+  vi.spyOn(revoked.validator, "validateAndIssueToken").mockImplementationOnce(async (...args) => {
+    const result = await revokedOriginal(...args);
+    await revoked.repository.mutate((state) => { state.users.admin!.status = "Suspended"; });
+    return result;
+  });
+  const forbidden = await revoked.app.inject({ method: "POST", url: "/api/workflows/other/duplicate", headers: revoked.headers("admin"), payload: {} });
+  expect(forbidden.statusCode, forbidden.body).toBe(403);
+  expect(Object.keys((await revoked.repository.snapshot()).workflows)).toEqual(["other"]);
+});
+
+test("template use and workflow import validate into non-runnable drafts", async () => {
+  const s = await setup(false);
+  await s.repository.mutate((state) => { state.templates.safe = { id: "safe", name: "Safe template", description: "Read only", yaml: readYaml }; });
+  const template = await s.app.inject({ method: "POST", url: "/api/workflows/templates/safe/use", headers: s.headers("admin"), payload: { name: "From template" } });
+  expect(template.statusCode, template.body).toBe(201);
+  expect(template.json().data).toMatchObject({ name: "From template", publishedVersion: 0, draftVersion: 1, canRun: false });
+  const imported = await s.app.inject({ method: "POST", url: "/api/upload/workflow-import", headers: s.headers("admin"), payload: { name: "Imported", yaml: readYaml } });
+  expect(imported.statusCode, imported.body).toBe(201);
+  expect(imported.json().data).toMatchObject({ name: "Imported", publishedVersion: 0, draftVersion: 1, canRun: false });
+  for (const id of [template.json().data.id, imported.json().data.id]) {
+    const run = await s.app.inject({ method: "POST", url: `/api/workflows/${id}/run`, headers: s.headers("admin"), payload: {} });
+    expect(run.statusCode, run.body).toBe(409);
+    expect(run.json().meta.code).toBe("WORKFLOW_NOT_PUBLISHED");
+  }
+  expect(s.listTools).not.toHaveBeenCalled();
+  expect(s.callToolDirect).not.toHaveBeenCalled();
+});
+
+const creationOrigins = ["create", "duplicate", "template", "import"] as const;
+async function originSetup(origin: typeof creationOrigins[number], yaml = readYaml) {
+  const s = await setup(false);
+  await s.repository.mutate(state => {
+    state.workflows.other = workflow("other", "admin", yaml);
+    state.templates.safe = { id: "safe", name: "Safe", yaml };
+  });
+  const request = () => s.app.inject({ method: "POST", headers: s.headers("admin"),
+    url: origin === "create" ? "/api/workflows" : origin === "duplicate" ? "/api/workflows/other/duplicate" :
+      origin === "template" ? "/api/workflows/templates/safe/use" : "/api/upload/workflow-import",
+    payload: origin === "create" || origin === "import" ? { yaml } : {},
+  });
+  return { ...s, request };
+}
+
+test.each(creationOrigins)("%s rejects actor revocation during validation before saving any draft", async origin => {
+  const s = await originSetup(origin), validate = s.validator.validateAndIssueToken.bind(s.validator);
+  vi.spyOn(s.validator, "validateAndIssueToken").mockImplementationOnce(async (...args) => {
+    const result = await validate(...args);
+    expect(result.result.passed).toBe(true);
+    await s.repository.mutate(state => { state.users.admin!.status = "Suspended"; });
+    return result;
+  });
+  const response = await s.request();
+  expect(response.statusCode, response.body).toBe(403);
+  expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["other"]);
+  expect(s.listTools).not.toHaveBeenCalled(); expect(s.callToolDirect).not.toHaveBeenCalled();
+});
+
+test.each(creationOrigins)("%s rejects registry drift during validation before saving any draft", async origin => {
+  const s = await originSetup(origin), validate = s.validator.validateAndIssueToken.bind(s.validator);
+  vi.spyOn(s.validator, "validateAndIssueToken").mockImplementationOnce(async (...args) => {
+    const result = await validate(...args);
+    expect(result.result.passed).toBe(true);
+    vi.spyOn(s.registries, "hash").mockReturnValue(`sha256:${"f".repeat(64)}`);
+    return result;
+  });
+  const response = await s.request();
+  expect(response.statusCode, response.body).toBe(409);
+  expect(response.json().meta.code).toBe("DRAFT_REGISTRY_CHANGED");
+  expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["other"]);
+});
+
+test.each(creationOrigins)("%s applies structural ownership checks even when registry validation passes", async origin => {
+  const blueprint = parseWorkflowYAMLStrict(readYaml);
+  blueprint.metadata = { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [] } } };
+  const s = await originSetup(origin, stringify(blueprint));
+  expect(s.validator.validatePlan("Fixture", stringify(blueprint), "Platform Admin").passed).toBe(true);
+  const response = await s.request();
+  expect(response.statusCode, response.body).toBe(422);
+  expect(response.json().meta.errors.join(" ")).toContain("Control flow must own every declared action exactly once");
+  expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["other"]);
+  expect(s.listTools).not.toHaveBeenCalled(); expect(s.callToolDirect).not.toHaveBeenCalled();
+});
+
+test("template use rejects a source changed or deleted during validation", async () => {
+  for (const damage of ["change", "delete"] as const) {
+    const s = await originSetup("template"), validate = s.validator.validateAndIssueToken.bind(s.validator);
+    vi.spyOn(s.validator, "validateAndIssueToken").mockImplementationOnce(async (...args) => {
+      const result = await validate(...args);
+      await s.repository.mutate(state => { if (damage === "delete") delete state.templates.safe; else state.templates.safe!.yaml = readYaml.replace("value: test", "value: changed"); });
+      return result;
+    });
+    const response = await s.request();
+    expect(response.statusCode, response.body).toBe(409); expect(response.json().meta.code).toBe("TEMPLATE_CHANGED");
+    expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["other"]);
+  }
+});
+
+test("direct creation rechecks linked chat origin after validation", async () => {
+  const s = await setup(false), timestamp = new Date().toISOString();
+  await s.repository.mutate(state => { state.chats.origin = { id: "origin", title: "Origin", ownerId: "admin", createdAt: timestamp,
+    updatedAt: timestamp, messageCount: 1, messages: [{ id: "request", role: "user", text: "Build a read", createdAt: timestamp }] }; });
+  const validate = s.validator.validateAndIssueToken.bind(s.validator);
+  vi.spyOn(s.validator, "validateAndIssueToken").mockImplementationOnce(async (...args) => {
+    const result = await validate(...args);
+    await s.repository.mutate(state => { delete state.chats.origin; });
+    return result;
+  });
+  const response = await s.app.inject({ method: "POST", url: "/api/workflows", headers: s.headers("admin"),
+    payload: { candidate: { yaml: readYaml, chatSessionId: "origin", chatMessageId: "request" } } });
+  expect(response.statusCode, response.body).toBe(409); expect(response.json().meta.code).toBe("CHAT_ORIGIN_CHANGED");
+  expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["other"]);
 });
 
 test.each(["read-dispatch-error", "write-blocked"])("published run handles %s without asking a model to execute", async (scenario) => {
