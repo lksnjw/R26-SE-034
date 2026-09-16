@@ -10,6 +10,7 @@ import { Firestore } from "@google-cloud/firestore";
 import { fileURLToPath } from "node:url";
 import { AESGCMCodec } from "../src/storage/aes-gcm.js";
 import { FirestoreRecordPersistence } from "../src/storage/firestore-records.js";
+import { prepareFirestoreLegacyCutover } from "../src/storage/firestore-legacy-cutover.js";
 import { Repository, initialState } from "../src/repository/store.js";
 
 const projectId = "demo-lcwe-records";
@@ -22,8 +23,8 @@ for (let at = 0; at < 450; at++) state.settings[`staged_${at}`] = { value: at % 
 const plaintext = Buffer.from(JSON.stringify(state)), sourceHash = `sha256:${createHash("sha256").update(plaintext).digest("hex")}`;
 const document = { payload: new AESGCMCodec(storageKey).encode(gzipSync(plaintext)).toString("base64"), encrypted: true,
   compression: "gzip", updatedAt: new Date().toISOString() };
-const db = new Firestore({ projectId, databaseId: "(default)" }); let persistence;
-const directory = await mkdtemp(join(tmpdir(), "lcwe-firestore-cutover-")), backupPath = join(directory, "backup.json");
+const db = new Firestore({ projectId, databaseId: "(default)" }); let persistence, abandoned, recovered;
+const directory = await mkdtemp(join(tmpdir(), "lcwe-firestore-cutover-")), backupPath = join(directory, "backup.json"), cleanupBackupPath = join(directory, "cleanup-backup.json");
 const cli = fileURLToPath(new URL("./firestore-cutover.mjs", import.meta.url)), execute = promisify(execFile);
 const environment = { ...process.env, FIRESTORE_PROJECT_ID: namespace.projectId, FIRESTORE_DATABASE_ID: namespace.databaseId,
   FIRESTORE_WORKSPACE_ID: namespace.workspaceId, STORAGE_ENCRYPTION_KEY: storageKey, FIRESTORE_CUTOVER_BACKUP_KEY: backupKey,
@@ -43,9 +44,34 @@ try {
   const repository = await Repository.open(persistence); assert.deepEqual(await repository.snapshot(), state);
   assert.deepEqual((await db.doc("runtime/state").get()).data(), document);
   await assert.rejects(persistence.migrateLegacy(sourceHash), /empty target/);
+  const cleanupNamespace = { ...namespace, workspaceId: `cleanup_${randomUUID().replaceAll("-", "")}` };
+  const cleanupEnvironment = { ...environment, FIRESTORE_WORKSPACE_ID: cleanupNamespace.workspaceId,
+    FIRESTORE_CUTOVER_BACKUP_PATH: cleanupBackupPath };
+  const cleanupRun = (command, extra = {}) => execute(process.execPath, ["--import", "tsx/esm", cli, command],
+    { env: { ...cleanupEnvironment, ...extra }, maxBuffer: 1_000_000 });
+  await cleanupRun("export");
+  abandoned = await FirestoreRecordPersistence.open(storageKey, cleanupNamespace);
+  const cleanupPrepared = prepareFirestoreLegacyCutover(document, storageKey, cleanupNamespace);
+  const changedDocument = { ...document, updatedAt: "2030-01-01T00:00:00.000Z" };
+  await db.doc("runtime/state").set(changedDocument);
+  await assert.rejects(abandoned.records.initializeStaged(cleanupPrepared.records, "abandoned_rehearsal", {
+    path: "runtime/state", document,
+  }), /source changed after backup verification/);
+  await abandoned.close(); abandoned = undefined;
+  await assert.rejects(cleanupRun("clear-staging"), /I_CONFIRM_CLEAR_UNACTIVATED_STAGING/);
+  const cleared = JSON.parse((await cleanupRun("clear-staging", {
+    FIRESTORE_CUTOVER_CONFIRM_CLEAR_STAGING: "I_CONFIRM_CLEAR_UNACTIVATED_STAGING",
+  })).stdout);
+  assert.equal(cleared.status, "cleared"); assert.ok(cleared.manifestsRemoved > 0); assert.ok(cleared.chunksRemoved > 0);
+  assert.equal(cleared.backupSourceHash, sourceHash); assert.equal(cleared.legacySourceMatchesBackup, false);
+  assert.equal(cleared.legacySourceRetained, true); assert.deepEqual((await db.doc("runtime/state").get()).data(), changedDocument);
+  const recoveredMigration = JSON.parse((await cleanupRun("migrate")).stdout); assert.equal(recoveredMigration.status, "migrated");
+  recovered = await FirestoreRecordPersistence.open(storageKey, cleanupNamespace);
+  const recoveredRepository = await Repository.open(recovered); assert.deepEqual(await recoveredRepository.snapshot(), state);
   console.log(`PASS: operator CLI authenticated legacy export/verify/migrate/status (${migrated.recordCount} records, ${migrated.sourceBytes} plaintext bytes)`);
   console.log(`PASS: normalized reopen matched the complete source; overwrite was denied and the legacy source remained retained`);
+  console.log(`PASS: confirmation-gated cleanup removed only abandoned headless staging, retained the legacy source, and permitted an exact retry`);
   console.log(`Firestore cutover rehearsal complete in synthetic workspace ${namespace.workspaceId}. No cloud project, application data, ERP/model/email call, source deletion or production activation was used.`);
 } finally {
-  await persistence?.close(); await db.terminate(); await rm(directory, { recursive: true, force: true });
+  await recovered?.close(); await abandoned?.close(); await persistence?.close(); await db.terminate(); await rm(directory, { recursive: true, force: true });
 }

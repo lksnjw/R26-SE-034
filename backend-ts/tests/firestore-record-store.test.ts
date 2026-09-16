@@ -193,6 +193,25 @@ test("an unrelated orphan manifest prevents staged head publication instead of b
   expect(db.documents.has(storage.headPath)).toBe(false);
 });
 
+test("explicit headless cleanup removes abandoned manifests and chunks and permits a different retry", async () => {
+  const failed = store(), first = Array.from({ length: 30 }, (_, at) => record(`old_${at}`, at)); db.stageFaultAt = first.length + 5;
+  await expect(failed.initializeStaged(first, "staged-migration-abandon")).rejects.toThrow("staging failure");
+  expect([...db.documents.keys()].some(path => path.startsWith(failed.collectionPath + "/"))).toBe(true);
+  expect([...db.documents.keys()].some(path => path.startsWith(failed.chunkCollectionPath + "/"))).toBe(true);
+  db.stageFaultAt = -1; const recovery = store(); await recovery.acquireWriter();
+  const report = await recovery.clearUnactivatedStaging(); expect(report.manifests).toBeGreaterThan(0); expect(report.chunks).toBeGreaterThan(0);
+  expect([...db.documents.keys()].some(path => path.startsWith(recovery.collectionPath + "/"))).toBe(false);
+  expect([...db.documents.keys()].some(path => path.startsWith(recovery.chunkCollectionPath + "/"))).toBe(false);
+  const next = [record("new", false)]; expect((await recovery.initializeStaged(next, "staged-migration-new")).recordCount).toBe(1);
+});
+
+test("staging cleanup refuses an authoritative target and preserves every active packet", async () => {
+  const storage = store(), saved = await storage.initializeStaged([record("active", false)], "staged-migration-active");
+  expect(saved.revision).toBe(1); await storage.acquireWriter(); const before = new Map(db.documents);
+  await expect(storage.clearUnactivatedStaging()).rejects.toThrow("refuses an authoritative target");
+  expect(db.documents).toEqual(before);
+});
+
 test("close waits for in-flight staging and refuses subsequent activation or cached success", async () => {
   const { storage, first } = await setup(), head = clone(db.documents.get(storage.headPath)); let resume!: () => void, started!: () => void;
   const hold = new Promise<void>(resolve => { resume = resolve; }), entered = new Promise<void>(resolve => { started = resolve; });

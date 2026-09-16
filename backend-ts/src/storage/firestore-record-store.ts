@@ -281,6 +281,50 @@ export class FirestoreRecordStore {
       } catch (error) { this.#uncertain = true; throw error; }
     }));
   }
+  /** Explicit recovery for an abandoned preparation that never published a
+   * head. Writer ownership prevents a competing normalized activator. Delete
+   * manifests first so an interrupted cleanup remains non-authoritative; both
+   * collections are content-addressed and safe to clear only while headless. */
+  async clearUnactivatedStaging(): Promise<Readonly<{ manifests: number; chunks: number }>> {
+    return this.#mutex.runExclusive(() => this.withWriter(async () => {
+      this.assertOpen();
+      if (this.#uncertain) throw new Error("Firestore must be authoritatively reopened before staging cleanup");
+      this.assertWriterActive();
+      const inspectHeadless = async (manifestLimit = 1, chunkLimit = 1) => {
+        return this.db.runTransaction(async transaction => {
+          await this.assertWriterTransaction(transaction);
+          if ((await transaction.get(this.db.doc(this.headPath))).exists) throw new Error("Staging cleanup refuses an authoritative target");
+          const manifests = await transaction.get(this.db.collection(this.collectionPath).limit(manifestLimit));
+          const chunks = await transaction.get(this.db.collection(this.chunkCollectionPath).limit(chunkLimit));
+          this.#writer?.assertTransactionDeadline();
+          return Object.freeze({ manifests: manifests.docs.map(row => row.id), chunks: chunks.docs.map(row => row.id) });
+        }, { readOnly: true });
+      };
+      const staged = await inspectHeadless(B.migrationRecords + 1, B.chunkCount + 1);
+      if (staged.manifests.length > B.migrationRecords || staged.chunks.length > B.chunkCount) throw new Error("Firestore abandoned staging exceeds the cleanup budget");
+      const remove = async (path: string, ids: string[]) => {
+        for (let offset = 0; offset < ids.length; offset += B.transactionWrites) {
+          const batch = ids.slice(offset, offset + B.transactionWrites);
+          await this.db.runTransaction(async transaction => {
+            await this.assertWriterTransaction(transaction);
+            if ((await transaction.get(this.db.doc(this.headPath))).exists) throw new Error("Staging cleanup refuses an authoritative target");
+            this.#writer?.assertTransactionDeadline();
+            for (const id of batch) transaction.delete(this.db.collection(path).doc(id));
+            return null;
+          }, { maxAttempts: 5 });
+          this.assertOpen(); this.#writer?.assertTransactionDeadline();
+        }
+      };
+      try {
+        await remove(this.collectionPath, staged.manifests);
+        await remove(this.chunkCollectionPath, staged.chunks);
+        const remaining = await inspectHeadless();
+        if (remaining.manifests.length || remaining.chunks.length)
+          throw new Error("Firestore abandoned staging cleanup is incomplete");
+        return Object.freeze({ manifests: staged.manifests.length, chunks: staged.chunks.length });
+      } catch (error) { this.#uncertain = true; throw error; }
+    }));
+  }
   async commit(snapshot: FirestoreRecordSnapshot, mutation: FirestoreRecordMutation): Promise<FirestoreRecordSnapshot> {
     return this.#mutex.runExclusive(() => this.withWriter(async () => {
       this.assertOpen();

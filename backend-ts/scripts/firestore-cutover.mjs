@@ -8,8 +8,8 @@ import { FirestoreRecordPersistence } from "../src/storage/firestore-records.js"
 import { assembleFirestoreState } from "../src/storage/firestore-record-layout.js";
 import { createFirestoreLegacyBackup, prepareFirestoreLegacyCutover, verifyFirestoreLegacyBackup } from "../src/storage/firestore-legacy-cutover.js";
 
-const command = process.argv[2], allowed = new Set(["export", "verify", "status", "migrate"]);
-if (!allowed.has(command)) throw new Error("Usage: firestore-cutover.mjs export|verify|status|migrate");
+const command = process.argv[2], allowed = new Set(["export", "verify", "status", "migrate", "clear-staging"]);
+if (!allowed.has(command)) throw new Error("Usage: firestore-cutover.mjs export|verify|status|migrate|clear-staging");
 const required = name => { const value = process.env[name]?.trim(); if (!value) throw new Error(`${name} is required`); return value; };
 const backupPath = resolve(required("FIRESTORE_CUTOVER_BACKUP_PATH"));
 const storageKey = required("STORAGE_ENCRYPTION_KEY"), backupKey = required("FIRESTORE_CUTOVER_BACKUP_KEY");
@@ -33,6 +33,8 @@ const authentication = {
   ...(process.env.FIRESTORE_KEY_FILE?.trim() ? { keyFilename: process.env.FIRESTORE_KEY_FILE.trim() } : {}),
   ...(process.env.FIRESTORE_KEY_JSON?.trim() ? { credentials: JSON.parse(process.env.FIRESTORE_KEY_JSON) } : {}),
 };
+if (command === "clear-staging" && process.env.FIRESTORE_CUTOVER_CONFIRM_CLEAR_STAGING !== "I_CONFIRM_CLEAR_UNACTIVATED_STAGING")
+  throw new Error("Staging cleanup requires FIRESTORE_CUTOVER_CONFIRM_CLEAR_STAGING=I_CONFIRM_CLEAR_UNACTIVATED_STAGING");
 
 if (command === "export") {
   const db = new Firestore({ projectId: namespace.projectId, databaseId: namespace.databaseId, ...authentication });
@@ -64,7 +66,7 @@ if (command === "export") {
         recordCount: snapshot.recordCount, recordFingerprint: backup.recordFingerprint, revision: snapshot.revision, legacySourceRetained }));
     }
   } finally { await persistence.close(); }
-} else {
+} else if (command === "migrate") {
   const backup = verifyFirestoreLegacyBackup(await readFile(backupPath), storageKey, backupKey);
   if (backup.namespace.projectId !== namespace.projectId || backup.namespace.databaseId !== namespace.databaseId || backup.namespace.workspaceId !== namespace.workspaceId)
     throw new Error("Backup namespace differs from the explicit migration target");
@@ -74,5 +76,26 @@ if (command === "export") {
     if (report.sourceBytes !== backup.sourceBytes || report.recordCount !== backup.recordCount || report.recordFingerprint !== backup.recordFingerprint)
       throw new Error("Activated migration report differs from the authenticated backup");
     console.log(JSON.stringify({ status: "migrated", namespace, ...report, legacySourceRetained: true }));
+  } finally { await persistence.close(); }
+} else {
+  const backup = verifyFirestoreLegacyBackup(await readFile(backupPath), storageKey, backupKey);
+  if (backup.namespace.projectId !== namespace.projectId || backup.namespace.databaseId !== namespace.databaseId || backup.namespace.workspaceId !== namespace.workspaceId)
+    throw new Error("Backup namespace differs from the explicit staging-cleanup target");
+  const db = new Firestore({ projectId: namespace.projectId, databaseId: namespace.databaseId, ...authentication });
+  let sourceBefore;
+  try {
+    const row = await db.doc("runtime/state").get();
+    if (!row.exists) throw new Error("Legacy Firestore source is unavailable; staging cleanup denied");
+    sourceBefore = row.data();
+  } finally { await db.terminate(); }
+  const persistence = await FirestoreRecordPersistence.open(storageKey, namespace, authentication);
+  try {
+    const report = await persistence.records.clearUnactivatedStaging();
+    const sourceAfter = await persistence.records.db.doc("runtime/state").get();
+    if (!sourceAfter.exists || !canonicalJSONBytes(sourceAfter.data()).equals(canonicalJSONBytes(sourceBefore)))
+      throw new Error("Legacy Firestore source changed during staging cleanup");
+    console.log(JSON.stringify({ status: "cleared", namespace, backupSourceHash: backup.sourceHash,
+      legacySourceMatchesBackup: canonicalJSONBytes(sourceBefore).equals(canonicalJSONBytes(backup.document)),
+      manifestsRemoved: report.manifests, chunksRemoved: report.chunks, legacySourceRetained: true }));
   } finally { await persistence.close(); }
 }
