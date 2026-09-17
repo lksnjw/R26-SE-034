@@ -91,18 +91,18 @@ export async function main(args) {
           !candidate.validation.passed ||
           candidate.execution_profile_issues.length ||
           candidate.candidate.generation_metadata.promptTemplateVersion !==
-            "prompt/candidate/v8"
+            "prompt/candidate/v9"
         )
           throw new Error(
             "Local synthesis did not prove the expected versioned draft",
           );
-        // Explicit operator authoring after synthesis, not a claim that the model
-        // inferred authoritative review metadata from the request.
+        // The local planning fixture consumes server-derived advisory hints;
+        // normal publication still independently captures current authority.
         const blueprint = parse(candidate.yaml),
           modelNode = blueprint.steps.find((step) => step.kind === kind);
         if (!modelNode)
           throw new Error("Synthetic candidate model node missing");
-        modelNode.data_class = dataClass;
+        if (modelNode.data_class !== dataClass) throw new Error("Generated class did not match the server-derived source hint");
         if (dataClass !== "public") {
           modelNode.data_class = "public";
           const unsafe = await request(
@@ -181,13 +181,16 @@ export async function main(args) {
           saved.finalOutput?.structuredContent?.departmentCount !==
             actualRows.length ||
           saved.runtimeApproval
-        )
+        ) {
+          console.error("Synthetic completion diagnostics", { status: saved.status, failureCategory: saved.failure?.failureCategory, hasRows: Array.isArray(actualRows), hasFinal: Boolean(saved.finalOutput) });
           throw new Error(
             "Local model-read evidence did not prove the expected read-only completion",
           );
+        }
         const privateRun = await workspace.repository.read(
           (state) => state.executions[run.id],
         );
+        if (privateRun.tokens.total !== (kind === "agent" ? 4 : 2)) throw new Error("Private fixture usage did not match the acknowledged model rounds");
         if (
           privateRun.runtimeApprovalSecret ||
           Object.values(privateRun.operationSecret.intents).some(
@@ -197,6 +200,15 @@ export async function main(args) {
           throw new Error(
             "Local read-only rehearsal unexpectedly contains effect authority",
           );
+        const events = await workspace.repository.read(state => state.executionEvents[run.id]);
+        if (kind === "agent") {
+          const completed = events.find(event => event.type === "node.agent_completed");
+          const intents = Object.values(privateRun.operationSecret.intents);
+          if (completed?.payload?.rounds !== 2 || completed.payload.toolCalls !== 1 ||
+              intents.filter(intent => intent.dispatchKind === "agent-model" && intent.state === "ACKNOWLEDGED").length !== 2 ||
+              intents.filter(intent => intent.dispatchKind === "agent-tool" && intent.state === "ACKNOWLEDGED" && intent.evidenceMeaning === "agent-tool-result").length !== 1)
+            throw new Error("Synthetic agent did not prove two model rounds and one governed Docker tool call");
+        }
         const replay = await request(
           "POST",
           `/api/workflows/${draft.id}/run`,
@@ -205,8 +217,9 @@ export async function main(args) {
         );
         if (replay.id !== run.id)
           throw new Error("Stable replay created a different run");
+        if (JSON.stringify(await workspace.repository.read(state => state.executionEvents[run.id])) !== JSON.stringify(events)) throw new Error("Replay unexpectedly added execution events");
         console.log(
-          `LOCAL Docker ${dataClass}/${kind}: v8 synthetic draft generated, classification explicitly authored and published; DONE; ${actualRows.length} actual synthetic rows; matching fixture departmentCount; ${saved.durationMs} ms whole-run sample; no effect or approval; replay returned the same run.`,
+          `LOCAL Docker ${dataClass}/${kind}: v9 fixture draft follows reviewed source hint; published; DONE; ${actualRows.length} actual synthetic rows; matching fixture departmentCount; ${kind === "agent" ? "two model rounds and one dynamic governed Docker read; " : ""}${saved.durationMs} ms whole-run sample; no effect or approval; replay returned the same run without new events.`,
         );
       }
     }

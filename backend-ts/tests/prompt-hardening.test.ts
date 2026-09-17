@@ -31,7 +31,7 @@ const turn = (calls: Array<{ id: string; name: string; arguments: Record<string,
 const call = (name = read.mcp_tool_name, args: Record<string, unknown> = { id: "x" }, id = "call1") => ({ id, name, arguments: args });
 afterEach(() => vi.unstubAllGlobals());
 
-test.each(["prompt/query/v2", "prompt/action/v2", "prompt/runtime-agent/v1", "prompt/candidate/v3", "prompt/candidate/v4", "prompt/candidate/v5", "prompt/candidate/v6", "prompt/candidate/v7", "prompt/candidate/v8", "prompt/node-patch/v2", "prompt/analysis-node-patch/v1", "prompt/condition-patch/v1", "prompt/return-patch/v1", "prompt/collection-patch/v1", "prompt/workflow-modifier/v2", "prompt/analysis/v2",
+test.each(["prompt/query/v2", "prompt/action/v2", "prompt/runtime-agent/v1", "prompt/candidate/v3", "prompt/candidate/v4", "prompt/candidate/v5", "prompt/candidate/v6", "prompt/candidate/v7", "prompt/candidate/v8", "prompt/candidate/v9", "prompt/node-patch/v2", "prompt/analysis-node-patch/v1", "prompt/condition-patch/v1", "prompt/return-patch/v1", "prompt/collection-patch/v1", "prompt/workflow-modifier/v2", "prompt/analysis/v2",
   "prompt/execution-analysis/v2", "prompt/data-flow/v2", "prompt/provider-test/v1"])("%s has an independent trusted instruction channel", async (version) => {
   const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: "ok" } }] }));
   const client = new OpenAICompatibleClient({ ...configuration, fetchImplementation });

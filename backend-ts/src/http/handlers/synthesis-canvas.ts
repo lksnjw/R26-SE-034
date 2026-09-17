@@ -19,6 +19,7 @@ import {
 } from "./model-selection.js";
 import { CanvasConversionFailure, canvasStepErrors, convertSourceOrderCanvas } from "../../workflows/canvas-source-order.js";
 import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
+import { reviewedModelSourceContext } from "../../synthesis/reviewed-model-sources.js";
 
 export const SYNTHESIS_CANVAS_UNHANDLED = Symbol("synthesis-canvas-unhandled");
 
@@ -69,6 +70,7 @@ async function synthesis(
       ...(provider === undefined ? {} : { providerRuntime: provider }),
       signal: request.signal,
       liveTools,
+      modelSourceContext: await reviewedModelSourceContext(services, user, liveTools),
     });
     await services.repository.read((state) => assertActorAuthority(state, user));
     const meta = result.canExecute

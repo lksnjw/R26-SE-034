@@ -27,6 +27,7 @@ import { chatSummary, createChat, deleteChat, getChat, listChats, updateChat } f
 import { effectiveChatContext, revisionPriorContext } from "../../agent/chat-request-revisions.js";
 import { buildCapabilitiesResponse, compactWorkflowArtifacts, errorText } from "./chat-artifacts.js";
 import { checkFeasibility } from "./chat-feasibility.js";
+import { reviewedModelSourceContext } from "../../synthesis/reviewed-model-sources.js";
 
 /*******************************************************************************
  * Function: buildWorkflowYamlFromSteps
@@ -421,6 +422,7 @@ export async function processStoredChat(input: {
   let result;
   await hooks?.stage("GENERATING");
   try { result = await services.synthesis.synthesize({ prompt: content, userRole: user.role, user: { id: user.id, role: user.role, department: user.departmentId }, ...(provider === undefined ? {} : { providerRuntime: provider }), priorMessages: augmentedPriorMessages,
+    modelSourceContext: await reviewedModelSourceContext(services, user, liveToolsForSynthesis),
     ...(automationRequest ? { candidateContext: recurringAutomationCandidateContext(automationRequest),
       candidateValidator: (yaml: string) => { inspectRecurringAutomationCandidate(yaml, automationRequest, liveToolsForSynthesis, user.role); } } : {}),
     ...(signal ? { signal } : {}), traceId, sessionId: sessionId, messageId: stringValue(stored.userMessage.id), liveTools: liveToolsForSynthesis }); }

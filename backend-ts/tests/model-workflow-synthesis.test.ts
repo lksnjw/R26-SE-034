@@ -13,7 +13,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { SynthesisService } from "../src/synthesis/service.js";
 import { compileOperationWorkflow, inspectModelWorkflowDraft } from "../src/workflows/compiled-read.js";
 import { validateWorkspaceDraft } from "../src/workflows/draft-validation.js";
-import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
+import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
 
 const directories: string[] = [];
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
@@ -42,14 +42,14 @@ async function setup(source: ReturnType<typeof blueprint>) {
   return { registries, repository, validator, runtime, fetcher, yaml, service: new SynthesisService(runtime, registries, validator) };
 }
 
-test.each(["analysis", "agent"] as const)("v8 proposes a bounded %s draft without effect, admission or execution authority", async kind => {
+test.each(["analysis", "agent"] as const)("v9 proposes a bounded %s draft without effect, admission or execution authority", async kind => {
   const source = blueprint(kind), s = await setup(source);
   const result = await s.service.synthesize({ prompt: "Create a workflow to read the actual count and summarise it", userRole: "Platform Admin", liveTools: [read] });
   expect(result.yaml).toBe(s.yaml.trim()); expect(result.execution_profile_issues).toEqual([]); expect(result.validation.passed).toBe(true);
-  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v8"); expect(s.fetcher).toHaveBeenCalledOnce();
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v9"); expect(s.fetcher).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.fetcher.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT);
-  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v8"));
+  expect(body.messages[0].content).toBe(REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT);
+  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v9"));
   const saved = await s.repository.snapshot(); expect(saved.executions).toEqual({}); expect(saved.workflows).toEqual({}); expect(saved.capabilityAdmissions).toEqual({});
   expect(inspectModelWorkflowDraft(source, [read], "Platform Admin")).toEqual([]);
   expect(() => compileOperationWorkflow(s.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
@@ -94,6 +94,10 @@ test("new instructions preserve historical provenance and recurring request cons
   expect(systemInstructionsFor("prompt/candidate/v7")).toBe(RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT);
   expect(RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT).not.toContain("MODEL NODES:");
   expect(systemInstructionsFor("prompt/candidate/v8")).toBe(MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT);
+  expect(systemInstructionsFor("prompt/candidate/v9")).toBe(REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT);
+  expect(MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT).not.toContain("MODEL_SOURCE_HINTS_JSON");
+  for (const marker of ["MODEL_SOURCE_HINTS_JSON", "callerInputClass", "UNKNOWN", "not permission", "every allowed_actions"])
+    expect(REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT).toContain(marker);
   for (const marker of ["no fake send", "data_class", "max_total_tokens", "SERVER_DERIVED_CONTEXT_JSON", "required_unresolved_requirements", "independent approvals", "never flatten", "use restricted"])
     expect(MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT).toContain(marker);
   expect(MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT).not.toContain("flat manual list of exact tool steps");

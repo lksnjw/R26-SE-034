@@ -36,7 +36,7 @@ export function qaWorkflowBlueprint() {
 
 export function qaModelReadBlueprint(kind = "analysis") {
   if (!["analysis", "agent"].includes(kind)) throw new Error("Unsupported synthetic model node");
-  const node = { id: "count", kind, description: "LOCAL fixture count · actual synthetic Department input", instruction: "Return the number of synthetic Departments in INPUT.data as departmentCount.",
+  const node = { id: "count", kind, description: "LOCAL fixture count · actual synthetic Department input", instruction: kind === "agent" ? "Use the offered qa_list_departments read once, then return its actual Department count as departmentCount." : "Return the number of synthetic Departments in INPUT.data as departmentCount.",
     input: "{{departments.structuredContent}}", data_class: "internal", model: "local-planning-fixture", max_input_items: 100, max_input_chars: 20000, max_output_tokens: 256,
     output_schema: { type: "object", properties: { departmentCount: { type: "integer" }, ...(kind === "agent" ? { complete: { type: "boolean" } } : {}) }, required: ["departmentCount", ...(kind === "agent" ? ["complete"] : [])], additionalProperties: false },
     ...(kind === "agent" ? { allowed_actions: ["qa_list_departments"], completion_predicate: { path: ["complete"], equals: true }, max_total_tokens: 1024, max_rounds: 2, max_tool_calls: 1, max_wall_time_ms: 10000, max_concurrency: 1 } : {}) };
@@ -51,14 +51,31 @@ export function qaPlanningResponse(request, modelReadFixture = false) {
     const input = JSON.parse(request.messages?.findLast(message => message.role === "user")?.content ?? "");
     const kind = ["analysis", "agent"].find(value => input.USER_REQUEST === `Create a local workflow to read synthetic Departments and count them with ${value}.`);
     if (!kind) throw new Error("Unsupported synthetic workflow synthesis request");
-    return { choices: [{ message: { content: stringify(qaModelReadBlueprint(kind)) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+    const blueprint = qaModelReadBlueprint(kind);
+    const hints = input.MODEL_SOURCE_HINTS_JSON;
+    const sources = hints?.profile === "model-source-hints/v1" && hints.advisoryOnly === true && hints.scope === "primary-connection-only"
+      ? hints.sources?.filter(source => source.toolId === "LOCAL-QA-DEPARTMENTS-READ" && source.action === "qa_list_departments" && source.connectionId === "erpbridge-default") : [];
+    blueprint.steps[1].data_class = sources?.length === 1 && sources[0].review === "REVIEWED" && ["public", "internal", "confidential", "restricted"].includes(sources[0].dataClass) ? sources[0].dataClass : "restricted";
+    return { choices: [{ message: { content: stringify(blueprint) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
   }
   if (modelReadFixture && (system.includes("TASK: BOUNDED DATA ANALYSIS") || system.includes("TASK: BOUNDED RUNTIME ERP AGENT"))) {
     const input = JSON.parse(request.messages?.findLast(message => message.role === "user")?.content ?? "");
-    if ((input.INSTRUCTION ?? input.TASK) !== "Return the number of synthetic Departments in INPUT.data as departmentCount." ||
+    const agent = system.includes("TASK: BOUNDED RUNTIME ERP AGENT");
+    if ((input.INSTRUCTION ?? input.TASK) !== qaModelReadBlueprint(agent ? "agent" : "analysis").steps[1].instruction ||
         !Array.isArray(input.INPUT?.data) || input.INPUT.data.length > 100) throw new Error("Unsupported synthetic model input");
-    return { choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ departmentCount: input.INPUT.data.length,
-      ...(system.includes("TASK: BOUNDED RUNTIME ERP AGENT") ? { complete: true } : {}) }) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+    let rows = input.INPUT.data;
+    if (agent) {
+      const remoteName = "qa_list_departments.rev_MS4wLjA"; // Exact pinned 1.0.0 SDK contract, not the floating alias.
+      if (!request.tools?.some(tool => tool.function?.name === remoteName)) throw new Error("Synthetic agent read was not offered");
+      const results = request.messages.filter(message => message.role === "tool");
+      if (!results.length) return { choices: [{ finish_reason: "tool_calls", message: { content: "", tool_calls: [{ id: "local-agent-department-read", type: "function", function: { name: remoteName, arguments: "{}" } }] } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+      if (results.length !== 1 || results[0].tool_call_id !== "local-agent-department-read") throw new Error("Unsupported synthetic agent tool result");
+      const result = JSON.parse(results[0].content);
+      if (result.source !== "untrusted_tool_result" || result.callId !== "local-agent-department-read" || result.toolName !== "qa_list_departments" || result.status !== "SUCCEEDED" || !Array.isArray(result.data?.structuredContent?.data) || result.data.structuredContent.data.length > 100) throw new Error("Unsupported synthetic agent tool result");
+      rows = result.data.structuredContent.data;
+    }
+    return { choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ departmentCount: rows.length,
+      ...(agent ? { complete: true } : {}) }) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
   }
   if (system.includes("ONE SELECTED NODE PATCH")) return { choices: [{ message: { content: '{"description":"Synthetic Departments reviewed in the local Docker workspace"}' } }] };
   const latest = request.messages?.findLast(message => message.role === "user");
