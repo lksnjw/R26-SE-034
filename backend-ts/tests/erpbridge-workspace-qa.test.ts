@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import { compileReadWorkflow } from "../src/workflows/compiled-read.js";
 // @ts-expect-error Local JavaScript operator entrypoint has no declarations
 import { qaWorkflowBlueprint, qaModelReadBlueprint, qaPlanningResponse, qaProviderConfiguration } from "../scripts/erpbridge-workspace-qa.mjs";
@@ -50,4 +50,10 @@ describe("isolated Docker QA workspace", () => {
     expect(qaProviderConfiguration("2026-10-08T00:00:00Z", true).egressPolicy).toMatchObject({ runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: ["internal"] });
   });
   it("refuses unsupported model node kinds", () => { expect(() => qaModelReadBlueprint("email")).toThrow(); });
+  it.each(["analysis", "agent"])("only explicitly opted-in synthesis returns the literal %s blueprint", kind => {
+    const request = { messages: [{ role: "system", content: "TASK: WORKFLOW DRAFT SYNTHESIS (prompt/candidate/v8)" }, { role: "user", content: JSON.stringify({ USER_REQUEST: `Create a local workflow to read synthetic Departments and count them with ${kind}.` }) }] };
+    expect(() => qaPlanningResponse(request)).toThrow();
+    expect(parse(qaPlanningResponse(request, true).choices[0].message.content)).toEqual(qaModelReadBlueprint(kind));
+    expect(() => qaPlanningResponse({ messages: [request.messages[0], { role: "user", content: JSON.stringify({ USER_REQUEST: "Create email workflow" }) }] }, true)).toThrow(/Unsupported synthetic/);
+  });
 });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { modelWorkflowCandidatePrompt } from "./model-workflow-candidate.js";
 
 /** Repository-owned instructions only. Never interpolate request, registry,
  * document, tool-result or model-generated text into this privileged channel. */
@@ -118,6 +119,9 @@ export const RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT = GOVERNED_OPERATION_
 
 When SERVER_DERIVED_CONTEXT_JSON is present, copy its exact automation_request object into metadata.automation_request and keep every still-applicable required_unresolved_requirements item in metadata.unresolved_requirements. Use a reviewed report only for its explicit report_coverage_contract.business_resource, map every requested business resource exactly once, and never infer resource identity from a tool name or description. The backend independently rejects changed cadence, recipients, requested resources, report-window mappings, relation mappings, delivery mappings, current-role denial, unsafe notification risk or schedule state. This context preserves request facts and authoring constraints only; it grants no tool, recipient-sharing, publication, scheduling, approval or delivery authority.`;
 
+// New code-owned version; historical candidate/provenance contracts stay intact.
+export const MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT = modelWorkflowCandidatePrompt(RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT);
+
 export const MODIFIER_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 
 TASK: WORKFLOW MODIFICATION PROPOSAL (prompt/workflow-modifier/v2)
@@ -154,6 +158,7 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/candidate/v5": return VALUE_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v6": return GOVERNED_OPERATION_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v7": return RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT;
+    case "prompt/candidate/v8": return MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/node-patch/v2": return NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/analysis-node-patch/v1": return ANALYSIS_NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/agent-node-patch/v1": return AGENT_NODE_PATCH_SYSTEM_PROMPT;

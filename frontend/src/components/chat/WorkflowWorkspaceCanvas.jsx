@@ -1,5 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from "react";
-import { parseWorkflowPreview, workflowArtifacts, workflowSource } from "./workflowPreview";
+import { parseWorkflowPreview, workflowSource } from "./workflowPreview";
+import { workflowChoices, selectedWorkflowChoice } from "./workflowChoices";
 import { readWorkspaceValue, writeWorkspaceValue } from "../../utils/workspaceSession";
 import WorkflowWorkspaceEditor from "./WorkflowWorkspaceEditor";
 import ReadableValue from "./ReadableValue";
@@ -7,10 +8,10 @@ const ChatArtifactPanel = lazy(() => import("./ChatArtifactPanel"));
 
 export default function WorkflowWorkspaceCanvas({ messages, initialWorkflowContext = null, selectionStorageKey, sessionId, canEdit = false, canControl = false, onChatChanged, onNodeContext, onFocusChat }) {
   const drafts = useMemo(() => {
-    const saved = workflowArtifacts(messages);
+    const saved = workflowChoices(messages);
     const workflowId = initialWorkflowContext?.workflowId;
     if (!workflowId || saved.some((draft) => draft.artifact.workflowId === workflowId)) return saved;
-    return [{ key: `handoff:${workflowId}`, artifact: { workflowId, ...(initialWorkflowContext.yaml ? { yaml: initialWorkflowContext.yaml } : {}), ...(initialWorkflowContext.selectedNodeId ? { nodeId: initialWorkflowContext.selectedNodeId } : {}) } }, ...saved];
+    return [{ key: `workflow:${workflowId}`, aliases: [`handoff:${workflowId}`], lastSeen: -1, artifact: { workflowId, ...(initialWorkflowContext.yaml ? { yaml: initialWorkflowContext.yaml } : {}), ...(initialWorkflowContext.selectedNodeId ? { nodeId: initialWorkflowContext.selectedNodeId } : {}) } }, ...saved];
   }, [messages, initialWorkflowContext]);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [selection, setSelection] = useState(() => {
@@ -24,10 +25,10 @@ export default function WorkflowWorkspaceCanvas({ messages, initialWorkflowConte
     setSelection(next);
     writeWorkspaceValue(selectionStorageKey, JSON.stringify(next));
   };
-  const current = drafts.find((draft) => draft.key === selectedDraft) ?? drafts.at(-1);
+  const current = selectedWorkflowChoice(drafts, selectedDraft);
   const yaml = workflowSource(current?.artifact);
   const preview = parseWorkflowPreview(yaml);
-  const node = selectedNode?.draftKey === current?.key
+  const node = (selectedNode?.draftKey === current?.key || current?.aliases?.includes(selectedNode?.draftKey))
     ? preview.steps.find((step) => step.id === selectedNode.id) : null;
   return (
     <section aria-label="Workflow canvas" className="flex h-full min-h-[320px] flex-col border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-darkBackgroundVery">

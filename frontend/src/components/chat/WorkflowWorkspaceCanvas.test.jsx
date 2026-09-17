@@ -48,3 +48,22 @@ test("durable node-edit messages restore workflow and node context without YAML"
   render(<WorkflowWorkspaceCanvas messages={[{ id: "request", artifacts: { intent: "NODE_EDIT_REQUEST", workflowId: "report", nodeId: "invoices" } }]} sessionId="chat" />);
   expect(editorProps).toHaveBeenLastCalledWith(expect.objectContaining({ workflowId: "report", initialSelectedNodeId: "invoices" }));
 });
+
+test("repeated saved node requests and replies share one option while distinct workflows remain selectable", () => {
+  const messages = [{ id: "one", artifacts: { workflowId: "report" } }, { id: "two", artifacts: { workflowId: "other" } }];
+  const view = render(<WorkflowWorkspaceCanvas messages={messages} selectionStorageKey="qa.choices" />);
+  fireEvent.change(screen.getByRole("combobox", { name: "Workflow draft" }), { target: { value: "workflow:report" } });
+  view.rerender(<WorkflowWorkspaceCanvas messages={[...messages, { id: "request", artifacts: { workflowId: "report", nodeId: "first" } }, { id: "reply", artifacts: { proposal: { workflowId: "report", nodeId: "first" } } }]} selectionStorageKey="qa.choices" />);
+  expect(screen.getAllByRole("option")).toHaveLength(2);
+  expect(screen.getByRole("combobox", { name: "Workflow draft" }).value).toBe("workflow:report");
+  expect(editorProps).toHaveBeenLastCalledWith(expect.objectContaining({ workflowId: "report", initialSelectedNodeId: "first", savedProposals: [expect.objectContaining({ workflowId: "report" })] }));
+});
+
+test("legacy message selections survive grouping and Settings remount", () => {
+  sessionStorage.setItem("qa.legacy", JSON.stringify({ selectedDraft: "old" }));
+  const messages = [{ id: "old", artifacts: { workflowId: "report" } }, { id: "other", artifacts: { workflowId: "other" } }, { id: "patch", artifacts: { workflowId: "report" } }];
+  const view = render(<WorkflowWorkspaceCanvas messages={messages} selectionStorageKey="qa.legacy" />);
+  expect(screen.getByRole("combobox", { name: "Workflow draft" }).value).toBe("workflow:report");
+  view.unmount(); render(<WorkflowWorkspaceCanvas messages={messages} selectionStorageKey="qa.legacy" />);
+  expect(editorProps).toHaveBeenLastCalledWith(expect.objectContaining({ workflowId: "report" }));
+});

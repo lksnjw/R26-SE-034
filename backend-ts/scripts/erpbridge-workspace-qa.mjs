@@ -20,6 +20,7 @@ import { ProviderRuntime } from "../src/providers/runtime.ts";
 import { hashPassword } from "../src/authn/password.ts";
 import { buildApp } from "../src/http/app.ts";
 import { compileReadWorkflow } from "../src/workflows/compiled-read.ts";
+import { SynthesisService } from "../src/synthesis/service.ts";
 
 export function qaWorkflowBlueprint() {
   const schema = { type: "array", items: { type: "object" } }, sequence = (...nodes) => ({ kind: "sequence", nodes });
@@ -46,6 +47,12 @@ export function qaPlanningResponse(request, modelReadFixture = false) {
   // This injected fetch never reaches an external provider. The real broker
   // still validates every call against the reviewed Docker tool and actor.
   const system = request.messages?.find(message => message.role === "system")?.content ?? "";
+  if (modelReadFixture && system.includes("TASK: WORKFLOW DRAFT SYNTHESIS")) {
+    const input = JSON.parse(request.messages?.findLast(message => message.role === "user")?.content ?? "");
+    const kind = ["analysis", "agent"].find(value => input.USER_REQUEST === `Create a local workflow to read synthetic Departments and count them with ${value}.`);
+    if (!kind) throw new Error("Unsupported synthetic workflow synthesis request");
+    return { choices: [{ message: { content: stringify(qaModelReadBlueprint(kind)) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+  }
   if (modelReadFixture && (system.includes("TASK: BOUNDED DATA ANALYSIS") || system.includes("TASK: BOUNDED RUNTIME ERP AGENT"))) {
     const input = JSON.parse(request.messages?.findLast(message => message.role === "user")?.content ?? "");
     if ((input.INSTRUCTION ?? input.TASK) !== "Return the number of synthetic Departments in INPUT.data as departmentCount." ||
@@ -110,7 +117,7 @@ export async function createQaWorkspace({ modelReadFixture = false } = {}) {
       return Response.json(qaPlanningResponse(JSON.parse(String(init.body)), modelReadFixture));
     });
     providerRuntime.activate(qaProviderConfiguration(createdAt, modelReadFixture));
-    const services = { config, repository, registries, validator, executor, providerRuntime, mcpConnectionRuntime: runtime, get erpbridgeSession() { return runtime.session; } };
+    const services = { config, repository, registries, validator, executor, providerRuntime, ...(modelReadFixture ? { synthesis: new SynthesisService(providerRuntime, registries, validator) } : {}), mcpConnectionRuntime: runtime, get erpbridgeSession() { return runtime.session; } };
     app = await buildApp(services);
     const close = async () => { await app.close(); await runtime.stop(); await repository.close(); for (const file of files) await unlink(file); await rmdir(directory); };
     return { app, repository, services, close };

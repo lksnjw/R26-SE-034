@@ -46,7 +46,7 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
 }
 /** Shared bounded binding compiler, not an execution/admission switch. The
  * operation compiler has a different IR/receipt and mandatory reviewed pins. */
-function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>, operations: boolean):
+function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>, operations: boolean, purpose: "publication" | "draft-inspection" = "publication"):
   { ir: ReadIR; semanticHash: string; issues: string[]; analysisNodes: OperationAnalysisNode[]; agentNodes: OperationAgentNode[] } {
   const issues: string[] = [], ids = new Set<string>(), outputs = new Map<string, Record<string, unknown>>();
   const analysisNodes: OperationAnalysisNode[] = [];
@@ -161,7 +161,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
         }
         issues.push(...validateToolSchemaProfile(allowed.input_schema));
         const admission = admissionFor(step.connection_id, allowed.tool_id);
-        if (!admission) { issues.push(`Step ${step.id} allowed action ${action} requires a reviewed capability pin`); continue; }
+        if (!admission) { if (purpose === "publication") issues.push(`Step ${step.id} allowed action ${action} requires a reviewed capability pin`); continue; }
         capabilities.push({ toolId: allowed.tool_id, action: allowed.name, remoteName: exactBridgeName(allowed), contractHash: capabilityContractHash(allowed), admission: structuredClone(admission) });
       }
       const maxInputItems = step.max_input_items ?? 200, maxInputChars = step.max_input_chars ?? 20_000, maxOutputTokens = step.max_output_tokens ?? 1_024;
@@ -202,6 +202,13 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
   if (ir.flow) issues.push(...validateReadControlFlow(ir.flow, ir, outputs, new Map(ir.root.nodes.map(node => [node.id, tools.find(tool => tool.tool_id === node.capability.toolId)?.input_schema ?? {}]))).issues);
   if (canonicalJSONBytes(ir).length > 1_000_000) issues.push("Compiled read artifact exceeds supported size");
   return { ir, semanticHash: hashIR(ir), issues: [...new Set(issues)], analysisNodes, agentNodes };
+}
+
+/** Pure draft diagnostics only: no plan, receipt, admission pin or dispatch
+ * authority escapes this API. The publication compiler always requires pins. */
+export function inspectModelWorkflowDraft(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string): string[] {
+  if (!blueprint.steps.some(step => ["analysis", "agent"].includes(effectiveStepKind(step)))) return [];
+  return buildActionBindingsIR(blueprint, tools, role, new Map(), true, "draft-inspection").issues;
 }
 
 export type OperationToolNode = ReadIR["root"]["nodes"][number] & { effectClass: "read" | "write" | "notification";

@@ -2,8 +2,7 @@
 // Docker MCP, synthetic ERP data and an injected LOCAL model fixture only.
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { stringify } from "yaml";
-import { createQaWorkspace, qaModelReadBlueprint } from "./erpbridge-workspace-qa.mjs";
+import { createQaWorkspace } from "./erpbridge-workspace-qa.mjs";
 
 export async function main(args) {
   if (args.length !== 1 || args[0] !== "--run-reviewed-model-reads") throw new Error("Use the explicit synthetic model-read qualification flag");
@@ -18,7 +17,10 @@ export async function main(args) {
       return response.json().data;
     };
     for (const kind of ["analysis", "agent"]) {
-      const draft = await request("POST", "/api/workflows", { yaml: stringify(qaModelReadBlueprint(kind)) }, 201);
+      const candidate = await request("POST", "/api/synthesis", { prompt: `Create a local workflow to read synthetic Departments and count them with ${kind}.` }, 200);
+      if (!candidate.validation.passed || candidate.execution_profile_issues.length || candidate.candidate.generation_metadata.promptTemplateVersion !== "prompt/candidate/v8")
+        throw new Error("Local synthesis did not prove the expected versioned draft");
+      const draft = await request("POST", "/api/workflows", { yaml: candidate.yaml }, 201);
       await request("POST", `/api/workflows/${draft.id}/publish`, {}, 200);
       const readiness = await request("GET", `/api/workflows/${draft.id}/readiness`, null, 200);
       if (!readiness.can_attempt_run || readiness.effectProfile !== "read-only") throw new Error("Local model-read publication is not ready");
@@ -38,7 +40,7 @@ export async function main(args) {
         throw new Error("Local read-only rehearsal unexpectedly contains effect authority");
       const replay = await request("POST", `/api/workflows/${draft.id}/run`, command, 202);
       if (replay.id !== run.id) throw new Error("Stable replay created a different run");
-      console.log(`LOCAL Docker ${kind}: DONE; ${actualRows.length} actual synthetic rows; matching fixture departmentCount; ${saved.durationMs} ms whole-run sample; no effect or approval; replay returned the same run.`);
+      console.log(`LOCAL Docker ${kind}: v8 synthetic draft generated and explicitly published; DONE; ${actualRows.length} actual synthetic rows; matching fixture departmentCount; ${saved.durationMs} ms whole-run sample; no effect or approval; replay returned the same run.`);
     }
     console.log("Product registry, existing workspace and ERPBridge source unchanged. Planning and token usage are synthetic fixtures, not real-provider or production acceptance.");
   } finally { await workspace.close(); }
