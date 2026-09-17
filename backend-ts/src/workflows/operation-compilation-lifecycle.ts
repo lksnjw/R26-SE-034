@@ -3,12 +3,13 @@ import { HandlerFailure } from "../http/handlers/common.js";
 import type { RepositoryState, StoredRecord } from "../repository/store.js";
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
-import { captureCapabilityAdmissionPin, captureReadAdmissionPin } from "../registry/capability-admission.js";
+import { captureCapabilityAdmissionPin, captureReadAdmissionPin, reviewedCapabilityDataClass } from "../registry/capability-admission.js";
 import { discoverTools } from "../agent/tool-discovery.js";
 import { compileOperationWorkflow, operationCompilationReceipt, type CompiledOperationPlan, type OperationCompilationReceipt, type ReadAdmissionPin } from "./compiled-read.js";
 import { effectiveStepKind, type WorkflowStepBlueprint } from "../models/schemas.js";
 import { boundMcpConnection, connectionToolKey, selectedMcpConnectionId, type BoundMcpConnection } from "../tools/mcp-dispatch-context.js";
 import { usesCheckpointedOperationWorkflow } from "./execution-shape.js";
+import { assertModelDataClassification, ModelDataClassViolation } from "./model-data-classification.js";
 
 export type StoredOperationCompilation = { plan: CompiledOperationPlan; receipt: OperationCompilationReceipt; verifiedRole: string; compiledAt: string };
 type PreparedConnection = BoundMcpConnection & { generation: number };
@@ -68,6 +69,7 @@ function compileCurrent(state: Readonly<RepositoryState>, services: HandlerServi
     }
   }
   const plan = compileOperationWorkflow(yaml, tools, role, pins);
+  assertModelDataClassification(plan, pin => reviewedCapabilityDataClass(state, pin));
   if (expected && !canonicalJSONBytes(expected).equals(canonicalJSONBytes(plan))) throw new Error("Operation source, semantics or admission changed");
   return plan;
 }
@@ -91,7 +93,10 @@ export async function prepareOperationPublication(services: HandlerServices, yam
     assertConnectionsCurrent(services, connections);
     if (registryHash !== services.registries.hash()) throw new Error("Operation registry changed");
     return { stored: { plan, receipt: operationCompilationReceipt(plan, registryHash), verifiedRole: user.role, compiledAt: new Date().toISOString() }, connections };
-  } catch { throw new HandlerFailure(422, "Operation publication requires supported exact reviewed contracts, immutable node connections and typed sequential bindings", { code: "OPERATION_COMPILATION_REQUIRED" }); }
+  } catch (error) {
+    if (error instanceof ModelDataClassViolation) throw new HandlerFailure(422, error.message, { code: "MODEL_DATA_CLASS_DOWNGRADE" });
+    throw new HandlerFailure(422, "Operation publication requires supported exact reviewed contracts, immutable node connections and typed sequential bindings", { code: "OPERATION_COMPILATION_REQUIRED" });
+  }
 }
 export function assertOperationPublicationCurrent(prepared: PreparedOperationCompilation, services: HandlerServices, state: Readonly<RepositoryState>, yaml: string, role: string) {
   try { assertConnectionsCurrent(services, prepared.connections); }

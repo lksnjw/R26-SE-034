@@ -6,7 +6,7 @@ import { Repository, type PersistenceBackend, type RepositoryState } from "../sr
 import { applyExecutionCheckpoint, type ExecutionCheckpoint } from "../src/repository/execution-transaction.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { toolSchema } from "../src/registry/schemas.js";
-import { admissionAuthorizer, observeCapabilities, reviewCapability, disableCapability, capabilityAdmissionCatalog, capabilityContractHash, requireProductionAdmissionProfile } from "../src/registry/capability-admission.js";
+import { admissionAuthorizer, observeCapabilities, reviewCapability, disableCapability, capabilityAdmissionCatalog, capabilityContractHash, requireProductionAdmissionProfile, captureReadAdmissionPin, reviewedCapabilityDataClass } from "../src/registry/capability-admission.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
 import { discoverTools } from "../src/agent/tool-discovery.js";
@@ -99,6 +99,23 @@ const collectionFlow = () => ({ schemaVersion: "read-control-flow/v3", root: { k
   { kind: "action", nodeId: "two" },
   { kind: "return", id: "answer", output: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["value"] } } },
 ] } });
+
+test.each(["connectionId", "capabilityId", "revisionId", "admissionVersion", "contractHash"] as const)("classification evidence rejects a changed %s pin", async field => {
+  const s = await setup(); await s.review();
+  const state = await s.repository.snapshot(), pin = captureReadAdmissionPin(state, s.registries, s.tool(), s.session.admissionBinding!);
+  expect(reviewedCapabilityDataClass(state, pin)).toBe("internal");
+  const changed = { ...pin, [field]: field === "admissionVersion" ? 999 : field === "contractHash" ? `sha256:${"f".repeat(64)}` : "different" };
+  expect(() => reviewedCapabilityDataClass(state, changed)).toThrow(); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["DISABLED", "BLOCKED", "malformed-policy", "changed-definition"])("classification evidence fails closed for %s authoritative review", async scenario => {
+  const s = await setup(); await s.review();
+  const state = await s.repository.snapshot(), pin = captureReadAdmissionPin(state, s.registries, s.tool(), s.session.admissionBinding!);
+  if (scenario === "DISABLED" || scenario === "BLOCKED") state.capabilityAdmissions[pin.capabilityId]!.state = scenario;
+  else if (scenario === "malformed-policy") (state.capabilityRevisions[pin.revisionId]!.policy as Record<string, unknown>).dataClass = "public";
+  else (state.capabilityRevisions[pin.revisionId]!.definition as Record<string, unknown>).name = "different";
+  expect(() => reviewedCapabilityDataClass(state, pin)).toThrow(); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
 
 test.each([false, true])("normal reviewed collection publication/readiness/execution preserves exact per-item answers, async=%s", async queued => {
   const s = await setup(); await s.review(); const w = await workflowHarness(s, false, collectionFlow(), "{{each.item}}");

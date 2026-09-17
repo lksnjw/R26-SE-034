@@ -14,6 +14,7 @@ import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
 import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { assertOperationReadbackSources } from "../tools/operation-readback-contract.js";
 import { assertReportCoverageContract } from "../tools/report-coverage-contract.js";
+import type { ModelDataClass } from "../providers/egress-policy.js";
 
 export const DEFAULT_BRIDGE_CONNECTION = "erpbridge-default";
 export function requireProductionAdmissionProfile(config: Pick<AppConfig, "mcpMode" | "mcpTransport">) {
@@ -249,6 +250,19 @@ export function captureCapabilityAdmissionPin(state: Readonly<RepositoryState>, 
   const pin = { connectionId, capabilityId, revisionId: revision.data.id, admissionVersion: admission.data.version, contractHash: revision.data.contractHash };
   if (expectedPin && !canonicalJSONBytes(pin).equals(canonicalJSONBytes(expectedPin))) throw new Error("Compiled capability admission changed; explicit recompile/publication is required");
   return pin;
+}
+
+/** Classification evidence for an already verified compilation pin, not a
+ * dispatch grant. Full registry/connection authorization still uses capture. */
+export function reviewedCapabilityDataClass(state: Readonly<RepositoryState>, pin: ReadAdmissionPin): ModelDataClass {
+  const admission = admissionSchema.parse(state.capabilityAdmissions[pin.capabilityId]);
+  const revision = revisionSchema.parse(state.capabilityRevisions[admission.revisionId]);
+  if (admission.state !== "AVAILABLE" || admission.capabilityId !== pin.capabilityId || admission.version !== pin.admissionVersion ||
+      admission.revisionId !== pin.revisionId || revision.id !== pin.revisionId || revision.capabilityId !== pin.capabilityId ||
+      revision.connectionId !== pin.connectionId || revision.contractHash !== pin.contractHash ||
+      capabilityContractHash(revision.definition) !== pin.contractHash)
+    throw new Error("Reviewed classification no longer matches the exact available capability pin");
+  return revision.policy.dataClass;
 }
 
 export async function capabilityAdmissionCatalog(repository: Repository, offset = 0, limit = 10,

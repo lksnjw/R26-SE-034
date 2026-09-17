@@ -24,6 +24,8 @@ import { nextCalendarOccurrence, reportWindowFor, workflowScheduleRunner } from 
 import { workflowContentHash } from "../src/parser/workflow.js";
 import { draftRequirements, emailDraftHash, type EmailDraft } from "../src/delivery/email-draft.js";
 import { ProviderRuntime } from "../src/providers/runtime.js";
+import { compileOperationWorkflow, operationCompilationReceipt, type ReadAdmissionPin } from "../src/workflows/compiled-read.js";
+import { prepareOperationExecution, type StoredOperationCompilation } from "../src/workflows/operation-compilation-lifecycle.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -215,6 +217,76 @@ async function prepareModelReadWorkflow(s: Awaited<ReturnType<typeof setup>>, ki
     workflow.yaml = stringify(blueprint); workflow.steps = blueprint.steps.length;
   });
 }
+
+test.each(["analysis", "agent"] as const)("%s cannot relabel reviewed ERP input public even when the model provider permits public egress", async kind => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  s.providerRuntime!.activate({ ...s.providerRuntime!.configuration!, egressPolicy: { ...s.providerRuntime!.configuration!.egressPolicy!,
+    runtimeAnalysisDataClasses: ["public", "internal"], runtimeAgentDataClasses: ["public", "internal"] } });
+  await s.repository.mutate(state => {
+    const blueprint = parse(state.workflows.flow!.yaml); blueprint.steps[1].data_class = "public"; state.workflows.flow!.yaml = stringify(blueprint);
+  });
+  const published = await s.publish();
+  expect(published.statusCode, published.body).toBe(422); expect(published.json().meta.code).toBe("MODEL_DATA_CLASS_DOWNGRADE");
+  expect(published.json().message).toMatch(/at least internal/);
+  const readiness = await s.request("GET", "/api/workflows/flow/readiness"); expect(readiness.json().data.can_attempt_run).toBe(false);
+  expect((await s.run(`data-downgrade-${kind}-0001`)).statusCode).not.toBe(202);
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+  expect(Object.keys((await s.repository.snapshot()).executions)).toHaveLength(0);
+});
+
+test.each(["analysis", "agent"] as const)("previously compiled %s receipts cannot bypass current source classification", async kind => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const state = await s.repository.snapshot(), publication = state.versions.flow!.findLast(value => value.artifactState === "PUBLISHED")!;
+  const stored = publication.compiledOperation as StoredOperationCompilation;
+  const pins = new Map<string, ReadAdmissionPin>();
+  for (const node of stored.plan.ir.root.nodes) {
+    if (node.kind === "action") pins.set(node.capability.toolId, node.capability.admission!);
+    if (node.kind === "agent") for (const capability of node.allowedCapabilities) pins.set(capability.toolId, capability.admission);
+  }
+  // Reproduce a legacy compiler's valid hashes/pins but underclassified source;
+  // no public API or new publication authority is granted by this fixture.
+  const blueprint = parse(publication.yaml as string); blueprint.steps[1].data_class = "public";
+  const yaml = stringify(blueprint), legacyPlan = compileOperationWorkflow(yaml, s.services.registries.snapshot().tools, s.actor.role, pins);
+  publication.yaml = yaml; publication.compiledOperation = { ...stored, plan: legacyPlan, receipt: operationCompilationReceipt(legacyPlan, s.services.registries.hash()) };
+  expect(() => prepareOperationExecution(state, s.services, publication, yaml, s.actor.role)).toThrow(/explicitly review and republish/);
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test.each(["analysis", "agent"] as const)("reviewed confidential operation output cannot feed an internal %s node", async kind => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  const observation = (await observeCapabilities({ repository: s.repository, registries: s.services.registries, session: s.session, user: s.actor })).observations.find(value => value.toolId === s.write.tool_id)!;
+  await reviewCapability({ repository: s.repository, registries: s.services.registries, session: s.session, user: s.actor, capabilityId: observation.capabilityId, body: {
+    observationId: observation.id, contractHash: observation.contractHash, decisionKey: `confidential-${kind}-fixture`, effectClass: "notification", riskClass: "low",
+    dataClass: "confidential", retryPolicy: "never", requireIndependentApproval: true, note: "Confidential synthetic operation output" } });
+  await s.repository.mutate(state => {
+    const blueprint = parse(state.workflows.flow!.yaml); blueprint.steps[0].action = s.write.name; state.workflows.flow!.yaml = stringify(blueprint);
+  });
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(422); expect(published.json().meta.code).toBe("MODEL_DATA_CLASS_DOWNGRADE");
+  expect(published.body).toMatch(/at least confidential/); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test.each(["analysis", "agent"] as const)("%s needs restricted egress review for unclassified workflow input reflected through ERP", async kind => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  await s.repository.mutate(state => {
+    const blueprint = parse(state.workflows.flow!.yaml);
+    blueprint.trigger.config = { inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false } };
+    blueprint.steps[0].parameters.value = "{{input.value}}"; state.workflows.flow!.yaml = stringify(blueprint);
+  });
+  const blocked = await s.publish(); expect(blocked.statusCode, blocked.body).toBe(422); expect(blocked.body).toMatch(/at least restricted/);
+  await s.repository.mutate(state => {
+    const blueprint = parse(state.workflows.flow!.yaml); blueprint.steps[1].data_class = "restricted"; state.workflows.flow!.yaml = stringify(blueprint);
+  });
+  expect((await s.publish()).statusCode).toBe(200);
+  const readiness = await s.request("GET", "/api/workflows/flow/readiness"); expect(readiness.json().data.can_attempt_run).toBe(false);
+  expect((await s.run(`restricted-input-${kind}-0001`, { value: "fixture report" })).statusCode).toBe(422);
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+  s.providerRuntime!.activate({ ...s.providerRuntime!.configuration!, egressPolicy: { ...s.providerRuntime!.configuration!.egressPolicy!,
+    runtimeAnalysisDataClasses: ["restricted"], runtimeAgentDataClasses: ["restricted"] } });
+  if (kind === "agent") s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"summary":"FIXTURE REPORT","complete":true}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+  const admitted = await s.run(`restricted-reviewed-${kind}-0001`, { value: "fixture report" }); expect(admitted.statusCode, admitted.body).toBe(202);
+  await s.wait(admitted.json().data.id, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).toHaveBeenCalledOnce();
+});
 
 test.each(["analysis", "agent"] as const)("read-only %s workflows publish and complete without adding a fake effect or requesting approval", async kind => {
   const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
