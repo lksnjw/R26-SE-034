@@ -83,10 +83,21 @@ function ResultBlock({ block }) {
   </div>;
   return notice(`Tool returned ${block?.type || "an unsupported"} content. This preview does not display that content type.`);
 }
+// MCP commonly includes a JSON-text compatibility mirror of structuredContent.
+// Collapse only an exact, unannotated mirror; never merge differing evidence.
+function equivalentJSON(left, right, budget = { remaining: 2000 }, depth = 0) {
+  if (--budget.remaining < 0 || depth > 8) return false;
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object" || Array.isArray(left) !== Array.isArray(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every(key => Object.hasOwn(right, key) && equivalentJSON(left[key], right[key], budget, depth + 1));
+}
 export function ReadableResult({ value }) {
   const [contentLimit, setContentLimit] = useState(25);
   if (!value || typeof value !== "object" || Array.isArray(value) || !("content" in value || "structuredContent" in value)) return <ReadableValue value={parseStructuredText(value) ?? value} />;
   const blocks = Array.isArray(value.content) ? value.content.slice(0, contentLimit) : [];
+  const mirrored = blocks.map(block => value.structuredContent !== undefined && block?.type === "text" &&
+    Object.keys(block).every(key => key === "type" || key === "text") && equivalentJSON(parseStructuredText(block.text), value.structuredContent));
   const failure = value._meta?.["com.erpbridge/error"];
   const binding = value._meta?.["io.workflow-engine/dispatch"];
   return <div className="space-y-3">
@@ -97,7 +108,8 @@ export function ReadableResult({ value }) {
       {Number.isSafeInteger(failure.retryAfterMs) && failure.retryAfterMs >= 0 && <p>Suggested wait · {(failure.retryAfterMs / 1000).toLocaleString()} seconds</p>}
     </div>}
     {value.structuredContent !== undefined && <ReadableValue value={value.structuredContent} />}
-    {blocks.map((block, index) => <div key={index}><ResultBlock block={block} /></div>)}
+    {blocks.map((block, index) => !mirrored[index] && <div key={index}><ResultBlock block={block} /></div>)}
+    {mirrored.some(Boolean) && notice("Matching text copy omitted from this preview; the full tool receipt is retained.")}
     {Array.isArray(value.content) && value.content.length > contentLimit && <div>{notice(`Showing ${contentLimit} of ${value.content.length} content blocks.`)}{contentLimit < 128 ? <button type="button" className="text-xs text-primary underline" onClick={() => setContentLimit(limit => Math.min(128, limit + 25))}>Show more tool content</button> : notice("Additional tool content exceeds the supported preview limit.")}</div>}
     {value.structuredContent === undefined && !blocks.length && notice("No displayable tool answer was returned.")}
     {binding && typeof binding === "object" && <details className="text-xs text-gray-500"><summary className="cursor-pointer">Reviewed dispatch binding</summary><div className="mt-2"><ReadableValue value={{ tool: binding.remoteName, version: binding.resourceVersion, digest: binding.resourceDigest }} />{notice("Recorded by this engine for the request. This is not a server-signed delivery or business-change receipt.")}</div></details>}

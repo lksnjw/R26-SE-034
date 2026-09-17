@@ -6,6 +6,27 @@ import ReadableValue, { ReadableResult } from "./ReadableValue";
 import MessageMarkdown from "./MessageMarkdown";
 afterEach(cleanup);
 
+test("an exact JSON-text mirror is displayed once without changing the receipt or hiding annotations", () => {
+  const value = { structuredContent: { data: [{ id: "DEP-1", active: false }] }, content: [{ type: "text", text: '{"data":[{"active":false,"id":"DEP-1"}]}' }, { type: "text", text: "Synthetic data only." }] };
+  const before = JSON.stringify(value);
+  render(<ReadableResult value={value} />);
+  expect(screen.getAllByRole("table", { name: "Returned records" })).toHaveLength(1);
+  expect(screen.getByText("Synthetic data only.")).toBeTruthy();
+  expect(screen.getByText(/Matching text copy omitted/)).toBeTruthy();
+  expect(JSON.stringify(value)).toBe(before);
+});
+
+test("differing data, annotated mirrors and missing fields never collapse", () => {
+  render(<ReadableResult value={{ structuredContent: { id: "DEP-1", active: false }, content: [
+    { type: "text", text: '{"id":"DEP-2","active":false}' },
+    { type: "text", text: '{"id":"DEP-1","active":false}', annotations: { audience: ["user"] } },
+    { type: "text", text: '{"id":"DEP-1"}' },
+  ] }} />);
+  expect(screen.getAllByText("DEP-1")).toHaveLength(3);
+  expect(screen.getByText("DEP-2")).toBeTruthy();
+  expect(screen.queryByText(/Matching text copy omitted/)).toBeNull();
+});
+
 test("objects become labeled fields, preserving false, zero, null, empty text and nested values", () => {
   const { container } = render(<ReadableValue value={{ invoice_total: 0, delivered: false, recipient: null, note: "", nested: { currencyCode: "LKR" } }} />);
   for (const text of ["Invoice total", "0", "No", "Not set", "Empty text", "Currency Code", "LKR"]) expect(screen.getByText(text)).toBeTruthy();

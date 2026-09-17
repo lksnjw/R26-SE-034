@@ -67,6 +67,12 @@ export function assertQaBridgeContainer(container) {
   return environment.get("API_AUTH_TOKEN");
 }
 
+export async function readQaBridgeToken() {
+  const containers = JSON.parse(await docker(["inspect", `${qaProject}-erpbridge-server-1`], process.env));
+  if (containers.length !== 1) throw new Error("Expected one exact QA bridge container");
+  return assertQaBridgeContainer(containers[0]);
+}
+
 async function verifyDiscovery(token) {
   const { createBridgeProtocolAdapter } = await import("../src/tools/erpbridge-protocol-adapter.ts");
   const { RegistryService } = await import("../src/registry/service.ts");
