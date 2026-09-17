@@ -1,4 +1,5 @@
 import { withoutSecretFields } from "../redact/secrets.js";
+import { publicExecution, publicModelInvocation } from "../redact/public-model-usage.js";
 import type {
   RepositoryState,
   StoredRecord,
@@ -30,13 +31,13 @@ export function buildTraceChain(
    *
    * Adds a sequenced record to the trace chain.
    ******************************************************************************/
-  const append = (kind: string, record: StoredRecord, timestamp: string) => {
+  const append = (kind: string, record: StoredRecord, timestamp: string, projection?: unknown) => {
     entries.push({
       kind,
       id: stringValue(record.id),
       timestamp,
       traceId,
-      record: withoutSecretFields(record),
+      record: projection ?? withoutSecretFields(record),
       sequence: sequence++,
     });
   };
@@ -60,6 +61,7 @@ export function buildTraceChain(
           "model.invocation",
           invocation as unknown as StoredRecord,
           invocation.createdAt,
+          publicModelInvocation(invocation),
         );
     }
     for (const audit of state.auditLogs) {
@@ -75,6 +77,7 @@ export function buildTraceChain(
       "execution",
       execution as unknown as StoredRecord,
       execution.startedAt,
+      publicExecution(execution),
     );
     for (const log of state.executionLogs[execution.id] ?? []) {
       if (log.traceId === traceId)

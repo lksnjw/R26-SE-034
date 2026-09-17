@@ -6,6 +6,7 @@ import type { Execution, ReportWindow, ReportWindowInputBinding, Repository, Rep
 import { effectiveStepKind, type Workflow } from "../models/schemas.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
 import { withoutSecretFields } from "../redact/secrets.js";
+import { publicExecution } from "../redact/public-model-usage.js";
 import { newReadProgress, appendExecutionEvent, assertCurrentRunController } from "./read-checkpoints.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
 import { isOperationToolNode, resolveReadBinding, type CompiledOperationPlan, type OperationToolNode } from "../workflows/compiled-read.js";
@@ -193,7 +194,7 @@ export class OperationJobQueue {
       if (existing) {
         if (existing.operationSecret!.requestFingerprint !== fingerprint) throw new HandlerFailure(409, "Operation key already belongs to different inputs or publication");
         assertCurrentRunController(state, existing, user.id, user.role);
-        return { execution: withoutSecretFields(existing), replayed: true };
+        return { execution: publicExecution(existing), replayed: true };
       }
       const current = state.workflows[workflow.id], publication = state.versions[workflow.id]?.findLast(item => item.version === workflow.publishedVersion && item.artifactState === "PUBLISHED");
       if (!current || current.archived || current.yaml !== workflow.yaml || current.publishedVersion !== workflow.publishedVersion || !publication || publication.yaml !== workflow.yaml || current.pendingGenerationApproval?.steps.length) throw new HandlerFailure(409, "A current accepted immutable operation publication is required");
@@ -253,7 +254,7 @@ export class OperationJobQueue {
       assertCurrentRunController(state, run, user.id, user.role);
       state.executions[id] = run; state.timelines[id] = []; state.executionEvents[id] = []; state.executionLogs[id] = [];
       appendExecutionEvent(state, run, "run.queued", { profile: "operation-job/v1", persistence: run.readProgress!.persistence }); audit(state, run, "execution.queued");
-      return { execution: withoutSecretFields(run), replayed: false };
+      return { execution: publicExecution(run), replayed: false };
     });
     this.kick(); return result;
   }

@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { fail, ok } from "../../models/schemas.js";
-import { withoutSecretFields } from "../../redact/secrets.js";
+import { publicExecution } from "../../redact/public-model-usage.js";
 import { executionReviewInbox } from "../../runner/execution-review-inbox.js";
 import { operationReconciliationView, hasOperationReconciliation } from "../../runner/operation-reconciliation.js";
 import { hasReportPageResolution } from "../../runner/report-page-resolution.js";
@@ -42,7 +42,7 @@ async function listExecutions(request: FastifyRequest, reply: FastifyReply, user
   const chatSessionId = stringValue(query.chatSessionId).trim();
   const all = Object.values(state.executions).filter((item) => chatSessionId === "" || item.chatSessionId === chatSessionId);
   const visible = visibleExecutions(user, all);
-  return reply.send(ok(visible.map((item) => withoutSecretFields(item)), "OK", {
+  return reply.send(ok(visible.map(publicExecution), "OK", {
     page: 1, limit: 20, total: visible.length, totalPages: visible.length === 0 ? 0 : 1,
   }));
 }
@@ -90,7 +90,7 @@ async function getExecution(request: FastifyRequest, reply: FastifyReply, user: 
   const item = await services.repository.read((state) => state.executions[id] ?? null);
   if (item === null || !canReadExecution(user, item))
     return reply.status(404).send(fail("Execution not found", null));
-  return reply.send(ok(withoutSecretFields({ ...item,
+  return reply.send(ok(publicExecution({ ...item,
     ...(item.runtimeApprovalSecret ? { hasRuntimeApproval: true } : {}),
     ...(hasOperationReconciliation(item) ? { hasOperationReconciliation: true } : {}),
     ...(hasReportPageResolution(item) ? { hasReportPageResolution: true } : {}),

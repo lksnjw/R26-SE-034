@@ -7,6 +7,7 @@ import { inspectReadWorkflow } from "../../runner/read-workflow.js";
 import { appendExecutionEvent, newReadProgress, assertCurrentRunController } from "../../runner/read-checkpoints.js";
 import { completeCheckpointedRead } from "../../runner/checkpointed-read.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
+import { publicExecution } from "../../redact/public-model-usage.js";
 import type { ValidationToken } from "../../validator/registry-validator.js";
 import { HandlerFailure, type CurrentUser, type HandlerServices } from "./common.js";
 import { readJobQueue } from "../../runner/read-jobs.js";
@@ -89,7 +90,7 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
       before: null, after: { workflowId: workflow.id, profile }, createdAt: new Date().toISOString(), traceId });
     return structuredClone(item);
   });
-  if (queued) { queue!.kick(); return reply.status(202).send(ok(initial, "Published read run admitted; use its execution ID to follow saved progress", { traceId, executionProfile: profile, admission: "read-job-v1" })); }
+  if (queued) { queue!.kick(); return reply.status(202).send(ok(publicExecution(initial), "Published read run admitted; use its execution ID to follow saved progress", { traceId, executionProfile: profile, admission: "read-job-v1" })); }
   if (token === null) throw new HandlerFailure(422, "Execution verification receipt is unavailable", { traceId });
   let execution;
   try { execution = collection
@@ -97,5 +98,5 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
     : await completeCheckpointedRead(services, initial, input, token, request.signal, undefined, compilation.plan); }
   catch { return reply.status(503).send(fail("Execution stopped because a checkpoint could not be confirmed. Inspect recovery state; do not automatically retry.", { executionId, code: "CHECKPOINT_NOT_COMMITTED", traceId })); }
   if (["FAILED", "RECOVERY_REQUIRED"].includes(execution.status)) return reply.status(422).send(fail("Read workflow stopped; inspect recorded node outcomes before starting another run", { executionId, status: execution.status, traceId }));
-  return reply.send(ok(execution, execution.status === "CANCELLED" ? "Read workflow cancelled at a tool boundary" : "Published read workflow completed", { traceId, executionProfile: profile }));
+  return reply.send(ok(publicExecution(execution), execution.status === "CANCELLED" ? "Read workflow cancelled at a tool boundary" : "Published read workflow completed", { traceId, executionProfile: profile }));
 }

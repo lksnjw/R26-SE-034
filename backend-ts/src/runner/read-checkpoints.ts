@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { Execution, Repository, RepositoryState, ReadRunProgress } from "../repository/store.js";
 import type { RunnerLog, RunnerTimelineEntry } from "./executor.js";
 import { withoutSecretFields } from "../redact/secrets.js";
+import { publicExecutionEventPayload } from "../redact/public-model-usage.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
 import type { CompiledReadPlan } from "../workflows/compiled-read.js";
 import { assertReadFlowCompletion, assertReadValueBoundary, assertSelectedReadNode, skippedActions, controlNodes, structuralNodes, controlPoint, actionOrder, readFlowOutcomes } from "../workflows/read-control-flow.js";
@@ -35,7 +36,7 @@ export function appendExecutionEvent(state: RepositoryState, item: Execution, ty
   const sequence = ++progress.lastSequence;
   events.push({ version: 1, executionId: item.id, workflowId: item.workflowId, sequence, timestamp: new Date().toISOString(), type,
     ...(item.traceId === undefined ? {} : { traceId: item.traceId }), ...(nodeId === undefined ? {} : { nodeId }),
-    ...(attemptId === undefined ? {} : { attemptId }), payload: withoutSecretFields(payload) as Record<string, unknown> });
+    ...(attemptId === undefined ? {} : { attemptId }), payload: publicExecutionEventPayload(type, payload) });
   state.executionEvents[item.id] = events;
 }
 

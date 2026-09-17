@@ -18,6 +18,7 @@ import OperationStatusQueries from "../../components/executions/OperationStatusQ
 import OperationRecoveryArtifacts from "../../components/executions/OperationRecoveryArtifacts";
 import usePermissions from "../../hooks/usePermissions";
 import { projectExecutionIterationEvidence } from "../../utils/iterationEvidence";
+import RecordedModelUsage from "../../components/executions/RecordedModelUsage";
 
 /*******************************************************************************
  * Function: ExecutionDetailPage
@@ -66,12 +67,12 @@ function ExecutionRunDetail({ executionId }) {
       ) : null}
       {execution.failure ? <GovernanceBlockPanel failure={execution.failure} /> : null}
       <Card>
-        <dl className="grid gap-4 md:grid-cols-4">
+        <dl className="grid gap-4 md:grid-cols-3">
           <Metric label="Started" value={execution.started} />
           <Metric label="Duration" value={execution.duration} />
-          <Metric label="Tokens" value={execution.tokens} />
           <Metric label="Cost" value={execution.cost} />
         </dl>
+        <RecordedModelUsage counts={execution.recordedUsage} />
       </Card>
       <ExecutionOutputPanel execution={execution} iterationModel={iterationModel} />
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">

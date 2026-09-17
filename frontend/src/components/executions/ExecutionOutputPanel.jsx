@@ -2,6 +2,7 @@ import { Icon } from "@iconify/react";
 import Card from "../shared/ui/Card";
 import { ReadableResult } from "../chat/ReadableValue";
 import IterationNodeEvidence from "./IterationNodeEvidence";
+import { isActiveExecution } from "../../utils/executionEvents";
 
 /*******************************************************************************
  * Function: OutputBlock
@@ -51,7 +52,7 @@ function ExecutionOutputPanel({ execution, iterationModel }) {
         <h2 className="section-title mb-3">Workflow output</h2>
         {collection && !iterationModel?.valid && <p role="alert" className="mb-3 text-xs text-amber-700">Saved item answers need a matching run snapshot and timeline. Refresh this run; no result is inferred.</p>}
         <p data-testid="no-output" className="text-sm text-gray-500">
-          {status === "RUNNING" ? "No confirmed output has been saved yet." : "This run did not produce a confirmed output."}
+          {isActiveExecution(status) ? "No confirmed output has been saved yet." : "This run did not produce a confirmed output."}
         </p>
       </Card>
     );
@@ -69,7 +70,7 @@ function ExecutionOutputPanel({ execution, iterationModel }) {
             className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
           >
             <Icon icon="mdi:progress-alert" className="h-4 w-4" />
-            {status === "RUNNING" ? "Partial — run still active" : "Partial — run not completed"}
+            {isActiveExecution(status) ? "Partial — run still active" : "Partial — run not completed"}
           </span>
         ) : null}
       </div>

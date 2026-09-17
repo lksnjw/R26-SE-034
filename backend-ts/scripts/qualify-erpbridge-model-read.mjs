@@ -166,6 +166,7 @@ export async function main(args) {
             202,
           ),
           deadline = Date.now() + 15_000;
+        if (run.tokens?.total !== 0) throw new Error("Admission must expose the recorded zero before model entry");
         let saved;
         do {
           saved = await request("GET", `/api/executions/${run.id}`, null, 200);
@@ -191,6 +192,7 @@ export async function main(args) {
           (state) => state.executions[run.id],
         );
         if (privateRun.tokens.total !== (kind === "agent" ? 4 : 2)) throw new Error("Private fixture usage did not match the acknowledged model rounds");
+        if (JSON.stringify(saved.tokens) !== JSON.stringify(privateRun.tokens)) throw new Error("Public usage did not match private recorded counts");
         if (
           privateRun.runtimeApprovalSecret ||
           Object.values(privateRun.operationSecret.intents).some(
@@ -201,6 +203,14 @@ export async function main(args) {
             "Local read-only rehearsal unexpectedly contains effect authority",
           );
         const events = await workspace.repository.read(state => state.executionEvents[run.id]);
+        const publicEvents = await request("GET", `/api/executions/${run.id}/events?waitMs=0`, null, 200);
+        const modelEvents = publicEvents.events.filter(event => ["node.agent_model_acknowledged", "node.agent_completed", "node.analysis_completed"].includes(event.type));
+        if (modelEvents.length !== (kind === "agent" ? 3 : 1) || modelEvents.some(event => !Number.isSafeInteger(event.payload.inputTokens) || !Number.isSafeInteger(event.payload.outputTokens))) throw new Error("Recorded model usage was missing from public journal events");
+        const listed = await request("GET", "/api/executions", null, 200);
+        if (JSON.stringify(listed.find(value => value.id === run.id)?.tokens) !== JSON.stringify(privateRun.tokens)) throw new Error("List usage did not match recorded counts");
+        const chain = await request("GET", `/api/executions?traceId=${saved.traceId}`, null, 200);
+        const invocationRecords = chain.filter(value => value.kind === "model.invocation").map(value => value.record);
+        if (invocationRecords.length !== (kind === "agent" ? 2 : 1) || invocationRecords.some(value => value.measured !== true || value.inputTokens !== 1 || value.outputTokens !== 1) || JSON.stringify(chain.find(value => value.kind === "execution")?.record.tokens) !== JSON.stringify(privateRun.tokens)) throw new Error("Trace usage did not match acknowledged model rounds");
         if (kind === "agent") {
           const completed = events.find(event => event.type === "node.agent_completed");
           const intents = Object.values(privateRun.operationSecret.intents);
@@ -217,6 +227,7 @@ export async function main(args) {
         );
         if (replay.id !== run.id)
           throw new Error("Stable replay created a different run");
+        if (JSON.stringify(replay.tokens) !== JSON.stringify(privateRun.tokens)) throw new Error("Replay usage did not match recorded counts");
         if (JSON.stringify(await workspace.repository.read(state => state.executionEvents[run.id])) !== JSON.stringify(events)) throw new Error("Replay unexpectedly added execution events");
         console.log(
           `LOCAL Docker ${dataClass}/${kind}: v9 fixture draft follows reviewed source hint; published; DONE; ${actualRows.length} actual synthetic rows; matching fixture departmentCount; ${kind === "agent" ? "two model rounds and one dynamic governed Docker read; " : ""}${saved.durationMs} ms whole-run sample; no effect or approval; replay returned the same run without new events.`,

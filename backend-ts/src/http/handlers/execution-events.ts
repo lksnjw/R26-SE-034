@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { canReadExecution } from "../execution-scope.js";
 import type { RepositoryState } from "../../repository/store.js";
-import { withoutSecretFields } from "../../redact/secrets.js";
+import { publicExecutionEvent } from "../../redact/public-model-usage.js";
 import { HandlerFailure, requestParam, type CurrentUser, type HandlerServices } from "./common.js";
 import { ok } from "../../models/schemas.js";
 
@@ -63,7 +63,7 @@ function projectPage(state: Readonly<RepositoryState>, user: CurrentUser, execut
   if (after > lastSequence) throw new HandlerFailure(400, "Event cursor is ahead of this execution");
   const batch = events.filter((event) => event.sequence > after).slice(0, limit);
   return {
-    events: withoutSecretFields(structuredClone(batch)) as unknown[],
+    events: batch.map(publicExecutionEvent),
     cursor: batch.at(-1)?.sequence ?? after,
     lastSequence,
     hasMore: batch.length > 0 && batch.at(-1)!.sequence < lastSequence,

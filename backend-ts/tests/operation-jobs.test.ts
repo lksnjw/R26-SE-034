@@ -296,8 +296,32 @@ test.each(modelDataClasses.flatMap(dataClass => ["analysis", "agent"].map(kind =
   if (kind === "agent") s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"summary":"FIXTURE REPORT","complete":true}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
   const readiness = await s.request("GET", "/api/workflows/flow/readiness"); expect(readiness.json().data.can_attempt_run).toBe(true);
   const admitted = await s.run(`sensitivity-${dataClass}-${kind}-0001`); expect(admitted.statusCode, admitted.body).toBe(202);
+  expect(admitted.json().data.tokens).toEqual({ input: 0, output: 0, total: 0 });
   await s.wait(admitted.json().data.id, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).toHaveBeenCalledOnce();
   expect((await s.repository.snapshot()).executions[admitted.json().data.id]!.runtimeApprovalSecret).toBeUndefined();
+  const id = admitted.json().data.id, expectedUsage = { input: 11, output: 7, total: 18 };
+  const detail = await s.request("GET", `/api/executions/${id}`); expect(detail.json().data.tokens).toEqual(expectedUsage);
+  const listed = await s.request("GET", "/api/executions"); expect(listed.json().data.find((value: { id: string }) => value.id === id).tokens).toEqual(expectedUsage);
+  const replayed = await s.run(`sensitivity-${dataClass}-${kind}-0001`); expect(replayed.json().data.tokens).toEqual(expectedUsage);
+  const events = await s.request("GET", `/api/executions/${id}/events?waitMs=0`);
+  const usageEvents = events.json().data.events.filter((value: { type: string }) => ["node.analysis_completed", "node.agent_completed", "node.agent_model_acknowledged"].includes(value.type));
+  expect(usageEvents.length).toBe(kind === "agent" ? 2 : 1);
+  for (const event of usageEvents) expect(event.payload).toMatchObject({ inputTokens: 11, outputTokens: 7 });
+  const trace = await s.request("GET", `/api/executions?traceId=${detail.json().data.traceId}`);
+  const chain = trace.json().data;
+  expect(chain.find((value: { kind: string }) => value.kind === "execution").record.tokens).toEqual(expectedUsage);
+  expect(chain.find((value: { kind: string }) => value.kind === "model.invocation").record).toMatchObject({ inputTokens: 11, outputTokens: 7, measured: true });
+  expect(`${detail.body}${listed.body}${replayed.body}${events.body}${trace.body}`).not.toMatch(/private-model-key|operationSecret|runtimeApprovalSecret/);
+  expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).toHaveBeenCalledOnce();
+});
+
+test("cancelling after measured analysis preserves numeric usage without disclosing approval/provider secrets", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAnalysisWorkflow(s);
+  const id = await s.admit();
+  const cancelled = await s.request("POST", `/api/executions/${id}/cancel`, {});
+  expect(cancelled.statusCode, cancelled.body).toBe(200); expect(cancelled.json().data.tokens).toEqual({ input: 11, output: 7, total: 18 });
+  expect(cancelled.body).not.toMatch(/private-model-key|runtimeApprovalSecret|operationSecret/);
+  expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).toHaveBeenCalledOnce();
 });
 
 test.each(["confidential", "restricted"].flatMap(dataClass => ["analysis", "agent"].map(kind => [dataClass, kind] as const)))("reviewed %s read cannot feed an internal %s even when provider egress permits internal", async (dataClass, kind) => {

@@ -1,5 +1,6 @@
 import { apiClient } from "../config/axios";
 import { formatDuration, formatTokens, unwrap } from "./api";
+import { recordedModelUsage } from "../utils/recordedModelUsage";
 
 const reconciliationId = value => typeof value === "string" && value.length > 0 && value.length <= 256;
 const reconciliationDate = value => typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -35,12 +36,14 @@ function validReconciliationHistory(records, state) {
  * Normalizes execution for the execution service module.
  ******************************************************************************/
 export function normalizeExecution(execution) {
+  const recordedUsage = recordedModelUsage(execution.tokens);
   return {
     ...execution,
     workflow: execution.workflowName,
     started: execution.startedAt ? new Date(execution.startedAt).toLocaleString() : "—",
     duration: formatDuration(execution.durationMs),
-    tokens: formatTokens(execution.tokens?.total || 0),
+    recordedUsage,
+    tokens: recordedUsage ? formatTokens(recordedUsage.total) : "Not reported",
     cost: `$${Number(execution.costUsd || 0).toFixed(2)}`,
   };
 }

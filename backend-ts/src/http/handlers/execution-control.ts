@@ -3,7 +3,7 @@ import type { RouteDefinition } from "../generated-routes.js";
 import { appendExecutionEvent, assertCurrentRunController } from "../../runner/read-checkpoints.js";
 import { appendAudit, HandlerFailure, requestParam, type CurrentUser, type HandlerServices } from "./common.js";
 import { ok } from "../../models/schemas.js";
-import { withoutSecretFields } from "../../redact/secrets.js";
+import { publicExecution } from "../../redact/public-model-usage.js";
 import { recordOperationReconciliation } from "../../runner/operation-reconciliation.js";
 import { operationReadbackHistory, operationReadbackQueue } from "../../runner/operation-readback-jobs.js";
 import { admitOperationRecovery, createOperationRecoveryArtifact, operationRecoveryArtifactView } from "../../runner/operation-recovery-artifacts.js";
@@ -115,5 +115,5 @@ export async function handleExecutionControlRoute(route: RouteDefinition, reques
     }
     return structuredClone(execution);
   });
-  return reply.status(item.status === "CANCELLED" ? 200 : 202).send(ok(withoutSecretFields(item), item.status === "CANCELLED" ? "Execution already cancelled" : "Cancellation requested. An in-flight operation may already have taken effect; no further calls will start after cancellation is observed.", { transportInterrupted: false }));
+  return reply.status(item.status === "CANCELLED" ? 200 : 202).send(ok(publicExecution(item), item.status === "CANCELLED" ? "Execution already cancelled" : "Cancellation requested. An in-flight operation may already have taken effect; no further calls will start after cancellation is observed.", { transportInterrupted: false }));
 }
