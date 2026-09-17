@@ -83,6 +83,17 @@ export class ReadJobQueue {
     const source = parseWorkflowYAMLStrict(yaml), ids = [...new Set(source.steps.map(step => selectedMcpConnectionId(this.services, step.connection_id)))].sort();
     return this.digest(canonicalInput(ids.map(id => { const bound = boundMcpConnection(this.services, id); return { id, binding: bound.session.admissionBinding ?? null, roleMap: bound.roleMap }; })));
   }
+  /** Read-only identity lookup. Publication/input changes do not hide an
+   * already admitted run; finding a receipt never grants replay authority. */
+  findAdmission(state: Readonly<RepositoryState>, workflowId: string, actorId: string, key: string): Execution | null {
+    const scope = this.digest(JSON.stringify([actorId, workflowId, key]));
+    const jobs = Object.values(state.readJobs).filter(job => job.idempotencyScope === scope);
+    if (!jobs.length) return null;
+    const job = jobs[0]!, run = state.executions[job.executionId];
+    if (jobs.length !== 1 || !run || job.actorId !== actorId || run.startedBy.id !== actorId || run.workflowId !== workflowId)
+      throw new HandlerFailure(409, "Read admission identity is inconsistent");
+    return run;
+  }
   existing(state: Readonly<RepositoryState>, admission: Admission, user: CurrentUser): Execution | null {
     const job = Object.values(state.readJobs).find((item) => item.idempotencyScope === admission.scope);
     if (!job) return null;

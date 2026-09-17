@@ -5,6 +5,7 @@ import { z } from "zod";
 import { fail, ok, runWorkflowRequestSchema, type Workflow } from "../../models/schemas.js";
 import { parseWorkflowYAMLStrict } from "../../parser/workflow.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
+import { publicExecution } from "../../redact/public-model-usage.js";
 import type { Execution, User, RepositoryState } from "../../repository/store.js";
 import { operationJobQueue } from "../../runner/operation-jobs.js";
 import { readJobQueue } from "../../runner/read-jobs.js";
@@ -213,6 +214,8 @@ export async function runWorkflowFor(
   if (!parsed.success)
     return reply.status(400).send(fail("Invalid request body", null));
   const traceId = requestTraceId(request, workflow.traceId);
+  if (parsed.data.expectedActorId !== undefined && parsed.data.expectedActorId !== user.id)
+    return reply.status(403).send(fail("The signed-in account changed before run admission; no work was admitted", { code: "RUN_ACTOR_CHANGED" }));
   if (!user.permissions.some((permission) => ["workflow:run", "workflow:run_own"].includes(permission)))
     return reply.status(403).send(fail("Permission denied", { requiredAny: ["workflow:run", "workflow:run_own"] }));
   if (!user.permissions.includes("workflow:run") && workflow.owner.id !== user.id && !(workflow.assignedUserIds ?? []).includes(user.id))
@@ -239,7 +242,7 @@ export async function runWorkflowFor(
     const admission = queue.prepare(workflow, parsed.data.input ?? {}, user, parsed.data.idempotencyKey);
     const existing = await services.repository.read((state) => queue.existing(state, admission, user));
     if (existing)
-      return reply.status(202).send(ok(existing, "Existing read run for this idempotency key; no additional run was admitted", { traceId, admission: "read-job-v1", replayed: true }));
+      return reply.status(202).send(ok(publicExecution(existing), "Existing read run for this idempotency key; no additional run was admitted", { traceId, admission: "read-job-v1", replayed: true }));
   }
   if (!["", "execute", "deterministic-read", "async-read"].includes(parsed.data.mode) || (!asyncRead && parsed.data.idempotencyKey !== ""))
     return reply.status(422).send(fail("Requested execution mode or idempotency contract is not implemented", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));

@@ -227,6 +227,8 @@ export async function main(args) {
         );
         if (replay.id !== run.id)
           throw new Error("Stable replay created a different run");
+        const receipt = await request("GET", `/api/workflows/${draft.id}/run-receipts/${command.idempotencyKey}?mode=async-operation`, null, 200);
+        if (receipt.profile !== "run-admission-receipt/v1" || receipt.outcome !== "RECORDED" || receipt.executionId !== run.id || receipt.status !== "DONE" || receipt.noReplay !== true || Object.keys(receipt).some(key => !["profile", "outcome", "workflowId", "mode", "executionId", "status", "noReplay"].includes(key))) throw new Error("Read-only admission lookup did not match the exact saved run");
         if (JSON.stringify(replay.tokens) !== JSON.stringify(privateRun.tokens)) throw new Error("Replay usage did not match recorded counts");
         if (JSON.stringify(await workspace.repository.read(state => state.executionEvents[run.id])) !== JSON.stringify(events)) throw new Error("Replay unexpectedly added execution events");
         console.log(

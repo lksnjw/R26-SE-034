@@ -1,5 +1,6 @@
 import { apiClient } from "../config/axios";
 import { formatRelativeTime, unwrap } from "./api";
+import { runAdmissionService } from "./run-admission.service";
 
 /*******************************************************************************
  * Function: normalizeWorkflow
@@ -173,8 +174,9 @@ export const workflowService = {
  * Runs the application for the workflow service module.
  ******************************************************************************/
   async run(id, input = {}, options = {}) {
-    // Published reads are deterministic, not LLM healing. This is still a
-    // synchronous request; timeout is not cancellation or retry safety.
+    if (!options.dryRun) return runAdmissionService.admit(id, input, options);
+    // Dry-run validation cannot dispatch. Real runs use the shared queued
+    // admission path above; a request timeout alone never proves cancellation.
     return unwrap(
       await apiClient.post(`/workflows/${id}/run`, {
         input,

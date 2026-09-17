@@ -2,6 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { fail, ok } from "../../models/schemas.js";
 import { publicExecution } from "../../redact/public-model-usage.js";
+import { getRunAdmissionReceipt } from "./run-admission-receipts.js";
 import { executionReviewInbox } from "../../runner/execution-review-inbox.js";
 import { operationReconciliationView, hasOperationReconciliation } from "../../runner/operation-reconciliation.js";
 import { hasReportPageResolution } from "../../runner/report-page-resolution.js";
@@ -23,6 +24,7 @@ export async function handleExecutionQueryRoute(
   services: HandlerServices,
 ): Promise<unknown | typeof EXECUTION_QUERY_UNHANDLED> {
   const base = services.config.apiBasePath;
+  if (route.path === `${base}/workflows/:id/run-receipts/:key` && route.method === "GET") return getRunAdmissionReceipt(request, reply, user, services);
   if (route.path === `${base}/executions` && route.method === "GET") return listExecutions(request, reply, user, services);
   if (route.path === `${base}/execution-reviews` && route.method === "GET") return reviewInbox(request, reply, user, services);
   if (route.path === `${base}/settings/runtime-approval-policy` && route.method === "GET") return approvalPolicy(request, reply, user, services);

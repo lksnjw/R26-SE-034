@@ -129,6 +129,7 @@ export const runWorkflowRequestSchema = z.object({
   dryRun: z.boolean().default(false),
   simulation: z.unknown().optional(),
   idempotencyKey: z.string().default(""),
+  expectedActorId: z.string().min(1).max(256).optional(),
 }).strict();
 
 export const loginRequestSchema = z.object({

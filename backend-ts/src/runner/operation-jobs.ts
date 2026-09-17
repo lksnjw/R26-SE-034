@@ -177,6 +177,16 @@ export class OperationJobQueue {
     this.services.repository.assertAuthority();
     if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt) throw new Error("Operation worker is fenced");
   }
+  /** Identity evidence only; no compilation, model/tool entry or admission. */
+  findAdmission(state: Readonly<RepositoryState>, workflowId: string, actorId: string, key: string): Execution | null {
+    const scope = digest(["operation/v1", actorId, workflowId, key]);
+    const runs = Object.values(state.executions).filter(run => run.operationSecret?.idempotencyScope === scope);
+    if (!runs.length) return null;
+    const run = runs[0]!;
+    if (runs.length !== 1 || run.operationSecret?.actorId !== actorId || run.startedBy.id !== actorId || run.workflowId !== workflowId)
+      throw new HandlerFailure(409, "Operation admission identity is inconsistent");
+    return run;
+  }
   async admit(workflow: Workflow, rawInput: Record<string, unknown>, user: CurrentUser, key: string, traceId: string,
     source?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string;
       scheduleHash: string; reportWindow: ReportWindow; reportWindowBinding: ReportWindowInputBinding; inputHash: string }) {

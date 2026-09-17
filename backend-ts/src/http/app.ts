@@ -277,9 +277,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 202)
+  if (routeTable.length !== 203)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 202`,
+      `route table has ${routeTable.length} routes, expected 203`,
     );
   return app;
 }
@@ -372,7 +372,7 @@ async function handleRoute(
 
   // Storage denial must not masquerade as an empty inbox, an expired login or
   // a generic crash. This read-only route never falls back to a stale image.
-  if (route.path === `${services.config.apiBasePath}/execution-reviews`) {
+  if (route.path === `${services.config.apiBasePath}/execution-reviews` || route.path === `${services.config.apiBasePath}/workflows/:id/run-receipts/:key`) {
     try { services.repository.assertAuthority(); }
     catch { return reply.status(503).send(fail("The review inbox is unavailable until authoritative storage is recovered. No tasks or actions are confirmed.", null)); }
   }

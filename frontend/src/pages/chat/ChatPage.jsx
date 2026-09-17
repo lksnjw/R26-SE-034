@@ -148,7 +148,7 @@ function ChatPage() {
         />
       </div>
       <div className="h-[75svh] min-h-[520px] min-w-0 shrink-0 lg:h-full lg:min-h-0 lg:flex-1" data-testid="workspace-canvas-pane">
-        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} initialWorkflowContext={initialWorkflowContext} sessionId={sessions.selectedSessionId} canEdit={user?.permissions?.includes("workflow:write")} canControl={user?.permissions?.some((key) => ["workflow:run", "workflow:run_own"].includes(key))} onChatChanged={onChatChanged} onNodeContext={onNodeContext} onFocusChat={focusChat} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
+        <WorkflowWorkspaceCanvas key={draftKey || sessions.selectedSessionId || "new"} messages={chat.messages} initialWorkflowContext={initialWorkflowContext} sessionId={sessions.selectedSessionId} actorId={user?.id} canEdit={user?.permissions?.includes("workflow:write")} canControl={user?.permissions?.some((key) => ["workflow:run", "workflow:run_own"].includes(key))} onChatChanged={onChatChanged} onNodeContext={onNodeContext} onFocusChat={focusChat} selectionStorageKey={workspaceKey(user, `canvas.${sessions.selectedSessionId || "new"}`)} />
       </div>
     </div>
   );

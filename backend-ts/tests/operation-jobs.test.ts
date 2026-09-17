@@ -163,6 +163,23 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; } };
 }
 
+test("operation admission receipt survives changed draft and revoked run permission without another dispatch", async () => {
+  const s = await setup(); const id = await s.admit();
+  await s.repository.mutate(state => { state.workflows.flow!.yaml += "\n# newer draft"; state.workflows.flow!.draftVersion++;
+    state.users.requester!.permissionOverrides = ["execution:read_own"]; state.roles[state.users.requester!.roleId]!.permissions = []; });
+  const before = await s.repository.snapshot(), calls = s.sdk.callTool.mock.calls.length;
+  const path = "/api/workflows/flow/run-receipts/fixture-operation-run-0001?mode=async-operation";
+  const receipt = await s.request("GET", path);
+  expect(receipt.statusCode, receipt.body).toBe(200);
+  expect(receipt.json().data).toEqual({ profile: "run-admission-receipt/v1", workflowId: "flow", mode: "async-operation", executionId: id, status: "AWAITING_APPROVAL", outcome: "RECORDED", noReplay: true });
+  expect(receipt.body).not.toMatch(/operationSecret|requestFingerprint|inputCiphertext|idempotencyScope|workflowSnapshot|private-/);
+  expect((await s.request("GET", path, undefined, "reviewer")).statusCode).toBe(403);
+  await s.repository.mutate(state => { state.users.other = { ...state.users.requester!, id: "other" }; });
+  const other = await s.request("GET", path, undefined, "other"); expect(other.statusCode).toBe(200); expect(other.json().data.outcome).toBe("NOT_FOUND");
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(calls);
+  expect((await s.repository.snapshot()).executionEvents).toEqual(before.executionEvents);
+});
+
 const scheduleReportWindowBinding = { profile: "workflow-report-window-input-binding/v1" as const,
   startAtInput: "reportStartAt", endAtInput: "reportEndAt" };
 async function prepareScheduleWorkflow(s: Awaited<ReturnType<typeof setup>>, page?: number,

@@ -4,6 +4,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { useWorkflowDetailRun } from "./useWorkflowDetailRun";
 import { workflowService } from "../services/workflow.service";
 import { executionService } from "../services/execution.service";
+import { runAdmissionService } from "../services/run-admission.service";
 
 const receipt = { id: "run-one", status: "PENDING" };
 beforeEach(() => {
@@ -85,4 +86,18 @@ test("an invalid receipt is uncertain; missing UUID support fails before admissi
   crypto.randomUUID.mockImplementation(() => { throw new Error("UUID unavailable"); });
   const second = renderHook(() => useWorkflowDetailRun("workflow")); await invoke(second.result);
   expect(second.result.current.state.unconfirmed).toBe(false); expect(executionService.run).toHaveBeenCalledTimes(1);
+});
+
+test("a new cross-tab identity hides the previous local answer while exact recovery is pending", async () => {
+  jest.spyOn(runAdmissionService, "pending").mockReturnValue(null);
+  jest.spyOn(runAdmissionService, "storageKey").mockReturnValue("same-workflow-scope");
+  let finish;
+  jest.spyOn(runAdmissionService, "recover").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const { result } = renderHook(() => useWorkflowDetailRun("workflow", undefined, "actor"));
+  await invoke(result); expect(result.current.state.result.id).toBe("run-one");
+  runAdmissionService.pending.mockReturnValue({ key: "another-explicit-run-key" });
+  await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key: "same-workflow-scope" })); });
+  expect(result.current.state.result).toBeNull(); expect(result.current.recovery.pending).toBe(true);
+  await act(async () => { finish({ id: "run-two", workflowId: "workflow", status: "PENDING" }); });
+  expect(result.current.state.result.id).toBe("run-two"); expect(executionService.run).toHaveBeenCalledTimes(1);
 });

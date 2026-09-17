@@ -1,6 +1,7 @@
 import { apiClient } from "../config/axios";
 import { formatDuration, formatTokens, unwrap } from "./api";
 import { recordedModelUsage } from "../utils/recordedModelUsage";
+import { runAdmissionService } from "./run-admission.service";
 
 const reconciliationId = value => typeof value === "string" && value.length > 0 && value.length <= 256;
 const reconciliationDate = value => typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -157,11 +158,10 @@ export const executionService = {
  * Runs the application for the execution service module.
  ******************************************************************************/
   async run(workflowId, input = {}, options = {}) {
-    // Transitional synchronous deterministic read execution. This timeout is
-    // not retry safety, cancellation, durable jobs or a latency guarantee.
-    return normalizeExecution(
-      unwrap(await apiClient.post(`/workflows/${workflowId}/run`, { input, ...options }, { timeout: 300000 })),
-    );
+    // Real runs share durable admission identity and read-only receipt recovery.
+    // Dry-run requests cannot dispatch; their timeout is not a latency guarantee.
+    if (options.dryRun) return normalizeExecution(unwrap(await apiClient.post(`/workflows/${workflowId}/run`, { input, ...options }, { timeout: 300000 })));
+    return normalizeExecution(await runAdmissionService.admit(workflowId, input, options));
   },
 /*******************************************************************************
  * Function: retry

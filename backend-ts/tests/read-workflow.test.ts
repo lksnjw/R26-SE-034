@@ -687,6 +687,57 @@ function barrier() {
 
 class QueuePersistence extends ReadPersistence { readonly readQueueDurability = "encrypted-single-writer" as const; }
 const queuedInput = (key = "read-job-fixture-001", input = { invoiceId: "queued-invoice", api_key: "private-queue-secret" }) => ({ mode: "async-read", idempotencyKey: key, input });
+
+test("read admission lookup recovers identity after draft changes without dispatch, replay or private fields", async () => {
+  const s = await setup(); await s.seed(); vi.spyOn(readJobQueue(s.services), "kick").mockImplementation(() => {});
+  const response = await s.run(queuedInput()); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+  await s.repository.mutate(state => { state.workflows.read!.yaml += "\n# later draft"; state.workflows.read!.draftVersion++; });
+  const before = await s.repository.snapshot();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const receipt = await s.app.inject({ method: "GET", url: "/api/workflows/read/run-receipts/read-job-fixture-001?mode=async-read", headers: s.headers });
+    expect(receipt.statusCode, receipt.body).toBe(200); expect(receipt.headers["cache-control"]).toBe("no-store");
+    expect(receipt.json().data).toEqual({ profile: "run-admission-receipt/v1", outcome: "RECORDED", workflowId: "read", mode: "async-read", executionId: id, status: "PENDING", noReplay: true });
+    expect(receipt.body).not.toMatch(/private-queue-secret|inputCiphertext|requestFingerprint|idempotencyScope|workflowSnapshot/);
+  }
+  expect(await s.repository.snapshot()).toEqual(before); expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled();
+});
+
+test.each(["unknown", "other-account", "wrong-workflow", "wrong-mode", "malformed", "override", "revoked", "storage"])("read receipt handles %s without admitting anything", async kind => {
+  const s = await setup(); await s.seed(); vi.spyOn(readJobQueue(s.services), "kick").mockImplementation(() => {});
+  const response = await s.run(queuedInput()); expect(response.statusCode, response.body).toBe(202);
+  let path = "/api/workflows/read/run-receipts/read-job-fixture-001?mode=async-read", headers = s.headers;
+  if (kind === "unknown") path = path.replace("read-job-fixture-001", "unknown-request-0001");
+  if (kind === "wrong-workflow") path = path.replace("workflows/read", "workflows/other");
+  if (kind === "wrong-mode") path = path.replace("async-read", "async-operation");
+  if (kind === "malformed") path = path.replace("read-job-fixture-001", "short");
+  if (kind === "override") path += "&actorId=actor";
+  if (kind === "other-account") {
+    await s.repository.mutate(state => { state.users.other = { ...state.users.actor!, id: "other" }; });
+    headers = { authorization: `Bearer ${jwt.sign({}, s.services.config.jwtSecret, { subject: "other", expiresIn: 3600 })}` };
+  }
+  if (kind === "revoked") await s.repository.mutate(state => { state.users.actor!.permissionOverrides = []; state.roles[state.users.actor!.roleId]!.permissions = ["workflow:run"]; });
+  if (kind === "storage") vi.spyOn(s.repository, "readAuthoritative").mockRejectedValue(new Error("Uncertain image"));
+  const lookup = await s.app.inject({ method: "GET", url: path, headers });
+  expect(lookup.statusCode, lookup.body).toBe(["malformed", "override"].includes(kind) ? 400 : kind === "revoked" ? 403 : kind === "storage" ? 503 : 200);
+  if (lookup.statusCode === 200) expect(lookup.json().data).toMatchObject({ outcome: "NOT_FOUND", executionId: null, noReplay: true });
+  expect(Object.keys((await s.repository.snapshot()).executions)).toHaveLength(1); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("read idempotent replay preserves validated numeric usage but filters secret fields", async () => {
+  const s = await setup(); await s.seed(); vi.spyOn(readJobQueue(s.services), "kick").mockImplementation(() => {});
+  const admitted = await s.run(queuedInput()); const id = admitted.json().data.id;
+  await s.repository.mutate(state => { state.executions[id]!.tokens = { input: 11, output: 7, total: 18 }; (state.executions[id] as any).access_token = "private-token"; });
+  const replay = await s.run(queuedInput()); expect(replay.statusCode, replay.body).toBe(202);
+  expect(replay.json().data.tokens).toEqual({ input: 11, output: 7, total: 18 }); expect(replay.body).not.toMatch(/private-token|access_token|private-queue-secret/);
+  expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("captured actor mismatch denies a queued run before any execution is saved", async () => {
+  const s = await setup(); await s.seed();
+  const denied = await s.run({ ...queuedInput(), expectedActorId: "other-account" });
+  expect(denied.statusCode, denied.body).toBe(403); expect(denied.json().meta.code).toBe("RUN_ACTOR_CHANGED");
+  expect(Object.keys((await s.repository.snapshot()).executions)).toHaveLength(0); expect(s.callTool).not.toHaveBeenCalled();
+});
 async function waitForTerminal(repository: Repository, id: string) {
   await vi.waitFor(async () => { expect((await repository.snapshot()).executions[id]?.status).not.toMatch(/^(PENDING|RUNNING)$/); }, { timeout: 3000, interval: 10 });
   await vi.waitFor(async () => { expect((await repository.snapshot()).readJobs[id]?.state).not.toBe("CLAIMED"); }, { timeout: 3000, interval: 10 });
@@ -923,6 +974,10 @@ test("durable unclaimed job survives a repository/process restart with private i
   const second = await setup({ persistence }); await second.app.ready();
   const item = await waitForTerminal(second.repository, admitted.id);
   expect(item.status).toBe("DONE"); expect(first.callTool).not.toHaveBeenCalled(); expect(second.callTool.mock.calls[0]?.[1]).toMatchObject({ id: "queued-invoice" });
+  const events = (await second.repository.snapshot()).executionEvents[admitted.id];
+  const receipt = await second.app.inject({ method: "GET", url: "/api/workflows/read/run-receipts/read-job-fixture-001?mode=async-read", headers: second.headers });
+  expect(receipt.statusCode, receipt.body).toBe(200); expect(receipt.json().data).toMatchObject({ outcome: "RECORDED", executionId: admitted.id, status: "DONE", noReplay: true });
+  expect((await second.repository.snapshot()).executionEvents[admitted.id]).toEqual(events); expect(second.callTool).toHaveBeenCalledTimes(2);
   expect((await second.run(queuedInput())).json().data.id).toBe(admitted.id); expect(second.callTool).toHaveBeenCalledTimes(2);
 });
 

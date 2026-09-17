@@ -18,9 +18,10 @@ export function unwrap(response, fallback = null) {
  ******************************************************************************/
 export function apiErrorDetails(error, fallback = "The request could not be completed.") {
   const payload = error?.response?.data;
+  const admissionMessage = typeof error?.runAdmissionMessage === "string" ? error.runAdmissionMessage : "";
   const message = typeof payload?.message === "string" && payload.message.trim()
     ? payload.message
-    : fallback;
+    : admissionMessage || fallback;
   const meta = payload?.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta)
     ? payload.meta
     : null;

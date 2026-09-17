@@ -807,6 +807,10 @@ export const routeTable = [
   {
     "method": "PUT",
     "path": "/api/workflows/:id/schedule"
+  },
+  {
+    "method": "GET",
+    "path": "/api/workflows/:id/run-receipts/:key"
   }
 ] as const;
 export type RouteDefinition = (typeof routeTable)[number];

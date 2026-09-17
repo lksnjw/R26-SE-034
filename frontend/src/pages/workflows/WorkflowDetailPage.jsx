@@ -13,6 +13,7 @@ import { Icon } from "@iconify/react";
 import WorkflowSchedulePanel from "../../components/workflows/WorkflowSchedulePanel";
 import WorkflowRunReceipt from "../../components/workflows/WorkflowRunReceipt";
 import { useWorkflowDetailRun } from "../../hooks/useWorkflowDetailRun";
+import RunAdmissionRecoveryPanel from "../../components/executions/RunAdmissionRecoveryPanel";
 
 /*******************************************************************************
  * Function: WorkflowDetailPage
@@ -27,7 +28,7 @@ function WorkflowDetailPage() {
   const { data: workflow, isLoading, error, refetch } = useWorkflow(selectedWorkflowId);
   const hasPendingGenerationApproval = Boolean(workflow?.pendingGenerationApproval?.steps?.length);
 
-  const { state: runState, run: handleRun, dismiss: dismissRun } = useWorkflowDetailRun(workflow?.id, refetch);
+  const { state: runState, run: handleRun, dismiss: dismissRun, recovery } = useWorkflowDetailRun(workflow?.id, refetch, actorId);
 
   if (!selectedWorkflowId) return <EmptyState title="No workflow selected" description="Choose a workflow from the workflow list." />;
   if (isLoading) return <LoadingState label="Loading workflow…" />;
@@ -76,6 +77,7 @@ function WorkflowDetailPage() {
       )}
 
       {/* Run result banner */}
+      <RunAdmissionRecoveryPanel recovery={recovery} execution={runState.result} allowRelease={false} />
       {runState.result && <WorkflowRunReceipt key={runState.result.id} initialExecution={runState.result}
         onDismiss={dismissRun} />}
       {runState.error && (

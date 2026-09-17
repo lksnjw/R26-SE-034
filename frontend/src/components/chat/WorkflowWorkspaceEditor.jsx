@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "@iconify/react";
 import { workflowService } from "../../services/workflow.service";
 import { executionService } from "../../services/execution.service";
+import { useRunAdmissionRecovery } from "../../hooks/useRunAdmissionRecovery";
+import RunAdmissionRecoveryPanel from "../executions/RunAdmissionRecoveryPanel";
 import { parseWorkflowPreview } from "./workflowPreview";
 import { readWorkspaceValue, writeWorkspaceValue } from "../../utils/workspaceSession";
 import "./workflowWorkspace.css";
@@ -82,7 +84,7 @@ function NodeInspector({ node, canEdit, busy, onPreview, sessionId, context, onP
   </aside>;
 }
 
-export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit = false, canControl = false, initialSelectedNodeId = "", selectionStorageKey, onChatChanged, savedProposals = [], onNodeContext, onFocusChat }) {
+export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId, canEdit = false, canControl = false, initialSelectedNodeId = "", selectionStorageKey, onChatChanged, savedProposals = [], onNodeContext, onFocusChat }) {
   const [record, setRecord] = useState(null), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(() => {
     const stored = readWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, null);
@@ -93,9 +95,11 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
   const [run, setRun] = useState(null), [timeline, setTimeline] = useState([]), [runInput, setRunInput] = useState({});
   const [submittingRun, setSubmittingRun] = useState(false);
   const [unconfirmedRun, setUnconfirmedRun] = useState(false);
-  const monitor = useExecutionMonitor(run?.id, { enabled: run?.readProgress?.profile === "read-progress-v1" || run?.status === "RUNNING" });
-  const shownRun = monitor.denied ? null : monitor.execution ?? run;
-  const shownTimeline = monitor.denied ? emptyTimeline : monitor.execution ? monitor.timeline : timeline;
+  const recovery = useRunAdmissionRecovery(workflowId, actorId);
+  const exactRun = recovery.denied ? null : recovery.run || (recovery.pending ? null : run);
+  const monitor = useExecutionMonitor(exactRun?.id, { enabled: exactRun?.readProgress?.profile === "read-progress-v1" || exactRun?.status === "RUNNING" });
+  const shownRun = monitor.denied ? null : monitor.execution ?? exactRun;
+  const shownTimeline = monitor.denied ? emptyTimeline : monitor.execution ? monitor.timeline : exactRun?.id === run?.id ? timeline : emptyTimeline;
   const runActive = isActiveExecution(shownRun?.status);
   const snapshotMatches = shownRun?.workflowSnapshot?.yaml === record?.yaml;
   const [adding, setAdding] = useState(false), [newId, setNewId] = useState(""), [newAction, setNewAction] = useState(""), [newConnectionId, setNewConnectionId] = useState("");
@@ -183,17 +187,20 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
     return target ? <FlowPlacementPoint key={target.key} target={target} model={placementModel} moving={moving} revision={{ workflowId, baseVersion: record.version, baseHash: record.contentHash }} disabled={busy || record.readinessUnknown || Boolean(pendingProposal)} onInsert={value => { setMoving(null); setInsertTarget({ target: value, workflowId, baseVersion: record.version, baseHash: record.contentHash }); }} onMove={previewMove} /> : null;
   };
   const attemptRun = async () => {
-    if (submittingRun || unconfirmedRun || runActive || ["RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED", "RECONCILED"].includes(shownRun?.status)) return;
+    if (submittingRun || unconfirmedRun || recovery.pending || recovery.checking || runActive || ["RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED", "RECONCILED"].includes(shownRun?.status)) return;
     setSubmittingRun(true); setError(""); setNotice("");
     try {
-      const result = await workflowService.run(workflowId, runInput, ...(record.operation_job_admission === "operation-job/v1" ? [{ mode: "async-operation", idempotencyKey: crypto.randomUUID() }] : record.read_job_admission === "read-job-v1" ? [{ mode: "async-read", idempotencyKey: crypto.randomUUID() }] : []));
-      setRun(result); setTimeline(await executionService.getTimeline(result.id));
+      const options = record.operation_job_admission === "operation-job/v1" ? { mode: "async-operation", idempotencyKey: crypto.randomUUID() } : record.read_job_admission === "read-job-v1" ? { mode: "async-read", idempotencyKey: crypto.randomUUID() } : {};
+      const admissionOptions = { ...options, ...(actorId ? { expectedActorId: actorId } : {}) };
+      const result = await workflowService.run(workflowId, runInput, ...(Object.keys(admissionOptions).length ? [admissionOptions] : []));
+      setRun(result);
+      try { setTimeline(await executionService.getTimeline(result.id)); } catch { setNotice("Run admitted, but its timeline could not be refreshed. Follow the saved run ID; nothing was restarted."); }
     } catch (cause) {
       const executionId = cause?.response?.data?.meta?.executionId;
       if (executionId) {
         try { const result = await executionService.get(executionId); setRun(result); setTimeline(await executionService.getTimeline(executionId)); }
         catch { setUnconfirmedRun(true); setNotice(`Run ${executionId} was recorded, but its evidence could not be loaded. Open Execution History before starting another run.`); }
-      } else if (!cause?.response) { setUnconfirmedRun(true); setNotice("The run response was not received. Its outcome is unconfirmed; check Execution History before starting another run. No automatic retry was sent."); }
+      } else if (cause?.runAdmissionUnconfirmed ?? (!cause?.response || cause.response.status >= 500)) { setUnconfirmedRun(true); setNotice("The run response was not received. Its outcome is unconfirmed; check Execution History before starting another run. No automatic retry was sent."); }
       setError(message(cause));
     } finally { setSubmittingRun(false); }
   };
@@ -326,7 +333,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, canEdit
         {!!pendingProposal.validation?.errors?.length && <details className="mt-2 text-xs"><summary className="cursor-pointer text-amber-700">Proposal issues ({pendingProposal.validation.errors.length})</summary><ul className="mt-2 space-y-1 text-gray-500">{pendingProposal.validation.errors.map((issue, index) => <li key={index}>{issue}</li>)}</ul></details>}
         <div className="mt-3 flex gap-2"><button className={`${button} bg-primary text-white hover:bg-primary/90`} disabled={busy || record.readinessUnknown || staleProposal} onClick={() => perform(() => save(pendingProposal.command, { version: pendingProposal.baseVersion, contentHash: pendingProposal.baseHash, proposalId: pendingProposal.id }))}>Apply to draft</button><button className={button} disabled={busy || record.readinessUnknown} onClick={() => perform(async () => { if (pendingProposal.id) { await workflowService.command(workflowId, record, { type: "discardProposal", proposalId: pendingProposal.id }); setResolvedProposals((items) => [...items, pendingProposal.id]); onChatChanged?.(); } setProposal(null); setNotice("Proposal discarded. The workflow was not changed."); })}>Discard</button></div>
       </section>}
-      <PublishedWorkflowRunForm record={record} authoring={authoring} runInput={runInput} onInput={setRunInput} buttonClass={button} onRun={attemptRun} submitting={submittingRun} unconfirmed={unconfirmedRun} disabled={busy || submittingRun || unconfirmedRun || runActive || ["RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED", "RECONCILED"].includes(shownRun?.status) || !record.can_attempt_run} />
+      <RunAdmissionRecoveryPanel recovery={recovery} execution={shownRun} onReleased={() => { setRun(null); setTimeline([]); setUnconfirmedRun(false); setNotice("The recorded terminal run was reviewed. A new run requires an explicit click."); }} />
+      <PublishedWorkflowRunForm record={record} authoring={authoring} runInput={runInput} onInput={setRunInput} buttonClass={button} onRun={attemptRun} submitting={submittingRun || recovery.checking} unconfirmed={unconfirmedRun && !recovery.run} disabled={busy || submittingRun || recovery.checking || recovery.pending || unconfirmedRun || runActive || ["RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED", "RECONCILED"].includes(shownRun?.status) || !record.can_attempt_run} />
       <ReadSimulationPanel workflowId={workflowId} record={record} steps={preview.steps} canControl={canControl} disabled={busy || record.readinessUnknown || Boolean(preview.error)} />
       {shownRun && <div className="mt-4 border-t border-gray-200 pt-3 text-[10px] text-gray-500 dark:border-gray-700"><p>Run {shownRun.id} · {shownRun.status} · published v{shownRun.workflowSnapshot?.version ?? "unknown"}</p><p className="mt-1">Answers belong to this run snapshot, not unsaved edits.</p>{shownRun.agentSummary && <p className="mt-2">{shownRun.agentSummary}</p>}<a href={`/executions/${encodeURIComponent(shownRun.id)}`} className="mt-2 inline-block text-primary">Open full run evidence</a></div>}
       {shownRun?.hasOperationReconciliation === true && !snapshotMatches && <div className="mt-4"><OperationStatusQueries executionId={shownRun.id} onHistoryChanged={monitor.refresh} /></div>}
