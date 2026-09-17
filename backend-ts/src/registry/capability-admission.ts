@@ -14,7 +14,7 @@ import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
 import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { assertOperationReadbackSources } from "../tools/operation-readback-contract.js";
 import { assertReportCoverageContract } from "../tools/report-coverage-contract.js";
-import type { ModelDataClass } from "../providers/egress-policy.js";
+import { modelDataClasses, type ModelDataClass } from "../providers/egress-policy.js";
 
 export const DEFAULT_BRIDGE_CONNECTION = "erpbridge-default";
 export function requireProductionAdmissionProfile(config: Pick<AppConfig, "mcpMode" | "mcpTransport">) {
@@ -25,7 +25,7 @@ const id = z.string().min(1).max(256), hash = z.string().regex(/^sha256:[a-f0-9]
 const observationSchema = z.object({ id, capabilityId: id, connectionId: id, connectionBinding: binding, toolId: id,
   contractHash: hash, definition: toolSchema, discoveredAt: z.string().datetime(), registryHash: hash,
   discoveryGeneration: z.number().int().nonnegative(), remoteMatches: z.boolean() }).strict();
-const readPolicySchema = z.object({ effectClass: z.literal("read"), riskClass: z.literal("low"), dataClass: z.literal("internal"), retryPolicy: z.literal("never"), note: z.string().trim().min(1).max(2000) }).strict();
+const readPolicySchema = z.object({ effectClass: z.literal("read"), riskClass: z.literal("low"), dataClass: z.enum(modelDataClasses), retryPolicy: z.literal("never"), note: z.string().trim().min(1).max(2000) }).strict();
 const operationPolicySchema = z.object({ effectClass: z.enum(["write", "notification"]), riskClass: z.enum(["low", "medium"]), dataClass: z.enum(["internal", "confidential"]), retryPolicy: z.literal("never"),
   requireIndependentApproval: z.literal(true), note: z.string().trim().min(1).max(2000) }).strict();
 const policySchema = z.union([readPolicySchema, operationPolicySchema]);

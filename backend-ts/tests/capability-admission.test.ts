@@ -18,6 +18,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { stringify } from "yaml";
 import { readJobQueue } from "../src/runner/read-jobs.js";
 import type { Workflow } from "../src/models/schemas.js";
+import { modelDataClasses } from "../src/providers/egress-policy.js";
 
 const sessions: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { await Promise.all(sessions.splice(0).map(value => value.close())); });
@@ -112,9 +113,33 @@ test.each(["DISABLED", "BLOCKED", "malformed-policy", "changed-definition"])("cl
   const s = await setup(); await s.review();
   const state = await s.repository.snapshot(), pin = captureReadAdmissionPin(state, s.registries, s.tool(), s.session.admissionBinding!);
   if (scenario === "DISABLED" || scenario === "BLOCKED") state.capabilityAdmissions[pin.capabilityId]!.state = scenario;
-  else if (scenario === "malformed-policy") (state.capabilityRevisions[pin.revisionId]!.policy as Record<string, unknown>).dataClass = "public";
+  else if (scenario === "malformed-policy") (state.capabilityRevisions[pin.revisionId]!.policy as Record<string, unknown>).dataClass = "unknown";
   else (state.capabilityRevisions[pin.revisionId]!.definition as Record<string, unknown>).name = "different";
   expect(() => reviewedCapabilityDataClass(state, pin)).toThrow(); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each(modelDataClasses)("explicit %s read review preserves exact sensitivity evidence without granting model egress", async dataClass => {
+  const s = await setup(), before = await s.repository.snapshot(), result = await s.review({ dataClass });
+  expect(result.revision.policy).toMatchObject({ effectClass: "read", riskClass: "low", dataClass, retryPolicy: "never" });
+  const state = await s.repository.snapshot(), pin = captureReadAdmissionPin(state, s.registries, s.tool(), s.session.admissionBinding!);
+  expect(reviewedCapabilityDataClass(state, pin)).toBe(dataClass);
+  const catalog = await capabilityAdmissionCatalog(s.repository, 0, 10, { registries: s.registries, session: s.session });
+  expect(catalog.capabilities[0]!.revision!.policy.dataClass).toBe(dataClass);
+  expect(state.providers).toEqual(before.providers); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["confidential", "restricted"])("%s read review survives a persistence reopen with unchanged pinned classification", async dataClass => {
+  const storage = new Persistence(), s = await setup(storage); await s.review({ dataClass });
+  const state = await s.repository.snapshot(), pin = captureReadAdmissionPin(state, s.registries, s.tool(), s.session.admissionBinding!);
+  const reopened = await Repository.open(storage), restored = await reopened.snapshot();
+  expect(reviewedCapabilityDataClass(restored, pin)).toBe(dataClass);
+  expect(captureReadAdmissionPin(restored, s.registries, s.tool(), s.session.admissionBinding!, pin)).toEqual(pin);
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each([undefined, null, "unknown", "PUBLIC", " internal", 1])("unsupported read classification %s is not defaulted or admitted", async dataClass => {
+  const s = await setup(); await expect(s.review({ dataClass })).rejects.toMatchObject({ status: 400 });
+  expect((await s.repository.snapshot()).capabilityAdmissions).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled();
 });
 
 test.each([false, true])("normal reviewed collection publication/readiness/execution preserves exact per-item answers, async=%s", async queued => {

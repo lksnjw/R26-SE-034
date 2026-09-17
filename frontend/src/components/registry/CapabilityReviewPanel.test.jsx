@@ -18,7 +18,7 @@ const page = (value = entry(), overrides = {}) => ({ capabilities: [value], pers
 let clients = [];
 function mount() { const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } } }); clients.push(client); return render(<QueryClientProvider client={client}><Panel /></QueryClientProvider>); }
 async function select() { fireEvent.click(await screen.findByRole("button", { name: /Read invoices/ })); }
-function confirm() { fireEvent.change(screen.getByLabelText("Capability decision note"), { target: { value: "Exact read contract reviewed" } }); fireEvent.click(screen.getByRole("checkbox")); }
+function confirm() { const sensitivity = screen.getByRole("combobox", { name: "Reviewed data sensitivity" }); if (!sensitivity.value) fireEvent.change(sensitivity, { target: { value: "internal" } }); fireEvent.change(screen.getByLabelText("Capability decision note"), { target: { value: "Exact read contract reviewed" } }); fireEvent.click(screen.getByRole("checkbox")); }
 beforeEach(() => { sessionStorage.clear(); catalog.mockResolvedValue(page()); role = "Platform Admin"; permissions = new Set(["registry:read", "registry:write"]); });
 afterEach(() => { cleanup(); for (const client of clients) client.clear(); clients = []; for (const mock of [catalog, discover, review, disable]) mock.mockReset(); jest.restoreAllMocks(); });
 
@@ -31,6 +31,68 @@ test("formatted inspection requires a note and explicit confirmation; discovery 
   discover.mockResolvedValue({ connectionId: "finance", authorityGranted: false, blockedCount: 1, unreviewedInventory: [{ remoteName: "erp.unmapped", reason: "NO_LOCAL_REVIEW_CONTRACT" }] });
   fireEvent.click(screen.getByRole("button", { name: "Refresh discovery" }));
   expect(await screen.findByText(/Discovery saved; no tool enabled/)).not.toBeNull(); expect(screen.getByText(/erp.unmapped/)).not.toBeNull(); expect(review).not.toHaveBeenCalled();
+});
+
+test("new read review requires an explicit sensitivity choice and changing it resets confirmation", async () => {
+  mount(); await select();
+  const sensitivity = screen.getByRole("combobox", { name: "Reviewed data sensitivity" });
+  expect(sensitivity.value).toBe(""); expect(Array.from(sensitivity.options).map(option => option.value)).toEqual(["", "public", "internal", "confidential", "restricted"]);
+  fireEvent.change(screen.getByLabelText("Capability decision note"), { target: { value: "Reviewed invoice data" } }); fireEvent.click(screen.getByRole("checkbox"));
+  expect(screen.getByRole("button", { name: "Save explicit read review" }).disabled).toBe(true);
+  fireEvent.change(sensitivity, { target: { value: "confidential" } });
+  expect(screen.getByRole("checkbox").checked).toBe(false); expect(screen.getByText(/Sensitive business or personal information/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("checkbox")); expect(screen.getByRole("button", { name: "Save explicit read review" }).disabled).toBe(false);
+  fireEvent.change(sensitivity, { target: { value: "restricted" } }); expect(screen.getByRole("checkbox").checked).toBe(false);
+  expect(screen.getByText(/Separate provider egress review is still required/)).toBeTruthy(); expect(review).not.toHaveBeenCalled();
+});
+
+test.each(["public", "internal", "confidential", "restricted"])("%s read decision survives remount and exact acknowledgement retry", async dataClass => {
+  const first = mount(); await select();
+  fireEvent.change(screen.getByRole("combobox", { name: "Reviewed data sensitivity" }), { target: { value: dataClass } }); confirm();
+  review.mockRejectedValueOnce(new Error("Unconfirmed synthetic receipt")); fireEvent.click(screen.getByRole("button", { name: "Save explicit read review" }));
+  await screen.findByText("Unconfirmed review decision");
+  const request = review.mock.calls[0]; expect(request[1].dataClass).toBe(dataClass);
+  expect(screen.getByText(/Requested data sensitivity/).textContent).toContain(dataClass[0].toUpperCase() + dataClass.slice(1));
+  first.unmount(); mount();
+  review.mockResolvedValueOnce({ revision: { capabilityId: "cap-fixture", connectionId: "finance", observationId: "obs-fixture", contractHash: entry().observation.contractHash, policy: request[1] }, admission: { capabilityId: "cap-fixture", state: "AVAILABLE", version: 1 } });
+  fireEvent.click(await screen.findByRole("button", { name: "Retry exact decision" }));
+  await screen.findByText(/Review decision acknowledged/); expect(review.mock.calls[1]).toEqual(request); expect(sessionStorage.length).toBe(0);
+});
+
+test.each(["dataClass", "riskClass", "effectClass", "note", "missing-policy"])("a mismatched %s review receipt never clears the pending decision", async field => {
+  mount(); await select(); confirm();
+  review.mockImplementationOnce(async (_id, body) => ({ revision: { capabilityId: "cap-fixture", connectionId: "finance", observationId: "obs-fixture", contractHash: entry().observation.contractHash,
+    ...(field === "missing-policy" ? {} : { policy: { ...body, [field]: field === "dataClass" ? "public" : "different" } }) }, admission: { capabilityId: "cap-fixture", state: "AVAILABLE", version: 1 } }));
+  fireEvent.click(screen.getByRole("button", { name: "Save explicit read review" }));
+  await screen.findByRole("alert"); expect(screen.getByText("Unconfirmed review decision")).toBeTruthy(); expect(sessionStorage.length).toBe(1);
+  expect(screen.queryByText(/Review decision acknowledged/)).toBeNull();
+});
+
+test("saved sensitivity is shown and preserved for re-review without implicit acknowledgement", async () => {
+  const value = entry(); value.revision = { id: "rev-existing", reviewedBy: { id: "admin" }, reviewedAt: "2026-10-08T00:00:00.000Z", policy: { dataClass: "restricted" }, definition: value.observation.definition };
+  catalog.mockResolvedValue(page(value)); mount(); await select();
+  expect(screen.getByText("Saved ERP output sensitivity").nextSibling.textContent).toBe("Restricted");
+  expect(screen.getByRole("combobox", { name: "Reviewed data sensitivity" }).value).toBe("restricted");
+  expect(screen.getByRole("checkbox").checked).toBe(false); expect(review).not.toHaveBeenCalled();
+});
+
+test("operation classification choices match the supported backend effect profile", async () => {
+  const value = entry(); value.observation.definition.is_read_only = false; value.observation.definition.risk_level = "medium";
+  value.observation.definition.operation_contract = { effect_class: "notification" };
+  catalog.mockResolvedValue(page(value)); mount(); fireEvent.click(await screen.findByRole("button", { name: /Read invoices/ }));
+  const sensitivity = screen.getByRole("combobox", { name: "Reviewed data sensitivity" });
+  expect(Array.from(sensitivity.options).map(option => option.value)).toEqual(["", "internal", "confidential"]);
+  fireEvent.change(sensitivity, { target: { value: "confidential" } }); confirm(); review.mockRejectedValueOnce(new Error("Unconfirmed"));
+  fireEvent.click(screen.getByRole("button", { name: "Save explicit operation review" })); await screen.findByText("Unconfirmed review decision");
+  expect(review.mock.calls[0][1]).toMatchObject({ dataClass: "confidential", effectClass: "notification", riskClass: "medium", requireIndependentApproval: true });
+});
+
+test.each(["unknown", null, 0, "public-operation"])("unsupported retry sensitivity %s requires recovery rather than submission", async dataClass => {
+  const policy = { observationId: "obs-fixture", contractHash: entry().observation.contractHash, decisionKey: "fixture-review-retry-0001", note: "Reviewed data sensitivity", retryPolicy: "never",
+    effectClass: dataClass === "public-operation" ? "notification" : "read", riskClass: "low", dataClass: dataClass === "public-operation" ? "public" : dataClass,
+    ...(dataClass === "public-operation" ? { requireIndependentApproval: true } : {}) };
+  sessionStorage.setItem("workflow.capability-decision.admin-fixture.finance", JSON.stringify({ action: "review", capabilityId: "cap-fixture", connectionId: "finance", body: policy }));
+  mount(); await screen.findByText("The local decision record needs recovery."); expect(screen.queryByRole("button", { name: "Retry exact decision" })).toBeNull(); expect(review).not.toHaveBeenCalled();
 });
 
 test("a report coverage read explains its exact interval and completeness evidence before review", async () => {
@@ -50,7 +112,7 @@ test("lost acknowledgement retains exact decision across remount and duplicate d
   await screen.findByText("Unconfirmed review decision"); await waitFor(() => expect(screen.getByRole("button", { name: "Retry exact decision" }).disabled).toBe(false));
   const request = review.mock.calls[0]; expect(request[1]).toMatchObject({ observationId: "obs-fixture", effectClass: "read", riskClass: "low", dataClass: "internal", retryPolicy: "never" });
   expect(request[1].decisionKey).toMatch(/^review_/); first.unmount(); mount();
-  review.mockResolvedValueOnce({ duplicate: true, revision: { capabilityId: "cap-fixture", connectionId: "finance", observationId: "obs-fixture", contractHash: entry().observation.contractHash }, admission: { capabilityId: "cap-fixture", state: "DISABLED", version: 2 } });
+  review.mockResolvedValueOnce({ duplicate: true, revision: { capabilityId: "cap-fixture", connectionId: "finance", observationId: "obs-fixture", contractHash: entry().observation.contractHash, policy: request[1] }, admission: { capabilityId: "cap-fixture", state: "DISABLED", version: 2 } });
   fireEvent.click(await screen.findByRole("button", { name: "Retry exact decision" }));
   await waitFor(() => expect(review).toHaveBeenCalledTimes(2)); expect(review.mock.calls[1]).toEqual(request);
   expect(await screen.findByText(/Review decision acknowledged/)).not.toBeNull(); expect(sessionStorage.getItem("workflow.capability-decision.admin-fixture.finance")).toBeNull();
@@ -132,6 +194,7 @@ test("connection selector scopes catalog, discovery and review to the exact seco
   fireEvent.click(screen.getByRole("button", { name: "Refresh discovery" }));
   await waitFor(() => expect(discover).toHaveBeenCalledWith("hr"));
   fireEvent.click(screen.getByRole("button", { name: /Read HR records/ })); confirm();
+  review.mockImplementationOnce(async (_id, policy) => ({ revision: { capabilityId: "cap-hr", connectionId: "hr", observationId: "obs-hr", contractHash: hrEntry.observation.contractHash, policy }, admission: { capabilityId: "cap-hr", state: "AVAILABLE", version: 1 } }));
   fireEvent.click(screen.getByRole("button", { name: "Save explicit read review" }));
   await waitFor(() => expect(review).toHaveBeenCalledWith("cap-hr", expect.objectContaining({ observationId: "obs-hr" }), "hr"));
   expect(sessionStorage.getItem("workflow.capability-decision.admin-fixture.hr")).toBeNull();
