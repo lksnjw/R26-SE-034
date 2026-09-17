@@ -22,6 +22,8 @@ import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 import { draftHistorySummary, resolveDraftCommand, saveDraftRevision } from "../../workflows/draft-history.js";
 import { boundMcpConnection, selectedMcpConnectionId } from "../../tools/mcp-dispatch-context.js";
 import { effectiveStepKind } from "../../models/schemas.js";
+import { hasWorkflowEffects, usesCheckpointedOperationWorkflow } from "../../workflows/execution-shape.js";
+import { operationModelReadinessIssues } from "../../workflows/operation-model-readiness.js";
 import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
@@ -61,11 +63,13 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       const validation = validateWorkspaceDraft("WorkspaceReadiness", current.yaml, user.role, services.validator, services.registries.snapshot().tools);
       let issues: string[] = [], bridge = "not_connected";
       let operationProfile = false;
+      let effectProfile: "read-only" | "contains-effects" | "unknown" = "unknown";
       try {
         const blueprint = parseWorkflowYAMLStrict(current.yaml);
-        operationProfile = blueprint.steps.some(step => services.registries.snapshot().tools.some(tool => !tool.is_read_only && [tool.name, tool.mcp_tool_name].includes(step.action ?? "")));
+        operationProfile = usesCheckpointedOperationWorkflow(blueprint, services.registries.snapshot().tools);
+        effectProfile = hasWorkflowEffects(blueprint, services.registries.snapshot().tools) ? "contains-effects" : "read-only";
         if (operationProfile) {
-          try { await prepareOperationPublication(services, current.yaml, user); if (!supportsOperationJobs(services)) issues.push("Operation checkpoint persistence is not qualified"); }
+          try { const prepared = await prepareOperationPublication(services, current.yaml, user); if (prepared) issues.push(...operationModelReadinessIssues(prepared.stored.plan, services.providerRuntime)); if (!supportsOperationJobs(services)) issues.push("Operation checkpoint persistence is not qualified"); }
           catch { issues.push("Operation requires a supported reviewed sequential artifact and current connection"); }
         } else issues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role, supportsCollectionReads(services));
         const connectionIds = [...new Set(blueprint.steps.filter(step => effectiveStepKind(step) !== "analysis").map(step => selectedMcpConnectionId(services, step.connection_id)))];
@@ -108,7 +112,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       });
       const { authoring, editHistory } = workspace;
       return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation, authoring,
-        editHistory,
+        editHistory, effectProfile,
         can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
         operation_job_admission: operationProfile && supportsOperationJobs(services) ? "operation-job/v1" : "unavailable",

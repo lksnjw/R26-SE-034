@@ -140,7 +140,8 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     collectSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.collect, node.id, true) }));
   const executionProfile = compiled?.ir.schemaVersion === "workflow-read-ir/v4" ? "collection-simulation-only" : compiled?.ir.schemaVersion === "workflow-read-ir/v3" ? "structured-read-v1" : editableFlow ? "conditional-read-v1" : "sequential-read-v1";
   const connectionChoices = connections.filter(item => /^[a-z][a-z0-9_-]{0,63}$/.test(item.id) && item.dispatchSupported).map(item => ({ id: item.id, primary: item.primary }));
-  const value = { profile: "read-authoring/v1", registryHash, executionProfile, connectionChoices, ...(inputSchema ? { inputSchema } : {}), nodes, ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides } : {}) };
+  const modelNodesSupported = blueprint.metadata?.controlFlow === undefined && prefix && blueprint.steps.length > 0;
+  const value = { profile: "read-authoring/v1", registryHash, executionProfile, modelNodesSupported, connectionChoices, ...(inputSchema ? { inputSchema } : {}), nodes, ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides } : {}) };
   if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, nodes: [], conditions: [], returns: [], collections: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
   return value;
 }

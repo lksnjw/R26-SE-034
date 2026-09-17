@@ -139,6 +139,20 @@ test("operation workspace adds an analysis node as a reviewable positioned draft
   await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({ type: "addAnalysis", beforeNodeId: "deliver", node: expect.objectContaining({ id: "classify", kind: "analysis", input: "{{summary.structuredContent.summary}}", data_class: "internal" }) })));
 });
 
+test("flat read workspace can add model nodes without adding a fake write or publishing automatically", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, executionProfile: "sequential-read-v1", effectProfile: "read-only", authoring: { profile: "read-authoring/v1", modelNodesSupported: true, nodes: ["first", "last"].map(nodeId => ({ nodeId, effectClass: "read", actions: ["demo.echo"] })) } });
+  await open(); expect(screen.getByRole("button", { name: "Add bounded agent" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Add analysis" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New analysis ID" }), { target: { value: "summarise" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "New analysis instruction" }), { target: { value: "Summarise the actual read answer" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "New analysis input" }), { target: { value: "{{last.structuredContent.value}}" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview analysis node" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({ type: "addAnalysis", node: expect.objectContaining({ id: "summarise", kind: "analysis" }) })));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
 test("selected bounded agent has typed allow-list, completion and budget editing with readable saved output", async () => {
   const saved = agentRecord(), run = { id: "agent-run", workflowId: "report", startedAt: "2026-10-07T00:00:00Z", status: "AWAITING_APPROVAL",
     workflowSnapshot: { yaml: saved.yaml, version: 1, executionProfile: "sequential-operation-v1" }, readProgress: { profile: "read-progress-v1", lastSequence: 5 },

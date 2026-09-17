@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import jwt from "jsonwebtoken";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import { afterEach, expect, test, vi } from "vitest";
 import { Repository, restoreState, type PersistenceBackend, type RepositoryState } from "../src/repository/store.js";
 import { applyExecutionCheckpoint, type ExecutionCheckpoint } from "../src/repository/execution-transaction.js";
@@ -206,6 +206,70 @@ async function prepareAgentWorkflow(s: Awaited<ReturnType<typeof setup>>, option
     workflow.steps = 3; workflow.updatedAt = new Date().toISOString();
   });
 }
+
+async function prepareModelReadWorkflow(s: Awaited<ReturnType<typeof setup>>, kind: "analysis" | "agent") {
+  if (kind === "analysis") await prepareAnalysisWorkflow(s); else await prepareAgentWorkflow(s);
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, blueprint = parse(workflow.yaml);
+    blueprint.name = `Read and ${kind} only`; blueprint.steps = blueprint.steps.filter((step: { id: string }) => step.id !== "send");
+    workflow.yaml = stringify(blueprint); workflow.steps = blueprint.steps.length;
+  });
+}
+
+test.each(["analysis", "agent"] as const)("read-only %s workflows publish and complete without adding a fake effect or requesting approval", async kind => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  await s.repository.mutate(state => { state.settings.rbac = {}; });
+  if (kind === "agent") s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"summary":"FIXTURE REPORT","complete":true}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+  const readiness = await s.request("GET", "/api/workflows/flow/readiness");
+  expect(readiness.json().data).toMatchObject({ can_attempt_run: true, effectProfile: "read-only", operation_job_admission: "operation-job/v1", authoring: { modelNodesSupported: true } });
+  const admitted = await s.run(`read-model-${kind}-only-0001`); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id; await s.wait(id, "DONE");
+  const run = (await s.repository.snapshot()).executions[id]!;
+  expect(run.finalOutput).toMatchObject({ structuredContent: { summary: "FIXTURE REPORT" } });
+  expect(run.runtimeApprovalSecret).toBeUndefined(); expect(run.agentSummary).toMatch(/No ERP write or notification/);
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read)]);
+  expect(s.modelFetch).toHaveBeenCalledOnce();
+  expect(run.tokens.total).toBe(18);
+  expect((await s.run(`read-model-${kind}-only-0001`)).json().data.id).toBe(id);
+  expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).toHaveBeenCalledOnce();
+  const publicRun = await s.request("GET", `/api/executions/${id}`); expect(publicRun.body).not.toMatch(/private-model-key|operationSecret|analysisProvider|agentProvider/);
+});
+
+test.each(["analysis", "agent"] as const)("read-only %s workflow denies unreviewed model policy before ERP/model entry", async kind => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  s.providerRuntime!.activate({ ...s.providerRuntime!.configuration!, egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://model.example.test", runtimeAnalysisDataClasses: [], runtimeAgentDataClasses: [], interactiveDataClasses: [], reviewedAt: null, reviewedBy: null } });
+  expect((await s.publish()).statusCode).toBe(200);
+  const ready = await s.request("GET", "/api/workflows/flow/readiness"); expect(ready.json().data.can_attempt_run).toBe(false);
+  expect(ready.json().data.issues.join(" ")).toMatch(/separately reviewed/);
+  expect((await s.run(`model-read-denied-${kind}-0001`)).statusCode).toBe(422);
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test.each(["analysis", "agent"] as const)("read-only %s can run with a disabled effect policy while effect workflows remain denied", async kind => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  if (kind === "agent") s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"summary":"FIXTURE REPORT","complete":true}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+  await s.repository.mutate(state => { ((state.settings.rbac as Record<string, unknown>).runtimeApprovalPolicy as { enabled: boolean }).enabled = false; });
+  expect((await s.publish()).statusCode).toBe(200);
+  const admitted = await s.run(`read-disabled-policy-${kind}-0001`); expect(admitted.statusCode, admitted.body).toBe(202);
+  await s.wait(admitted.json().data.id, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).toHaveBeenCalledOnce();
+  const effect = await setup(); await effect.repository.mutate(state => { state.settings.rbac = {}; });
+  expect((await effect.publish()).statusCode).toBe(200);
+  const denied = await effect.run(`effect-missing-policy-${kind}-0001`); expect(denied.statusCode).toBe(503);
+  expect(denied.json().meta.code).toBe("RUNTIME_APPROVAL_DENIED"); expect(effect.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["analysis", "agent"] as const)("uncertain read-only %s model dispatch stays recoverable and is never replayed", async kind => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  s.modelFetch.mockRejectedValueOnce(new Error("fixture model entry lost acknowledgement"));
+  expect((await s.publish()).statusCode).toBe(200);
+  const key = `model-read-unknown-${kind}-0001`, admitted = await s.run(key), id = admitted.json().data.id;
+  expect(admitted.statusCode, admitted.body).toBe(202); await s.wait(id, "RECOVERY_REQUIRED");
+  const run = (await s.repository.snapshot()).executions[id]!;
+  expect(run.finalOutput).toBeUndefined(); expect(run.runtimeApprovalSecret).toBeUndefined();
+  expect((await s.run(key)).json().data.id).toBe(id); expect(s.modelFetch).toHaveBeenCalledOnce(); expect(s.sdk.callTool).toHaveBeenCalledOnce();
+});
 
 test("normal publish/readiness/run/approve worker executes exact sequential operation once without a model", async () => {
   const s = await setup();

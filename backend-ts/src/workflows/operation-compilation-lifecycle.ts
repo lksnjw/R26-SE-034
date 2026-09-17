@@ -8,6 +8,7 @@ import { discoverTools } from "../agent/tool-discovery.js";
 import { compileOperationWorkflow, operationCompilationReceipt, type CompiledOperationPlan, type OperationCompilationReceipt, type ReadAdmissionPin } from "./compiled-read.js";
 import { effectiveStepKind, type WorkflowStepBlueprint } from "../models/schemas.js";
 import { boundMcpConnection, connectionToolKey, selectedMcpConnectionId, type BoundMcpConnection } from "../tools/mcp-dispatch-context.js";
+import { usesCheckpointedOperationWorkflow } from "./execution-shape.js";
 
 export type StoredOperationCompilation = { plan: CompiledOperationPlan; receipt: OperationCompilationReceipt; verifiedRole: string; compiledAt: string };
 type PreparedConnection = BoundMcpConnection & { generation: number };
@@ -73,7 +74,7 @@ function compileCurrent(state: Readonly<RepositoryState>, services: HandlerServi
 
 export async function prepareOperationPublication(services: HandlerServices, yaml: string, user: CurrentUser): Promise<PreparedOperationCompilation | null> {
   const source = parseWorkflowYAMLStrict(yaml), tools = services.registries.snapshot().tools;
-  if (!source.steps.some(step => tools.some(tool => !tool.is_read_only && [tool.name, tool.mcp_tool_name].includes(step.action ?? "")))) return null;
+  if (!usesCheckpointedOperationWorkflow(source, tools)) return null;
   let connections: PreparedConnection[];
   try { connections = preparedConnections(services, source.steps); }
   catch { throw new HandlerFailure(503, "Every operation node requires its selected connected reviewed ERPBridge connection"); }

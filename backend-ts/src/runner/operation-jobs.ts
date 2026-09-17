@@ -236,7 +236,9 @@ export class OperationJobQueue {
         } catch (error) { throw new HandlerFailure(422, error instanceof Error ? error.message : "Durable agent provider admission failed", { code: "AGENT_PROVIDER_DENIED" }); }
         agentProvider = { configuration: structuredClone(configuration), configurationRevision: binding.configurationRevision };
       }
-      runtimeApprovalPolicyHash(state);
+      // Model egress has separate authority. Require the write-approval policy
+      // only when this immutable publication actually contains an effect.
+      if (compiled.plan.ir.root.nodes.some(node => node.kind === "action" && node.effectClass !== "read")) runtimeApprovalPolicyHash(state);
       const id = `operation-${randomBytes(16).toString("hex")}`, now = new Date().toISOString();
       const run: Execution = { id, workflowId: workflow.id, workflowName: workflow.name, status: "PENDING", startedAt: now, completedAt: null, durationMs: 0,
         startedBy: { id: user.id, name: user.name }, tokens: { input: 0, output: 0, total: 0 }, costUsd: 0, traceId,
@@ -245,7 +247,9 @@ export class OperationJobQueue {
         operationSecret: { profile: "operation-job/v1", actorId: user.id, roleId: state.users[user.id]!.roleId, admittedRole: user.role, state: "QUEUED", idempotencyScope: scope, requestFingerprint: fingerprint, createdAt: now, intents: {},
           ...(analysisProvider ? { analysisProvider } : {}), ...(agentProvider ? { agentProvider } : {}) },
         ...(source ? { scheduleSource: structuredClone(source) } : {}),
-        agentSummary: "Operation queued. Each write requires an independent exact approval; nothing is confirmed by queue admission." };
+        agentSummary: compiled.plan.ir.root.nodes.some(node => node.kind === "action" && node.effectClass !== "read")
+          ? "Operation queued. Each write requires an independent exact approval; nothing is confirmed by queue admission."
+          : "Read-and-model workflow queued. Model and tool results require saved acknowledgements; no ERP write or notification is in this publication." };
       assertCurrentRunController(state, run, user.id, user.role);
       state.executions[id] = run; state.timelines[id] = []; state.executionEvents[id] = []; state.executionLogs[id] = [];
       appendExecutionEvent(state, run, "run.queued", { profile: "operation-job/v1", persistence: run.readProgress!.persistence }); audit(state, run, "execution.queued");
@@ -798,7 +802,9 @@ export class OperationJobQueue {
       await repository.mutateExecution(id, state => { assertContext(); const run = state.executions[id]!;
         if (run.readProgress!.nextStepIndex !== plan.ir.root.nodes.length || Object.values(run.readProgress!.attempts).some(attempt => attempt.status !== "DONE")) throw new Error("Operation is incomplete");
         run.finalOutput = run.stepOutputs![plan.ir.root.nodes.at(-1)!.id];
-        finish(state, run, "DONE", "All steps have acknowledged tool results. Operation evidence follows each reviewed result contract; this is not independent recipient-delivery verification.");
+        finish(state, run, "DONE", plan.ir.root.nodes.some(node => node.kind === "action" && node.effectClass !== "read")
+          ? "All steps have acknowledged results. Operation evidence follows each reviewed result contract; this is not independent recipient-delivery verification."
+          : "All read and model nodes have acknowledged results. No ERP write or notification was part of this run.");
       });
     } catch {
       try { await repository.mutateExecution(id, state => {

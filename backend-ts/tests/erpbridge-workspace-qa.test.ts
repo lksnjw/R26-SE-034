@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { stringify } from "yaml";
 import { compileReadWorkflow } from "../src/workflows/compiled-read.js";
 // @ts-expect-error Local JavaScript operator entrypoint has no declarations
-import { qaWorkflowBlueprint, qaPlanningResponse, qaProviderConfiguration } from "../scripts/erpbridge-workspace-qa.mjs";
+import { qaWorkflowBlueprint, qaModelReadBlueprint, qaPlanningResponse, qaProviderConfiguration } from "../scripts/erpbridge-workspace-qa.mjs";
 // @ts-expect-error Local JavaScript operator entrypoint has no declarations
 import { qaReadTool } from "../scripts/seed-erpbridge-qa-read.mjs";
 // @ts-expect-error Local JavaScript operator entrypoint has no declarations
@@ -35,4 +35,19 @@ describe("isolated Docker QA workspace", () => {
     expect(configuration.egressPolicy.approvedOrigin).toBe("https://fixture.invalid");
     expect(configuration.egressPolicy.runtimeAgentDataClasses).toEqual([]);
   });
+  it.each(["analysis", "agent"])("requires explicit local fixture opt-in for bounded %s, counts actual input and adds no effect", kind => {
+    const blueprint = qaModelReadBlueprint(kind);
+    expect(blueprint.steps.map((step: { kind?: string; action?: string }) => step.kind ?? step.action)).toEqual(["qa_list_departments", kind]);
+    expect(blueprint.steps[1]).toMatchObject({ max_input_items: 100, max_input_chars: 20000, max_output_tokens: 256, data_class: "internal" });
+    const system = kind === "analysis" ? "TASK: BOUNDED DATA ANALYSIS" : "TASK: BOUNDED RUNTIME ERP AGENT";
+    const envelope = { [kind === "analysis" ? "INSTRUCTION" : "TASK"]: blueprint.steps[1].instruction, INPUT: { data: [{ name: "One" }, { name: "Two" }] } };
+    const request = { messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(envelope) }] };
+    expect(() => qaPlanningResponse(request)).toThrow();
+    const answer = JSON.parse(qaPlanningResponse(request, true).choices[0].message.content);
+    expect(answer).toEqual({ departmentCount: 2, ...(kind === "agent" ? { complete: true } : {}) });
+    expect(() => qaPlanningResponse({ messages: [request.messages[0], { role: "user", content: JSON.stringify({ ...envelope, INPUT: { data: Array(101).fill({}) } }) }] }, true)).toThrow(/Unsupported synthetic/);
+    expect(qaProviderConfiguration("2026-10-08T00:00:00Z").egressPolicy.runtimeAnalysisDataClasses).toEqual([]);
+    expect(qaProviderConfiguration("2026-10-08T00:00:00Z", true).egressPolicy).toMatchObject({ runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: ["internal"] });
+  });
+  it("refuses unsupported model node kinds", () => { expect(() => qaModelReadBlueprint("email")).toThrow(); });
 });

@@ -246,7 +246,8 @@ export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefin
     }
     return { ...node, effectClass: tool.is_read_only ? "read" as const : tool.operation_contract?.effect_class ?? "write" as const, ...(readback ? { readback } : {}) };
   }).filter((node): node is OperationNode => node !== null);
-  if (!nodes.some(node => node.kind === "action" && node.effectClass !== "read")) built.issues.push("Read-only workflows must use the read profile");
+  if (!nodes.some(node => node.kind === "action" && node.effectClass !== "read") && !nodes.some(node => node.kind === "analysis" || node.kind === "agent"))
+    built.issues.push("Deterministic read-only workflows must use the read profile");
   if (built.issues.length) throw new Error(`Operation compilation failed: ${built.issues.join("; ")}`);
   const hasAgent = nodes.some(node => node.kind === "agent"), hasAnalysis = nodes.some(node => node.kind === "analysis");
   const ir: OperationIR = { schemaVersion: hasAgent ? "workflow-operation-ir/v3" : hasAnalysis ? "workflow-operation-ir/v2" : "workflow-operation-ir/v1",
