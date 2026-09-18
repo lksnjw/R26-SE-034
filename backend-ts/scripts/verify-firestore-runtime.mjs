@@ -518,6 +518,39 @@ try {
     yaml: durableAnalysisYAML, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions.durableAnalysis = []; });
   const durableAnalysisPublication = (await request("POST", "/api/workflows/durableAnalysis/publish", {}, 200)).data;
   assert.equal(durableAnalysisPublication.compiledOperation.schemaVersion, "workflow-operation-ir/v2");
+  for (const selected of [true, false]) {
+    const blueprint = parseWorkflowYAMLStrict(durableAnalysisYAML), workflowId = selected ? "decisionYes" : "decisionNo";
+    blueprint.metadata = { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [
+      { kind: "action", nodeId: "analysis_lookup" }, { kind: "if", id: "include_report", predicate: { kind: "literal", value: selected },
+        then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "analysis_summary" }, { kind: "action", nodeId: "analysis_send" }] },
+        else: { kind: "sequence", nodes: [] } },
+    ] } } };
+    await repository.mutate(state => { state.workflows[workflowId] = { ...state.workflows.durableAnalysis, id: workflowId,
+      yaml: stringify(blueprint), publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions[workflowId] = []; });
+    assert.equal((await request("POST", `/api/workflows/${workflowId}/publish`, {}, 200)).data.compiledOperation.schemaVersion, "workflow-operation-ir/v4");
+    const modelCount = models.length, effectCount = operations.length, command = { mode: "async-operation", input: {}, idempotencyKey: `firestore-${workflowId}-0001` };
+    const id = (await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id;
+    await waitFor(async () => (await repository.snapshot()).executions[id].status === (selected ? "AWAITING_APPROVAL" : "DONE"), "durable decision selected path");
+    const saved = (await repository.snapshot()).executions[id];
+    assert.equal(saved.readProgress.decisions.include_report.selected, selected ? "then" : "else");
+    assert.equal(models.length, modelCount + (selected ? 1 : 0)); assert.equal(operations.length, effectCount);
+    if (!selected) { assert.equal(saved.readProgress.attempts.analysis_summary.status, "SKIPPED"); assert.equal(saved.readProgress.attempts.analysis_send.status, "SKIPPED"); assert.equal(saved.stepOutputs.analysis_summary, undefined); }
+    await stop(); await start(await openApplicationRepository(config));
+    assert.deepEqual((await repository.snapshot()).executions[id], saved);
+    if (selected) {
+      const review = (await request("GET", `/api/executions/${id}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+      assert.deepEqual(review.arguments, { id: "ANALYSIS-FIXTURE-ONE" });
+      await request("POST", `/api/executions/${id}/approve`, { approvalId: review.id, baseVersion: review.version, reviewHash: review.reviewHash, decisionKey: "firestore-decision-exact-0001" }, 200, "reviewer");
+      await waitFor(async () => (await repository.snapshot()).executions[id].status === "DONE", "durable decision approved effect");
+    }
+    assert.equal(models.length, modelCount + (selected ? 1 : 0)); assert.equal(operations.length, effectCount + (selected ? 1 : 0));
+    const done = (await repository.snapshot()).executions[id];
+    await stop(); await start(await openApplicationRepository(config));
+    assert.deepEqual((await repository.snapshot()).executions[id], done);
+    assert.equal((await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id, id);
+    assert.equal(models.length, modelCount + (selected ? 1 : 0)); assert.equal(operations.length, effectCount + (selected ? 1 : 0));
+  }
+  log("actual Firestore v4 decisions preserved selected/skip receipts across restarts; Yes required independent approval; No invoked neither model nor effect; replay did not execute again");
   const analysisModelsBefore = models.length, analysisOperationsBefore = operations.length;
   const durableAnalysisRun = (await request("POST", "/api/workflows/durableAnalysis/run", { mode: "async-operation",
     idempotencyKey: "firestore-durable-analysis-0001", input: {} }, 202)).data.id;

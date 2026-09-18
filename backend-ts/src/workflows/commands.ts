@@ -148,7 +148,7 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
     saveDraftFlow(blueprint, root); return stringifyWorkflowYAML(blueprint);
   }
   if (["addCondition", "wrapNode", "updateCondition", "removeCondition"].includes(change.type) ||
-      blueprint.metadata?.controlFlow !== undefined && ["addNode", "moveNode", "removeNode"].includes(change.type) ||
+      blueprint.metadata?.controlFlow !== undefined && ["addNode", "addAnalysis", "addAgent", "moveNode", "removeNode"].includes(change.type) ||
       (change.type === "addNode" || change.type === "moveNode") && change.destination) {
     const root = draftFlow(blueprint);
     if (change.type === "addCondition" || change.type === "wrapNode") {
@@ -167,9 +167,9 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
         if (found.node.then.nodes.length || found.node.else.nodes.length) throw new HandlerFailure(422, "Move or remove the contents of both paths before removing this condition");
         found.block.nodes.splice(found.index, 1);
       }
-    } else if (change.type === "addNode") {
+    } else if (change.type === "addNode" || change.type === "addAnalysis" || change.type === "addAgent") {
       if (locateFlowNode(root, change.node.id)) throw new HandlerFailure(422, "Structural ID already exists");
-      const target = insertionScope(root, change.beforeNodeId, change.destination);
+      const target = insertionScope(root, change.beforeNodeId, change.type === "addNode" ? change.destination : undefined);
       target.block.nodes.splice(target.index, 0, { kind: "action", nodeId: change.node.id }); blueprint.steps.push(change.node);
     } else if (change.type === "removeNode" || change.type === "moveNode") {
       if (change.type === "moveNode") moveDraftNode(root, change.nodeId, change.beforeNodeId, change.destination);
@@ -184,7 +184,6 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
     saveDraftFlow(blueprint, root); return stringifyWorkflowYAML(blueprint);
   }
   if (!["updateNode", "updateAnalysis", "updateAgent", "addNode", "addAnalysis", "addAgent", "removeNode", "moveNode"].includes(change.type)) throw new HandlerFailure(422, "Unsupported structural command");
-  if ((change.type === "addAnalysis" || change.type === "addAgent") && blueprint.metadata?.controlFlow !== undefined) throw new HandlerFailure(422, "Model and agent nodes are supported only in a flat reviewed operation");
   if (change.type === "addCondition" || change.type === "wrapNode" || change.type === "updateCondition" || change.type === "removeCondition") throw new HandlerFailure(422, "Unsupported structural command");
   if (change.type === "addNode" || change.type === "addAnalysis" || change.type === "addAgent") {
     if (blueprint.steps.some(step => step.id === change.node.id)) throw new HandlerFailure(422, "Node ID already exists");

@@ -1,0 +1,88 @@
+import type { ReadIR, ReadBinding, CompiledOperationPlan } from "./compiled-read.js";
+import { actionOrder, validateReadControlFlow, type ReadSequence } from "./read-control-flow.js";
+import { schemaAt } from "./read-binding-validation.js";
+import type { ReadRunProgress } from "../repository/store.js";
+
+/** The authoring tree is shared; operation decisions have a separate versioned
+ * compilation and durable worker. No read-interpreter effect authority. */
+export function inspectOperationDecisions(root: ReadSequence, nodes: Array<{ id: string; inputs: ReadBinding }>, inputSchema: Record<string, unknown> | undefined,
+  outputs: ReadonlyMap<string, Record<string, unknown>>) {
+  const issues: string[] = [];
+  const projection: ReadIR = { schemaVersion: "workflow-read-ir/v2", compilerVersion: "read-compiler/v2", trigger: { kind: "manual" },
+    ...(inputSchema ? { inputSchema } : {}), root: { kind: "sequence", nodes: nodes.map(node => ({ ...node, kind: "action", capability: {
+      toolId: "draft-scope-only", action: "draft-scope-only", remoteName: "draft-scope-only", contractHash: "draft-scope-only",
+    } })) } };
+  const visit = (block: ReadSequence) => { for (const node of block.nodes) {
+    if (node.kind === "action") continue;
+    if (node.kind !== "if" || node.merge) { issues.push("Operation decisions do not yet support collections, typed merges or returns"); continue; }
+    if (node.predicate.kind === "ref" && schemaAt(node.predicate.source === "workflowInput" ? inputSchema : outputs.get(node.predicate.nodeId!), node.predicate.path)?.type !== "boolean")
+      issues.push(`Operation condition ${node.id} requires an exact declared boolean predicate`);
+    visit(node.then); visit(node.else);
+  } };
+  visit(root);
+  const validation = validateReadControlFlow(root, projection, outputs);
+  return { ...validation, issues: [...new Set([...issues, ...validation.issues])] };
+}
+
+export type OperationControlTransition = { kind: "action"; nodeId: string; index: number } | { kind: "decision"; node: Extract<ReadSequence["nodes"][number], { kind: "if" }>; index: number } |
+  { kind: "skip"; nodeId: string; index: number; conditionId: string; selected: "then" | "else" } | { kind: "complete" };
+
+/** Denial-only traversal of exact committed receipts. It never evaluates a
+ * predicate, dispatches, grants approval or infers success from a pointer. */
+export function operationControlTransition(root: ReadSequence, progress: Pick<ReadRunProgress, "attempts" | "decisions" | "nextStepIndex">): OperationControlTransition {
+  const order = actionOrder(root), positions = new Map(order.map((id, index) => [id, index]));
+  const visited = new Set<string>(), accounted = new Set<string>();
+  let transition: OperationControlTransition | undefined;
+  const skip = (block: ReadSequence, conditionId: string, selected: "then" | "else") => {
+    for (const nodeId of actionOrder(block)) {
+      if (transition) return;
+      const attempt = progress.attempts[nodeId], index = positions.get(nodeId)!;
+      if (!attempt) { transition = { kind: "skip", nodeId, index, conditionId, selected }; return; }
+      if (attempt.status !== "SKIPPED" || attempt.stepIndex !== index) throw new Error("Unselected operation node has an incompatible receipt");
+      accounted.add(nodeId);
+    }
+  };
+  const visit = (block: ReadSequence) => { for (const node of block.nodes) {
+    if (transition) return;
+    if (node.kind === "action") {
+      const index = positions.get(node.nodeId)!, attempt = progress.attempts[node.nodeId];
+      if (attempt && attempt.stepIndex !== index) throw new Error("Operation receipt is detached from source order");
+      if (attempt?.status === "DONE") { accounted.add(node.nodeId); continue; }
+      if (attempt && !["PREPARING", "DISPATCH_INTENT"].includes(attempt.status)) throw new Error("Selected operation node has an incompatible receipt");
+      transition = { kind: "action", nodeId: node.nodeId, index }; return;
+    }
+    if (node.kind !== "if" || node.merge) throw new Error("Unsupported operation control primitive");
+    const index = accounted.size, receipt = progress.decisions?.[node.id];
+    if (!receipt) { transition = { kind: "decision", node, index }; return; }
+    if (receipt.status !== "DONE" || !["then", "else"].includes(receipt.selected ?? "") || receipt.stepIndex !== index) throw new Error("Operation decision lacks an exact confirmed receipt");
+    visited.add(node.id);
+    if (receipt.selected === "else") skip(node.then, node.id, "else");
+    if (!transition) visit(node[receipt.selected!]);
+    if (!transition && receipt.selected === "then") skip(node.else, node.id, "then");
+  } };
+  visit(root);
+  const next = transition ?? { kind: "complete" as const };
+  if (Object.keys(progress.attempts).some(id => !accounted.has(id) && !(next.kind === "action" && id === next.nodeId)) ||
+      Object.keys(progress.decisions ?? {}).some(id => !visited.has(id)) || Object.keys(progress.attempts).some(id => !positions.has(id)) ||
+      progress.nextStepIndex !== (next.kind === "complete" ? order.length : next.index)) throw new Error("Operation pointer or receipts do not match the confirmed decision path");
+  return next;
+}
+
+export function assertOperationSelectedNode(plan: CompiledOperationPlan, progress: ReadRunProgress, nodeId: string): void {
+  if (!plan.ir.flow) return;
+  const next = operationControlTransition(plan.ir.flow, progress);
+  if (next.kind !== "action" || next.nodeId !== nodeId) throw new Error("Operation node is not the next confirmed selected action");
+}
+
+/** Control dependencies retain their sensitivity even when the model input is
+ * otherwise public. Branch selection is not a declassification boundary. */
+export function operationControlDependencies(root: ReadSequence | undefined): Map<string, ReadBinding[]> {
+  const dependencies = new Map<string, ReadBinding[]>();
+  const visit = (block: ReadSequence, parents: ReadBinding[]) => { for (const node of block.nodes) {
+    if (node.kind === "action") dependencies.set(node.nodeId, parents);
+    else if (node.kind === "if" && !node.merge) { visit(node.then, [...parents, node.predicate]); visit(node.else, [...parents, node.predicate]); }
+    else throw new Error("Unsupported operation control dependency");
+  } };
+  if (root) visit(root, []);
+  return dependencies;
+}

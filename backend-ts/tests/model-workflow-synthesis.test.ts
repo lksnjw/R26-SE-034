@@ -109,10 +109,10 @@ test("new instructions preserve historical provenance and recurring request cons
   expect(MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT).not.toContain("flat manual list of exact tool steps");
 });
 
-test.each(["analysis", "agent"] as const)("%s draft diagnostics reject model nodes inside read control flow and missing output contracts", kind => {
+test.each(["analysis", "agent"] as const)("%s draft diagnostics preserve owned decision structure and reject missing output contracts", kind => {
   const source = blueprint(kind);
   const structural = { ...source, metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "action", nodeId: "records" }, { kind: "action", nodeId: "answer" }] } } } };
-  expect(inspectModelWorkflowDraft(structural, [read], "Platform Admin").join(" ")).toMatch(/Operation control flow/);
+  expect(inspectModelWorkflowDraft(structural, [read], "Platform Admin")).toEqual([]);
   expect(inspectModelWorkflowDraft(source, [{ ...read, bridge_contract: undefined }], "Platform Admin").join(" ")).toMatch(/declared prior output/);
   expect(inspectModelWorkflowDraft(source, [read], "Client").join(" ")).toMatch(/role-granted/);
 });

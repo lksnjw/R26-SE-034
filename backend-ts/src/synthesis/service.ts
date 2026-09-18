@@ -5,7 +5,7 @@ import type { RegistryService } from "../registry/service.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import type { CandidateValidationResult, RegistryValidator } from "../validator/registry-validator.js";
 import type { GovernanceUser, ValidationGate } from "../governance/gate.js";
-import { buildReadIR, inspectModelWorkflowDraft } from "../workflows/compiled-read.js";
+import { inspectWorkflowDraft } from "../workflows/compiled-read.js";
 import { withWorkspaceCompilationIssues } from "../workflows/draft-validation.js";
 import type { ReviewedModelSourceContext } from "./reviewed-model-sources.js";
 
@@ -108,7 +108,8 @@ export class SynthesisService {
     }
     const blueprint = parseWorkflowYAMLStrict(yaml);
     const offeredTools = input.liveTools ?? this.registries.snapshot().tools;
-    const executionIssues = [...(blueprint.metadata?.controlFlow === undefined ? [] : buildReadIR(blueprint, offeredTools, input.userRole).issues), ...inspectModelWorkflowDraft(blueprint, offeredTools, input.userRole)];
+    const executionIssues = blueprint.metadata?.controlFlow !== undefined || blueprint.steps.some(step => ["analysis", "agent"].includes(step.kind ?? "")) ?
+      inspectWorkflowDraft(blueprint, offeredTools, input.userRole).issues : [];
     if (executionIssues.length) withWorkspaceCompilationIssues(gate.result, executionIssues);
     const canExecute = gate.result.passed && gate.token !== null && executionIssues.length === 0;
     const temperature = providers.configuration?.temperature ?? 0;

@@ -89,6 +89,30 @@ function agentRecord() {
   ] } };
 }
 
+test("operation decision canvas shows skipped model/effect evidence and allows scoped model editing without offering unsupported primitives", async () => {
+  const saved = analysisRecord(), flow = { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }, { kind: "if", id: "gate",
+    predicate: { kind: "literal", value: false }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "summary" }, { kind: "action", nodeId: "deliver" }] },
+    else: { kind: "sequence", nodes: [] } }] };
+  saved.authoring = { ...saved.authoring, executionProfile: "decision-operation-v1", modelNodesSupported: true, controlFlow: flow, conditions: [{ nodeId: "gate", dataSources: [] }] };
+  workflowService.readiness.mockResolvedValue(saved);
+  executionService.list.mockResolvedValue([{ id: "decision-model-run", workflowId: "report", status: "DONE", startedAt: "2026-10-08T00:00:00Z",
+    workflowSnapshot: { yaml: saved.yaml }, readProgress: { decisions: { gate: { status: "DONE", selected: "else" } } },
+    stepOutputs: { first: { structuredContent: { value: "Confirmed source" } } } }]);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "DONE" }, { nodeId: "summary", status: "SKIPPED" }, { nodeId: "deliver", status: "SKIPPED" }]);
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);
+  await screen.findByText("If no · Selected"); expect(screen.getByText(/Governed decision flow/)).toBeTruthy();
+  expect(screen.getAllByText(/another branch was selected.*no answer/)).toHaveLength(2);
+  expect(screen.queryByText(/Structured analysis answer/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Add return" }).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: /Summarise invoices/ }));
+  expect(screen.getByRole("button", { name: "Wrap node in condition" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Wrap node in collection" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
+  expect(screen.queryByRole("checkbox", { name: "Declare branch output" })).toBeNull();
+  expect(screen.getByText(/Typed branch outputs, returns and collections are not supported/)).toBeTruthy();
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
 test("selected analysis node has a typed bounded inspector and applies only an explicit analysis draft command", async () => {
   const saved = analysisRecord(); workflowService.readiness.mockResolvedValue(saved);
   render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);

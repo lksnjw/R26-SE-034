@@ -1,7 +1,7 @@
 import type { CandidateValidationResult, RegistryValidator } from "../validator/registry-validator.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
-import { buildReadIR, inspectModelWorkflowDraft } from "./compiled-read.js";
+import { inspectWorkflowDraft } from "./compiled-read.js";
 
 /** Preview/save validation, not execution admission. Preserve invalid user
  * mappings as explicitly blocked drafts; never call discovery or a model here. */
@@ -10,7 +10,8 @@ export function validateWorkspaceDraft(candidateId: string, yaml: string, role: 
   let issues: string[] = [];
   try {
     const blueprint = parseWorkflowYAMLStrict(yaml);
-    issues = [...(blueprint.metadata?.controlFlow === undefined ? [] : buildReadIR(blueprint, tools, role).issues), ...inspectModelWorkflowDraft(blueprint, tools, role)];
+    if (blueprint.metadata?.controlFlow === undefined && !blueprint.steps.some(step => ["analysis", "agent"].includes(step.kind ?? ""))) return result;
+    issues = inspectWorkflowDraft(blueprint, tools, role).issues;
     if (blueprint.metadata?.controlFlow === undefined && !issues.length) return result;
   } catch {
     issues = ["Structural draft cannot be compiled within supported limits"];

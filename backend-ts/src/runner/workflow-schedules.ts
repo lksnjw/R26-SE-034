@@ -201,6 +201,7 @@ function directlyBindsNodeOutput(binding: ReadBinding, parameter: string, nodeId
 }
 function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<string, unknown>, binding: ReportWindowInputBinding, window: ReportWindow,
   tools: readonly ToolDefinition[]) {
+  if (plan.ir.flow) throw new HandlerFailure(422, "Operation decisions currently support manual runs only; recurring branch coverage is not qualified", { code: "SCHEDULE_OPERATION_DECISIONS_UNSUPPORTED" });
   if (!reportWindowInputBindingSchema.safeParse(binding).success)
     throw new HandlerFailure(422, "Report-window input binding is malformed", { code: "SCHEDULE_REPORT_WINDOW_BINDING_INVALID" });
   const names = [binding.startAtInput, binding.endAtInput];

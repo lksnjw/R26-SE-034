@@ -8,6 +8,8 @@ import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow
 import { withoutSecretFields } from "../redact/secrets.js";
 import { publicExecution } from "../redact/public-model-usage.js";
 import { newReadProgress, appendExecutionEvent, assertCurrentRunController } from "./read-checkpoints.js";
+import { advanceOperationDecisions } from "./operation-control-checkpoints.js";
+import { operationControlTransition } from "../workflows/operation-control-flow.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
 import { isOperationToolNode, resolveReadBinding, type CompiledOperationPlan, type OperationToolNode } from "../workflows/compiled-read.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
@@ -344,7 +346,17 @@ export class OperationJobQueue {
       assertContext();
       const gate = await validateWorkflow(services, "OperationJobWorker", snapshot.yaml, actor, { executionId: id, workflowId: initial.workflowId, traceId: initial.traceId, signal: control.controller.signal });
       if (!gate.result.passed || !gate.token) throw new Error("Operation deterministic verification failed");
-      for (let index = initial.readProgress!.nextStepIndex; index < plan.ir.root.nodes.length; index++) {
+      while (true) {
+        const next = plan.ir.flow ? await repository.mutateExecution(id, state => {
+          assertContext(); const run = state.executions[id]!;
+          const next = advanceOperationDecisions(state, run, plan);
+          if (next.kind === "failed") finish(state, run, "FAILED", "The decision predicate was not a confirmed boolean. No branch was entered and no later effect ran.");
+          return next;
+        }) : await repository.readAuthoritative(state => { const index = state.executions[id]!.readProgress!.nextStepIndex;
+          return index < plan.ir.root.nodes.length ? { kind: "action" as const, index } : { kind: "complete" as const }; });
+        if (next.kind === "failed") return;
+        if (next.kind === "complete") break;
+        const index = next.index;
         assertContext(); const node = plan.ir.root.nodes[index]!;
         if (node.kind === "agent") {
           const agentConnections = new Set(node.allowedCapabilities.map(value => value.admission.connectionId));
@@ -811,9 +823,15 @@ export class OperationJobQueue {
         });
       }
       await repository.mutateExecution(id, state => { assertContext(); const run = state.executions[id]!;
-        if (run.readProgress!.nextStepIndex !== plan.ir.root.nodes.length || Object.values(run.readProgress!.attempts).some(attempt => attempt.status !== "DONE")) throw new Error("Operation is incomplete");
-        run.finalOutput = run.stepOutputs![plan.ir.root.nodes.at(-1)!.id];
-        finish(state, run, "DONE", plan.ir.root.nodes.some(node => node.kind === "action" && node.effectClass !== "read")
+        if (run.readProgress!.nextStepIndex !== plan.ir.root.nodes.length || (plan.ir.flow ? operationControlTransition(plan.ir.flow, run.readProgress!).kind !== "complete" :
+          Object.values(run.readProgress!.attempts).some(attempt => attempt.status !== "DONE"))) throw new Error("Operation is incomplete");
+        const last = plan.ir.root.nodes.findLast(node => run.readProgress!.attempts[node.id]?.status === "DONE");
+        if (last) run.finalOutput = run.stepOutputs![last.id]; else delete run.finalOutput;
+        const selectedEffect = plan.ir.root.nodes.some(node => node.kind === "action" && node.effectClass !== "read" && run.readProgress!.attempts[node.id]?.status === "DONE");
+        finish(state, run, "DONE", plan.ir.flow ? selectedEffect
+          ? "All selected steps have acknowledged results; unselected branches were not executed. Operation acceptance does not prove recipient delivery."
+          : "The selected decision path completed. Unselected branches were not executed; no ERP write or notification was performed."
+          : plan.ir.root.nodes.some(node => node.kind === "action" && node.effectClass !== "read")
           ? "All steps have acknowledged results. Operation evidence follows each reviewed result contract; this is not independent recipient-delivery verification."
           : "All read and model nodes have acknowledged results. No ERP write or notification was part of this run.");
       });

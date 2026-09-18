@@ -230,6 +230,109 @@ async function prepareAgentWorkflow(s: Awaited<ReturnType<typeof setup>>, option
   });
 }
 
+async function prepareDecisionWorkflow(s: Awaited<ReturnType<typeof setup>>, kind: "analysis" | "agent") {
+  if (kind === "analysis") await prepareAnalysisWorkflow(s, "restricted"); else await prepareAgentWorkflow(s, { dataClass: "restricted" });
+  const runtime = s.providerRuntime!;
+  runtime.activate({ ...runtime.configuration!, egressPolicy: { ...runtime.configuration!.egressPolicy!, runtimeAnalysisDataClasses: ["restricted"], runtimeAgentDataClasses: ["restricted"] } });
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, source = parse(workflow.yaml), modelId = source.steps[1].id;
+    source.trigger.config = { inputSchema: { type: "object", properties: { sendReport: { type: "boolean" } }, required: ["sendReport"], additionalProperties: false } };
+    source.steps.push({ id: "no_path", action: s.read.name, parameters: { value: "no branch" } });
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [
+      { kind: "action", nodeId: "lookup" }, { kind: "if", id: "sendGate", predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] },
+        then: { kind: "sequence", nodes: [{ kind: "action", nodeId: modelId }, { kind: "action", nodeId: "send" }] },
+        else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "no_path" }] } },
+    ] } } }; workflow.yaml = stringify(source); workflow.steps = 4;
+  });
+  if (kind === "agent") s.modelFetch.mockReset().mockResolvedValue(Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"summary":"AGENT ANSWER","complete":true}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+}
+
+test.each(["analysis", "agent"].flatMap(kind => [true, false].map(selected => [kind, selected] as const)))("decision %s with sendReport=%s dispatches only the selected path", async (kind, selected) => {
+  const s = await setup(null, true, false, false, false, true); await prepareDecisionWorkflow(s, kind as "analysis" | "agent");
+  const publication = await s.publish(); expect(publication.statusCode, publication.body).toBe(200);
+  expect(publication.json().data.compiledOperation).toMatchObject({ schemaVersion: "workflow-operation-ir/v4", compilerVersion: "operation-compiler/v4" });
+  const admitted = await s.run(`decision-${kind}-${selected}-0001`, { sendReport: selected }); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id as string; await s.wait(id, selected ? "AWAITING_APPROVAL" : "DONE");
+  const before = (await s.repository.snapshot()).executions[id]!, modelId = kind === "agent" ? "research" : "summarize";
+  expect(before.readProgress!.decisions).toMatchObject({ sendGate: { status: "DONE", selected: selected ? "then" : "else", stepIndex: 1 } });
+  if (selected) {
+    expect(s.modelFetch).toHaveBeenCalledTimes(1); expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+    expect(await s.review(id)).toMatchObject({ arguments: { value: kind === "agent" ? "AGENT ANSWER" : "FIXTURE REPORT" }, canDecide: true });
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200);
+    await s.wait(id, "DONE"); expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read), exactBridgeName(s.write)]);
+  } else {
+    expect(s.modelFetch).not.toHaveBeenCalled(); expect(before.pendingApproval).toBeFalsy(); expect(before.runtimeApprovalSecret).toBeUndefined();
+    expect(before.stepOutputs).not.toHaveProperty(modelId); expect(before.stepOutputs).not.toHaveProperty("send");
+    expect(before.finalOutput).toMatchObject({ structuredContent: { value: "NO BRANCH" } });
+    expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.read), exactBridgeName(s.read)]);
+  }
+  const done = (await s.repository.snapshot()).executions[id]!;
+  expect(done.readProgress!.attempts[selected ? "no_path" : modelId]!.status).toBe("SKIPPED");
+  if (!selected) expect(done.readProgress!.attempts.send!.status).toBe("SKIPPED");
+  expect(done.agentSummary).toMatch(/unselected branches were not executed/i);
+  const modelCalls = s.modelFetch.mock.calls.length, sdkCalls = s.sdk.callTool.mock.calls.length;
+  expect((await s.run(`decision-${kind}-${selected}-0001`, { sendReport: selected })).json().data.id).toBe(id);
+  expect(s.modelFetch).toHaveBeenCalledTimes(modelCalls); expect(s.sdk.callTool).toHaveBeenCalledTimes(sdkCalls);
+});
+
+test.each(["decision", "skip receipt"])("post-commit %s acknowledgement loss fences model/effect entry and restart does not replay", async checkpoint => {
+  const records = new Records(), s = await setup(records, true, false, false, false, true); await prepareDecisionWorkflow(s, "analysis");
+  expect((await s.publish()).statusCode).toBe(200);
+  records.loseWhen = state => Object.values(state.executions).some(run => checkpoint === "decision" ?
+    run.readProgress?.decisions?.sendGate?.status === "DONE" : run.readProgress?.attempts.summarize?.status === "SKIPPED");
+  const admitted = await s.run(`decision-ack-${checkpoint.replaceAll(" ", "-")}`, { sendReport: checkpoint === "decision" });
+  expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id;
+  await vi.waitFor(() => expect(records.loseWhen).toBeUndefined());
+  expect(s.modelFetch).not.toHaveBeenCalled(); expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+  await s.app.close(); const repository = await Repository.open(records), queue = operationJobQueue({ ...s.services, repository });
+  try {
+    await queue.start(); const recovered = (await repository.snapshot()).executions[id]!;
+    expect(recovered.status).toBe("RECOVERY_REQUIRED"); expect(recovered.runtimeApprovalSecret).toBeUndefined();
+    expect(recovered.readProgress!.decisions!.sendGate!.selected).toBe(checkpoint === "decision" ? "then" : "else");
+    expect(s.modelFetch).not.toHaveBeenCalled(); expect(s.sdk.callTool).toHaveBeenCalledTimes(1);
+  } finally { await queue.stop(); await repository.close(); }
+});
+
+test("manual decision operation cannot activate a recurring schedule without branch coverage qualification", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareDecisionWorkflow(s, "analysis");
+  expect((await s.publish()).statusCode).toBe(200); const workflow = (await s.repository.snapshot()).workflows.flow!;
+  const denied = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
+    reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester",
+    input: { sendReport: true }, reportWindowBinding: scheduleReportWindowBinding });
+  expect(denied.statusCode, denied.body).toBe(422); expect(denied.json().meta.code).toBe("SCHEDULE_OPERATION_DECISIONS_UNSUPPORTED");
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+  expect(Object.keys((await s.repository.snapshot()).schedules)).toHaveLength(0);
+});
+
+test("changing a saved decision cannot move an existing approval to another branch", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareDecisionWorkflow(s, "analysis");
+  expect((await s.publish()).statusCode).toBe(200); const admitted = await s.run("decision-approval-tamper", { sendReport: true }), id = admitted.json().data.id;
+  await s.wait(id, "AWAITING_APPROVAL"); const command = await s.command(id);
+  await s.repository.mutate(state => { state.executions[id]!.readProgress!.decisions!.sendGate!.selected = "else"; });
+  const response = await s.request("POST", `/api/executions/${id}/approve`, command, "reviewer");
+  expect(response.statusCode, response.body).toBe(409); expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+});
+
+test("a missing optional declared boolean fails the decision without guessing a branch or requesting approval", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAnalysisWorkflow(s);
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, source = parse(workflow.yaml);
+    source.steps[1].output_schema.properties.ready = { type: "boolean" };
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [
+      { kind: "action", nodeId: "lookup" }, { kind: "action", nodeId: "summarize" }, { kind: "if", id: "readyGate",
+        predicate: { kind: "ref", source: "nodeOutput", nodeId: "summarize", path: ["structuredContent", "ready"] },
+        then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "send" }] }, else: { kind: "sequence", nodes: [] } },
+    ] } } }; workflow.yaml = stringify(source);
+  });
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  const admitted = await s.run("decision-missing-bool-0001"), id = admitted.json().data.id; await s.wait(id, "FAILED");
+  const failed = (await s.repository.snapshot()).executions[id]!;
+  expect(failed.readProgress!.decisions).toMatchObject({ readyGate: { status: "FAILED" } });
+  expect(failed.failure).toMatchObject({ failureCategory: "OPERATION_CONDITION_INVALID", failedStepId: "readyGate" });
+  expect(failed.pendingApproval).toBeFalsy(); expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+});
+
 async function prepareModelReadWorkflow(s: Awaited<ReturnType<typeof setup>>, kind: "analysis" | "agent") {
   if (kind === "analysis") await prepareAnalysisWorkflow(s); else await prepareAgentWorkflow(s);
   await s.repository.mutate(state => {

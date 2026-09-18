@@ -1,5 +1,6 @@
 import { modelDataClasses, type ModelDataClass } from "../providers/egress-policy.js";
 import type { CompiledOperationPlan, ReadAdmissionPin, ReadBinding } from "./compiled-read.js";
+import { operationControlDependencies } from "./operation-control-flow.js";
 
 export class ModelDataClassViolation extends Error {
   constructor(nodeId: string, declared: ModelDataClass, required: ModelDataClass) {
@@ -15,6 +16,7 @@ export class ModelDataClassViolation extends Error {
 export function assertModelDataClassification(plan: CompiledOperationPlan, reviewedClass: (pin: ReadAdmissionPin) => ModelDataClass): void {
   if (!plan.ir.root.nodes.some(node => node.kind === "analysis" || node.kind === "agent")) return;
   const outputs = new Map<string, ModelDataClass>();
+  const controlDependencies = operationControlDependencies(plan.ir.flow);
   const rank = (value: ModelDataClass) => {
     const index = modelDataClasses.indexOf(value);
     if (index < 0) throw new Error("Unknown reviewed data classification");
@@ -38,11 +40,11 @@ export function assertModelDataClassification(plan: CompiledOperationPlan, revie
   for (const node of plan.ir.root.nodes) {
     if (node.kind === "action") {
       if (!node.capability.admission) throw new Error("Model classification requires an exact reviewed source pin");
-      outputs.set(node.id, highest(reviewedClass(node.capability.admission), bindingClass(node.inputs),
+      outputs.set(node.id, highest(reviewedClass(node.capability.admission), bindingClass(node.inputs), ...(controlDependencies.get(node.id) ?? []).map(bindingClass),
         ...(node.readback ? [reviewedClass(node.readback.admission)] : [])));
       continue;
     }
-    const required = highest(bindingClass(node.input), ...(node.kind === "agent" ? node.allowedCapabilities.map(capability => reviewedClass(capability.admission)) : []));
+    const required = highest(bindingClass(node.input), ...(controlDependencies.get(node.id) ?? []).map(bindingClass), ...(node.kind === "agent" ? node.allowedCapabilities.map(capability => reviewedClass(capability.admission)) : []));
     if (rank(node.dataClass) < rank(required)) throw new ModelDataClassViolation(node.id, node.dataClass, required);
     // A high declaration is retained through later model nodes AND tool inputs.
     outputs.set(node.id, node.dataClass);

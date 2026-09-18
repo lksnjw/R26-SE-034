@@ -39,6 +39,9 @@ test("long collection histories retain a bounded window without losing the seque
 });
 
 test("approval waits remain monitored and operation status is not mislabeled as a read or delivery", () => {
+  expect(executionEventLabel({ type: "condition.selected" })).toBe("Decision saved · selected path only");
+  expect(executionEventLabel({ type: "condition.failed" })).toBe("Decision stopped · no confirmed boolean, no branch dispatched");
+  expect(executionEventLabel({ type: "node.skipped" })).toBe("Node not selected · no model or tool call");
   expect(isActiveExecution("AWAITING_APPROVAL")).toBe(true); expect(isActiveExecution("RECONCILIATION_REQUIRED")).toBe(false);
   expect(executionEventLabel({ type: "run.queued", payload: { profile: "operation-job/v1" } })).toBe("Operation queued");
   expect(executionEventLabel({ type: "node.dispatch_intent", payload: { sideEffect: true } })).toBe("Operation dispatch recorded — outcome not yet saved");

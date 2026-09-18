@@ -32,6 +32,9 @@ export function reconcileExecutionEvents(events, cursor, page, executionId) {
 }
 
 const eventNames = {
+  "condition.selected": "Decision saved · selected path only",
+  "condition.failed": "Decision stopped · no confirmed boolean, no branch dispatched",
+  "node.skipped": "Node not selected · no model or tool call",
   "operation.readback_queued": "ERP status query queued · original action unchanged",
   "operation.readback_started": "Checking reviewed ERP state",
   "operation.readback_dispatch_intent": "Status-query dispatch recorded · no answer yet",
