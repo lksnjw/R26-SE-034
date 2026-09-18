@@ -29,7 +29,7 @@ import { prepareOperationExecution, type StoredOperationCompilation } from "../s
 import { modelDataClasses, type ModelDataClass } from "../src/providers/egress-policy.js";
 import { reviewedModelSourceContext } from "../src/synthesis/reviewed-model-sources.js";
 import { SynthesisService, assembleCandidatePrompt } from "../src/synthesis/service.js";
-import { RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -396,7 +396,7 @@ test.each(["direct", "chat"])("%s synthesis ignores forged browser source claims
   });
   expect(response.statusCode, response.body).toBe(200); expect(s.modelFetch).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT);
+  expect(body.messages[0].content).toBe(DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT);
   const data = JSON.parse(body.messages[1].content);
   expect(data.MODEL_SOURCE_HINTS_JSON.sources.find((source: { toolId: string }) => source.toolId === s.read.tool_id)).toEqual({
     toolId: s.read.tool_id, action: s.read.name, connectionId: "erpbridge-default", dataClass: "confidential", review: "REVIEWED",
@@ -404,6 +404,53 @@ test.each(["direct", "chat"])("%s synthesis ignores forged browser source claims
   expect(data.USER_REQUEST).toContain("user claims"); expect(JSON.stringify(body)).not.toContain("forged-browser-secret");
   expect(s.sdk.callTool).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
 });
+
+test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"].flatMap(kind => [true, false].map(selected => [route, kind, selected] as const))))(
+  "%s synthesis preserves %s decisions, selected=%s, without publishing or executing the proposal", async (route, kind, selected) => {
+    const s = await setup(null, true, false, false, false, true); await prepareDecisionWorkflow(s, kind as "analysis" | "agent");
+    const provider = s.providerRuntime!;
+    provider.activate({ ...provider.configuration!, egressPolicy: { ...provider.configuration!.egressPolicy!, interactiveDataClasses: ["restricted"] } });
+    Object.assign(s.services, { synthesis: new SynthesisService(provider, s.services.registries, s.services.validator) });
+    const yaml = (await s.repository.snapshot()).workflows.flow!.yaml, source = parse(yaml);
+    s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ message: { content: yaml } }], usage: { prompt_tokens: 5, completion_tokens: 8 } }));
+    const prompt = "Create a workflow to read the report and, if include report is Yes, analyse and send it; otherwise take the no path. Keep both branches.";
+    let workflowId: string;
+    if (route === "direct") {
+      const response = await s.request("POST", "/api/synthesis", { prompt }); expect(response.statusCode, response.body).toBe(200);
+      const candidate = response.json().data; expect(candidate.execution_profile_issues).toEqual([]);
+      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v11"); expect(candidate.yaml).toBe(yaml.trim());
+      expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["flow"]);
+      const created = await s.request("POST", "/api/workflows", { yaml: candidate.yaml }); expect(created.statusCode, created.body).toBe(201); workflowId = created.json().data.id;
+    } else {
+      const session = await s.request("POST", "/api/chat/sessions", {}); expect(session.statusCode, session.body).toBe(201);
+      const sessionId = session.json().data.id, response = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, {
+        content: prompt, ...(route === "async-chat" ? { delivery: "async-chat", idempotencyKey: `synthesis-${kind}-${selected}-0001` } : {}),
+      });
+      expect(response.statusCode, response.body).toBe(route === "async-chat" ? 202 : 200);
+      if (route === "async-chat") {
+        const id = response.json().data.operation.id;
+        await vi.waitFor(async () => expect((await s.repository.snapshot()).chatOperations[id]!.status).not.toMatch(/^(QUEUED|RUNNING)$/), { timeout: 4000 });
+        const operation = (await s.repository.snapshot()).chatOperations[id]!; expect(operation.status).toBe("ANSWERED");
+        workflowId = operation.artifactRefs!.find(item => item.type === "workflow-draft")!.id;
+      } else workflowId = response.json().data.assistantMessage.artifacts.workflowId;
+      const chat = (await s.request("GET", `/api/chat/sessions/${sessionId}`)).json().data;
+      expect(chat.messages.at(-1).text).toMatch(/has not been published or executed/);
+    }
+    const before = await s.repository.snapshot(), draft = before.workflows[workflowId!]!;
+    expect(parse(draft.yaml).metadata.controlFlow).toEqual(source.metadata.controlFlow); expect(draft.publishedVersion).toBe(0);
+    expect(before.executions).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledTimes(1);
+    const requestBody = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(requestBody.messages[0].content).toBe(DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT);
+    const publication = await s.request("POST", `/api/workflows/${workflowId!}/publish`, {}); expect(publication.statusCode, publication.body).toBe(200);
+    expect(publication.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v4");
+    const admitted = await s.request("POST", `/api/workflows/${workflowId!}/run`, { mode: "async-operation", idempotencyKey: `explicit-${route}-${kind}-${selected}`, input: { sendReport: selected } });
+    expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id;
+    await s.wait(id, selected ? "AWAITING_APPROVAL" : "DONE");
+    expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 2 : 1); expect(s.sdk.callTool).toHaveBeenCalledTimes(selected ? 1 : 2);
+    if (selected) {
+      expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200);
+      await s.wait(id, "DONE"); expect(s.sdk.callTool.mock.calls.at(-1)![0]).toBe(exactBridgeName(s.write));
+    } else expect((await s.repository.snapshot()).executions[id]!.readProgress!.attempts.send!.status).toBe("SKIPPED");
+  });
 
 test.each(modelDataClasses.flatMap(dataClass => ["analysis", "agent"].map(kind => [dataClass, kind] as const)))("normal HTTP %s read review supports separately reviewed %s execution", async (dataClass, kind) => {
   const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind as "analysis" | "agent");

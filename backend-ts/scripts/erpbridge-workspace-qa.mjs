@@ -43,12 +43,26 @@ export function qaModelReadBlueprint(kind = "analysis") {
   return { name: `LOCAL Docker read and ${kind}`, description: "Actual Docker synthetic GET and an in-process count fixture, no real model or effect", trigger: { type: "manual" }, steps: [qaWorkflowBlueprint().steps[0], node] };
 }
 
+export function qaModelDecisionBlueprint(kind = "analysis") {
+  const blueprint = qaModelReadBlueprint(kind);
+  blueprint.name = `LOCAL Docker conditional ${kind}`;
+  blueprint.trigger.config = { inputSchema: { type: "object", properties: { includeCount: { type: "boolean" } }, required: ["includeCount"], additionalProperties: false } };
+  blueprint.steps[1].data_class = "restricted"; // Caller-input predicate is a control dependency.
+  blueprint.metadata = { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [
+    { kind: "action", nodeId: "departments" }, { kind: "if", id: "include_count", predicate: { kind: "ref", source: "workflowInput", path: ["includeCount"] },
+      then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "count" }] }, else: { kind: "sequence", nodes: [] } },
+  ] } } };
+  return blueprint;
+}
+
 export function qaPlanningResponse(request, modelReadFixture = false) {
   // This injected fetch never reaches an external provider. The real broker
   // still validates every call against the reviewed Docker tool and actor.
   const system = request.messages?.find(message => message.role === "system")?.content ?? "";
   if (modelReadFixture && system.includes("TASK: WORKFLOW DRAFT SYNTHESIS")) {
     const input = JSON.parse(request.messages?.findLast(message => message.role === "user")?.content ?? "");
+    const decisionKind = ["analysis", "agent"].find(value => input.USER_REQUEST === `Create a local workflow to read synthetic Departments and conditionally count them with ${value} on the Yes path.`);
+    if (decisionKind) return { choices: [{ message: { content: stringify(qaModelDecisionBlueprint(decisionKind)) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
     const kind = ["analysis", "agent"].find(value => input.USER_REQUEST === `Create a local workflow to read synthetic Departments and count them with ${value}.`);
     if (!kind) throw new Error("Unsupported synthetic workflow synthesis request");
     const blueprint = qaModelReadBlueprint(kind);

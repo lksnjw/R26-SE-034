@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { modelWorkflowCandidatePrompt } from "./model-workflow-candidate.js";
 import { reviewedSourcesCandidatePrompt } from "./reviewed-sources-candidate.js";
 import { recurringAnalysisCandidatePrompt } from "./recurring-analysis-candidate.js";
+import { decisionOperationCandidatePrompt } from "./decision-operation-candidate.js";
 
 /** Repository-owned instructions only. Never interpolate request, registry,
  * document, tool-result or model-generated text into this privileged channel. */
@@ -125,6 +126,7 @@ When SERVER_DERIVED_CONTEXT_JSON is present, copy its exact automation_request o
 export const MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT = modelWorkflowCandidatePrompt(RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT);
 export const REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT = reviewedSourcesCandidatePrompt(MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT);
 export const RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT = recurringAnalysisCandidatePrompt(REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT);
+export const DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT = decisionOperationCandidatePrompt(RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT);
 
 export const MODIFIER_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 
@@ -165,6 +167,7 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/candidate/v8": return MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v9": return REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v10": return RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT;
+    case "prompt/candidate/v11": return DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/node-patch/v2": return NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/analysis-node-patch/v1": return ANALYSIS_NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/agent-node-patch/v1": return AGENT_NODE_PATCH_SYSTEM_PROMPT;
