@@ -6,6 +6,7 @@ import { hasRecurringCompositionCapability, inspectRecurringAutomationCandidate,
 import { RegistryService } from "../src/registry/service.js";
 import { analysisRequirement, recurringAnalysisTools, reportAnalysis } from "./fixtures/recurring-analysis-tools.js";
 import { deliveryOutputReferences } from "../src/delivery/recurring-analysis.js";
+import { RECURRING_DECISION_REQUIREMENT } from "../src/delivery/recurring-decision-scopes.js";
 
 const text = "Get invoice and order details and email the report to manager@example.test every day";
 
@@ -180,4 +181,92 @@ test("weekly recurrence maps supported capabilities but retains an exact weekday
   const result = inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin");
   expect(result.status).toBe("CAPABILITIES_MAPPED");
   expect(result.remainingRequirements).toContain("Confirm the exact local weekday for this weekly schedule; no weekday is inferred from the request.");
+});
+
+async function conditionalFixture(withAnalysis = false, branchReports = false, bothBranches = false) {
+  const source = withAnalysis ? await analysisFixture() : await fixture();
+  const original = `${withAnalysis ? "Analyse" : "Get"} invoice and order reports and email manager@example.test daily if the declared sendReport boolean workflow input is true; ${bothBranches ? "otherwise obtain the alternative invoice/order reports and email them to the same recipient" : "otherwise do not deliver"}.`;
+  const request = recurringDeliveryRequest(original)!, workflow = source.workflow;
+  workflow.metadata.automation_request = recurringAutomationCandidateContext(request).automation_request;
+  workflow.metadata.unresolved_requirements.push(RECURRING_DECISION_REQUIREMENT);
+  workflow.trigger.config.inputSchema.properties.sendReport = { type: "boolean" }; workflow.trigger.config.inputSchema.required.push("sendReport");
+  const action = (nodeId: string) => ({ kind: "action", nodeId }), seq = (...nodes: any[]) => ({ kind: "sequence", nodes });
+  for (const step of workflow.steps) if (step.kind === "analysis") step.data_class = "restricted";
+  let root: any;
+  if (branchReports) {
+    const yes = workflow.steps, no = bothBranches ? structuredClone(yes).map((step: any) => {
+      const old = step.id; step.id = `no_${old}`;
+      if (step.input) step.input = step.input.replace(/\{\{([A-Za-z][A-Za-z0-9_-]*)\./g, "{{no_$1.");
+      for (const key of Object.keys(step.parameters ?? {})) if (typeof step.parameters[key] === "string")
+        step.parameters[key] = step.parameters[key].replace(/\{\{([A-Za-z][A-Za-z0-9_-]*)\./g, (match: string, id: string) => id === "input" ? match : `{{no_${id}.`);
+      return step;
+    }) : [];
+    workflow.steps = [...yes, ...no]; root = seq({ kind: "if", id: "send_gate", predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] },
+      then: seq(...yes.map((step: any) => action(step.id))), else: seq(...no.map((step: any) => action(step.id))) });
+  } else {
+    root = seq(...workflow.steps.slice(0, 2).map((step: any) => action(step.id)), { kind: "if", id: "send_gate",
+      predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] }, then: seq(...workflow.steps.slice(2).map((step: any) => action(step.id))), else: seq() });
+  }
+  workflow.metadata.controlFlow = { schemaVersion: "read-control-flow/v1", root };
+  return { ...source, request, workflow };
+}
+
+test.each([false, true].flatMap(analysis => [[analysis, false, false], [analysis, true, false], [analysis, true, true]] as const))(
+  "conditional recurring draft analysis=%s branchReports=%s bothBranches=%s validates exact scopes without granting readiness", async (analysis, local, both) => {
+    const { request, workflow, tools } = await conditionalFixture(analysis, local, both);
+    const result = inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin");
+    expect(result).toMatchObject({ status: "CAPABILITIES_MAPPED", relatedRecords: { status: "MATCHED" }, deliveryBodyBound: true, recipientBound: true,
+      analysis: { status: analysis ? "MAPPED" : "NOT_REQUESTED" }, readyForPublication: false, scheduleActive: false });
+    expect(result.remainingRequirements).toContain(RECURRING_DECISION_REQUIREMENT);
+    expect(result.mappedSteps).toHaveLength((analysis ? 5 : 3) * (both ? 2 : 1));
+    expect(recurringAutomationCandidateContext(request).automation_request).toMatchObject({ decision_request: { originalRequest: request.decisionRequest!.originalRequest }, schedule_active: false });
+  });
+
+test("conditional text without a tree remains partial and retains original intent instead of claiming unconditional equivalence", async () => {
+  const { request, workflow, tools } = await conditionalFixture(); delete workflow.metadata.controlFlow;
+  const result = inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin");
+  expect(result.status).toBe("PARTIAL"); expect(result.remainingRequirements).toContain(RECURRING_DECISION_REQUIREMENT);
+  workflow.metadata.unresolved_requirements = workflow.metadata.unresolved_requirements.filter((item: string) => item !== RECURRING_DECISION_REQUIREMENT);
+  expect(() => inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toThrow("Required unresolved outcome");
+});
+
+test.each(["literal predicate", "missing predicate", "sibling report", "parent after join", "one wrong recipient", "one wrong relation", "two deliveries", "forgotten request", "dropped review"])(
+  "conditional recurring inspector rejects %s without borrowing another branch's mapping", async damage => {
+    const { request, workflow, tools } = await conditionalFixture(true, true, true), gate = workflow.metadata.controlFlow.root.nodes[0];
+    if (damage === "literal predicate") gate.predicate = { kind: "literal", value: true };
+    if (damage === "missing predicate") gate.predicate.path = ["invented"];
+    if (damage === "sibling report") workflow.steps[7].input = "{{invoice_report.structuredContent.summary}}";
+    if (damage === "parent after join") {
+      const send = workflow.steps.pop(); gate.else.nodes.pop(); workflow.metadata.controlFlow.root.nodes.push({ kind: "action", nodeId: send.id });
+    }
+    if (damage === "one wrong recipient") workflow.steps[9].parameters.recipient = "wrong@example.test";
+    if (damage === "one wrong relation") workflow.steps[6].parameters.orderIds = ["invented-order"];
+    if (damage === "two deliveries") {
+      const second = { ...structuredClone(workflow.steps[4]), id: "duplicate_send" }; workflow.steps.splice(5, 0, second); gate.then.nodes.push({ kind: "action", nodeId: second.id });
+    }
+    if (damage === "forgotten request") delete workflow.metadata.automation_request.decision_request;
+    if (damage === "dropped review") workflow.metadata.unresolved_requirements = workflow.metadata.unresolved_requirements.filter((item: string) => item !== RECURRING_DECISION_REQUIREMENT);
+    expect(() => inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toThrow("Recurring automation candidate failed its server contract");
+  });
+
+test("unrequested recurring decisions are not invented as a way to suppress delivery", async () => {
+  const { workflow, tools } = await conditionalFixture(), request = recurringDeliveryRequest(text)!;
+  workflow.metadata.automation_request = recurringAutomationCandidateContext(request).automation_request;
+  expect(() => inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toThrow("without a requested conditional outcome");
+});
+
+test("two sequential decisions cannot each send the same report on one possible path", async () => {
+  const { request, workflow, tools } = await conditionalFixture();
+  const duplicate = { ...structuredClone(workflow.steps[2]), id: "second_delivery" }; workflow.steps.push(duplicate);
+  workflow.metadata.controlFlow.root.nodes.push({ kind: "if", id: "second_gate", predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] },
+    then: { kind: "sequence", nodes: [{ kind: "action", nodeId: duplicate.id }] }, else: { kind: "sequence", nodes: [] } });
+  expect(() => inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toThrow("multiple delivery effects on one possible path");
+});
+
+test.each(["page", "cursor"])("recurring authoring cannot override server-owned %s traversal", async parameter => {
+  const { request, workflow, tools } = await fixture();
+  tools[0]!.report_coverage_contract!.pagination = (parameter === "page" ? { profile: "page-number/v1", page_parameter: parameter } :
+    { profile: "opaque-cursor/v1", cursor_parameter: parameter }) as any;
+  workflow.steps[0].parameters[parameter] = parameter === "page" ? 2 : "invented-cursor";
+  expect(() => inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toThrow("may not override server-owned pagination");
 });

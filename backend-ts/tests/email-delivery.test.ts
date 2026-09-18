@@ -14,11 +14,12 @@ import { classifyIntent } from "../src/agent/intent-classifier.js";
 import { createEmailDraft, deliveryIntent, type EmailDraft } from "../src/delivery/email-draft.js";
 import { runQueryLoop } from "../src/agent/query-loop.js";
 import { toolSchema } from "../src/registry/schemas.js";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import { recurringAutomationCandidateContext, recurringDeliveryRequest } from "../src/delivery/recurring-automation.js";
 import { SynthesisService } from "../src/synthesis/service.js";
 import { recurringAnalysisTools, reportAnalysis } from "./fixtures/recurring-analysis-tools.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
+import { RECURRING_DECISION_REQUIREMENT } from "../src/delivery/recurring-decision-scopes.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -168,10 +169,54 @@ test("connected recurring request saves exact useful capability steps without ru
   expect(workflows[0]).toMatchObject({ yaml: candidate.yaml, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false, trigger: { type: "manual" } });
   expect(state.schedules).toEqual({}); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
   const providerBody = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-  expect(providerBody.messages[0].content).toContain("prompt/candidate/v11");
+  expect(providerBody.messages[0].content).toContain("prompt/candidate/v12");
   const context = JSON.parse(providerBody.messages[1].content).SERVER_DERIVED_CONTEXT_JSON;
   expect(context.automation_request).toEqual(recurringAutomationCandidateContext(candidate.request).automation_request);
 });
+
+function conditionalRecurringCandidate(withAnalysis: boolean) {
+  const base = recurringCandidate("manager@example.test", withAnalysis), source = parse(base.yaml);
+  const text = `${base.text} only if the declared sendReport boolean workflow input is true; otherwise do not deliver.`;
+  const request = recurringDeliveryRequest(text)!;
+  source.metadata.automation_request = recurringAutomationCandidateContext(request).automation_request;
+  source.metadata.unresolved_requirements.push(RECURRING_DECISION_REQUIREMENT);
+  source.trigger.config.inputSchema.properties.sendReport = { type: "boolean" }; source.trigger.config.inputSchema.required.push("sendReport");
+  const action = (nodeId: string) => ({ kind: "action", nodeId });
+  source.metadata.controlFlow = { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [
+    ...source.steps.slice(0, 2).map((step: { id: string }) => action(step.id)), { kind: "if", id: "send_gate",
+      predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] },
+      then: { kind: "sequence", nodes: source.steps.slice(2).map((step: { id: string }) => action(step.id)) }, else: { kind: "sequence", nodes: [] } },
+  ] } };
+  return { text, request, source, yaml: stringify(source).trim() };
+}
+
+test.each([false, true].flatMap(analysis => [false, true].map(async => [analysis, async] as const)))(
+  "recurring conditional chat analysis=%s async=%s saves/reopens exact inactive branches without executing", async (analysis, asynchronous) => {
+    const candidate = conditionalRecurringCandidate(analysis), s = await setup({ bridge: true, automationTools: true, analysisTools: analysis, candidateYaml: candidate.yaml });
+    const extra = asynchronous ? { delivery: "async-chat", idempotencyKey: `conditional-recurring-${analysis}-0001` } : {};
+    const response = await s.send(candidate.text, extra); expect(response.statusCode, response.body).toBe(asynchronous ? 202 : 200);
+    if (asynchronous) await vi.waitFor(async () => {
+      const job = await s.app.inject({ method: "GET", url: `/api/chat/operations/${response.json().data.operation.id}`, headers: s.headers });
+      expect(job.statusCode, job.body).toBe(200); expect(job.json().data.operation.status).toBe("ANSWERED");
+    });
+    const reopened = await s.app.inject({ method: "GET", url: `/api/chat/sessions/${s.sessionId}`, headers: s.headers });
+    const messages = reopened.json().data.messages, artifact = messages.at(-1).artifacts;
+    expect(artifact).toMatchObject({ intent: "WORKFLOW", can_execute: false, automationRequest: { decisionRequest: candidate.request.decisionRequest },
+      automationComposition: { status: "CAPABILITIES_MAPPED", readyForPublication: false, scheduleActive: false } });
+    expect(artifact.automationComposition.remainingRequirements).toContain(RECURRING_DECISION_REQUIREMENT);
+    const state = await s.repository.snapshot(), workflow = state.workflows[artifact.workflowId]!;
+    expect(workflow).toMatchObject({ yaml: candidate.yaml, publishedVersion: 0, canRun: false });
+    expect(parse(workflow.yaml).metadata.controlFlow).toEqual(candidate.source.metadata.controlFlow);
+    expect(messages.at(-1).text).toContain("have not been published, scheduled or executed");
+    expect(state.executions).toEqual({}); expect(state.schedules).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
+    expect(body.messages[0].content).toContain("prompt/candidate/v12"); expect(body.messages[0].content).not.toContain(candidate.text);
+    expect(JSON.parse(body.messages[1].content).SERVER_DERIVED_CONTEXT_JSON.automation_request.decision_request.originalRequest).toBe(candidate.text);
+    if (asynchronous) {
+      const replay = await s.send(candidate.text, extra); expect(replay.statusCode).toBe(202); expect(replay.json().data.operation.id).toBe(response.json().data.operation.id);
+      expect(s.fetchImplementation).toHaveBeenCalledOnce(); expect(Object.values((await s.repository.snapshot()).workflows)).toHaveLength(1);
+    }
+  });
 test("unsafe recurring model output falls back to the empty shell and preserves every gate", async () => {
   const candidate = recurringCandidate("invented@example.test"), s = await setup({ bridge: true, automationTools: true, candidateYaml: candidate.yaml });
   const result = await s.send(candidate.text); expect(result.statusCode, result.body).toBe(200);

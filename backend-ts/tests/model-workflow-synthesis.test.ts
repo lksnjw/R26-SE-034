@@ -1,5 +1,6 @@
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { afterEach, expect, test, vi } from "vitest";
@@ -13,7 +14,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { SynthesisService } from "../src/synthesis/service.js";
 import { compileOperationWorkflow, inspectModelWorkflowDraft } from "../src/workflows/compiled-read.js";
 import { validateWorkspaceDraft } from "../src/workflows/draft-validation.js";
-import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT, RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT, DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
+import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT, RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT, DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT, RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
 
 const directories: string[] = [];
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
@@ -42,14 +43,14 @@ async function setup(source: ReturnType<typeof blueprint>) {
   return { registries, repository, validator, runtime, fetcher, yaml, service: new SynthesisService(runtime, registries, validator) };
 }
 
-test.each(["analysis", "agent"] as const)("v11 proposes a bounded %s draft without effect, admission or execution authority", async kind => {
+test.each(["analysis", "agent"] as const)("v12 proposes a bounded %s draft without effect, admission or execution authority", async kind => {
   const source = blueprint(kind), s = await setup(source);
   const result = await s.service.synthesize({ prompt: "Create a workflow to read the actual count and summarise it", userRole: "Platform Admin", liveTools: [read] });
   expect(result.yaml).toBe(s.yaml.trim()); expect(result.execution_profile_issues).toEqual([]); expect(result.validation.passed).toBe(true);
-  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v11"); expect(s.fetcher).toHaveBeenCalledOnce();
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v12"); expect(s.fetcher).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.fetcher.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT);
-  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v11"));
+  expect(body.messages[0].content).toBe(RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT);
+  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v12"));
   const saved = await s.repository.snapshot(); expect(saved.executions).toEqual({}); expect(saved.workflows).toEqual({}); expect(saved.capabilityAdmissions).toEqual({});
   expect(inspectModelWorkflowDraft(source, [read], "Platform Admin")).toEqual([]);
   expect(() => compileOperationWorkflow(s.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
@@ -88,6 +89,17 @@ test.each([
   const validation = validateWorkspaceDraft("qa", s.yaml, "Platform Admin", s.validator, [read]);
   expect(validation.passed).toBe(false); expect(validation.failed_rules).toContain("WORKSPACE_READ_COMPILATION");
   expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
+test("v12 enables scoped recurring decisions while freezing historical v11 instruction bytes", () => {
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  expect(hash(systemInstructionsFor("prompt/candidate/v11"))).toBe("a2c782e712fd3e28248d4046a2c6cfde0c7a96452cd940108897e4983e4c66b6");
+  expect(systemInstructionsFor("prompt/candidate/v12")).toBe(RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT);
+  expect(hash(systemInstructionsFor("prompt/candidate/v12"))).toBe("6b2557ecb15491c72dca5fd751aad90b1fd929f830026be72d2e2d878eccb9b0");
+  for (const obsolete of ["or recurring execution", "bounded FLAT", "manual decision tree is not a schedulable replacement", "No dynamic agent, branch"])
+    expect(RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT).not.toContain(obsolete);
+  for (const marker of ["original conditional request", "preceding in-scope", "At most one delivery effect", "schedule_active false", "fresh independent effect approval"])
+    expect(RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT).toContain(marker);
 });
 
 test("new instructions preserve historical provenance and recurring request constraints", () => {

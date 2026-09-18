@@ -5,6 +5,7 @@ import { deliveryIntent } from "./email-draft.js";
 import type { RecipientResolution } from "./recipient-resolution.js";
 import { effectiveStepKind } from "../models/schemas.js";
 import { deliveryOutputReferences, inspectRecurringAnalysis } from "./recurring-analysis.js";
+import { recurringDecisionRequest, recurringDecisionScopes, RECURRING_DECISION_REQUIREMENT } from "./recurring-decision-scopes.js";
 
 export type RecurringRequestedResource = "invoices" | "orders";
 
@@ -18,6 +19,7 @@ export type RecurringDeliveryRequest = {
   reportRequested: boolean;
   requestedResources: RecurringRequestedResource[];
   analysisRequested: boolean;
+  decisionRequest?: ReturnType<typeof recurringDecisionRequest>;
   scheduleActive: false;
   requirements: string[];
 };
@@ -77,7 +79,9 @@ export function recurringDeliveryRequest(text: string, directoryResolution?: Rec
     ...(/\borders?\b/.test(normalized) ? ["orders" as const] : []),
   ];
   const requestedCadence = cadence(text);
+  const decisionRequest = recurringDecisionRequest(text);
   const requirements = [
+    ...(decisionRequest ? [RECURRING_DECISION_REQUIREMENT] : []),
     ...(intent.reportRequested ? requestedResources.length ? requestedResources.map(resourceRequirement) : [REPORT_REQUIREMENT] : [MESSAGE_CONTENT_REQUIREMENT]),
     ...(/\banaly[sz](?:e|es|ed|ing|is)\b/.test(normalized) ? [ANALYSIS_REQUIREMENT] : []),
     DELIVERY_REQUIREMENT,
@@ -90,7 +94,7 @@ export function recurringDeliveryRequest(text: string, directoryResolution?: Rec
   return { profile: "recurring-delivery-request/v1", cadence: requestedCadence, channel: intent.channel,
     requestedAddresses, recipientReference: intent.recipientReference, recipientResolution: directoryResolution ?? null,
     reportRequested: intent.reportRequested, requestedResources,
-    analysisRequested: /\banaly[sz](?:e|es|ed|ing|is)\b/.test(normalized), scheduleActive: false, requirements };
+    analysisRequested: /\banaly[sz](?:e|es|ed|ing|is)\b/.test(normalized), ...(decisionRequest ? { decisionRequest } : {}), scheduleActive: false, requirements };
 }
 
 /** Supplies only server-derived request facts and authoring constraints. The
@@ -105,12 +109,14 @@ export function recurringAutomationCandidateContext(request: RecurringDeliveryRe
     constraints: [
       "Keep trigger.type manual and schedule_active false.",
       "Use only offered exact capabilities; do not guess a recipient, report field or delivery result.",
-      "Use a report capability only for its reviewed report_coverage_contract.business_resource and map every requested resource exactly once.",
+      "Use a report capability only for its reviewed report_coverage_contract.business_resource and map every requested resource exactly once in each delivery's preceding scope.",
       "A report step must bind its reviewed window parameters to input.reportStartAt and input.reportEndAt.",
       "A related report must consume the preceding primary report's exact reviewed key projection.",
       "An email delivery step must use the literal requested address when exactly one address is present and bind its body to confirmed report output.",
-      "If analysis was requested, use one supported bounded analysis per requested report resource after all report reads; bind delivery to every analysis result.",
+      "If analysis was requested, use one supported bounded analysis per requested report resource within each delivery scope after its report reads; bind that delivery to every in-scope analysis result.",
       "The delivery body must explicitly reference every requested report resource, or its mapped analysis result. A single related-order summary does not prove invoice content was included.",
+      "For a conditional request preserve the original decision_request and its review requirement. Use only declared boolean references and exact owned Yes/No scopes; missing comparisons remain unresolved, not unconditional delivery.",
+      "Every delivery's preceding scope must contain each requested report and corresponding analysis; sibling and after-join outputs are unavailable. Empty no-delivery paths are allowed, never inferred consent.",
     ],
   };
 }
@@ -132,6 +138,8 @@ export function hasRecurringCompositionCapability(request: RecurringDeliveryRequ
 export function inspectRecurringAutomationCandidate(rawYAML: string, request: RecurringDeliveryRequest, tools: readonly ToolDefinition[], userRole: string): RecurringAutomationComposition {
   const blueprint = parseWorkflowYAMLStrict(rawYAML);
   const issues: string[] = [];
+  const scopes = recurringDecisionScopes(blueprint, tools, userRole, request.decisionRequest !== undefined);
+  issues.push(...scopes.issues);
   if (blueprint.trigger.type !== "manual") issues.push("Recurring workflow drafts must retain a manual trigger");
   const metadata = record(blueprint.metadata?.automation_request);
   const expected = automationMetadata(request);
@@ -165,6 +173,8 @@ export function inspectRecurringAutomationCandidate(rawYAML: string, request: Re
       }
       if (!windowInputReady || parameters[contract.start_parameter] !== "{{input.reportStartAt}}" || parameters[contract.end_parameter] !== "{{input.reportEndAt}}")
         issues.push(`Report step ${step.id} is not bound to the server-owned report window inputs`);
+      const pagination = contract.pagination, pageParameter = pagination?.profile === "page-number/v1" ? pagination.page_parameter : pagination?.cursor_parameter;
+      if (pageParameter && Object.hasOwn(parameters, pageParameter)) issues.push(`Report step ${step.id} may not override server-owned pagination`);
     }
     if (!tool.is_read_only && tool.operation_contract?.effect_class === "notification" && tool.email_delivery_contract && safeNotificationRisk(tool.risk_level)) {
       recognized = true;
@@ -175,45 +185,52 @@ export function inspectRecurringAutomationCandidate(rawYAML: string, request: Re
   }
 
   for (const resource of request.requestedResources) {
-    if (reportSteps.filter(report => report.resource === resource).length > 1)
+    if (!scopes.structured && reportSteps.filter(report => report.resource === resource).length > 1)
       issues.push(`Requested business resource ${resource} was mapped more than once`);
   }
 
-  const relation = relatedRecordStatus(request, reportSteps);
-  const analysis = inspectRecurringAnalysis(blueprint, request.analysisRequested, request.requestedResources, reportSteps, tools, userRole);
+  const relation = relatedRecordStatus(request, reportSteps, scopes.predecessors);
+  const analysis = inspectRecurringAnalysis(blueprint, request.analysisRequested, request.requestedResources, reportSteps, tools, userRole, scopes.predecessors);
   issues.push(...analysis.issues);
   for (const mapping of analysis.mappings) mappedSteps.push({ stepId: mapping.id, capability: "analysis", tool: "Bounded analysis", resource: mapping.resource, sourceStepId: mapping.sourceStepId });
   const sourceOrder = new Map(blueprint.steps.map((step, index) => [step.id, index]));
   mappedSteps.sort((left, right) => sourceOrder.get(left.stepId)! - sourceOrder.get(right.stepId)!);
   const exactRecipient = request.requestedAddresses.length === 1 ? request.requestedAddresses[0]! : null;
-  let recipientBound = false, deliveryBodyBound = false;
+  let recipientBound = deliverySteps.length > 0, deliveryBodyBound = deliverySteps.length > 0;
   for (const delivery of deliverySteps) {
     const contract = delivery.tool.email_delivery_contract!;
+    const visible = scopes.predecessors.get(delivery.id) ?? new Set<string>(), reports = reportSteps.filter(report => visible.has(report.id));
+    if (reports.length > 2 || request.requestedResources.some(resource => reports.filter(report => report.resource === resource).length !== 1))
+      issues.push(`Delivery ${delivery.id} requires exactly one preceding in-scope report for each requested resource`);
     if (exactRecipient === null) {
+      recipientBound = false;
       if (delivery.parameters[contract.recipient_parameter] !== undefined) issues.push("A delivery recipient was supplied without one exact requested address");
-    } else if (delivery.parameters[contract.recipient_parameter] === exactRecipient) recipientBound = true;
-    const sources = reportSteps.map(report => request.analysisRequested ? analysis.mappings.find(value => value.resource === report.resource) ?? report : report);
+    } else if (delivery.parameters[contract.recipient_parameter] !== exactRecipient) recipientBound = false;
+    const sources = reports.map(report => request.analysisRequested ? analysis.mappings.find(value => value.sourceStepId === report.id && visible.has(value.id)) ?? report : report);
     const body = deliveryOutputReferences(delivery.parameters[contract.body_parameter]);
-    const exact = body?.every(ref => ref.path[0] === "structuredContent" && sources.some(source => source.id === ref.root && source.index < delivery.index));
-    if (exact && sources.length > 0 && sources.every(source => body!.some(ref => ref.root === source.id))) deliveryBodyBound = true;
+    const exact = body?.every(ref => ref.path[0] === "structuredContent" && sources.some(source => source.id === ref.root && visible.has(source.id)));
+    if (!(exact && sources.length > 0 && sources.every(source => body!.some(ref => ref.root === source.id)))) deliveryBodyBound = false;
+    if (request.analysisRequested && sources.some(source => !analysis.mappings.some(value => value.id === source.id)))
+      analysis.bound = false;
   }
-  if (deliverySteps.length > 1) issues.push("A recurring draft may not silently select multiple delivery effects");
-  if (reportSteps.length > 2) issues.push("The supported recurring report profile permits at most two reviewed report steps");
-  if (deliverySteps.some(delivery => reportSteps.some(report => report.index > delivery.index))) issues.push("All reviewed report reads must precede the delivery effect");
-  if (deliverySteps.some(delivery => analysis.mappings.some(node => node.index > delivery.index))) issues.push("Every bounded analysis must precede the delivery effect");
+  if (!scopes.structured && deliverySteps.length > 1) issues.push("A recurring draft may not silently select multiple delivery effects");
+  if (!scopes.structured && reportSteps.length > 2) issues.push("The supported recurring report profile permits at most two reviewed report steps");
+  if (deliverySteps.some(delivery => !scopes.structured && reportSteps.some(report => report.index > delivery.index))) issues.push("All reviewed report reads must precede the delivery effect");
+  if (deliverySteps.some(delivery => !scopes.structured && analysis.mappings.some(node => node.index > delivery.index))) issues.push("Every bounded analysis must precede the delivery effect");
   if (exactRecipient !== null && deliverySteps.length > 0 && !recipientBound) issues.push("The delivery step did not preserve the exact requested address");
   if (request.reportRequested && deliverySteps.length > 0 && !deliveryBodyBound) issues.push("The delivery body must include every requested report or mapped analysis output");
   if (request.requestedResources.includes("invoices") && request.requestedResources.includes("orders") && relation.status !== "MATCHED" &&
       reportSteps.some(report => report.tool.report_coverage_contract?.requested_key_coverage !== undefined))
     issues.push("Invoice and order reports do not have one exact reviewed relationship binding");
 
-  const remainingRequirements = recurringCompositionRequirements(request, reportSteps, deliverySteps.length, relation.status, recipientBound, deliveryBodyBound, windowInputReady, analysis.bound);
+  const deliveryMapped = scopes.structured ? deliverySteps.length > 0 : deliverySteps.length === 1;
+  const remainingRequirements = recurringCompositionRequirements(request, reportSteps, deliveryMapped ? 1 : 0, relation.status, recipientBound, deliveryBodyBound, windowInputReady, analysis.bound);
   const unresolved = Array.isArray(blueprint.metadata?.unresolved_requirements) ? blueprint.metadata.unresolved_requirements : [];
   for (const requirement of remainingRequirements) if (!unresolved.includes(requirement)) issues.push(`Required unresolved outcome was omitted: ${requirement}`);
   if (issues.length) throw new Error(`Recurring automation candidate failed its server contract: ${[...new Set(issues)].join("; ")}`);
   const everyResourceMapped = request.requestedResources.length > 0 && request.requestedResources.every(resource => reportSteps.some(report => report.resource === resource));
   const fullyMapped = request.cadence !== "custom" && request.reportRequested && everyResourceMapped && windowInputReady && relation.status !== "UNRESOLVED" &&
-    deliverySteps.length === 1 && exactRecipient !== null && recipientBound && deliveryBodyBound && (!request.analysisRequested || analysis.bound);
+    deliveryMapped && exactRecipient !== null && recipientBound && deliveryBodyBound && (!request.analysisRequested || analysis.bound) && (!request.decisionRequest || scopes.structured);
   return { profile: "recurring-automation-composition/v1", status: fullyMapped ? "CAPABILITIES_MAPPED" : "PARTIAL", mappedSteps,
     relatedRecords: relation, analysis: { status: !request.analysisRequested ? "NOT_REQUESTED" : analysis.bound ? "MAPPED" : "UNRESOLVED" }, reportWindowBound: !request.reportRequested || reportSteps.length > 0 && windowInputReady,
     recipientBound, deliveryBodyBound, readyForPublication: false, scheduleActive: false, remainingRequirements };
@@ -240,7 +257,8 @@ export function recurringAutomationShell(text: string, request: RecurringDeliver
 function automationMetadata(request: RecurringDeliveryRequest): Record<string, unknown> {
   return { profile: request.profile, cadence: request.cadence, channel: request.channel, requested_addresses: request.requestedAddresses,
     recipient_reference: request.recipientReference, recipient_resolution: request.recipientResolution,
-    report_requested: request.reportRequested, requested_resources: request.requestedResources, analysis_requested: request.analysisRequested, schedule_active: false };
+    report_requested: request.reportRequested, requested_resources: request.requestedResources, analysis_requested: request.analysisRequested,
+    ...(request.decisionRequest ? { decision_request: request.decisionRequest } : {}), schedule_active: false };
 }
 
 function recurringCompositionRequirements(request: RecurringDeliveryRequest,
@@ -248,6 +266,7 @@ function recurringCompositionRequirements(request: RecurringDeliveryRequest,
   relation: RecurringAutomationComposition["relatedRecords"]["status"], recipientBound: boolean, deliveryBodyBound: boolean, windowInputReady: boolean, analysisBound: boolean): string[] {
   const exactRecipient = request.requestedAddresses.length === 1 ? request.requestedAddresses[0]! : null;
   return [
+    ...(request.decisionRequest ? [RECURRING_DECISION_REQUIREMENT] : []),
     ...(!request.reportRequested ? [MESSAGE_CONTENT_REQUIREMENT] : []),
     ...(request.reportRequested && !windowInputReady ? [REPORT_REQUIREMENT] : []),
     ...request.requestedResources.filter(resource => !reports.some(report => report.resource === resource)).map(resourceRequirement),
@@ -265,21 +284,22 @@ function recurringCompositionRequirements(request: RecurringDeliveryRequest,
 }
 
 function relatedRecordStatus(request: RecurringDeliveryRequest,
-  reports: Array<{ index: number; id: string; tool: ToolDefinition; parameters: Record<string, unknown>; resource: RecurringRequestedResource }>): RecurringAutomationComposition["relatedRecords"] {
+  reports: Array<{ index: number; id: string; tool: ToolDefinition; parameters: Record<string, unknown>; resource: RecurringRequestedResource }>,
+  predecessors: ReadonlyMap<string, ReadonlySet<string>>): RecurringAutomationComposition["relatedRecords"] {
   if (!(request.requestedResources.includes("invoices") && request.requestedResources.includes("orders"))) return { status: "NOT_REQUESTED" };
-  for (const primary of reports) {
-    if (primary.resource !== "invoices") continue;
-    const projection = primary.tool.report_coverage_contract?.key_projection;
-    if (!projection) continue;
-    for (const related of reports) {
-      if (related.resource !== "orders") continue;
-      const coverage = related.tool.report_coverage_contract?.requested_key_coverage;
-      if (!coverage || related.index <= primary.index || coverage.relation_name !== projection.relation_name) continue;
-      const expected = `{{${primary.id}.structuredContent.${projection.keys_path.join(".")}}}`;
-      if (related.parameters[coverage.keys_parameter] === expected) return { status: "MATCHED", relationName: projection.relation_name };
-    }
+  const relatedReports = reports.filter(report => report.resource === "orders"); let relationName: string | undefined;
+  if (!relatedReports.length) return { status: "UNRESOLVED" };
+  for (const related of relatedReports) {
+    const coverage = related.tool.report_coverage_contract?.requested_key_coverage;
+    const primary = coverage && reports.find(report => {
+      const projection = report.tool.report_coverage_contract?.key_projection;
+      return report.resource === "invoices" && projection && predecessors.get(related.id)?.has(report.id) && coverage.relation_name === projection.relation_name &&
+        related.parameters[coverage.keys_parameter] === `{{${report.id}.structuredContent.${projection.keys_path.join(".")}}}`;
+    });
+    if (!primary || !coverage || relationName && relationName !== coverage.relation_name) return { status: "UNRESOLVED" };
+    relationName = coverage.relation_name;
   }
-  return { status: "UNRESOLVED" };
+  return relationName ? { status: "MATCHED", relationName } : { status: "UNRESOLVED" };
 }
 
 function record(value: unknown): Record<string, unknown> | null {

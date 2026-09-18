@@ -167,13 +167,22 @@ async function start(repositoryValue) {
     if (recurringContext?.profile === "recurring-automation-candidate-context/v1") {
       const unresolved = recurringContext.required_unresolved_requirements.filter(value => !value.startsWith("Add exact reviewed ERP report") &&
         !value.startsWith("Add one exact reviewed ERP report") && !value.startsWith("Add one exact reviewed email"));
-      const candidate = stringify({ name: "Daily invoice and related-order report", description: "Maps reviewed report contracts into one blocked recurring delivery draft.",
+      const source = { name: "Daily invoice and related-order report", description: "Maps reviewed report contracts into one blocked recurring delivery draft.",
         trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
           required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
           { id: "invoice_report", action: relatedInvoiceTool.name, description: "Read complete invoices", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
           { id: "order_report", action: relatedOrderTool.name, description: "Read every related order", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", orderIds: "{{invoice_report.structuredContent.orderIds}}" } },
           { id: "deliver_report", action: emailTool.name, description: "Propose reviewed email delivery", parameters: { recipient: "manager@example.test", subject: "Daily invoice and order report", body: "Invoices: {{invoice_report.structuredContent.reportId}}\nOrders: {{order_report.structuredContent.reportId}}" } },
-        ], metadata: { automation_request: recurringContext.automation_request, unresolved_requirements: unresolved } });
+        ], metadata: { automation_request: recurringContext.automation_request, unresolved_requirements: unresolved } };
+      if (recurringContext.automation_request.decision_request) {
+        source.trigger.config.inputSchema.properties.sendReport = { type: "boolean" }; source.trigger.config.inputSchema.required.push("sendReport");
+        source.metadata.controlFlow = { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [
+          { kind: "action", nodeId: "invoice_report" }, { kind: "action", nodeId: "order_report" }, { kind: "if", id: "send_gate",
+            predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "deliver_report" }] },
+            else: { kind: "sequence", nodes: [] } },
+        ] } };
+      }
+      const candidate = stringify(source);
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: candidate } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
     }
     if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS"))
@@ -290,8 +299,23 @@ try {
   assert.equal(automationWorkflow.publishedVersion, 0); assert.equal(automationWorkflow.steps, 3); assert.equal(automationWorkflow.canRun, false); assert.equal(automationWorkflow.trigger.type, "manual");
   assert.match(automationWorkflow.yaml, /unresolved_requirements/); assert.equal((await repository.snapshot()).schedules[`schedule-${automation.workflowId}`], undefined);
   assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation + 1); assert.equal(emails.length, 0); assert.equal(operations.length, 0);
-  const modelsAfterAutomation = models.length;
   log("recurring delivery wording used one model proposal to save exact reviewed invoice, related-order and delivery capability steps with readable remaining gates, zero SDK calls and no active schedule or one-off email draft");
+
+  const conditionalText = "Send daily invoice and order details to manager@example.test only if the declared sendReport boolean workflow input is true; otherwise do not deliver.";
+  const conditionalCommand = { content: conditionalText, delivery: "async-chat", idempotencyKey: "firestore-conditional-recurring-chat-0001" };
+  const conditionalChat = (await request("POST", `/api/chat/sessions/${chatId}/messages`, conditionalCommand, 202)).data.operation;
+  await waitFor(async () => (await repository.snapshot()).chatOperations[conditionalChat.id]?.status === "ANSWERED", "conditional recurring chat draft");
+  const conditionalArtifact = (await request("GET", `/api/chat/sessions/${chatId}`, undefined, 200)).data.messages.at(-1).artifacts;
+  assert.equal(conditionalArtifact.automationComposition.status, "CAPABILITIES_MAPPED"); assert.equal(conditionalArtifact.automationComposition.scheduleActive, false);
+  assert.equal(conditionalArtifact.automationRequest.decisionRequest.originalRequest, conditionalText);
+  const conditionalWorkflow = structuredClone((await repository.snapshot()).workflows[conditionalArtifact.workflowId]);
+  const conditionalSource = parseWorkflowYAMLStrict(conditionalWorkflow.yaml);
+  assert.equal(conditionalSource.metadata.controlFlow.root.nodes[2].else.nodes.length, 0);
+  assert.equal(conditionalWorkflow.publishedVersion, 0); assert.equal(conditionalWorkflow.canRun, false);
+  assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation + 2); assert.equal(emails.length, 0); assert.equal(operations.length, 0);
+  assert.equal((await request("POST", `/api/chat/sessions/${chatId}/messages`, conditionalCommand, 202)).data.operation.id, conditionalChat.id);
+  const modelsAfterAutomation = models.length;
+  log("actual Firestore async v12 recurring chat saved the exact boolean Yes delivery/empty No tree and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
 
   const saved = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).chats, saved.chats); assert.deepEqual((await repository.snapshot()).executions, saved.executions);
@@ -299,6 +323,7 @@ try {
   assert.deepEqual((await repository.snapshot()).workflows.collection_edit, saved.workflows.collection_edit);
   assert.equal((await repository.snapshot()).chats[chatId].messages.findLast(message => message.artifacts?.proposal)?.artifacts.proposal.status, "APPLIED");
   assert.deepEqual((await repository.snapshot()).workflows[automation.workflowId], automationWorkflow); assert.equal((await repository.snapshot()).schedules[`schedule-${automation.workflowId}`], undefined);
+  assert.deepEqual((await repository.snapshot()).workflows[conditionalArtifact.workflowId], conditionalWorkflow);
   assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.runtimeAnalysisDataClasses, ["internal"]);
   assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.runtimeAgentDataClasses, ["internal"]);
   assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.interactiveDataClasses, ["restricted"]);
