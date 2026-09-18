@@ -29,7 +29,7 @@ import { prepareOperationExecution, type StoredOperationCompilation } from "../s
 import { modelDataClasses, type ModelDataClass } from "../src/providers/egress-policy.js";
 import { reviewedModelSourceContext } from "../src/synthesis/reviewed-model-sources.js";
 import { SynthesisService, assembleCandidatePrompt } from "../src/synthesis/service.js";
-import { REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -293,7 +293,7 @@ test.each(["direct", "chat"])("%s synthesis ignores forged browser source claims
   });
   expect(response.statusCode, response.body).toBe(200); expect(s.modelFetch).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT);
+  expect(body.messages[0].content).toBe(RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT);
   const data = JSON.parse(body.messages[1].content);
   expect(data.MODEL_SOURCE_HINTS_JSON.sources.find((source: { toolId: string }) => source.toolId === s.read.tool_id)).toEqual({
     toolId: s.read.tool_id, action: s.read.name, connectionId: "erpbridge-default", dataClass: "confidential", review: "REVIEWED",
@@ -560,6 +560,75 @@ test("durable analysis admission fails before ERP or model dispatch when its dat
   const denied = await s.run("durable-analysis-denied-0001"); expect(denied.statusCode, denied.body).toBe(422);
   expect(denied.json().meta).toMatchObject({ code: "ANALYSIS_PROVIDER_DENIED" });
   expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+async function prepareTwoReportAnalysis(s: Awaited<ReturnType<typeof setup>>) {
+  await prepareScheduleWorkflow(s);
+  const runtime = s.providerRuntime!;
+  runtime.activate({ ...runtime.configuration!, egressPolicy: { ...runtime.configuration!.egressPolicy!, runtimeAnalysisDataClasses: ["restricted"] } });
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, blueprint = parse(workflow.yaml);
+    const analyses = ["lookupReport", "lookupOrders"].map((source, index) => ({ id: index === 0 ? "invoiceAnalysis" : "orderAnalysis", kind: "analysis",
+      description: "Bounded report analysis", instruction: "Summarize only the confirmed report.", input: `{{${source}.structuredContent.summary}}`,
+      data_class: "restricted", model: "analysis-model-b", max_input_chars: 2000, max_input_items: 10, max_output_tokens: 512,
+      output_schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false } }));
+    blueprint.steps = [...blueprint.steps.slice(0, 2), ...analyses, { id: "send", action: s.email!.name, parameters: { recipient: "manager@example.test",
+      subject: "Reviewed reports", body: "{{invoiceAnalysis.structuredContent.summary}}\n{{orderAnalysis.structuredContent.summary}}" } }];
+    workflow.yaml = stringify(blueprint); workflow.steps = 5;
+  });
+  for (const summary of ["ANALYSED INVOICES", "ANALYSED ORDERS"]) s.modelFetch.mockImplementationOnce(async () => Response.json({
+    choices: [{ message: { content: JSON.stringify({ summary }) } }], usage: { prompt_tokens: 11, completion_tokens: 7 },
+  }));
+}
+
+test.each(["manual", "daily"])("%s two-report analysis joins both outputs and waits for independent email approval", async mode => {
+  const s = await setup(null, true, false, true, "related", true); await prepareTwoReportAnalysis(s);
+  expect((await s.publish()).statusCode).toBe(200);
+  let id: string;
+  if (mode === "manual") {
+    const admitted = await s.run("two-report-analysis-0001", { reportStartAt: "2026-10-07T00:00:00Z", reportEndAt: "2026-10-08T00:00:00Z" });
+    expect(admitted.statusCode, admitted.body).toBe(202); id = admitted.json().data.id;
+  } else {
+    const workflow = (await s.repository.snapshot()).workflows.flow!;
+    const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+      workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC",
+      localTime: new Date(Date.now() + 120000).toISOString().slice(11, 16), reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300,
+      servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+    expect(saved.statusCode, saved.body).toBe(200);
+    expect(await workflowScheduleRunner(s.services).runDue(Date.parse(saved.json().data.nextRunAt))).toEqual({ admitted: 1, skipped: 0, blocked: 0 });
+    id = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId;
+  }
+  await s.wait(id, "AWAITING_APPROVAL");
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead), exactBridgeName(s.relatedOrderRead!)]);
+  expect(s.modelFetch).toHaveBeenCalledTimes(2);
+  const pending = (await s.repository.snapshot()).executions[id]!;
+  expect(pending.stepOutputs).toMatchObject({ invoiceAnalysis: { structuredContent: { summary: "ANALYSED INVOICES" } }, orderAnalysis: { structuredContent: { summary: "ANALYSED ORDERS" } } });
+  const args = { recipient: "manager@example.test", subject: "Reviewed reports", body: "ANALYSED INVOICES\nANALYSED ORDERS" };
+  expect(await s.review(id)).toMatchObject({ arguments: args, canDecide: true });
+  expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200);
+  await s.wait(id, "DONE"); expect(s.sdk.callTool.mock.calls[2]![1]).toEqual(args); expect(s.sdk.callTool).toHaveBeenCalledTimes(3);
+  const last = (await s.repository.snapshot()).executions[id]!;
+  expect(last.stepOutputs!.send).toMatchObject({ structuredContent: { accepted: true } });
+  expect(last.tokens).toEqual({ input: 22, output: 14, total: 36 });
+  expect(s.modelFetch).toHaveBeenCalledTimes(2);
+  if (mode === "manual") {
+    expect((await s.run("two-report-analysis-0001", { reportStartAt: "changed", reportEndAt: "changed" })).statusCode).toBe(409);
+    expect((await s.run("two-report-analysis-0001", { reportStartAt: "2026-10-07T00:00:00Z", reportEndAt: "2026-10-08T00:00:00Z" })).json().data.id).toBe(id);
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(3); expect(s.modelFetch).toHaveBeenCalledTimes(2); }
+});
+
+test("failure of the second report analysis cannot deliver the first as a complete report or trigger a retry", async () => {
+  const s = await setup(null, true, false, true, "related", true); await prepareTwoReportAnalysis(s);
+  s.modelFetch.mockReset().mockImplementationOnce(async () => Response.json({ choices: [{ message: { content: '{"summary":"INVOICES ONLY"}' } }] }))
+    .mockImplementationOnce(async () => Response.json({ choices: [{ message: { content: '{"wrong":"ORDERS MISSING"}' } }] }));
+  expect((await s.publish()).statusCode).toBe(200);
+  const input = { reportStartAt: "2026-10-07T00:00:00Z", reportEndAt: "2026-10-08T00:00:00Z" };
+  const admitted = await s.run("two-report-analysis-failed", input); expect(admitted.statusCode).toBe(202);
+  const id = admitted.json().data.id; await s.wait(id, "FAILED");
+  const execution = (await s.repository.snapshot()).executions[id]!;
+  expect(execution.stepOutputs).toHaveProperty("invoiceAnalysis"); expect(execution.stepOutputs).not.toHaveProperty("orderAnalysis");
+  expect(execution.pendingApproval).toBeFalsy(); expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledTimes(2);
+  expect((await s.run("two-report-analysis-failed", input)).json().data.id).toBe(id); expect(s.modelFetch).toHaveBeenCalledTimes(2);
 });
 
 test("a known malformed analysis response fails with no approval or later effect and is not retried", async () => {

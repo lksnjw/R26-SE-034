@@ -17,17 +17,20 @@ import { toolSchema } from "../src/registry/schemas.js";
 import { stringify } from "yaml";
 import { recurringAutomationCandidateContext, recurringDeliveryRequest } from "../src/delivery/recurring-automation.js";
 import { SynthesisService } from "../src/synthesis/service.js";
+import { recurringAnalysisTools, reportAnalysis } from "./fixtures/recurring-analysis-tools.js";
+import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 const requestText = "Get invoice details, analyse the report and email it to manager@example.test";
 const headersFor = (id: string, secret: string) => ({ authorization: `Bearer ${jwt.sign({}, secret, { algorithm: "HS256", subject: id, expiresIn: 3600 })}` });
 async function setup(options: { bridge?: boolean; calls?: boolean; final?: string; finalStop?: string; failure?: boolean; unadmitted?: boolean; providerFailsAfterRead?: boolean;
-  automationTools?: boolean; candidateYaml?: string } = {}) {
+  automationTools?: boolean; analysisTools?: boolean; candidateYaml?: string } = {}) {
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "test-email-draft-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }), erpbridgeRoleMap: { "Platform Admin": "admin" } };
   const repository = new Repository(null);
   await repository.mutate((state) => { for (const id of ["owner", "other"]) state.users[id] = { id, name: id, email: `${id}@example.test`, roleId: "role_admin", permissionOverrides: [], status: "Active", initials: "U", departmentId: null, lastLoginAt: null, createdAt: new Date().toISOString() }; });
   const registries = await RegistryService.load(resolve(options.automationTools ? "tests/fixtures/recurring-tools.json" : options.unadmitted ? "tests/fixtures/tools.json" : "tests/fixtures/chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
+  if (options.analysisTools) { const original = registries.snapshot(); vi.spyOn(registries, "snapshot").mockReturnValue({ ...original, tools: recurringAnalysisTools(original.tools) }); }
   const validator = new RegistryValidator(registries, repository);
   const executor = new Executor(new ToolRegistry(), validator);
   const fetchImplementation = vi.fn<typeof fetch>(async (_url, init) => {
@@ -44,7 +47,9 @@ async function setup(options: { bridge?: boolean; calls?: boolean; final?: strin
     egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.example.test", runtimeAnalysisDataClasses: [], interactiveDataClasses: ["restricted"], reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "owner", name: "owner" } } });
   const callTool = vi.fn(async () => options.failure ? { content: [{ type: "text", text: "denied" }], isError: true } : { content: [], structuredContent: { value: "fixture report" } });
   const erpbridgeSession = options.bridge ? await createErpbridgeMcpSession({ baseURL: "https://bridge.example.test", token: "fixture-only", timeoutMs: 1000, validator,
-    sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => registries.snapshot().tools.map((tool) => ({ name: tool.mcp_tool_name, inputSchema: tool.input_schema })), callTool } }) : undefined;
+    sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => registries.snapshot().tools.map((tool) => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool),
+      ...(tool.bridge_contract ? { ...(tool.bridge_contract.output_schema ? { outputSchema: tool.bridge_contract.output_schema } : {}), _meta: { "toolplane.resourceDigest": tool.bridge_contract.resource_digest, "toolplane.resourceVersion": tool.bridge_contract.resource_version, "io.erpbridge/allowedRoles": tool.bridge_contract.remote_roles } } : {}),
+    })), callTool } }) : undefined;
   const app = await buildApp({ config, repository, registries, validator, executor, providerRuntime, synthesis: new SynthesisService(providerRuntime, registries, validator),
     ...(erpbridgeSession ? { erpbridgeSession } : {}) }); apps.push(app);
   const headers = headersFor("owner", config.jwtSecret);
@@ -116,11 +121,11 @@ test("connected recurrence skips model latency when discovery has no reviewed re
   const state = await s.repository.snapshot(); expect(Object.values(state.workflows)[0]).toMatchObject({ steps: 0, publishedVersion: 0, canRun: false });
   expect(state.schedules).toEqual({}); expect(state.executions).toEqual({});
 });
-function recurringCandidate(recipient = "manager@example.test") {
-  const text = "Get invoice and order details and email the report to manager@example.test every day";
+function recurringCandidate(recipient = "manager@example.test", withAnalysis = false) {
+  const text = `${withAnalysis ? "Analyse" : "Get"} invoice and order details and email the report to manager@example.test every day`;
   const request = recurringDeliveryRequest(text)!;
   const unresolved = request.requirements.filter(item => !item.startsWith("Add exact reviewed ERP report") &&
-    !item.startsWith("Add one exact reviewed ERP report") && !item.startsWith("Add one exact reviewed email"));
+    !item.startsWith("Add one exact reviewed ERP report") && !item.startsWith("Add one exact reviewed email") && !(withAnalysis && item.startsWith("Add a supported bounded analysis")));
   const yaml = stringify({
     name: "Daily invoice and order report", description: "Reads complete invoice and related order reports before proposing reviewed email delivery.",
     trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
@@ -128,11 +133,27 @@ function recurringCandidate(recipient = "manager@example.test") {
     steps: [
       { id: "invoice_report", action: "erp.invoices.report", description: "Read complete invoices", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
       { id: "order_report", action: "erp.orders.report", description: "Read every related order", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", orderIds: "{{invoice_report.structuredContent.orderIds}}" } },
-      { id: "deliver_report", action: "erp.email.deliver", description: "Propose reviewed report delivery", parameters: { recipient, subject: "Daily invoice and order report", body: "{{order_report.structuredContent.summary}}" } },
+      ...(withAnalysis ? [reportAnalysis("invoice_analysis", "invoice_report"), reportAnalysis("order_analysis", "order_report")] : []),
+      { id: "deliver_report", action: "erp.email.deliver", description: "Propose reviewed report delivery", parameters: { recipient, subject: "Daily invoice and order report", body: withAnalysis ? "Invoices: {{invoice_analysis.structuredContent.text}}\nOrders: {{order_analysis.structuredContent.text}}" : "Invoices: {{invoice_report.structuredContent.summary}}\nOrders: {{order_report.structuredContent.summary}}" } },
     ], metadata: { automation_request: recurringAutomationCandidateContext(request).automation_request, unresolved_requirements: unresolved },
   }).trim();
   return { text, yaml, request, unresolved };
 }
+
+test("chat saves requested report analyses as an editable five-node draft without reading ERP or sending", async () => {
+  const candidate = recurringCandidate("manager@example.test", true);
+  const s = await setup({ bridge: true, automationTools: true, analysisTools: true, candidateYaml: candidate.yaml });
+  const result = await s.send(candidate.text); expect(result.statusCode, result.body).toBe(200);
+  const artifact = result.json().data.assistantMessage.artifacts;
+  expect(artifact).toMatchObject({ intent: "WORKFLOW", can_execute: false, automationComposition: {
+    status: "CAPABILITIES_MAPPED", analysis: { status: "MAPPED" }, deliveryBodyBound: true, readyForPublication: false, scheduleActive: false,
+  } });
+  expect(artifact.automationComposition.mappedSteps).toHaveLength(5);
+  const state = await s.repository.snapshot();
+  expect(Object.values(state.workflows)[0]).toMatchObject({ steps: 5, publishedVersion: 0, canRun: false, yaml: candidate.yaml });
+  expect(state.schedules).toEqual({}); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
+  expect(result.json().data.answer).toContain("5 workflow steps were mapped");
+});
 test("connected recurring request saves exact useful capability steps without running, publishing, scheduling or sending", async () => {
   const candidate = recurringCandidate(), s = await setup({ bridge: true, automationTools: true, candidateYaml: candidate.yaml });
   const result = await s.send(candidate.text); expect(result.statusCode, result.body).toBe(200);
@@ -147,7 +168,7 @@ test("connected recurring request saves exact useful capability steps without ru
   expect(workflows[0]).toMatchObject({ yaml: candidate.yaml, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false, trigger: { type: "manual" } });
   expect(state.schedules).toEqual({}); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
   const providerBody = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-  expect(providerBody.messages[0].content).toContain("prompt/candidate/v9");
+  expect(providerBody.messages[0].content).toContain("prompt/candidate/v10");
   const context = JSON.parse(providerBody.messages[1].content).SERVER_DERIVED_CONTEXT_JSON;
   expect(context.automation_request).toEqual(recurringAutomationCandidateContext(candidate.request).automation_request);
 });

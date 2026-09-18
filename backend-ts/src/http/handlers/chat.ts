@@ -509,7 +509,7 @@ export async function processStoredChat(input: {
   const assistantText = [
     autoSavedWorkflowId ? automationComposition ? "Recurring workflow steps saved as an editable draft. They have not been published, scheduled or executed." : "Workflow draft saved. It has not been published or executed." : "Workflow proposal prepared, but no saved draft was acknowledged.",
     result.validation.passed ? "Structural and registry validation passed; this is not execution readiness." : "Validation failed; review the reported issues before publishing.",
-    automationComposition ? `${automationComposition.mappedSteps.length} exact reviewed capability step${automationComposition.mappedSteps.length === 1 ? " was" : "s were"} mapped. ${automationComposition.remainingRequirements.length} requirement${automationComposition.remainingRequirements.length === 1 ? " remains" : "s remain"}; no schedule is active.` : "",
+    automationComposition ? `${automationComposition.mappedSteps.length} workflow step${automationComposition.mappedSteps.length === 1 ? " was" : "s were"} mapped. ${automationComposition.remainingRequirements.length} requirement${automationComposition.remainingRequirements.length === 1 ? " remains" : "s remain"}; no schedule is active.` : "",
     missingTools.length ? "Some requested actions have no admitted live ERPBridge contract. The original proposal was preserved." : "",
     pendingGenerationApproval ? "Build acceptance is pending. Runtime approval checkpoints remain required for each transaction." : "",
   ].filter(Boolean).join("\n\n");

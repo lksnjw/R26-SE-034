@@ -4,6 +4,8 @@ import { expect, test } from "vitest";
 import { hasRecurringCompositionCapability, inspectRecurringAutomationCandidate, recurringAutomationCandidateContext,
   recurringDeliveryRequest } from "../src/delivery/recurring-automation.js";
 import { RegistryService } from "../src/registry/service.js";
+import { analysisRequirement, recurringAnalysisTools, reportAnalysis } from "./fixtures/recurring-analysis-tools.js";
+import { deliveryOutputReferences } from "../src/delivery/recurring-analysis.js";
 
 const text = "Get invoice and order details and email the report to manager@example.test every day";
 
@@ -21,7 +23,7 @@ async function fixture() {
     steps: [
       { id: "invoice_report", action: "erp.invoices.report", description: "Read complete invoices", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
       { id: "order_report", action: "erp.orders.report", description: "Read every related order", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", orderIds: "{{invoice_report.structuredContent.orderIds}}" } },
-      { id: "deliver_report", action: "erp.email.deliver", description: "Propose reviewed report delivery", parameters: { recipient: "manager@example.test", subject: "Daily invoice and order report", body: "{{order_report.structuredContent.summary}}" } },
+      { id: "deliver_report", action: "erp.email.deliver", description: "Propose reviewed report delivery", parameters: { recipient: "manager@example.test", subject: "Daily invoice and order report", body: "Invoices: {{invoice_report.structuredContent.summary}}\nOrders: {{order_report.structuredContent.summary}}" } },
     ],
     metadata: { automation_request: recurringAutomationCandidateContext(request).automation_request, unresolved_requirements: unresolved },
   };
@@ -65,6 +67,68 @@ test("analysis remains an explicit blocker instead of being silently dropped", a
   const result = inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin");
   expect(result.status).toBe("PARTIAL");
   expect(result.remainingRequirements).toContain("Add a supported bounded analysis node or retain analysis as an unresolved requested outcome.");
+});
+
+async function analysisFixture() {
+  const source = await fixture(), request = recurringDeliveryRequest("Analyse invoice and order details and email the report to manager@example.test daily")!;
+  const workflow = source.workflow;
+  workflow.metadata.automation_request = recurringAutomationCandidateContext(request).automation_request;
+  workflow.steps.splice(2, 0, reportAnalysis("invoice_analysis", "invoice_report"), reportAnalysis("order_analysis", "order_report"));
+  workflow.steps[4].parameters.body = "Invoices: {{invoice_analysis.structuredContent.text}}\nOrders: {{order_analysis.structuredContent.text}}";
+  return { ...source, request, workflow, tools: recurringAnalysisTools(source.tools) };
+}
+
+test("all requested per-resource analyses and joined delivery map without granting publication, egress or a schedule", async () => {
+  const { request, workflow, tools } = await analysisFixture();
+  expect(request.requirements).toContain(analysisRequirement);
+  const result = inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin");
+  expect(result).toMatchObject({ status: "CAPABILITIES_MAPPED", analysis: { status: "MAPPED" }, deliveryBodyBound: true, readyForPublication: false, scheduleActive: false });
+  expect(result.remainingRequirements).not.toContain(analysisRequirement);
+  expect(result.remainingRequirements.length).toBeGreaterThan(0);
+  expect(result.mappedSteps.map(step => step.capability)).toEqual(["report", "report", "analysis", "analysis", "delivery"]);
+  expect(result.mappedSteps[2]).toMatchObject({ resource: "invoices", sourceStepId: "invoice_report" });
+});
+
+test("partial analysis preserves its blocker and explicitly includes the remaining raw report", async () => {
+  const { request, workflow, tools } = await analysisFixture();
+  workflow.steps.splice(3, 1); workflow.steps[3].parameters.body = "{{invoice_analysis.structuredContent.text}} / {{order_report.structuredContent.summary}}";
+  workflow.metadata.unresolved_requirements.push(analysisRequirement);
+  const result = inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin");
+  expect(result).toMatchObject({ status: "PARTIAL", analysis: { status: "UNRESOLVED" }, deliveryBodyBound: true });
+  expect(result.remainingRequirements).toContain(analysisRequirement);
+  workflow.metadata.unresolved_requirements = workflow.metadata.unresolved_requirements.filter((value: string) => value !== analysisRequirement);
+  expect(() => inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toThrow("Required unresolved outcome");
+});
+
+test.each(["omitted invoices", "omitted orders", "workflow input", "unknown output", "literal only", "malformed template"])("report delivery rejects %s instead of silently dropping requested content", async kind => {
+  const { request, workflow, tools } = await fixture();
+  const bodies: Record<string, string> = { "omitted invoices": "{{order_report.structuredContent.summary}}", "omitted orders": "{{invoice_report.structuredContent.summary}}",
+    "workflow input": "{{input.reportStartAt}}", "unknown output": "{{unread.structuredContent.summary}}", "literal only": "Everything sent", "malformed template": "{{invoice_report.structuredContent.summary}} {{order_report.structuredContent.summary}} {{broken" };
+  workflow.steps[2].parameters.body = bodies[kind];
+  expect(() => inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toThrow("delivery body must include every requested report");
+});
+
+test.each(["unrequested", "duplicate resource", "future input", "workflow input", "undeclared output", "missing contract", "missing schema", "oversized budget", "before all reads", "after delivery", "raw bypass", "missing analysis result"])("recurring analysis rejects %s before any run", async kind => {
+  const data = await analysisFixture(), { workflow } = data;
+  if (kind === "unrequested") { data.request = recurringDeliveryRequest(text)!; workflow.metadata.automation_request = recurringAutomationCandidateContext(data.request).automation_request; }
+  if (kind === "duplicate resource") workflow.steps[3].input = "{{invoice_report.structuredContent.summary}}";
+  if (kind === "future input") workflow.steps[2].input = "{{order_analysis.structuredContent.text}}";
+  if (kind === "workflow input") workflow.steps[2].input = "{{input.reportStartAt}}";
+  if (kind === "undeclared output") workflow.steps[2].input = "{{invoice_report.structuredContent.guessed}}";
+  if (kind === "missing contract") data.tools[0]!.bridge_contract = undefined;
+  if (kind === "missing schema") delete workflow.steps[2].output_schema;
+  if (kind === "oversized budget") workflow.steps[2].max_output_tokens = 8193;
+  if (kind === "before all reads") [workflow.steps[1], workflow.steps[2]] = [workflow.steps[2], workflow.steps[1]];
+  if (kind === "after delivery") [workflow.steps[3], workflow.steps[4]] = [workflow.steps[4], workflow.steps[3]];
+  if (kind === "raw bypass") workflow.steps[4].parameters.body = "{{invoice_report.structuredContent.summary}} {{order_report.structuredContent.summary}}";
+  if (kind === "missing analysis result") workflow.steps[4].parameters.body = "{{order_analysis.structuredContent.text}}";
+  expect(() => inspectRecurringAutomationCandidate(stringify(workflow), data.request, data.tools, "Platform Admin")).toThrow("Recurring automation candidate failed its server contract");
+});
+
+test("delivery reference extraction accepts literal framing, not malformed or excessive bindings", () => {
+  expect(deliveryOutputReferences("Report {review}: {{a.structuredContent.text}}\n{{b.structuredContent.text}}")).toHaveLength(2);
+  for (const value of ["{{a.structuredContent.text}} }}", "}} {{a.structuredContent.text}}", "{{a.structuredContent.text}} {{", "{{a + b}}", "{{a.structuredContent.text}}".repeat(17)])
+    expect(deliveryOutputReferences(value)).toBeNull();
 });
 
 test("a named-person request may retain useful exact report steps but cannot invent a delivery recipient", async () => {

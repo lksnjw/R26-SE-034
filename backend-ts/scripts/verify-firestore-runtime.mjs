@@ -172,7 +172,7 @@ async function start(repositoryValue) {
           required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
           { id: "invoice_report", action: relatedInvoiceTool.name, description: "Read complete invoices", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
           { id: "order_report", action: relatedOrderTool.name, description: "Read every related order", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", orderIds: "{{invoice_report.structuredContent.orderIds}}" } },
-          { id: "deliver_report", action: emailTool.name, description: "Propose reviewed email delivery", parameters: { recipient: "manager@example.test", subject: "Daily invoice and order report", body: "{{order_report.structuredContent.reportId}}" } },
+          { id: "deliver_report", action: emailTool.name, description: "Propose reviewed email delivery", parameters: { recipient: "manager@example.test", subject: "Daily invoice and order report", body: "Invoices: {{invoice_report.structuredContent.reportId}}\nOrders: {{order_report.structuredContent.reportId}}" } },
         ], metadata: { automation_request: recurringContext.automation_request, unresolved_requirements: unresolved } });
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: candidate } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
     }

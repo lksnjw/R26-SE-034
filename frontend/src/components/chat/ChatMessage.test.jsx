@@ -39,6 +39,21 @@ test("incomplete read preparation is not mislabeled as a successful result or a 
   expect(screen.getByText("1 tool call · preparation incomplete")).toBeTruthy();
   expect(screen.queryByText(/limit reached/)).toBeNull();
 });
+
+test.each(["MAPPED", "UNRESOLVED"])("recurring analysis %s is readable draft evidence, not an answer or delivery claim", (status) => {
+  const { container } = render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Workflow draft saved.", artifacts: {
+    intent: "WORKFLOW", yaml: "name: Daily\ntrigger:\n  type: manual\nsteps: []", can_execute: false,
+    automationRequest: { profile: "recurring-delivery-request/v1", cadence: "daily", channel: "email", requestedAddresses: ["manager@example.test"], analysisRequested: true },
+    automationComposition: { profile: "recurring-automation-composition/v1", status: "PARTIAL", analysis: { status }, mappedSteps: [
+      { stepId: "invoice_analysis", capability: "analysis", resource: "invoices", tool: "Bounded analysis", sourceStepId: "invoice_report" },
+    ], remainingRequirements: ["Confirm delivery time and timezone."], scheduleActive: false },
+  } }} /></MemoryRouter>);
+  const region = screen.getByRole("region", { name: "Recurring automation requirements" });
+  expect(region.textContent).toContain(status === "MAPPED" ? "Analysis mapped for each requested report · not executed" : "Requested report analysis still needs setup");
+  expect(region.textContent).toContain("invoice_analysis · invoices · Bounded analysis · from invoice_report");
+  expect(region.textContent).toContain("no schedule active"); expect(container.querySelector("pre")).toBeNull();
+  expect(region.textContent).not.toMatch(/CAPABILITIES_MAPPED|structuredContent|Email sent|Schedule activated/);
+});
 test("historical chat exposes saved structured/attachment/failure receipts even without an active operation monitor", () => {
   const { container } = render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Partial read.", artifacts: { intent: "QUERY", toolSteps: [
     { toolName: "invoices", status: "SUCCEEDED", result: { content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }], structuredContent: { invoice_id: "INV-7" } } },

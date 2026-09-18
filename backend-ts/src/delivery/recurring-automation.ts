@@ -3,6 +3,8 @@ import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { deliveryIntent } from "./email-draft.js";
 import type { RecipientResolution } from "./recipient-resolution.js";
+import { effectiveStepKind } from "../models/schemas.js";
+import { deliveryOutputReferences, inspectRecurringAnalysis } from "./recurring-analysis.js";
 
 export type RecurringRequestedResource = "invoices" | "orders";
 
@@ -23,7 +25,8 @@ export type RecurringDeliveryRequest = {
 export type RecurringAutomationComposition = {
   profile: "recurring-automation-composition/v1";
   status: "CAPABILITIES_MAPPED" | "PARTIAL";
-  mappedSteps: Array<{ stepId: string; capability: "report" | "delivery"; tool: string; resource?: RecurringRequestedResource }>;
+  mappedSteps: Array<{ stepId: string; capability: "report" | "delivery" | "analysis"; tool: string; resource?: RecurringRequestedResource; sourceStepId?: string }>;
+  analysis: { status: "NOT_REQUESTED" | "MAPPED" | "UNRESOLVED" };
   relatedRecords: { status: "MATCHED" | "NOT_REQUESTED" | "UNRESOLVED"; relationName?: string };
   reportWindowBound: boolean;
   recipientBound: boolean;
@@ -76,6 +79,7 @@ export function recurringDeliveryRequest(text: string, directoryResolution?: Rec
   const requestedCadence = cadence(text);
   const requirements = [
     ...(intent.reportRequested ? requestedResources.length ? requestedResources.map(resourceRequirement) : [REPORT_REQUIREMENT] : [MESSAGE_CONTENT_REQUIREMENT]),
+    ...(/\banaly[sz](?:e|es|ed|ing|is)\b/.test(normalized) ? [ANALYSIS_REQUIREMENT] : []),
     DELIVERY_REQUIREMENT,
     ...(exactRecipient ? [`Confirm data-sharing permission for the exact recipient ${exactRecipient}.`] : ["Resolve and confirm exactly one authorized recipient; do not guess a person's address."]),
     TIME_REQUIREMENT,
@@ -105,6 +109,8 @@ export function recurringAutomationCandidateContext(request: RecurringDeliveryRe
       "A report step must bind its reviewed window parameters to input.reportStartAt and input.reportEndAt.",
       "A related report must consume the preceding primary report's exact reviewed key projection.",
       "An email delivery step must use the literal requested address when exactly one address is present and bind its body to confirmed report output.",
+      "If analysis was requested, use one supported bounded analysis per requested report resource after all report reads; bind delivery to every analysis result.",
+      "The delivery body must explicitly reference every requested report resource, or its mapped analysis result. A single related-order summary does not prove invoice content was included.",
     ],
   };
 }
@@ -141,6 +147,7 @@ export function inspectRecurringAutomationCandidate(rawYAML: string, request: Re
   const reportSteps: Array<{ index: number; id: string; tool: ToolDefinition; parameters: Record<string, unknown>; resource: RecurringRequestedResource }> = [];
   const deliverySteps: Array<{ index: number; id: string; tool: ToolDefinition; parameters: Record<string, unknown> }> = [];
   for (const [index, step] of blueprint.steps.entries()) {
+    if (effectiveStepKind(step) === "analysis") continue;
     const action = (step.action ?? "").trim(), tool = byAction.get(action);
     if (!tool) { issues.push(`Step ${step.id} does not use one exact live capability`); continue; }
     if (!grantsRole(tool, userRole)) issues.push(`Step ${step.id} is not granted to the current role`);
@@ -173,6 +180,11 @@ export function inspectRecurringAutomationCandidate(rawYAML: string, request: Re
   }
 
   const relation = relatedRecordStatus(request, reportSteps);
+  const analysis = inspectRecurringAnalysis(blueprint, request.analysisRequested, request.requestedResources, reportSteps, tools, userRole);
+  issues.push(...analysis.issues);
+  for (const mapping of analysis.mappings) mappedSteps.push({ stepId: mapping.id, capability: "analysis", tool: "Bounded analysis", resource: mapping.resource, sourceStepId: mapping.sourceStepId });
+  const sourceOrder = new Map(blueprint.steps.map((step, index) => [step.id, index]));
+  mappedSteps.sort((left, right) => sourceOrder.get(left.stepId)! - sourceOrder.get(right.stepId)!);
   const exactRecipient = request.requestedAddresses.length === 1 ? request.requestedAddresses[0]! : null;
   let recipientBound = false, deliveryBodyBound = false;
   for (const delivery of deliverySteps) {
@@ -180,27 +192,30 @@ export function inspectRecurringAutomationCandidate(rawYAML: string, request: Re
     if (exactRecipient === null) {
       if (delivery.parameters[contract.recipient_parameter] !== undefined) issues.push("A delivery recipient was supplied without one exact requested address");
     } else if (delivery.parameters[contract.recipient_parameter] === exactRecipient) recipientBound = true;
-    const body = exactReference(delivery.parameters[contract.body_parameter]);
-    if (body && reportSteps.some(report => report.index < delivery.index && report.id === body.root && body.path[0] === "structuredContent")) deliveryBodyBound = true;
+    const sources = reportSteps.map(report => request.analysisRequested ? analysis.mappings.find(value => value.resource === report.resource) ?? report : report);
+    const body = deliveryOutputReferences(delivery.parameters[contract.body_parameter]);
+    const exact = body?.every(ref => ref.path[0] === "structuredContent" && sources.some(source => source.id === ref.root && source.index < delivery.index));
+    if (exact && sources.length > 0 && sources.every(source => body!.some(ref => ref.root === source.id))) deliveryBodyBound = true;
   }
   if (deliverySteps.length > 1) issues.push("A recurring draft may not silently select multiple delivery effects");
   if (reportSteps.length > 2) issues.push("The supported recurring report profile permits at most two reviewed report steps");
   if (deliverySteps.some(delivery => reportSteps.some(report => report.index > delivery.index))) issues.push("All reviewed report reads must precede the delivery effect");
+  if (deliverySteps.some(delivery => analysis.mappings.some(node => node.index > delivery.index))) issues.push("Every bounded analysis must precede the delivery effect");
   if (exactRecipient !== null && deliverySteps.length > 0 && !recipientBound) issues.push("The delivery step did not preserve the exact requested address");
-  if (request.reportRequested && deliverySteps.length > 0 && !deliveryBodyBound) issues.push("The delivery body is not bound to confirmed report output");
+  if (request.reportRequested && deliverySteps.length > 0 && !deliveryBodyBound) issues.push("The delivery body must include every requested report or mapped analysis output");
   if (request.requestedResources.includes("invoices") && request.requestedResources.includes("orders") && relation.status !== "MATCHED" &&
       reportSteps.some(report => report.tool.report_coverage_contract?.requested_key_coverage !== undefined))
     issues.push("Invoice and order reports do not have one exact reviewed relationship binding");
 
-  const remainingRequirements = recurringCompositionRequirements(request, reportSteps, deliverySteps.length, relation.status, recipientBound, deliveryBodyBound, windowInputReady);
+  const remainingRequirements = recurringCompositionRequirements(request, reportSteps, deliverySteps.length, relation.status, recipientBound, deliveryBodyBound, windowInputReady, analysis.bound);
   const unresolved = Array.isArray(blueprint.metadata?.unresolved_requirements) ? blueprint.metadata.unresolved_requirements : [];
   for (const requirement of remainingRequirements) if (!unresolved.includes(requirement)) issues.push(`Required unresolved outcome was omitted: ${requirement}`);
   if (issues.length) throw new Error(`Recurring automation candidate failed its server contract: ${[...new Set(issues)].join("; ")}`);
   const everyResourceMapped = request.requestedResources.length > 0 && request.requestedResources.every(resource => reportSteps.some(report => report.resource === resource));
   const fullyMapped = request.cadence !== "custom" && request.reportRequested && everyResourceMapped && windowInputReady && relation.status !== "UNRESOLVED" &&
-    deliverySteps.length === 1 && exactRecipient !== null && recipientBound && deliveryBodyBound && !request.analysisRequested;
+    deliverySteps.length === 1 && exactRecipient !== null && recipientBound && deliveryBodyBound && (!request.analysisRequested || analysis.bound);
   return { profile: "recurring-automation-composition/v1", status: fullyMapped ? "CAPABILITIES_MAPPED" : "PARTIAL", mappedSteps,
-    relatedRecords: relation, reportWindowBound: !request.reportRequested || reportSteps.length > 0 && windowInputReady,
+    relatedRecords: relation, analysis: { status: !request.analysisRequested ? "NOT_REQUESTED" : analysis.bound ? "MAPPED" : "UNRESOLVED" }, reportWindowBound: !request.reportRequested || reportSteps.length > 0 && windowInputReady,
     recipientBound, deliveryBodyBound, readyForPublication: false, scheduleActive: false, remainingRequirements };
 }
 
@@ -230,14 +245,14 @@ function automationMetadata(request: RecurringDeliveryRequest): Record<string, u
 
 function recurringCompositionRequirements(request: RecurringDeliveryRequest,
   reports: Array<{ index: number; id: string; tool: ToolDefinition; parameters: Record<string, unknown>; resource: RecurringRequestedResource }>, deliveryCount: number,
-  relation: RecurringAutomationComposition["relatedRecords"]["status"], recipientBound: boolean, deliveryBodyBound: boolean, windowInputReady: boolean): string[] {
+  relation: RecurringAutomationComposition["relatedRecords"]["status"], recipientBound: boolean, deliveryBodyBound: boolean, windowInputReady: boolean, analysisBound: boolean): string[] {
   const exactRecipient = request.requestedAddresses.length === 1 ? request.requestedAddresses[0]! : null;
   return [
     ...(!request.reportRequested ? [MESSAGE_CONTENT_REQUIREMENT] : []),
     ...(request.reportRequested && !windowInputReady ? [REPORT_REQUIREMENT] : []),
     ...request.requestedResources.filter(resource => !reports.some(report => report.resource === resource)).map(resourceRequirement),
     ...(request.requestedResources.includes("invoices") && request.requestedResources.includes("orders") && relation !== "MATCHED" ? [RELATED_REQUIREMENT] : []),
-    ...(request.analysisRequested ? [ANALYSIS_REQUIREMENT] : []),
+    ...(request.analysisRequested && !analysisBound ? [ANALYSIS_REQUIREMENT] : []),
     ...(deliveryCount !== 1 ? [DELIVERY_REQUIREMENT] : []),
     ...(request.reportRequested && deliveryCount === 1 && !deliveryBodyBound ? [DELIVERY_BODY_REQUIREMENT] : []),
     ...(exactRecipient === null ? ["Resolve and confirm exactly one authorized recipient; do not guess a person's address."] :
@@ -265,12 +280,6 @@ function relatedRecordStatus(request: RecurringDeliveryRequest,
     }
   }
   return { status: "UNRESOLVED" };
-}
-
-function exactReference(value: unknown): { root: string; path: string[] } | null {
-  if (typeof value !== "string") return null;
-  const match = /^\{\{\s*([A-Za-z][A-Za-z0-9_-]*)((?:\.[A-Za-z0-9_-]+)+)\s*\}\}$/.exec(value);
-  return match ? { root: match[1]!, path: match[2]!.slice(1).split(".") } : null;
 }
 
 function record(value: unknown): Record<string, unknown> | null {

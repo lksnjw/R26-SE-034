@@ -95,7 +95,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
     const binding = (value: unknown, depth: number): ReadBinding => {
       if (++localNodes > 4096 || ++bindingNodes > 32768 || depth > 16) { issues.push("Read parameters exceed supported limits"); return { kind: "literal", value: null }; }
       if (typeof value === "string") {
-        const exact = /^\{\{([\s\S]*?)\}\}$/.exec(value.trim()); if (exact) return reference(exact[1]!);
+        const exact = /^\{\{([^{}]*?)\}\}$/.exec(value.trim()); if (exact) return reference(exact[1]!);
         const parts: Array<string | ReadReference> = []; let end = 0;
         for (const match of value.matchAll(/\{\{([\s\S]*?)\}\}/g)) { parts.push(value.slice(end, match.index), reference(match[1]!)); end = match.index + match[0].length; }
         parts.push(value.slice(end));

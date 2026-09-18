@@ -279,10 +279,11 @@ function AutomationRequestBanner({ request, composition }) {
       <span className="text-amber-700 dark:text-amber-300">· {hasComposition ? "Draft composed" : "Setup required"} · no schedule active</span>
     </div>
     <p className="mt-1 text-gray-500 dark:text-gray-400">Channel: {request.channel} · Recipient: {recipient}</p>
+    {request.analysisRequested && <p className="mt-1 text-gray-500 dark:text-gray-400">{composition?.analysis?.status === "MAPPED" ? "Analysis mapped for each requested report · not executed" : "Requested report analysis still needs setup"}</p>}
     {mapped.length > 0 && <div className="mt-2">
-      <p className="font-semibold text-gray-800 dark:text-gray-200">Mapped capabilities</p>
+      <p className="font-semibold text-gray-800 dark:text-gray-200">Mapped workflow steps</p>
       <ul className="mt-1 space-y-1 text-gray-600 dark:text-gray-300">{mapped.map((step) => <li key={`${step.stepId}-${step.tool}`} className="flex gap-2">
-        <span className="w-14 shrink-0 capitalize text-gray-400">{step.capability}</span><span>{step.stepId} · {step.resource ? `${step.resource} · ` : ""}{step.tool}</span>
+        <span className="w-14 shrink-0 capitalize text-gray-400">{step.capability}</span><span>{step.stepId} · {step.resource ? `${step.resource} · ` : ""}{step.tool}{step.capability === "analysis" && step.sourceStepId ? ` · from ${step.sourceStepId}` : ""}</span>
       </li>)}</ul>
     </div>}
     {Array.isArray(requirements) && requirements.length > 0 && <><p className="mt-2 font-semibold text-gray-800 dark:text-gray-200">Resolve before publication</p><ul className="mt-1 list-disc space-y-1 pl-5 text-gray-600 dark:text-gray-300">{requirements.map((item) => <li key={item}>{item}</li>)}</ul></>}
