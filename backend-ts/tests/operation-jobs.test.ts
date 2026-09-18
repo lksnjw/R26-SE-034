@@ -293,16 +293,187 @@ test.each(["decision", "skip receipt"])("post-commit %s acknowledgement loss fen
   } finally { await queue.stop(); await repository.close(); }
 });
 
-test("manual decision operation cannot activate a recurring schedule without branch coverage qualification", async () => {
+test("a decision operation without declared report-window inputs still cannot activate a recurring schedule", async () => {
   const s = await setup(null, true, false, false, false, true); await prepareDecisionWorkflow(s, "analysis");
   expect((await s.publish()).statusCode).toBe(200); const workflow = (await s.repository.snapshot()).workflows.flow!;
   const denied = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
     workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime: "09:00",
     reportingPeriod: "previous-calendar-day", misfirePolicy: "SKIP", misfireGraceSeconds: 300, servicePrincipalId: "requester",
     input: { sendReport: true }, reportWindowBinding: scheduleReportWindowBinding });
-  expect(denied.statusCode, denied.body).toBe(422); expect(denied.json().meta.code).toBe("SCHEDULE_OPERATION_DECISIONS_UNSUPPORTED");
+  expect(denied.statusCode, denied.body).toBe(422); expect(denied.json().meta.code).toBe("SCHEDULE_REPORT_WINDOW_BINDING_INVALID");
   expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
   expect(Object.keys((await s.repository.snapshot()).schedules)).toHaveLength(0);
+});
+
+async function prepareScheduledDecision(s: Awaited<ReturnType<typeof setup>>, kind: "analysis" | "agent") {
+  await prepareDecisionWorkflow(s, kind);
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, source = parse(workflow.yaml);
+    Object.assign(source.trigger.config.inputSchema.properties, { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } });
+    source.trigger.config.inputSchema.required.push("reportStartAt", "reportEndAt");
+    Object.assign(source.steps[0], { action: s.reportRead.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } });
+    source.steps[1].input = "{{lookup.structuredContent.summary}}"; // Keep pagination metadata outside the bounded summary input.
+    workflow.yaml = stringify(source);
+  });
+}
+async function activateDecisionSchedule(s: Awaited<ReturnType<typeof setup>>, input: Record<string, unknown>, cadence: "daily" | "weekly" | "monthly" = "daily") {
+  const publication = await s.publish(); expect(publication.statusCode, publication.body).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!, localTime = new Date(Date.now() + 120000).toISOString().slice(11, 16);
+  return s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-calendar-schedule-command/v2", cadence,
+    ...(cadence === "weekly" ? { dayOfWeek: 1 } : cadence === "monthly" ? { dayOfMonth: 1 } : {}), baseRevision: 0, workflowVersion: workflow.publishedVersion,
+    workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC", localTime,
+    reportingPeriod: cadence === "weekly" ? "previous-calendar-week" : cadence === "monthly" ? "previous-calendar-month" : "previous-calendar-day",
+    misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input, reportWindowBinding: scheduleReportWindowBinding });
+}
+async function admitScheduledOccurrence(s: Awaited<ReturnType<typeof setup>>, saved: any) {
+  expect(saved.statusCode, saved.body).toBe(200);
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+  const at = Date.parse(saved.json().data.nextRunAt);
+  expect(await workflowScheduleRunner(s.services).runDue(at)).toEqual({ admitted: 1, skipped: 0, blocked: 0 });
+  const occurrence = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0];
+  return { id: occurrence.executionId as string, at };
+}
+
+test.each(["analysis", "agent"].flatMap(kind => [true, false].flatMap(selected => [false, true, "cursor"].map(pages => [kind, selected, pages] as const))))(
+  "scheduled decision %s selected=%s pagination=%s preserves coverage, skips and independent approval", async (kind, selected, pages) => {
+    const s = await setup(null, true, false, false, pages as boolean | "cursor", true); await prepareScheduledDecision(s, kind as "analysis" | "agent");
+    const { id, at } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected }));
+    await s.wait(id, selected ? "AWAITING_APPROVAL" : "DONE");
+    const before = (await s.repository.snapshot()).executions[id]!, count = pages ? 3 : 1;
+    expect(before.reportCoverages?.lookup).toMatchObject({ nodeId: "lookup", startAt: before.scheduleSource!.reportWindow.startAt, endAt: before.scheduleSource!.reportWindow.endAt });
+    expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.reportRead))).toHaveLength(count);
+    expect(before.readProgress!.decisions!.sendGate!.selected).toBe(selected ? "then" : "else");
+    if (selected) {
+      expect(s.modelFetch).toHaveBeenCalledTimes(1);
+      expect(await s.review(id)).toMatchObject({ arguments: { value: kind === "agent" ? "AGENT ANSWER" : "FIXTURE REPORT" }, canDecide: true });
+      expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.write))).toHaveLength(0);
+      expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200);
+      await s.wait(id, "DONE"); expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.write))).toHaveLength(1);
+    } else {
+      expect(s.modelFetch).not.toHaveBeenCalled(); expect(before.runtimeApprovalSecret).toBeUndefined();
+      expect(before.stepOutputs).not.toHaveProperty(kind === "agent" ? "research" : "summarize"); expect(before.stepOutputs).not.toHaveProperty("send");
+    }
+    const beforeReplay = await s.repository.snapshot(), calls = s.sdk.callTool.mock.calls.length;
+    expect(await workflowScheduleRunner(s.services).runDue(at)).toEqual({ admitted: 0, skipped: 0, blocked: 0 });
+    const after = await s.repository.snapshot(); expect(after.executionEvents).toEqual(beforeReplay.executionEvents);
+    expect(Object.values(after.executions).filter(run => run.scheduleSource)).toHaveLength(1); expect(s.sdk.callTool).toHaveBeenCalledTimes(calls);
+  });
+
+async function prepareBranchReports(s: Awaited<ReturnType<typeof setup>>, damage?: "sibling" | "join" | "late" | "window") {
+  await prepareScheduleWorkflow(s);
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, source = parse(workflow.yaml);
+    source.trigger.config.inputSchema.properties.sendReport = { type: "boolean" }; source.trigger.config.inputSchema.required.push("sendReport");
+    const read = (id: string) => ({ ...structuredClone(source.steps[0]), id }), effect = (id: string, reportId: string) => ({ ...source.steps[1], id, parameters: { value: `{{${reportId}.structuredContent.summary}}` } });
+    const action = (nodeId: string) => ({ kind: "action", nodeId }), seq = (...nodes: unknown[]) => ({ kind: "sequence", nodes });
+    source.steps = [read("yes_report"), effect("yes_send", "yes_report"), read("no_report"), effect("no_send", "no_report")];
+    const gate = { kind: "if", id: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] },
+      then: seq(action("yes_report"), action("yes_send")), else: seq(action("no_report"), action("no_send")) };
+    let root = seq(gate);
+    if (damage === "sibling") { source.steps.splice(2, 1); gate.else.nodes = [action("no_send")]; source.steps[2].parameters = { value: "Literal effect cannot borrow Yes report evidence" }; }
+    if (damage === "late") { source.steps[1].parameters = { value: "Before report" }; [source.steps[0], source.steps[1]] = [source.steps[1], source.steps[0]]; gate.then.nodes.reverse(); }
+    if (damage === "window") source.steps[2].parameters.startAt = "2026-01-01T00:00:00Z";
+    if (damage === "join") {
+      source.steps = [read("yes_report"), read("no_report"), { ...source.steps[1], id: "after", parameters: { value: "No branch receipt escapes scope" } }];
+      gate.then.nodes = [action("yes_report")]; gate.else.nodes = [action("no_report")]; root = seq(gate, action("after"));
+    }
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v1", root } };
+    workflow.yaml = stringify(source); workflow.steps = source.steps.length;
+  });
+}
+
+test.each([true, false])("scheduled branch-local reports select=%s do not require sibling coverage receipts", async selected => {
+  const s = await setup(); await prepareBranchReports(s);
+  const { id } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected })); await s.wait(id, "AWAITING_APPROVAL");
+  const run = (await s.repository.snapshot()).executions[id]!, own = selected ? "yes_report" : "no_report", other = selected ? "no_report" : "yes_report";
+  expect(Object.keys(run.reportCoverages!)).toEqual([own]); expect(run.readProgress!.attempts[other]?.status).toBe(selected ? undefined : "SKIPPED");
+  expect(await s.review(id)).toMatchObject({ nodeId: selected ? "yes_send" : "no_send", canDecide: true });
+  expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE");
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead), exactBridgeName(s.write)]);
+  expect((await s.repository.snapshot()).executions[id]!.readProgress!.attempts[other]!.status).toBe("SKIPPED");
+});
+
+test.each(["sibling", "join", "late", "window"] as const)("schedule rejects %s coverage laundering before admitting an occurrence", async damage => {
+  const s = await setup(); await prepareBranchReports(s, damage);
+  const response = await activateDecisionSchedule(s, { sendReport: true }); expect(response.statusCode, response.body).toBe(422);
+  expect(response.json().meta.code).toBe("SCHEDULE_REPORT_COVERAGE_REQUIRED");
+  const state = await s.repository.snapshot(); expect(state.schedules).toEqual({}); expect(state.scheduleOccurrences).toEqual({}); expect(state.executions).toEqual({});
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test.each([[true, true], [true, false], [false, true]])("nested scheduled decisions outer=%s inner=%s retain branch-local coverage", async (outer, inner) => {
+  const s = await setup(); await prepareBranchReports(s);
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, source = parse(workflow.yaml), gate = source.metadata.controlFlow.root.nodes[0];
+    source.trigger.config.inputSchema.properties.inner = { type: "boolean" }; source.trigger.config.inputSchema.required.push("inner");
+    gate.then = { kind: "sequence", nodes: [{ kind: "if", id: "inner_gate", predicate: { kind: "ref", source: "workflowInput", path: ["inner"] },
+      then: gate.then, else: { kind: "sequence", nodes: [] } }] }; workflow.yaml = stringify(source);
+  });
+  const effect = !outer ? "no_send" : inner ? "yes_send" : null;
+  const { id } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: outer, inner }, "monthly"));
+  await s.wait(id, effect ? "AWAITING_APPROVAL" : "DONE");
+  if (effect) {
+    expect(await s.review(id)).toMatchObject({ nodeId: effect });
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE");
+  }
+  const run = (await s.repository.snapshot()).executions[id]!;
+  expect(run.readProgress!.decisions!.gate!.selected).toBe(outer ? "then" : "else");
+  expect(run.readProgress!.decisions!.inner_gate?.selected).toBe(outer ? inner ? "then" : "else" : undefined);
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual(effect ? [exactBridgeName(s.reportRead), exactBridgeName(s.write)] : []);
+  expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test.each([true, false])("related-record report pair remains exact before a scheduled selected=%s effect", async selected => {
+  const s = await setup(null, true, false, false, "related"); await prepareScheduleWorkflow(s);
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, source = parse(workflow.yaml), action = (nodeId: string) => ({ kind: "action", nodeId });
+    source.trigger.config.inputSchema.properties.sendReport = { type: "boolean" }; source.trigger.config.inputSchema.required.push("sendReport");
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [action("lookupReport"), action("lookupOrders"),
+      { kind: "if", id: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] },
+        then: { kind: "sequence", nodes: [action("send")] }, else: { kind: "sequence", nodes: [] } }] } } }; workflow.yaml = stringify(source);
+  });
+  const { id } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected }, "weekly"));
+  await s.wait(id, selected ? "AWAITING_APPROVAL" : "DONE");
+  const run = (await s.repository.snapshot()).executions[id]!, receipts = run.reportCoverages!;
+  expect(receipts.lookupReport!.relatedRecords).toMatchObject({ mode: "PROJECTED" }); expect(receipts.lookupOrders!.relatedRecords).toMatchObject({ mode: "REQUESTED_MATCHED" });
+  expect(receipts.lookupReport!.relatedRecords!.keysHash).toBe(receipts.lookupOrders!.relatedRecords!.keysHash);
+  if (selected) {
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE");
+  }
+  expect(s.sdk.callTool.mock.calls.filter(call => call[0] === exactBridgeName(s.write))).toHaveLength(selected ? 1 : 0);
+});
+
+test.each([true, false])("tampering selected=%s branch receipt while approval waits cannot dispatch", async selected => {
+  const s = await setup(); await prepareBranchReports(s);
+  const { id } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected })); await s.wait(id, "AWAITING_APPROVAL");
+  const command = await s.command(id), own = selected ? "yes_report" : "no_report", effect = selected ? "yes_send" : "no_send";
+  await s.repository.mutate(state => { state.executions[id]!.reportCoverages![own]!.itemCount += 1; });
+  expect((await s.request("POST", `/api/executions/${id}/approve`, command, "reviewer")).statusCode).toBe(200); await s.wait(id, "FAILED");
+  const failed = (await s.repository.snapshot()).executions[id]!;
+  expect(failed.operationSecret!.intents[effect]).toBeUndefined(); expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead)]);
+});
+
+test.each([true, false])("decision schedule selected=%s recovers one occurrence after claim acknowledgement loss", async selected => {
+  const storage = new Records(), s = await setup(storage); await prepareBranchReports(s);
+  const saved = await activateDecisionSchedule(s, { sendReport: selected }); expect(saved.statusCode, saved.body).toBe(200);
+  const at = Date.parse(saved.json().data.nextRunAt);
+  storage.loseWhen = state => Object.values(state.scheduleOccurrences).some(value => value.state === "ADMITTING");
+  await expect(workflowScheduleRunner(s.services).runDue(at)).rejects.toThrow(/acknowledgement loss/); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  await s.app.close(); const repository = await Repository.open(storage), validator = new RegistryValidator(s.services.registries, repository);
+  const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: s.sdk,
+    admissionAuthorizer: admissionAuthorizer(repository, s.services.registries) });
+  const services = { ...s.services, repository, validator, erpbridgeSession: session, executor: new Executor(new ToolRegistry(), validator) };
+  const operations = operationJobQueue(services), schedules = workflowScheduleRunner(services);
+  closers.push({ close: () => schedules.stop() }, { close: () => operations.stop() }, session, repository); await operations.start(); await schedules.start();
+  await vi.waitFor(async () => {
+    const state = await repository.snapshot(), runs = Object.values(state.executions).filter(run => run.scheduleSource);
+    expect(runs).toHaveLength(1); expect(runs[0]!.status).toBe("AWAITING_APPROVAL");
+    expect(Object.values(state.scheduleOccurrences)[0]!.state).toBe("ADMITTED");
+  }, { timeout: 4000 });
+  const run = Object.values((await repository.snapshot()).executions).find(run => run.scheduleSource)!;
+  expect(run.readProgress!.decisions!.gate!.selected).toBe(selected ? "then" : "else"); expect(Object.keys(run.reportCoverages!)).toEqual([selected ? "yes_report" : "no_report"]);
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead)]);
+  expect(await schedules.runDue(at)).toEqual({ admitted: 0, skipped: 0, blocked: 0 });
 });
 
 test("changing a saved decision cannot move an existing approval to another branch", async () => {

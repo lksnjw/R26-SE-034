@@ -10,6 +10,7 @@ import { publicExecution } from "../redact/public-model-usage.js";
 import { newReadProgress, appendExecutionEvent, assertCurrentRunController } from "./read-checkpoints.js";
 import { advanceOperationDecisions } from "./operation-control-checkpoints.js";
 import { operationControlTransition } from "../workflows/operation-control-flow.js";
+import { scheduledReportPaths } from "./scheduled-report-paths.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
 import { isOperationToolNode, resolveReadBinding, type CompiledOperationPlan, type OperationToolNode } from "../workflows/compiled-read.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
@@ -101,13 +102,13 @@ function recordValue(value: unknown): Record<string, unknown> {
 function assertCoverageBeforeScheduledEffect(run: Execution, plan: CompiledOperationPlan, live: readonly ToolDefinition[], effectIndex: number): void {
   const source = run.scheduleSource;
   if (!source) return;
-  const scheduledReads = plan.ir.root.nodes.slice(0, effectIndex).filter((node): node is OperationToolNode => isOperationToolNode(node) && node.effectClass === "read" &&
-    live.some(tool => tool.tool_id === node.capability.toolId && tool.report_coverage_contract));
-  if (!scheduledReads.length) throw new Error("Scheduled effects require prior confirmed report coverage");
+  const effectId = plan.ir.root.nodes[effectIndex]?.id;
+  const scheduledReads = effectId ? scheduledReportPaths(plan, live, source.reportWindowBinding).get(effectId) : undefined;
+  if (!scheduledReads?.length) throw new Error("Scheduled effects require prior confirmed in-scope report coverage");
   const receipts = run.reportCoverages ?? (run.reportCoverage ? { [run.reportCoverage.nodeId]: run.reportCoverage } : {});
   const requiredReceipts: ReportCoverageReceipt[] = [];
-  for (const node of scheduledReads) {
-    const receipt = receipts[node.id], tool = live.find(value => value.tool_id === node.capability.toolId);
+  for (const { node, tool } of scheduledReads) {
+    const receipt = receipts[node.id];
     if (!receipt || !tool?.report_coverage_contract || tool.tool_id !== receipt.toolId || node.capability.contractHash !== receipt.contractHash)
       throw new Error("Scheduled report coverage no longer matches the reviewed read contract");
     const args = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs }) as Record<string, unknown>;

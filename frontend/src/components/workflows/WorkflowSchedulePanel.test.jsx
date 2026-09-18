@@ -53,6 +53,16 @@ test("lost save acknowledgement locks controls until authoritative reload", asyn
   expect(workflowScheduleService.save).toHaveBeenCalledTimes(1);
 });
 
+test("decision schedule guidance requires scope-specific evidence and never treats activation rejection as success", async () => {
+  workflowScheduleService.save.mockRejectedValueOnce({ response: { status: 422, data: { message: "Complete report evidence is missing before effect no_send" } } });
+  render(<WorkflowSchedulePanel workflow={{ id: "flow" }} actorId="owner" />);
+  const activate = await screen.findByRole("button", { name: "Activate daily schedule" }); selectWindowBinding();
+  expect(screen.getByText(/a sibling branch cannot supply it/)).toBeTruthy(); fireEvent.click(activate);
+  await screen.findByRole("alert"); expect(screen.getByRole("alert")).toHaveTextContent("Complete report evidence is missing before effect no_send");
+  expect(screen.queryByText(/Daily schedule active/)).toBeNull(); expect(activate).toBeDisabled();
+  expect(workflowScheduleService.save).toHaveBeenCalledTimes(1);
+});
+
 test("does not offer activation for an unpublished or unsupported workflow", async () => {
   workflowService.readiness.mockResolvedValue({ ...readiness, published: false, executionProfile: "sequential-read-v1" });
   render(<WorkflowSchedulePanel workflow={{ id: "flow" }} actorId="owner" />); await screen.findByText(/Legacy trigger text is not an active schedule/);

@@ -11,7 +11,7 @@ import { operationJobQueue, supportsOperationJobs } from "./operation-jobs.js";
 import { canViewWorkflow } from "../workflows/commands.js";
 import { isOperationToolNode, type CompiledOperationPlan, type ReadBinding } from "../workflows/compiled-read.js";
 import type { ToolDefinition } from "../registry/schemas.js";
-import { reportCoverageParameters } from "../tools/report-coverage-contract.js";
+import { scheduledReportPaths } from "./scheduled-report-paths.js";
 
 const digest = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJSONBytes(value)).digest("hex")}`;
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -188,20 +188,8 @@ function referencesWorkflowInput(binding: ReadBinding, name: string): boolean {
   if (binding.kind === "array") return binding.items.some(child => referencesWorkflowInput(child, name));
   return false;
 }
-function directlyBindsParameter(binding: ReadBinding, parameter: string, workflowInput: string): boolean {
-  if (binding.kind !== "object") return false;
-  const value = binding.fields[parameter];
-  return value?.kind === "ref" && value.source === "workflowInput" && value.path.length === 1 && value.path[0] === workflowInput;
-}
-function directlyBindsNodeOutput(binding: ReadBinding, parameter: string, nodeId: string, path: readonly string[]): boolean {
-  if (binding.kind !== "object") return false;
-  const value = binding.fields[parameter];
-  return value?.kind === "ref" && value.source === "nodeOutput" && value.nodeId === nodeId &&
-    value.path.length === path.length && value.path.every((part, index) => part === path[index]);
-}
 function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<string, unknown>, binding: ReportWindowInputBinding, window: ReportWindow,
   tools: readonly ToolDefinition[]) {
-  if (plan.ir.flow) throw new HandlerFailure(422, "Operation decisions currently support manual runs only; recurring branch coverage is not qualified", { code: "SCHEDULE_OPERATION_DECISIONS_UNSUPPORTED" });
   if (!reportWindowInputBindingSchema.safeParse(binding).success)
     throw new HandlerFailure(422, "Report-window input binding is malformed", { code: "SCHEDULE_REPORT_WINDOW_BINDING_INVALID" });
   const names = [binding.startAtInput, binding.endAtInput];
@@ -216,34 +204,7 @@ function bindReportWindowInput(plan: CompiledOperationPlan, staticInput: Record<
     if (!plan.ir.root.nodes.some(node => isOperationToolNode(node) && node.effectClass === "read" && referencesWorkflowInput(node.inputs, name)))
       throw new HandlerFailure(422, `Report-window input ${name} must be referenced by a reviewed ERP read step`, { code: "SCHEDULE_REPORT_WINDOW_BINDING_UNUSED" });
   }
-  const firstEffect = plan.ir.root.nodes.findIndex(node => isOperationToolNode(node) && node.effectClass !== "read");
-  const coverage = plan.ir.root.nodes.flatMap((node, index) => {
-    if (firstEffect < 0 || index >= firstEffect) return [];
-    if (!isOperationToolNode(node) || node.effectClass !== "read") return [];
-    const tool = tools.find(value => value.tool_id === node.capability.toolId && node.capability.contractHash === digest(value));
-    if (!tool?.report_coverage_contract) return [];
-    try {
-      const parameters = reportCoverageParameters(tool)!;
-      const pagination = tool.report_coverage_contract.pagination;
-      const pageParameter = pagination?.profile === "page-number/v1" ? pagination.page_parameter : pagination?.cursor_parameter;
-      return directlyBindsParameter(node.inputs, parameters.start, binding.startAtInput) && directlyBindsParameter(node.inputs, parameters.end, binding.endAtInput) &&
-        (!pageParameter || node.inputs.kind === "object" && !Object.hasOwn(node.inputs.fields, pageParameter)) ? [{ node, tool }] : [];
-    } catch { return []; }
-  });
-  const supportedSingle = coverage.length === 1 && !coverage[0]!.tool.report_coverage_contract!.key_projection &&
-    !coverage[0]!.tool.report_coverage_contract!.requested_key_coverage;
-  let supportedRelation = false;
-  if (coverage.length === 2) {
-    const [primary, related] = coverage, primaryContract = primary!.tool.report_coverage_contract!, relatedContract = related!.tool.report_coverage_contract!;
-    supportedRelation = !!primaryContract.key_projection && !!relatedContract.requested_key_coverage &&
-      !primaryContract.requested_key_coverage && !relatedContract.key_projection &&
-      primaryContract.key_projection.relation_name === relatedContract.requested_key_coverage.relation_name &&
-      directlyBindsNodeOutput(related!.node.inputs, relatedContract.requested_key_coverage.keys_parameter, primary!.node.id,
-        ["structuredContent", ...primaryContract.key_projection.keys_path]);
-  }
-  if (!supportedSingle && !supportedRelation) throw new HandlerFailure(422,
-    "An active schedule requires either one reviewed complete report or one reviewed primary report followed by an exact related-key coverage report before the first effect",
-    { code: "SCHEDULE_REPORT_COVERAGE_REQUIRED" });
+  scheduledReportPaths(plan, tools, binding);
   const effective = { ...structuredClone(staticInput), ...values };
   if (!schema || validateToolInput(schema, effective).length)
     throw new HandlerFailure(422, "Schedule values plus the server-derived report window do not match the published workflow input schema", { code: "SCHEDULE_INPUT_INVALID" });
@@ -468,7 +429,10 @@ export class WorkflowScheduleRunner {
         if (!occurrence || occurrence.state !== "ADMITTING") return;
         occurrence.state = "ADMITTED"; occurrence.executionId = String((result.execution as { id?: unknown }).id); occurrence.admittedAt = new Date(nowMs).toISOString();
         if (schedule?.revision === claim.schedule.revision) {
-          schedule.lastOccurrenceAt = occurrence.scheduledFor; schedule.nextRunAt = nextCalendarOccurrence(recurrence(schedule), nowMs);
+          // A recovered durable claim may be ahead of the current wall clock
+          // after clock correction. Never point back at its terminal occurrence.
+          schedule.lastOccurrenceAt = occurrence.scheduledFor;
+          schedule.nextRunAt = nextCalendarOccurrence(recurrence(schedule), Math.max(nowMs, Date.parse(occurrence.scheduledFor)));
           schedule.updatedAt = new Date(nowMs).toISOString(); delete schedule.lastError;
         }
       });
