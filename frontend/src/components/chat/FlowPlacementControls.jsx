@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { canPlaceNode } from "./flowPlacement";
+import { canPlaceNode, insertionPositionValue } from "./flowPlacement";
 import ConditionFields from "./ConditionFields";
 import ReadValueFields from "./ReadValueFields";
 
@@ -35,23 +35,34 @@ export function FlowPlacementPoint({ target, model, moving, revision, disabled, 
   </li>;
 }
 
-export function CanvasInsertionForm({ target, disabled, onPreview, onCancel }) {
+export function ModelInsertionPosition({ model, value, onChange, label }) {
+  return <label className="block text-xs text-gray-500">Insert position<select aria-label={label} className={input} value={value} onChange={event => onChange(event.target.value)} disabled={!model.valid}>
+    {model.placements.map(target => <option key={target.key} value={insertionPositionValue(target)}>{target.label}</option>)}
+  </select></label>;
+}
+
+export function CanvasInsertionForm({ target, disabled, onPreview, onCancel, onModel, allowAnalysis = false, allowAgent = false, allowReturn = true }) {
   const [kind, setKind] = useState("action"), [id, setId] = useState(""), [action, setAction] = useState("");
   const [predicate, setPredicate] = useState({ kind: "literal", value: false });
   const [output, setOutput] = useState({ schema: { type: "string" }, value: { kind: "literal", value: "" } });
   return <form aria-label="Insert canvas step" className="workspace-reveal mb-5 space-y-3 border-y border-primary/25 py-4" onSubmit={event => {
     event.preventDefault();
     if (disabled) return;
+    if (kind === "analysis" || kind === "agent") {
+      if (kind === "analysis" ? allowAnalysis : allowAgent) onModel?.(kind, target);
+      return;
+    }
+    if (kind === "return" && !allowReturn) return;
     const placement = { beforeNodeId: target.beforeNodeId, ...(target.destination ? { destination: target.destination } : {}) };
     const command = kind === "action" ? { type: "addNode", node: { id, action, parameters: {} }, ...placement }
       : kind === "if" ? { type: "addCondition", conditionId: id, predicate, ...placement } : { type: "addReturn", nodeId: id, output, ...placement };
     onPreview(id, command, { location: target.label }, { step: id, location: target.label, ...(kind === "action" ? { tool: action, parameters: "Configure required inputs after saving" } : kind === "if" ? { predicate, paths: "New empty If yes / If no paths" } : { output }) });
   }}>
     <h4 className="text-xs font-semibold">Insert step</h4><p className="break-words text-xs text-gray-500">{target.label}</p>
-    <label className="block text-xs text-gray-500">Step type<select aria-label="Canvas step type" className={input} value={kind} onChange={event => setKind(event.target.value)}><option value="action">ERP tool action</option><option value="if">Condition · two paths</option><option value="return">Workflow return</option></select></label>
-    <label className="block text-xs text-gray-500">Stable step ID<input aria-label="Canvas step ID" className={input} value={id} onChange={event => setId(event.target.value)} pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" maxLength={64} required /></label>
-    {kind === "action" ? <label className="block text-xs text-gray-500">Registered tool<input aria-label="Canvas step tool" className={input} value={action} onChange={event => setAction(event.target.value)} required maxLength={128} /></label> : kind === "if" ? <ConditionFields value={predicate} onChange={setPredicate} /> : <ReadValueFields value={output} onChange={setOutput} />}
+    <label className="block text-xs text-gray-500">Step type<select aria-label="Canvas step type" className={input} value={kind} onChange={event => setKind(event.target.value)}><option value="action">ERP tool action</option><option value="if">Condition · two paths</option>{allowAnalysis && <option value="analysis">Structured analysis</option>}{allowAgent && <option value="agent">Bounded runtime agent</option>}{allowReturn && <option value="return">Workflow return</option>}</select></label>
+    {!["analysis", "agent"].includes(kind) && <label className="block text-xs text-gray-500">Stable step ID<input aria-label="Canvas step ID" className={input} value={id} onChange={event => setId(event.target.value)} pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" maxLength={64} required /></label>}
+    {kind === "action" ? <label className="block text-xs text-gray-500">Registered tool<input aria-label="Canvas step tool" className={input} value={action} onChange={event => setAction(event.target.value)} required maxLength={128} /></label> : kind === "if" ? <ConditionFields value={predicate} onChange={setPredicate} /> : kind === "return" ? <ReadValueFields value={output} onChange={setOutput} /> : <p className="text-xs text-gray-500">Continue to the bounded model editor at this exact position. Review its input, answer contract and limits before saving.</p>}
     <p className="text-[10px] text-gray-500">Preview first. Saving creates a draft; publication and execution remain separate.</p>
-    <div className="flex flex-wrap gap-2"><button className={`${button} text-primary`} disabled={disabled}>Preview insertion</button><button type="button" className={button} onClick={onCancel}>Cancel insertion</button></div>
+    <div className="flex flex-wrap gap-2"><button className={`${button} text-primary`} disabled={disabled}>{["analysis", "agent"].includes(kind) ? "Configure model step" : "Preview insertion"}</button><button type="button" className={button} onClick={onCancel}>Cancel insertion</button></div>
   </form>;
 }

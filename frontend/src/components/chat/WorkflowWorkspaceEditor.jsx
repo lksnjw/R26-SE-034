@@ -24,8 +24,8 @@ import { flowLoops } from "./CollectionFields";
 import CollectionInspector, { CollectionWrapForm } from "./CollectionInspector";
 import CollectionPatchPreview from "./CollectionPatchPreview";
 import WorkflowEditHistory from "./WorkflowEditHistory";
-import { flowPlacementModel, movePlacementPreview } from "./flowPlacement";
-import { FlowMoveHandle, FlowPlacementPoint, CanvasInsertionForm } from "./FlowPlacementControls";
+import { flowPlacementModel, movePlacementPreview, insertionPlacementPreview, insertionPositionValue } from "./flowPlacement";
+import { FlowMoveHandle, FlowPlacementPoint, CanvasInsertionForm, ModelInsertionPosition } from "./FlowPlacementControls";
 import IterationNodeEvidence from "../executions/IterationNodeEvidence";
 import { projectIterationEvidence } from "../../utils/iterationEvidence";
 import AnalysisNodeInspector from "./AnalysisNodeInspector";
@@ -119,6 +119,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
   const [returnOutput, setReturnOutput] = useState({ schema: { type: "string" }, value: { kind: "literal", value: "" } });
   const [wrappingCollection, setWrappingCollection] = useState(false);
   const [arranging, setArranging] = useState(false), [movingRecord, setMoving] = useState(null), [insertRecord, setInsertTarget] = useState(null);
+  const [modelInsertionRevision, setModelInsertionRevision] = useState(null);
   const load = useCallback(async () => { const next = await workflowService.readiness(workflowId); setRecord(next); setNotice(value => value.startsWith("Edit save outcome is unconfirmed.") ? "Authoritative draft reloaded. Review the current revision before another edit." : value); return next; }, [workflowId]);
   useEffect(() => {
     let active = true;
@@ -148,15 +149,33 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
   const version = record?.version, contentHash = record?.contentHash;
   const currentPlacement = value => value?.workflowId === workflowId && value.baseVersion === version && value.baseHash === contentHash;
   const moving = currentPlacement(movingRecord) ? movingRecord : null, insertTarget = currentPlacement(insertRecord) ? insertRecord.target : null;
+  const supportsModelInsertion = Boolean(authoring?.modelNodesSupported || !preview.metadata?.controlFlow && record?.executionProfile === "sequential-operation-v1");
+  const modelInsertionStale = !currentPlacement(modelInsertionRevision);
   useEffect(() => {
     onNodeContext?.(canEdit && nodeId && (contentHash || contextPending) ? { workflowId, sessionId, nodeId, label: nodeLabel, version, contentHash, pending: contextPending,
       onProposal: setProposal, clear: () => { setSelected(""); writeWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, ""); } } : null);
     return () => onNodeContext?.(null);
   }, [onNodeContext, canEdit, workflowId, sessionId, nodeId, nodeLabel, version, contentHash, contextPending, selectionStorageKey]);
   const pendingProposal = (proposal && !resolvedProposals.includes(proposal.id) ? proposal : null) || savedProposals.findLast((item) => item.workflowId === workflowId && item.status === "PROPOSED" && item.baseVersion === record?.version && item.baseHash === record?.contentHash && !resolvedProposals.includes(item.id));
+  const modelInsertionDisabled = busy || record?.readinessUnknown || Boolean(pendingProposal) || !placementModel.valid || modelInsertionStale || !supportsModelInsertion;
   const staleProposal = pendingProposal && (pendingProposal.baseVersion !== version || pendingProposal.baseHash !== contentHash);
   const select = id => { setSelected(id); writeWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, id); setProposal(null); };
   const previewChange = (nodeId, command, before, after) => setProposal({ nodeId, baseVersion: record.version, baseHash: record.contentHash, command, before, after });
+  const openModelInsertion = (kind, target) => {
+    if (!supportsModelInsertion || !placementModel.valid || busy || record.readinessUnknown || pendingProposal || kind === "agent" && !agentReadActions.length) return;
+    setModelInsertionRevision({ workflowId, baseVersion: record.version, baseHash: record.contentHash });
+    const position = target ? insertionPositionValue(target) : preview.steps.find(step => authoring?.nodes?.find(item => item.nodeId === step.id)?.effectClass !== "read" && !["analysis", "agent"].includes(step.source.kind))?.id ?? "";
+    setAddingAnalysis(kind === "analysis"); setAddingAgent(kind === "agent"); setInsertTarget(null);
+    if (kind === "analysis") setNewAnalysisBefore(position);
+    else { setNewAgentBefore(position); setNewAgentAction(current => current || agentReadActions[0] || ""); }
+  };
+  const previewModelInsertion = (type, node, position, after) => {
+    if (modelInsertionDisabled) return;
+    try {
+      const { placement, location } = insertionPlacementPreview(placementModel, position);
+      previewChange(node.id, { type, node, ...placement }, { location }, { ...after, location });
+    } catch (cause) { setError(message(cause)); }
+  };
   const perform = async (action) => { setBusy(true); setError(""); try { await action(); } catch (cause) { setError(message(cause)); } finally { setBusy(false); } };
   const save = async (command, revision = record) => {
     if (record.readinessUnknown) throw new Error("Reload authoritative workflow storage before another edit.");
@@ -170,7 +189,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
       throw cause;
     }
     if (revision.proposalId) setResolvedProposals((items) => [...items, revision.proposalId]);
-    setRecord({ ...next, readinessUnknown: true }); setProposal(null); setConditionMode(null); setAddingReturn(false); setWrappingCollection(false); setNotice("Draft saved. Publication and execution are separate actions."); onChatChanged?.();
+    setRecord({ ...next, readinessUnknown: true }); setProposal(null); setConditionMode(null); setAddingReturn(false); setWrappingCollection(false); setAddingAnalysis(false); setAddingAgent(false); setInsertTarget(null); setNotice("Draft saved. Publication and execution are separate actions."); onChatChanged?.();
     try { await load(); } catch { setNotice("Draft saved, but readiness could not be refreshed. Reload before publishing or running."); }
   };
   const beginMove = id => { select(id); setInsertTarget(null); setMoving({ nodeId: id, workflowId, baseVersion: record.version, baseHash: record.contentHash }); };
@@ -215,8 +234,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
         {canEdit && <><button className={button} aria-label="Undo workflow edit" disabled={busy || record.readinessUnknown || !record.editHistory?.undoTarget} onClick={() => perform(() => save({ type: "undoDraft", versionId: record.editHistory.undoTarget }))}><Icon icon="lucide:undo-2" /></button>
           <button className={button} aria-label="Redo workflow edit" disabled={busy || record.readinessUnknown || !record.editHistory?.redoTarget} onClick={() => perform(() => save({ type: "redoDraft", versionId: record.editHistory.redoTarget }))}><Icon icon="lucide:redo-2" /></button>
           <button className={button} disabled={busy} onClick={() => setAdding((value) => !value)}><Icon icon="lucide:plus" />Add node</button>
-          {(authoring?.modelNodesSupported || !preview.metadata?.controlFlow && record.executionProfile === "sequential-operation-v1") && <><button className={button} disabled={busy || record.readinessUnknown} onClick={() => { setAddingAnalysis(value => !value); setNewAnalysisBefore(preview.steps.find(step => authoring?.nodes?.find(item => item.nodeId === step.id)?.effectClass !== "read" && !["analysis", "agent"].includes(step.source.kind))?.id ?? ""); }}><Icon icon="lucide:brain-circuit" />Add analysis</button>
-          <button className={button} disabled={busy || record.readinessUnknown || agentReadActions.length === 0} onClick={() => { setAddingAgent(value => !value); setNewAgentAction(current => current || agentReadActions[0] || ""); setNewAgentBefore(preview.steps.find(step => authoring?.nodes?.find(item => item.nodeId === step.id)?.effectClass !== "read" && !["analysis", "agent"].includes(step.source.kind))?.id ?? ""); }}><Icon icon="lucide:bot" />Add bounded agent</button></>}
+          {supportsModelInsertion && <><button className={button} disabled={busy || record.readinessUnknown || !placementModel.valid || Boolean(pendingProposal)} onClick={() => addingAnalysis ? setAddingAnalysis(false) : openModelInsertion("analysis")}><Icon icon="lucide:brain-circuit" />Add analysis</button>
+          <button className={button} disabled={busy || record.readinessUnknown || !placementModel.valid || Boolean(pendingProposal) || agentReadActions.length === 0} onClick={() => addingAgent ? setAddingAgent(false) : openModelInsertion("agent")}><Icon icon="lucide:bot" />Add bounded agent</button></>}
           <button className={button} disabled={busy || record.readinessUnknown || preview.error} onClick={() => setConditionMode(value => value === "add" ? null : "add")}>Add condition</button>
           <button className={button} disabled={busy || record.readinessUnknown || preview.error || record.executionProfile === "sequential-operation-v1"} onClick={() => setAddingReturn(value => !value)}>Add return</button>
           <button className={button} aria-pressed={arranging} disabled={busy || record.readinessUnknown || !placementModel.valid || Boolean(pendingProposal)} onClick={() => { setArranging(value => !value); setMoving(null); setInsertTarget(null); }}>Arrange flow</button>
@@ -229,7 +248,8 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
       {error && <div role="alert" className="mb-4 rounded-md bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/30">{error}{pendingProposal && <p className="mt-1">Your unsaved proposal is retained. Reload if another edit changed the draft.</p>}</div>}
       {preview.error && <p role="alert" className="text-xs text-amber-700">{preview.error}</p>}
       {arranging && <div className="workspace-reveal mb-4 text-xs text-gray-500"><p>Select Move or drag its handle to a position. Conditions and collections move with their contents. Review before saving.</p>{moving && <p role="status" className="mt-2">Placing {moving.nodeId} · choose a highlighted position.<button className={button} onClick={() => setMoving(null)}>Cancel move</button></p>}{!placementModel.valid && <p role="alert" className="mt-2">{placementModel.error}</p>}</div>}
-      {insertTarget && <CanvasInsertionForm key={`${record.version}:${record.contentHash}:${insertTarget.key}`} target={insertTarget} disabled={busy || record.readinessUnknown || Boolean(pendingProposal)} onPreview={previewChange} onCancel={() => setInsertTarget(null)} />}
+      {insertTarget && <CanvasInsertionForm key={`${record.version}:${record.contentHash}:${insertTarget.key}`} target={insertTarget} disabled={busy || record.readinessUnknown || Boolean(pendingProposal)} onPreview={previewChange} onCancel={() => setInsertTarget(null)} onModel={openModelInsertion} allowAnalysis={supportsModelInsertion} allowAgent={supportsModelInsertion && agentReadActions.length > 0} allowReturn={record.executionProfile !== "sequential-operation-v1"} />}
+      {(addingAnalysis || addingAgent) && modelInsertionStale && <p role="alert" className="mb-3 text-xs text-amber-700">The draft changed since this model editor opened. Your inputs are retained. Close and reopen the editor to deliberately select a position in the current revision.</p>}
       {!!record.validation?.errors?.length && <details className="mb-4 text-xs"><summary className="cursor-pointer text-amber-700">Validation issues ({record.validation.errors.length})</summary><ul className="mt-2 space-y-1 text-gray-500">{record.validation.errors.map((issue, index) => <li key={index}>{issue}</li>)}</ul></details>}
       {!!record.issues?.length && <details className="mb-4 text-xs" open><summary className="cursor-pointer text-amber-700">Execution readiness issues ({record.issues.length})</summary><ul className="mt-2 space-y-1 text-gray-500">{record.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul></details>}
       {(shownRun || monitor.denied) && <div className="mb-5"><ExecutionRunControls key={shownRun?.id || "unavailable"} execution={shownRun} canControl={canControl} monitor={monitor} />
@@ -242,25 +262,25 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
         {authoring?.controlFlow && <ScopeSelect flow={authoring.controlFlow} value={addScope} onChange={setAddScope} label="New node destination" />}
         <button className={`${button} bg-primary/10 text-primary`} disabled={busy}>Add draft node</button><p className="text-[10px] text-gray-500">Fill required parameters in the inspector. Unavailable tools remain blocked drafts.</p>
       </form>}
-      {addingAnalysis && <form aria-label="Create analysis node" className="workspace-reveal mb-5 space-y-3 border-y border-primary/25 py-4" onSubmit={event => { event.preventDefault(); previewChange(newAnalysisId,
-        { type: "addAnalysis", node: { id: newAnalysisId, kind: "analysis", description: "Structured analysis", instruction: newAnalysisInstruction, input: newAnalysisInput,
-          output_schema: newAnalysisSchema, data_class: newAnalysisClass, model: newAnalysisModel, max_input_items: 200, max_input_chars: 20000, max_output_tokens: 2048 }, beforeNodeId: newAnalysisBefore || null },
-        { location: newAnalysisBefore ? `Before ${newAnalysisBefore}` : "End of flow" }, { id: newAnalysisId, type: "Structured analysis", input: newAnalysisInput, dataClass: newAnalysisClass, model: newAnalysisModel || "Reviewed provider default" }); }}>
+      {addingAnalysis && <form aria-label="Create analysis node" className="workspace-reveal mb-5 space-y-3 border-y border-primary/25 py-4" onSubmit={event => { event.preventDefault(); previewModelInsertion("addAnalysis",
+        { id: newAnalysisId, kind: "analysis", description: "Structured analysis", instruction: newAnalysisInstruction, input: newAnalysisInput,
+          output_schema: newAnalysisSchema, data_class: newAnalysisClass, model: newAnalysisModel, max_input_items: 200, max_input_chars: 20000, max_output_tokens: 2048 }, newAnalysisBefore,
+        { id: newAnalysisId, type: "Structured analysis", input: newAnalysisInput, dataClass: newAnalysisClass, model: newAnalysisModel || "Reviewed provider default" }); }}>
         <div><h4 className="text-xs font-semibold">Add structured analysis</h4><p className="mt-1 text-[10px] leading-4 text-gray-500">Place one bounded model transformation after its source read and before the effect that consumes it.</p></div>
         <input aria-label="New analysis ID" className={input} value={newAnalysisId} onChange={event => setNewAnalysisId(event.target.value)} pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" placeholder="Unique stable analysis ID" maxLength={64} required />
         <textarea aria-label="New analysis instruction" className={`${input} min-h-20 resize-y`} value={newAnalysisInstruction} onChange={event => setNewAnalysisInstruction(event.target.value)} placeholder="What should the model derive from the acknowledged input?" maxLength={4000} required />
         <input aria-label="New analysis input" className={`${input} font-mono`} value={newAnalysisInput} onChange={event => setNewAnalysisInput(event.target.value)} placeholder="{{prior_node.structuredContent.field}}" maxLength={1000} required />
         <div className="grid gap-3 sm:grid-cols-2"><select aria-label="New analysis data class" className={input} value={newAnalysisClass} onChange={event => setNewAnalysisClass(event.target.value)}><option value="public">Public</option><option value="internal">Internal</option><option value="confidential">Confidential</option><option value="restricted">Restricted</option></select><input aria-label="New analysis model" className={input} value={newAnalysisModel} onChange={event => setNewAnalysisModel(event.target.value)} placeholder="Reviewed provider default" maxLength={256} /></div>
-        <label className="block text-xs text-gray-500">Insert position<select aria-label="New analysis position" className={input} value={newAnalysisBefore} onChange={event => setNewAnalysisBefore(event.target.value)}><option value="">End of flow</option>{preview.steps.map(step => <option key={step.id} value={step.id}>Before {step.source.description || step.id}</option>)}</select></label>
+        <ModelInsertionPosition model={placementModel} value={newAnalysisBefore} onChange={setNewAnalysisBefore} label="New analysis position" />
         <SchemaContractFields schema={newAnalysisSchema} onChange={setNewAnalysisSchema} label="Structured answer contract" />
-        <div className="flex flex-wrap gap-2"><button className={`${button} text-primary`} disabled={busy}>Preview analysis node</button><button type="button" className={button} onClick={() => setAddingAnalysis(false)}>Cancel</button></div>
+        <div className="flex flex-wrap gap-2"><button className={`${button} text-primary`} disabled={modelInsertionDisabled}>Preview analysis node</button><button type="button" className={button} onClick={() => setAddingAnalysis(false)}>Cancel</button></div>
       </form>}
-      {addingAgent && <form aria-label="Create agent node" className="workspace-reveal mb-5 space-y-3 border-y border-primary/25 py-4" onSubmit={event => { event.preventDefault(); previewChange(newAgentId,
-        { type: "addAgent", node: { id: newAgentId, kind: "agent", ...(authoring?.connectionChoices?.length ? { connection_id: newAgentConnectionId || primaryConnectionId } : {}), description: "Bounded runtime agent", instruction: newAgentInstruction, input: newAgentInput,
+      {addingAgent && <form aria-label="Create agent node" className="workspace-reveal mb-5 space-y-3 border-y border-primary/25 py-4" onSubmit={event => { event.preventDefault(); previewModelInsertion("addAgent",
+        { id: newAgentId, kind: "agent", ...(authoring?.connectionChoices?.length ? { connection_id: newAgentConnectionId || primaryConnectionId } : {}), description: "Bounded runtime agent", instruction: newAgentInstruction, input: newAgentInput,
           allowed_actions: [newAgentAction], output_schema: newAgentSchema, completion_predicate: { path: ["complete"], equals: true }, data_class: newAgentClass,
           model: newAgentModel, max_input_items: 200, max_input_chars: 20000, max_output_tokens: 1024, max_total_tokens: 4096, max_rounds: 4,
-          max_tool_calls: 8, max_wall_time_ms: 30000, max_concurrency: 1 }, beforeNodeId: newAgentBefore || null },
-        { location: newAgentBefore ? `Before ${newAgentBefore}` : "End of flow" }, { id: newAgentId, type: "Bounded runtime agent", input: newAgentInput,
+          max_tool_calls: 8, max_wall_time_ms: 30000, max_concurrency: 1 }, newAgentBefore,
+        { id: newAgentId, type: "Bounded runtime agent", input: newAgentInput,
           allowedReads: [newAgentAction], completion: "complete equals true", dataClass: newAgentClass, model: newAgentModel || "Reviewed provider default" }); }}>
         <div><h4 className="text-xs font-semibold">Add bounded runtime agent</h4><p className="mt-1 text-[10px] leading-4 text-gray-500">The model may dynamically choose only the selected reviewed read. Any later email or ERP effect stays a separate independently approved node.</p></div>
         <input aria-label="New agent ID" className={input} value={newAgentId} onChange={event => setNewAgentId(event.target.value)} pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" placeholder="Unique stable agent ID" maxLength={64} required />
@@ -269,10 +289,10 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
         <input aria-label="New agent input" className={`${input} font-mono`} value={newAgentInput} onChange={event => setNewAgentInput(event.target.value)} placeholder="{{prior_node.structuredContent.field}}" maxLength={1000} required />
         <label className="block text-xs text-gray-500">Allowed reviewed read<select aria-label="New agent allowed action" className={input} value={newAgentAction} onChange={event => setNewAgentAction(event.target.value)} required><option value="" disabled>Select one exact read capability</option>{agentReadActions.map(action => <option key={action} value={action}>{action}</option>)}</select></label>
         <div className="grid gap-3 sm:grid-cols-2"><select aria-label="New agent data class" className={input} value={newAgentClass} onChange={event => setNewAgentClass(event.target.value)}><option value="public">Public</option><option value="internal">Internal</option><option value="confidential">Confidential</option><option value="restricted">Restricted</option></select><input aria-label="New agent model" className={input} value={newAgentModel} onChange={event => setNewAgentModel(event.target.value)} placeholder="Reviewed provider default" maxLength={256} /></div>
-        <label className="block text-xs text-gray-500">Insert position<select aria-label="New agent position" className={input} value={newAgentBefore} onChange={event => setNewAgentBefore(event.target.value)}><option value="">End of flow</option>{preview.steps.map(step => <option key={step.id} value={step.id}>Before {step.source.description || step.id}</option>)}</select></label>
+        <ModelInsertionPosition model={placementModel} value={newAgentBefore} onChange={setNewAgentBefore} label="New agent position" />
         <SchemaContractFields schema={newAgentSchema} onChange={setNewAgentSchema} label="Structured completion contract" />
         <p className="text-[10px] text-gray-500">The initial completion predicate is <span className="font-mono">complete equals true</span>. Select the node after adding it to edit all budgets, allowed reads and completion fields.</p>
-        <div className="flex flex-wrap gap-2"><button className={`${button} text-primary`} disabled={busy || !newAgentAction}>Preview agent node</button><button type="button" className={button} onClick={() => setAddingAgent(false)}>Cancel</button></div>
+        <div className="flex flex-wrap gap-2"><button className={`${button} text-primary`} disabled={modelInsertionDisabled || !newAgentAction}>Preview agent node</button><button type="button" className={button} onClick={() => setAddingAgent(false)}>Cancel</button></div>
       </form>}
       {conditionMode && <form aria-label="Create condition" className="mb-5 space-y-3 border-b border-gray-200 pb-4 dark:border-gray-700" onSubmit={event => {
         event.preventDefault();

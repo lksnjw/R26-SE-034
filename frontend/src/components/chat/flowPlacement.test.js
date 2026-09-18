@@ -1,5 +1,5 @@
 import { expect, test } from "@jest/globals";
-import { flowPlacementModel, canPlaceNode, movePlacementPreview } from "./flowPlacement";
+import { flowPlacementModel, canPlaceNode, movePlacementPreview, insertionPositionValue, insertionPlacementPreview } from "./flowPlacement";
 
 const action = nodeId => ({ kind: "action", nodeId });
 const sequence = (...nodes) => ({ kind: "sequence", nodes });
@@ -51,4 +51,19 @@ test("depth/count budgets and synthesized source IDs fail visibly instead of par
   expect(flowPlacementModel(deep, steps).valid).toBe(false);
   expect(flowPlacementModel(undefined, Array.from({ length: 201 }, (_, index) => ({ id: `node${index}` }))).valid).toBe(false);
   expect(flowPlacementModel(undefined, [{ id: "generated", source: { action: "read" } }]).valid).toBe(false);
+});
+
+test("model insertion positions preserve exact named scopes, including empty ends and structural targets", () => {
+  const model = flowPlacementModel(flow, steps);
+  expect(new Set(model.placements.map(insertionPositionValue)).size).toBe(model.placements.length);
+  expect(insertionPlacementPreview(model, "")).toEqual({ placement: { beforeNodeId: null }, location: "Main sequence · end" });
+  expect(insertionPlacementPreview(model, "gate:else|$end")).toMatchObject({ placement: { beforeNodeId: null, destination: { conditionId: "gate", branch: "else" } }, location: expect.stringContaining("If no · end") });
+  expect(insertionPlacementPreview(model, "first").placement).toEqual({ beforeNodeId: "first", destination: { loopId: "each", scope: "body" } });
+  expect(insertionPlacementPreview(model, "each").placement).toEqual({ beforeNodeId: "each", destination: { conditionId: "gate", branch: "then" } });
+});
+
+test("unknown or no-longer-confirmed model insertion positions never fall back to the root", () => {
+  const model = flowPlacementModel(flow, steps);
+  expect(() => insertionPlacementPreview(model, "missing:then|$end")).toThrow(/no longer confirmed/);
+  expect(() => insertionPlacementPreview(flowPlacementModel(undefined, steps, true), "")).toThrow(/no longer confirmed/);
 });

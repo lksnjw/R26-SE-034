@@ -158,7 +158,7 @@ test("operation workspace adds an analysis node as a reviewable positioned draft
   fireEvent.change(screen.getByRole("textbox", { name: "New analysis input" }), { target: { value: "{{summary.structuredContent.summary}}" } });
   fireEvent.change(screen.getByRole("combobox", { name: "New analysis position" }), { target: { value: "deliver" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview analysis node" }));
-  expect(screen.getByRole("region", { name: "Node change preview" }).textContent).toMatch(/classify.*Before deliver/);
+  expect(screen.getByRole("region", { name: "Node change preview" }).textContent).toMatch(/classify.*Main sequence · before deliver/);
   fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
   await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({ type: "addAnalysis", beforeNodeId: "deliver", node: expect.objectContaining({ id: "classify", kind: "analysis", input: "{{summary.structuredContent.summary}}", data_class: "internal" }) })));
 });
@@ -211,7 +211,7 @@ test("operation workspace adds a bounded agent as a positioned reviewable draft"
   fireEvent.change(screen.getByRole("textbox", { name: "New agent input" }), { target: { value: "{{research.structuredContent.summary}}" } });
   fireEvent.change(screen.getByRole("combobox", { name: "New agent position" }), { target: { value: "deliver" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview agent node" }));
-  expect(screen.getByRole("region", { name: "Node change preview" }).textContent).toMatch(/verify.*Before deliver/);
+  expect(screen.getByRole("region", { name: "Node change preview" }).textContent).toMatch(/verify.*Main sequence · before deliver/);
   fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
   await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({
     type: "addAgent", beforeNodeId: "deliver", node: expect.objectContaining({ id: "verify", kind: "agent", input: "{{research.structuredContent.summary}}",

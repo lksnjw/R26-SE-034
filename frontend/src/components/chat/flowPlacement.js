@@ -55,6 +55,16 @@ export function canPlaceNode(model, nodeId, placementKey) {
   return entry.scopeKey !== target.scopeKey || nextIndex !== entry.index;
 }
 
+// IDs cannot contain '|', so named empty-scope ends cannot collide with an
+// action/structural ID. Preserve the existing before-ID and root-end values.
+export const insertionPositionValue = target => target.beforeNodeId ?? (target.destination ? target.key : "");
+
+export function insertionPlacementPreview(model, value) {
+  const target = model.valid && model.placements.find(item => insertionPositionValue(item) === value);
+  if (!target) throw new Error("This insertion position is no longer confirmed. Reload and select it again.");
+  return { placement: { beforeNodeId: target.beforeNodeId, ...(target.destination ? { destination: target.destination } : {}) }, location: target.label };
+}
+
 export function movePlacementPreview(model, nodeId, placementKey) {
   if (!canPlaceNode(model, nodeId, placementKey)) throw new Error("This position would not move the node or would put it inside its own contents.");
   const entry = model.nodes.get(nodeId), target = model.placements.find(item => item.key === placementKey);

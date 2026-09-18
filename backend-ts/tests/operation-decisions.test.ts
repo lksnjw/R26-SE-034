@@ -114,6 +114,24 @@ test("model insertion before an exact branch target preserves ownership and sour
   expect(inspectWorkflowDraft(blueprint, tools, role).issues).toEqual([]);
 });
 
+test.each(["analysis", "agent"] as const)("%s can be inserted directly into either empty operation branch and compile without flattening", kind => {
+  for (const branch of ["then", "else"] as const) {
+    const value = source(), gate = value.metadata.controlFlow.root.nodes[1], removed = branch === "then" ? ["yes_model", "yes_send"] : ["no_model", "no_send"];
+    value.steps = value.steps.filter((step: any) => !removed.includes(step.id)); gate[branch].nodes = [];
+    const opposite = structuredClone(gate[branch === "then" ? "else" : "then"]);
+    const node = { ...model("inserted"), kind, ...(kind === "agent" ? { allowed_actions: [read.name],
+      completion_predicate: { path: ["complete"], equals: true }, output_schema: { type: "object", properties: { summary: { type: "string" }, complete: { type: "boolean" } }, required: ["summary", "complete"], additionalProperties: false } } : {}) };
+    const changed = applyWorkflowCommand(stringify(value), workflowCommandSchema.parse({ type: kind === "analysis" ? "addAnalysis" : "addAgent", node,
+      beforeNodeId: null, destination: { conditionId: "gate", branch } })), blueprint = parseWorkflowYAMLStrict(changed);
+    const plan = compile(blueprint);
+    expect(plan.ir.schemaVersion).toBe("workflow-operation-ir/v4");
+    expect((plan.ir.flow!.nodes[1] as any)[branch].nodes).toEqual([action("inserted")]);
+    expect((plan.ir.flow!.nodes[1] as any)[branch === "then" ? "else" : "then"]).toEqual(opposite);
+    expect(blueprint.steps.map(step => step.id)).toEqual(branch === "then" ? ["report", "inserted", "no_model", "no_send"] : ["report", "yes_model", "yes_send", "inserted"]);
+    expect(inspectWorkflowDraft(blueprint, tools, role).issues).toEqual([]);
+  }
+});
+
 test.each([true, false])("nested decisions with empty paths account for every skipped action, outer=%s", outer => {
   const flow: any = seq({ kind: "if", id: "outer", predicate: { kind: "literal", value: outer }, then: seq(
     { kind: "if", id: "inner", predicate: { kind: "literal", value: false }, then: seq(action("a")), else: seq() }),

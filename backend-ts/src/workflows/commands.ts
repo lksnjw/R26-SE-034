@@ -50,8 +50,8 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("updateAnalysis"), nodeId: nodeIdSchema, patch: analysisNodePatchSchema }).strict(),
   z.object({ type: z.literal("updateAgent"), nodeId: nodeIdSchema, patch: agentNodePatchSchema }).strict(),
   z.object({ type: z.literal("addNode"), node: workflowStepBlueprintSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
-  z.object({ type: z.literal("addAnalysis"), node: analysisNodeSchema, beforeNodeId: nodeIdSchema.nullable() }).strict(),
-  z.object({ type: z.literal("addAgent"), node: agentNodeSchema, beforeNodeId: nodeIdSchema.nullable() }).strict(),
+  z.object({ type: z.literal("addAnalysis"), node: analysisNodeSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
+  z.object({ type: z.literal("addAgent"), node: agentNodeSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
   z.object({ type: z.literal("removeNode"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("moveNode"), nodeId: nodeIdSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
   z.object({ type: z.literal("addCondition"), conditionId: nodeIdSchema, predicate: readPredicateSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
@@ -149,7 +149,7 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
   }
   if (["addCondition", "wrapNode", "updateCondition", "removeCondition"].includes(change.type) ||
       blueprint.metadata?.controlFlow !== undefined && ["addNode", "addAnalysis", "addAgent", "moveNode", "removeNode"].includes(change.type) ||
-      (change.type === "addNode" || change.type === "moveNode") && change.destination) {
+      (change.type === "addNode" || change.type === "addAnalysis" || change.type === "addAgent" || change.type === "moveNode") && change.destination) {
     const root = draftFlow(blueprint);
     if (change.type === "addCondition" || change.type === "wrapNode") {
       if (locateFlowNode(root, change.conditionId)) throw new HandlerFailure(422, "Structural ID already exists");
@@ -169,7 +169,7 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
       }
     } else if (change.type === "addNode" || change.type === "addAnalysis" || change.type === "addAgent") {
       if (locateFlowNode(root, change.node.id)) throw new HandlerFailure(422, "Structural ID already exists");
-      const target = insertionScope(root, change.beforeNodeId, change.type === "addNode" ? change.destination : undefined);
+      const target = insertionScope(root, change.beforeNodeId, change.destination);
       target.block.nodes.splice(target.index, 0, { kind: "action", nodeId: change.node.id }); blueprint.steps.push(change.node);
     } else if (change.type === "removeNode" || change.type === "moveNode") {
       if (change.type === "moveNode") moveDraftNode(root, change.nodeId, change.beforeNodeId, change.destination);

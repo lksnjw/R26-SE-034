@@ -12,7 +12,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { ProviderRuntime } from "../src/providers/runtime.js";
 import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 import type { Workflow } from "../src/models/schemas.js";
-import { agentNodePatchSchema, analysisNodePatchSchema, applyWorkflowCommand, selectedNodePatchCommand, selectedNodePatchSchema, selectedNodePatchVersion } from "../src/workflows/commands.js";
+import { agentNodePatchSchema, analysisNodePatchSchema, applyWorkflowCommand, selectedNodePatchCommand, selectedNodePatchSchema, selectedNodePatchVersion, workflowCommandSchema } from "../src/workflows/commands.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -86,6 +86,41 @@ test("analysis patch schema rejects authority changes, floating models, workflow
   const schema = selectedNodePatchSchema({ kind: "analysis" });
   for (const value of [{ action: "demo.echo" }, { model: "provider:latest" }, { input: "{{input.value}}" }, { max_output_tokens: 8193 }, {}])
     expect(schema.safeParse(value).success).toBe(false);
+});
+
+test.each(["analysis", "agent"] as const)("%s branch insertion is revisioned, undoable, nonrunnable and never calls a model", async kind => {
+  for (const branch of ["then", "else"] as const) {
+    const s = await setup(), node = { id: "branch_model", kind, instruction: "Summarize only acknowledged data", input: "{{first.structuredContent.value}}",
+      data_class: "internal", output_schema: { type: "object", properties: { complete: { type: "boolean" } }, required: ["complete"], additionalProperties: false },
+      ...(kind === "agent" ? { allowed_actions: ["demo.echo"], completion_predicate: { path: ["complete"], equals: true } } : {}) };
+    const created = await s.edit({ type: "addCondition", conditionId: "gate", predicate: { kind: "literal", value: true }, beforeNodeId: "approval" });
+    expect(created.statusCode, created.body).toBe(200); const empty = created.json().data;
+    const command = { type: kind === "analysis" ? "addAnalysis" : "addAgent", node, beforeNodeId: null, destination: { conditionId: "gate", branch } };
+    const response = await s.edit(command, empty.version, empty.contentHash);
+    expect(response.statusCode, response.body).toBe(200); const saved = response.json().data;
+    expect(saved).toMatchObject({ version: 3, publishedVersion: 1, canRun: false });
+    const flow = parseWorkflowYAMLStrict(saved.yaml).metadata!.controlFlow as any;
+    expect(flow.root.nodes[1][branch].nodes).toEqual([{ kind: "action", nodeId: node.id }]);
+    expect(flow.root.nodes[1][branch === "then" ? "else" : "then"].nodes).toEqual([]);
+    expect(parseWorkflowYAMLStrict(saved.yaml).steps.map(step => step.id)).toEqual(["first", node.id, "approval", "last"]);
+    const state = await s.repository.snapshot(); expect(state.versions.report![0]!.yaml).toBe(yaml); expect(state.executions).toEqual({}); expect(s.fetchImplementation).not.toHaveBeenCalled();
+    expect((await s.edit(command, empty.version, empty.contentHash)).statusCode).toBe(409);
+    const undone = await s.edit({ type: "undoDraft", versionId: saved.editHistory.undoTarget }, saved.version, saved.contentHash);
+    expect(undone.statusCode, undone.body).toBe(200); expect(undone.json().data.yaml).toBe(empty.yaml);
+  }
+});
+
+test.each(["analysis", "agent"] as const)("%s insertion rejects missing/mismatched scope and forged destinations without mutating saved state", async kind => {
+  const s = await setup(), created = (await s.edit({ type: "wrapNode", nodeId: "first", conditionId: "gate", predicate: { kind: "literal", value: true }, branch: "then" })).json().data;
+  const node = { id: "branch_model", kind, instruction: "Summarize", input: "{{first.structuredContent.value}}", data_class: "internal",
+    output_schema: { type: "object" }, ...(kind === "agent" ? { allowed_actions: ["demo.echo"], completion_predicate: { path: ["complete"], equals: true } } : {}) };
+  const before = await s.repository.snapshot();
+  for (const destination of [{ conditionId: "missing", branch: "then" }, { conditionId: "gate", branch: "else" }, { loopId: "gate", scope: "body" }, { conditionId: "gate", branch: "then", approved: true }]) {
+    const response = await s.edit({ type: kind === "analysis" ? "addAnalysis" : "addAgent", node, beforeNodeId: "first", destination }, created.version, created.contentHash);
+    expect([400, 422]).toContain(response.statusCode);
+  }
+  expect(await s.repository.snapshot()).toEqual(before); expect(s.fetchImplementation).not.toHaveBeenCalled();
+  expect(workflowCommandSchema.safeParse({ type: kind === "analysis" ? "addAnalysis" : "addAgent", node, beforeNodeId: null, destination: { conditionId: "gate", branch: "unknown" } }).success).toBe(false);
 });
 
 test("selected analysis chat proposal uses its hardened narrow prompt and persists no workflow edit", async () => {
