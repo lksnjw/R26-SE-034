@@ -83,6 +83,7 @@ function ChatPage() {
         const session = await sessions.createSession(text.slice(0, 64) || "Workflow conversation");
         sid = session.id;
         writeWorkspaceValue(workspaceKey(user, `draft.${sid}`), text);
+        if (options.model) writeWorkspaceValue(`${workspaceKey(user, `draft.${sid}`)}.model`, options.model);
         navigate(`/chat/${encodeURIComponent(sid)}`);
       }
       const editCtx = peekWorkflowForChatEdit();

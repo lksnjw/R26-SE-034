@@ -72,3 +72,40 @@ test("catalog refresh does not overwrite an unsent model choice with the last se
   fireEvent.click(screen.getByRole("button", { name: "Refresh configured models" }));
   await waitFor(() => expect(picker.value).toBe("model-b"));
 });
+
+test("leaving and returning preserves an unsent model choice and node-scoped send uses it", async () => {
+  const first = render(<ChatWindow messages={[]} savedModel="model-a" draftStorageKey="account.unsent" />);
+  const picker = await screen.findByRole("combobox", { name: "Requested model" });
+  await waitFor(() => expect(picker.value).toBe("model-a"));
+  fireEvent.change(picker, { target: { value: "model-b" } });
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Edit only this node" } }); first.unmount();
+  const onSend = jest.fn().mockResolvedValue({});
+  render(<ChatWindow messages={[]} savedModel="model-a" draftStorageKey="account.unsent" onSend={onSend} nodeContext={{ nodeId: "read", label: "Read", version: 1 }} />);
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "Requested model" }).value).toBe("model-b"));
+  expect(screen.getByRole("textbox").value).toBe("Edit only this node");
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(onSend).toHaveBeenCalledWith("Edit only this node", { model: "model-b" }));
+});
+
+test("automatic default is not persisted as intent and a late saved model can restore", async () => {
+  const view = render(<ChatWindow messages={[]} draftStorageKey="account.late" />);
+  await waitFor(() => expect(screen.getByRole("combobox").value).toBe("model-a"));
+  expect(sessionStorage.getItem("account.late.model")).toBeNull();
+  view.rerender(<ChatWindow messages={[]} draftStorageKey="account.late" savedModel="model-b" />);
+  await waitFor(() => expect(screen.getByRole("combobox").value).toBe("model-b"));
+  expect(sessionStorage.getItem("account.late.model")).toBeNull();
+});
+
+test("restored removed choice stays explicit and is not silently replaced by an available model", async () => {
+  sessionStorage.setItem("account.removed.model", "removed-model");
+  render(<ChatWindow messages={[]} savedModel="model-a" draftStorageKey="account.removed" />);
+  await screen.findByText("removed-model · unavailable");
+  expect(screen.getByRole("combobox").value).toBe("removed-model");
+});
+
+test("model intent is isolated between account and conversation storage scopes", async () => {
+  sessionStorage.setItem("first.chat.model", "model-b");
+  render(<ChatWindow messages={[]} savedModel="model-a" draftStorageKey="second.chat" />);
+  await waitFor(() => expect(screen.getByRole("combobox").value).toBe("model-a"));
+  expect(sessionStorage.getItem("first.chat.model")).toBe("model-b");
+});

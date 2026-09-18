@@ -88,7 +88,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
   const scopePending = Boolean(nodeContext?.pending);
   useEffect(() => { writeWorkspaceValue(draftStorageKey, draft); }, [draftStorageKey, draft]);
   const modelStorageKey = draftStorageKey ? `${draftStorageKey}.model` : undefined;
-  const [selectedModel, setSelectedModel] = useState(() => savedModel || readWorkspaceValue(modelStorageKey));
+  const [selectedModel, setSelectedModel] = useState(() => readWorkspaceValue(modelStorageKey) || savedModel || "");
   const [availableModels, setAvailableModels] = useState([]);
   const [modelError, setModelError] = useState("");
   const [catalogRetry, setCatalogRetry] = useState(0);
@@ -105,12 +105,13 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
       if (!current) return;
       const models = (Array.isArray(catalog.models) ? catalog.models : []).map((id) => ({ id, label: id }));
       setAvailableModels(models);
-      setSelectedModel((currentModel) => modelChosenByUser.current ? currentModel : savedModel || readWorkspaceValue(modelStorageKey) || catalog.binding?.model || "");
+      setSelectedModel((currentModel) => modelChosenByUser.current ? currentModel : readWorkspaceValue(modelStorageKey) || savedModel || catalog.binding?.model || "");
       setModelError(catalog.configured ? "" : "No model provider is configured.");
     }).catch(() => { if (current) { setAvailableModels([]); setModelError("Could not load configured models. Your draft is kept."); } });
     return () => { current = false; };
   }, [savedModel, modelStorageKey, catalogRetry]);
-  useEffect(() => { writeWorkspaceValue(modelStorageKey, selectedModel); }, [modelStorageKey, selectedModel]);
+  // Store explicit user intent only. An automatically displayed default must
+  // not overwrite a late saved-session binding or an unsent model choice.
 
   // Only auto-scroll to bottom when a message is actually appended (a new
   // send, or the last message changing) — never when older messages get
@@ -304,7 +305,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
                     <select
                       aria-label="Requested model"
                       value={selectedModel}
-                      onChange={(e) => { modelChosenByUser.current = true; setSelectedModel(e.target.value); }}
+                      onChange={(e) => { modelChosenByUser.current = true; writeWorkspaceValue(modelStorageKey, e.target.value); setSelectedModel(e.target.value); }}
                       disabled={busy}
                       className="bg-transparent text-[10px] font-semibold text-gray-600 outline-none disabled:opacity-50 dark:text-gray-300"
                     >
@@ -331,6 +332,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
               </div>
             </div>
             {modelError && <p role="status" className="mt-2 text-xs text-gray-600 dark:text-gray-300">{modelError} <button type="button" disabled={busy} className="underline" onClick={() => setCatalogRetry((value) => value + 1)}>Reload models</button></p>}
+            <p className="mt-2 text-[10px] text-gray-500 dark:text-gray-400">Chat model applies to new messages and edit proposals. Saved runtime nodes keep their reviewed models.</p>
           </div>
           <p className="mt-1.5 text-center text-[10px] text-gray-400">
             {nodeContext ? "Enter to propose · configured provider · review Apply/Discard in the canvas · nothing executes" : "Enter to send · Shift+Enter for newline · A draft is not proof of ERP readiness or safe execution"}
