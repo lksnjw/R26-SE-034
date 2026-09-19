@@ -18,7 +18,8 @@ import { supportsCollectionReads } from "../../runner/read-collection-admission.
 import { prepareOperationExecution, prepareOperationPublication } from "../../workflows/operation-compilation-lifecycle.js";
 import { supportsOperationJobs } from "../../runner/operation-jobs.js";
 import { readAuthoringContract } from "../../workflows/read-authoring.js";
-import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
+import { validateWorkspaceDraft, withWorkspaceCompilationIssues } from "../../workflows/draft-validation.js";
+import { savedGeneratedReturnCoverageIssues } from "../../synthesis/return-coverage.js";
 import { draftHistorySummary, resolveDraftCommand, saveDraftRevision } from "../../workflows/draft-history.js";
 import { boundMcpConnection, selectedMcpConnectionId } from "../../tools/mcp-dispatch-context.js";
 import { effectiveStepKind } from "../../models/schemas.js";
@@ -61,6 +62,8 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
     if (kind === "readiness") {
       const registryHash = services.registries.hash();
       const validation = validateWorkspaceDraft("WorkspaceReadiness", current.yaml, user.role, services.validator, services.registries.snapshot().tools);
+      const coverageIssues = savedGeneratedReturnCoverageIssues(current);
+      if (coverageIssues.length) withWorkspaceCompilationIssues(validation, coverageIssues);
       let issues: string[] = [], bridge = "not_connected";
       let operationProfile = false;
       let effectProfile: "read-only" | "contains-effects" | "unknown" = "unknown";

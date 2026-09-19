@@ -5,6 +5,7 @@ import { recurringAnalysisCandidatePrompt } from "./recurring-analysis-candidate
 import { decisionOperationCandidatePrompt } from "./decision-operation-candidate.js";
 import { recurringDecisionCandidatePrompt } from "./recurring-decision-candidate.js";
 import { namedModelCandidatePrompt, namedModelPatchPrompt } from "./named-model-inputs.js";
+import { typedReturnCandidatePrompt } from "./typed-return-candidate.js";
 
 /** Repository-owned instructions only. Never interpolate request, registry,
  * document, tool-result or model-generated text into this privileged channel. */
@@ -131,6 +132,7 @@ export const RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT = recurringAnalysisCandi
 export const DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT = decisionOperationCandidatePrompt(RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT);
 export const RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT = recurringDecisionCandidatePrompt(DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT);
 export const NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT = namedModelCandidatePrompt(RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT);
+export const TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT = typedReturnCandidatePrompt(NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT);
 export const NAMED_ANALYSIS_PATCH_SYSTEM_PROMPT = namedModelPatchPrompt(ANALYSIS_NODE_PATCH_SYSTEM_PROMPT, "analysis");
 export const NAMED_AGENT_PATCH_SYSTEM_PROMPT = namedModelPatchPrompt(AGENT_NODE_PATCH_SYSTEM_PROMPT, "agent");
 
@@ -176,6 +178,7 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/candidate/v11": return DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v12": return RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v13": return NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT;
+    case "prompt/candidate/v14": return TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/node-patch/v2": return NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/analysis-node-patch/v1": return ANALYSIS_NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/analysis-node-patch/v2": return NAMED_ANALYSIS_PATCH_SYSTEM_PROMPT;

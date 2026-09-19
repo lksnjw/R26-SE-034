@@ -27,6 +27,7 @@ import { requestRuntimeApproval, runtimeApprovalPolicyHash, consumeRuntimeApprov
 import { reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.js";
+import { TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -109,7 +110,7 @@ const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
 const calls = [], reports = [], relatedInvoiceReports = [], relatedOrderReports = [], models = [], operations = [], readbacks = [], emails = [];
-let sdkHook, modelHook;
+let sdkHook, modelHook, returnSynthesisFixture;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
   const deadline = performance.now() + 20_000;
@@ -157,6 +158,11 @@ async function start(repositoryValue) {
       } } });
   const providerRuntime = new ProviderRuntime(repository, executor, async (url, init) => {
     assert.equal(url, "https://provider.fixture.example.test/v1/chat/completions"); const request = JSON.parse(String(init.body)); models.push(request.model); await modelHook?.(request, init.signal);
+    if (request.messages[0]?.content.includes("TASK: WORKFLOW DRAFT SYNTHESIS") && returnSynthesisFixture) {
+      assert.equal(request.messages[0].content, TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
+      assert(JSON.parse(request.messages[1].content).USER_REQUEST.includes("Create a workflow"));
+      return Response.json({ choices: [{ finish_reason: "stop", message: { content: stringify(returnSynthesisFixture) } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
+    }
     const node = request.messages[0].content.includes("ONE SELECTED NODE PATCH"), owner = request.messages[0].content.includes("ONE SELECTED COLLECTION PATCH"),
       agent = request.messages[0].content.includes("TASK: BOUNDED RUNTIME ERP AGENT"), answered = request.messages.some(message => message.role === "tool");
     if (owner) assert.deepEqual(JSON.parse(request.messages[1].content).tools, []);
@@ -334,7 +340,7 @@ try {
   assert.equal((await request("POST", `/api/chat/sessions/${chatId}/messages`, jointCommand, 202)).data.operation.id, jointOperation.id);
   assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation + 3); assert.equal(emails.length, 0);
   const modelsAfterAutomation = models.length;
-  log("actual Firestore async v13 recurring chats saved exact boolean Yes delivery/empty No trees, named joint analysis and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
+  log("actual Firestore async v14 recurring chats saved exact boolean Yes delivery/empty No trees, named joint analysis and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
 
   const saved = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).chats, saved.chats); assert.deepEqual((await repository.snapshot()).executions, saved.executions);
@@ -745,6 +751,44 @@ try {
     assert.equal(models.length, modelCount + (selected ? kind === "agent" ? 2 : 1 : 0)); assert.equal(calls.length, readCount + (selected && kind === "agent" ? 2 : 1)); assert.equal(operations.length, effectCount);
     assert.equal((await repository.snapshot()).executionEvents[id].length, eventCount + (loseACK ? 1 : 0));
     log(`actual Firestore ${kind} return select=${selected}, lost-ACK=${loseACK}: exact saved answer, no later read/effect/approval, restart and original-key replay without extra connector/model work`);
+  }
+  for (const kind of ["analysis", "agent"]) for (const selected of [true, false]) {
+    const source = parseWorkflowYAMLStrict(kind === "agent" ? durableAgentYAML : durableAnalysisYAML), [lookup, model] = source.steps;
+    source.steps = [lookup, model];
+    const action = nodeId => ({ kind: "action", nodeId }), seq = (...nodes) => ({ kind: "sequence", nodes });
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: seq(action(lookup.id), { kind: "if", id: "answer_gate", predicate: { kind: "literal", value: selected },
+      then: seq(action(model.id), { kind: "return", id: "answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: model.id, path: ["structuredContent", "id"] } } }),
+      else: seq({ kind: "return", id: "not_requested", output: { schema: { type: "string" }, value: { kind: "literal", value: "Model answer not requested" } } }) }) } };
+    returnSynthesisFixture = source;
+    const chat = (await request("POST", "/api/chat/sessions", {}, 201)).data, planningCount = models.length, readCount = calls.length, effectCount = operations.length;
+    const chatCommand = { content: `Create a workflow to read fixture data and return its bounded ${kind} answer on the selected path, with no notification.`, delivery: "async-chat", idempotencyKey: `firestore-return-chat-${kind}-${selected}-0001` };
+    const operationId = (await request("POST", `/api/chat/sessions/${chat.id}/messages`, chatCommand, 202)).data.operation.id;
+    await waitFor(async () => (await repository.snapshot()).chatOperations[operationId].status === "ANSWERED", "saved typed-return background chat");
+    returnSynthesisFixture = undefined;
+    const before = await repository.snapshot(), operation = before.chatOperations[operationId], workflowId = operation.artifactRefs.find(value => value.type === "workflow-draft").id;
+    assert.equal(models.length, planningCount + 1); assert.equal(calls.length, readCount); assert.equal(operations.length, effectCount);
+    assert.deepEqual(parseWorkflowYAMLStrict(before.workflows[workflowId].yaml), source); assert.equal(before.workflows[workflowId].publishedVersion, 0);
+    const messageCount = before.chats[chat.id].messages.length;
+    await stop(); await start(await openApplicationRepository(config));
+    assert.deepEqual((await repository.snapshot()).workflows[workflowId], before.workflows[workflowId]);
+    assert.equal((await request("POST", `/api/chat/sessions/${chat.id}/messages`, chatCommand, 202)).data.operation.id, operationId);
+    assert.equal((await request("GET", `/api/chat/sessions/${chat.id}`, undefined, 200)).data.messages.length, messageCount);
+    assert.equal(models.length, planningCount + 1); assert.equal(calls.length, readCount);
+    assert.equal((await request("POST", `/api/workflows/${workflowId}/publish`, {}, 200)).data.compiledOperation.schemaVersion, "workflow-operation-ir/v6");
+    const command = { mode: "async-operation", input: {}, idempotencyKey: `firestore-return-chat-run-${kind}-${selected}-0001` };
+    const id = (await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id;
+    await waitFor(async () => (await repository.snapshot()).executions[id].status === "DONE", "generated typed-return execution");
+    const saved = (await repository.snapshot()).executions[id], expected = selected ? kind === "agent" ? "AGENT-FOLLOW-UP" : "ANALYSIS-FIXTURE-ONE" : "Model answer not requested";
+    assert.equal(saved.finalOutput, expected); assert.deepEqual(saved.valueOutputs, { [selected ? "answer" : "not_requested"]: { value: expected } });
+    assert.equal(saved.runtimeApprovalSecret, undefined); assert.equal(operations.length, effectCount);
+    const expectedModels = planningCount + 1 + (selected ? kind === "agent" ? 2 : 1 : 0), expectedReads = readCount + (selected && kind === "agent" ? 2 : 1);
+    assert.equal(models.length, expectedModels); assert.equal(calls.length, expectedReads);
+    const events = (await repository.snapshot()).executionEvents[id];
+    await stop(); await start(await openApplicationRepository(config));
+    assert.deepEqual((await repository.snapshot()).executions[id], saved);
+    assert.equal((await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id, id);
+    assert.deepEqual((await repository.snapshot()).executionEvents[id], events); assert.equal(models.length, expectedModels); assert.equal(calls.length, expectedReads); assert.equal(operations.length, effectCount);
+    log(`actual Firestore v14 background ${kind}/select=${selected}: saved unpublished typed-return draft, fresh restart/chat replay, explicit v6 run, persisted exact answer, fresh restart/run replay without repeated planning/model/connector work`);
   }
   const modelsAfterDurableAgent = models.length;
   log("actual Firestore bounded runtime-agent used only its reviewed read allow-list, persisted every model/tool intent and structured answer, survived restarts, required independent approval for the later effect, and replayed neither model, ERP read nor operation");

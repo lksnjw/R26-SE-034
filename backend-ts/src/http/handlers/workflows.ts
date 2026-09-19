@@ -16,6 +16,7 @@ import { assertWorkflowMutable, requireWorkflowBase, workflowRevisionSchema, per
 import { historyPage, historyVersion, saveDraftRevision, savedDraftHistory } from "../../workflows/draft-history.js";
 import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 import { assertActorAuthority } from "./model-selection.js";
+import { savedGeneratedReturnCoverageIssues } from "../../synthesis/return-coverage.js";
 
 export const WORKFLOW_UNHANDLED = Symbol("workflow-unhandled");
 
@@ -245,6 +246,8 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
   if (current.status === "draft-unvalidated") throw new HandlerFailure(422, "Workflow must be validated before publishing", { status: current.status });
   const expectedHash = workflowContentHash(current.yaml);
   const traceId = requestTraceId(request, current.traceId);
+  const coverageIssues = savedGeneratedReturnCoverageIssues(current);
+  if (coverageIssues.length) throw new HandlerFailure(422, "Generated workflow contains unreachable requested work or answers; edit the draft before publication", { code: "GENERATED_RETURN_COVERAGE_INVALID", issues: coverageIssues, traceId });
   const gate = await validateWorkflow(services, "PublishWorkflow", current.yaml, user, { traceId, workflowId: current.id });
   if (!gate.result.passed) throw new HandlerFailure(422, "Workflow validation failed", { ...gate.result, traceId });
   const compilation = await prepareReadPublication(services, current.yaml, user);
@@ -254,6 +257,7 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
     if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
     const publisher = assertCurrentWorkflowEditor(state, item, user);
     if (item.draftVersion !== current.draftVersion || workflowContentHash(item.yaml) !== expectedHash) throw new HandlerFailure(409, "Workflow content changed during validation");
+    if (savedGeneratedReturnCoverageIssues(item).length) throw new HandlerFailure(422, "Generated return coverage changed during publication", { code: "GENERATED_RETURN_COVERAGE_INVALID" });
     const editHistory = savedDraftHistory(state, item);
     if (compilation) assertReadPublicationCurrent(compilation, services, state, item.yaml, publisher.role);
     if (operationCompilation) assertOperationPublicationCurrent(operationCompilation, services, state, item.yaml, publisher.role);

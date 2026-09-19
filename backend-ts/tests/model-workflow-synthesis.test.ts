@@ -14,7 +14,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { SynthesisService } from "../src/synthesis/service.js";
 import { compileOperationWorkflow, inspectModelWorkflowDraft } from "../src/workflows/compiled-read.js";
 import { validateWorkspaceDraft } from "../src/workflows/draft-validation.js";
-import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT, RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT, DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT, RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT, NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
+import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT, RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT, DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT, RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT, TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
 
 const directories: string[] = [];
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
@@ -47,10 +47,10 @@ test.each(["analysis", "agent"] as const)("v12 proposes a bounded %s draft witho
   const source = blueprint(kind), s = await setup(source);
   const result = await s.service.synthesize({ prompt: "Create a workflow to read the actual count and summarise it", userRole: "Platform Admin", liveTools: [read] });
   expect(result.yaml).toBe(s.yaml.trim()); expect(result.execution_profile_issues).toEqual([]); expect(result.validation.passed).toBe(true);
-  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v13"); expect(s.fetcher).toHaveBeenCalledOnce();
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v14"); expect(s.fetcher).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.fetcher.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT);
-  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v13"));
+  expect(body.messages[0].content).toBe(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
+  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v14"));
   const saved = await s.repository.snapshot(); expect(saved.executions).toEqual({}); expect(saved.workflows).toEqual({}); expect(saved.capabilityAdmissions).toEqual({});
   expect(inspectModelWorkflowDraft(source, [read], "Platform Admin")).toEqual([]);
   expect(() => compileOperationWorkflow(s.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
@@ -181,4 +181,50 @@ test("downstream tool bindings must match the declared model output type", () =>
   const target = toolSchema.parse({ ...read, tool_id: "target", name: "records.detail", mcp_tool_name: "records.detail", input_schema: { type: "object", properties: { value: { type: "integer" } }, required: ["value"], additionalProperties: false } });
   const combined = { ...source, steps: [...source.steps, { id: "detail", action: target.name, parameters: { value: "{{answer.structuredContent.summary}}" } }] };
   expect(inspectModelWorkflowDraft(combined, [read, target], "Platform Admin").length).toBeGreaterThan(0);
+});
+
+test("v14 manual-return contract preserves v13 bytes and does not contradict calendar authority", () => {
+  expect(createHash("sha256").update(systemInstructionsFor("prompt/candidate/v13")).digest("hex")).toBe("05e60aee7094aee1812df0e8e54e95a65725b9f514e815fc854ee95a50ceffdb");
+  expect(systemInstructionsFor("prompt/candidate/v14")).toBe(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
+  for (const marker of ["read-control-flow/v2", "TYPED MANUAL OPERATION ANSWERS", "same branch", "fresh independent", "does NOT support Return", "unreachable", "no fake send", "NAMED MODEL INPUTS", "originalRequest"])
+    expect(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT).toContain(marker);
+  expect(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT).not.toContain("Operation decisions do not support typed merges, returns");
+  expect(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT).not.toContain("Operation control nodes are ONLY");
+});
+
+function returnBlueprint(kind: "analysis" | "agent", branches = false): any {
+  const value = branches ? decisionBlueprint(kind) : blueprint(kind);
+  const returned = (id: string, source: string) => ({ kind: "return", id, output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: source, path: ["structuredContent", "summary"] } } });
+  if (branches) {
+    value.metadata.controlFlow.schemaVersion = "read-control-flow/v2";
+    value.metadata.controlFlow.root.nodes[1].then.nodes.push(returned("yes_result", "answer"));
+    value.metadata.controlFlow.root.nodes[1].else.nodes.push(returned("no_result", "other_answer"));
+  } else value.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: { kind: "sequence", nodes: [
+    { kind: "action", nodeId: "records" }, { kind: "action", nodeId: "answer" }, returned("result", "answer"),
+  ] } } };
+  return value;
+}
+
+test.each(["analysis", "agent"].flatMap(kind => [false, true].map(branches => [kind, branches] as const)))("v14 retains %s typed final answers, branches=%s, with no implicit save/run", async (kind, branches) => {
+  const source = returnBlueprint(kind as "analysis" | "agent", branches), s = await setup(source);
+  const result = await s.service.synthesize({ prompt: "Create a workflow that reads the actual count, analyses it and returns the reviewed summary on the selected path", userRole: "Platform Admin", liveTools: [read] });
+  expect(result.yaml).toBe(s.yaml.trim()); expect(result.validation.passed).toBe(true); expect(result.execution_profile_issues).toEqual([]);
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v14"); expect(s.fetcher).toHaveBeenCalledOnce();
+  expect((await s.repository.snapshot()).workflows).toEqual({}); expect((await s.repository.snapshot()).executions).toEqual({});
+  expect(() => compileOperationWorkflow(result.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
+});
+
+test.each(["wrong type", "sibling source", "forward source", "unreachable model", "both-branches-return", "unreachable return"])("v14 generated %s remains an exact blocked proposal", async damage => {
+  const value = returnBlueprint("analysis", true), root = value.metadata.controlFlow.root, gate = root.nodes[1];
+  if (damage === "wrong type") gate.then.nodes[1].output.schema.type = "integer";
+  if (damage === "sibling source") gate.then.nodes[1].output.value.nodeId = "other_answer";
+  if (damage === "forward source") gate.then.nodes.unshift(gate.then.nodes.pop());
+  if (damage === "unreachable model") gate.then.nodes.unshift({ kind: "return", id: "early", output: { schema: { type: "string" }, value: { kind: "literal", value: "Not the requested analysis" } } });
+  if (damage === "both-branches-return") { value.steps.push({ ...value.steps[1], id: "after", input: "{{records.structuredContent.count}}" }); root.nodes.push({ kind: "action", nodeId: "after" }); }
+  if (damage === "unreachable return") gate.then.nodes.push({ kind: "return", id: "never", output: { schema: { type: "string" }, value: { kind: "literal", value: "Never reached" } } });
+  const s = await setup(value), result = await s.service.synthesize({ prompt: "Create a workflow and never omit the requested analysis or selected answer", userRole: "Platform Admin", liveTools: [read] });
+  expect(result.yaml).toBe(s.yaml.trim()); expect(result.canExecute).toBe(false); expect(result.validation.passed).toBe(false);
+  expect(result.validation.failed_rules).toContain("WORKSPACE_READ_COMPILATION"); expect(s.fetcher).toHaveBeenCalledOnce();
+  if (["unreachable model", "both-branches-return", "unreachable return"].includes(damage)) expect(result.execution_profile_issues.join(" ")).toMatch(/unreachable/);
+  expect((await s.repository.snapshot()).executions).toEqual({});
 });

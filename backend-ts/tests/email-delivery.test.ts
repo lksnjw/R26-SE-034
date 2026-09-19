@@ -169,7 +169,7 @@ test("connected recurring request saves exact useful capability steps without ru
   expect(workflows[0]).toMatchObject({ yaml: candidate.yaml, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false, trigger: { type: "manual" } });
   expect(state.schedules).toEqual({}); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
   const providerBody = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-  expect(providerBody.messages[0].content).toContain("prompt/candidate/v13");
+  expect(providerBody.messages[0].content).toContain("prompt/candidate/v14");
   const context = JSON.parse(providerBody.messages[1].content).SERVER_DERIVED_CONTEXT_JSON;
   expect(context.automation_request).toEqual(recurringAutomationCandidateContext(candidate.request).automation_request);
 });
@@ -210,7 +210,7 @@ test.each([false, true].flatMap(analysis => [false, true].map(async => [analysis
     expect(messages.at(-1).text).toContain("have not been published, scheduled or executed");
     expect(state.executions).toEqual({}); expect(state.schedules).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
     const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-    expect(body.messages[0].content).toContain("prompt/candidate/v13"); expect(body.messages[0].content).not.toContain(candidate.text);
+    expect(body.messages[0].content).toContain("prompt/candidate/v14"); expect(body.messages[0].content).not.toContain(candidate.text);
     expect(JSON.parse(body.messages[1].content).SERVER_DERIVED_CONTEXT_JSON.automation_request.decision_request.originalRequest).toBe(candidate.text);
     if (asynchronous) {
       const replay = await s.send(candidate.text, extra); expect(replay.statusCode).toBe(202); expect(replay.json().data.operation.id).toBe(response.json().data.operation.id);

@@ -29,7 +29,7 @@ import { prepareOperationExecution, type StoredOperationCompilation } from "../s
 import { modelDataClasses, type ModelDataClass } from "../src/providers/egress-policy.js";
 import { reviewedModelSourceContext } from "../src/synthesis/reviewed-model-sources.js";
 import { SynthesisService, assembleCandidatePrompt } from "../src/synthesis/service.js";
-import { NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -513,6 +513,90 @@ async function prepareModelReadWorkflow(s: Awaited<ReturnType<typeof setup>>, ki
   });
 }
 
+test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"].flatMap(kind => [true, false].map(selected => [route, kind, selected] as const))))(
+  "%s v14 synthesis saves %s selected=%s typed answers only as a draft until explicit publish/run", async (route, kind, selected) => {
+    const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind as "analysis" | "agent");
+    const modelId = kind === "analysis" ? "summarize" : "research", source = parse((await s.repository.snapshot()).workflows.flow!.yaml);
+    source.steps[1].data_class = "restricted";
+    source.trigger.config = { inputSchema: { type: "object", properties: { includeAnswer: { type: "boolean" } }, required: ["includeAnswer"], additionalProperties: false } };
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: { kind: "sequence", nodes: [
+      { kind: "action", nodeId: "lookup" }, { kind: "if", id: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["includeAnswer"] },
+        then: { kind: "sequence", nodes: [{ kind: "action", nodeId: modelId }, { kind: "return", id: "answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: modelId, path: ["structuredContent", "summary"] } } }] },
+        else: { kind: "sequence", nodes: [{ kind: "return", id: "not_requested", output: { schema: { type: "string" }, value: { kind: "literal", value: "Analysis was not requested" } } }] } },
+    ] } } };
+    const yaml = stringify(source), provider = s.providerRuntime!;
+    provider.activate({ ...provider.configuration!, egressPolicy: { ...provider.configuration!.egressPolicy!, interactiveDataClasses: ["restricted"], runtimeAnalysisDataClasses: ["restricted"], runtimeAgentDataClasses: ["restricted"] } });
+    Object.assign(s.services, { synthesis: new SynthesisService(provider, s.services.registries, s.services.validator) });
+    s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ message: { content: yaml } }], usage: { prompt_tokens: 5, completion_tokens: 8 } }));
+    const prompt = "Create a workflow to read the report and, if includeAnswer is Yes, return its bounded summary; otherwise return Analysis was not requested. Do not send an email.";
+    let workflowId: string, chatRequest: Record<string, unknown> | undefined, sessionId: string | undefined;
+    if (route === "direct") {
+      const response = await s.request("POST", "/api/synthesis", { prompt }); expect(response.statusCode, response.body).toBe(200);
+      const candidate = response.json().data; expect(candidate.execution_profile_issues).toEqual([]); expect(candidate.validation.passed).toBe(true);
+      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v14"); expect(candidate.yaml).toBe(yaml.trim());
+      expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["flow"]);
+      const created = await s.request("POST", "/api/workflows", { yaml: candidate.yaml }); expect(created.statusCode, created.body).toBe(201); workflowId = created.json().data.id;
+    } else {
+      const session = await s.request("POST", "/api/chat/sessions", {}); expect(session.statusCode, session.body).toBe(201); sessionId = session.json().data.id;
+      chatRequest = { content: prompt, ...(route === "async-chat" ? { delivery: "async-chat", idempotencyKey: `return-chat-${kind}-${selected}-0001` } : {}) };
+      const response = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, chatRequest); expect(response.statusCode, response.body).toBe(route === "async-chat" ? 202 : 200);
+      if (route === "async-chat") {
+        const operationId = response.json().data.operation.id;
+        await vi.waitFor(async () => expect((await s.repository.snapshot()).chatOperations[operationId]!.status).toBe("ANSWERED"), { timeout: 4000 });
+        workflowId = (await s.repository.snapshot()).chatOperations[operationId]!.artifactRefs!.find(item => item.type === "workflow-draft")!.id;
+        const replay = await s.request("POST", `/api/chat/sessions/${sessionId}/messages`, chatRequest); expect(replay.statusCode, replay.body).toBe(202); expect(replay.json().data.operation.id).toBe(operationId);
+      } else workflowId = response.json().data.assistantMessage.artifacts.workflowId;
+      const chat = (await s.request("GET", `/api/chat/sessions/${sessionId}`)).json().data;
+      expect(chat.messages.at(-1).text).toMatch(/has not been published or executed/);
+    }
+    const before = await s.repository.snapshot(), draft = before.workflows[workflowId!]!;
+    expect(parse(draft.yaml)).toEqual(source); expect(draft.publishedVersion).toBe(0); expect(before.executions).toEqual({});
+    expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toBe(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
+    const published = await s.request("POST", `/api/workflows/${workflowId!}/publish`, {}); expect(published.statusCode, published.body).toBe(200); expect(published.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v6");
+    if (selected) s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ summary: "Typed synthesis answer", ...(kind === "agent" ? { complete: true } : {}) }) } }], usage: { prompt_tokens: 9, completion_tokens: 4 } }));
+    const command = { mode: "async-operation", idempotencyKey: `return-run-${route}-${kind}-${selected}-0001`, input: { includeAnswer: selected } };
+    const admitted = await s.request("POST", `/api/workflows/${workflowId!}/run`, command); expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id;
+    await s.wait(id, "DONE"); const saved = await s.repository.snapshot(), run = saved.executions[id]!;
+    expect(run.finalOutput).toBe(selected ? "Typed synthesis answer" : "Analysis was not requested");
+    expect(run.valueOutputs).toEqual(selected ? { answer: { value: "Typed synthesis answer" } } : { not_requested: { value: "Analysis was not requested" } });
+    expect(run.runtimeApprovalSecret).toBeUndefined(); expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 2 : 1);
+    expect((await s.request("POST", `/api/workflows/${workflowId!}/run`, command)).json().data.id).toBe(id);
+    expect((await s.repository.snapshot()).executionEvents[id]).toEqual(saved.executionEvents[id]); expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 2 : 1);
+  });
+
+test.each(["chat", "async-chat"])("%s unreachable generated return stays blocked at readiness/publication until an explicit repair", async route => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, "analysis");
+  const source = parse((await s.repository.snapshot()).workflows.flow!.yaml), provider = s.providerRuntime!;
+  source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: { kind: "sequence", nodes: [
+    { kind: "action", nodeId: "lookup" }, { kind: "return", id: "early", output: { schema: { type: "string" }, value: { kind: "literal", value: "Not the requested analysis" } } },
+    { kind: "action", nodeId: "summarize" }, { kind: "return", id: "answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "summarize", path: ["structuredContent", "summary"] } } },
+  ] } } };
+  provider.activate({ ...provider.configuration!, egressPolicy: { ...provider.configuration!.egressPolicy!, interactiveDataClasses: ["restricted"] } });
+  Object.assign(s.services, { synthesis: new SynthesisService(provider, s.services.registries, s.services.validator) });
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ message: { content: stringify(source) } }], usage: { prompt_tokens: 5, completion_tokens: 8 } }));
+  const session = (await s.request("POST", "/api/chat/sessions", {})).json().data;
+  const response = await s.request("POST", `/api/chat/sessions/${session.id}/messages`, { content: "Create a workflow to read and analyse the report then return its answer", ...(route === "async-chat" ? { delivery: "async-chat", idempotencyKey: "blocked-return-chat-0001" } : {}) });
+  expect(response.statusCode, response.body).toBe(route === "async-chat" ? 202 : 200);
+  let workflowId;
+  if (route === "async-chat") {
+    const operationId = response.json().data.operation.id;
+    await vi.waitFor(async () => expect((await s.repository.snapshot()).chatOperations[operationId]!.status).toBe("ANSWERED"), { timeout: 4000 });
+    workflowId = (await s.repository.snapshot()).chatOperations[operationId]!.artifactRefs!.find(value => value.type === "workflow-draft")!.id;
+  } else { workflowId = response.json().data.assistantMessage.artifacts.workflowId; expect(response.json().data.validation.passed).toBe(false); }
+  expect(parse((await s.repository.snapshot()).workflows[workflowId]!.yaml)).toEqual(source);
+  const readiness = await s.request("GET", `/api/workflows/${workflowId}/readiness`); expect(readiness.json().data.validation.passed).toBe(false); expect(readiness.json().data.can_attempt_run).toBe(false);
+  expect(readiness.json().data.validation.errors.join(" ")).toMatch(/unreachable/);
+  const publication = await s.request("POST", `/api/workflows/${workflowId}/publish`, {}); expect(publication.statusCode, publication.body).toBe(422); expect(publication.json().meta.code).toBe("GENERATED_RETURN_COVERAGE_INVALID");
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledOnce(); expect((await s.repository.snapshot()).executions).toEqual({});
+  const base = readiness.json().data;
+  const edited = await s.request("POST", `/api/workflows/${workflowId}/commands`, { baseVersion: base.version, baseHash: base.contentHash, command: { type: "removeReturn", nodeId: "early" } });
+  expect(edited.statusCode, edited.body).toBe(200); expect(edited.json().data.validation.passed).toBe(true);
+  expect((await s.request("POST", `/api/workflows/${workflowId}/publish`, {})).statusCode).toBe(200);
+  const admitted = await s.request("POST", `/api/workflows/${workflowId}/run`, { mode: "async-operation", idempotencyKey: "repaired-return-run-0001", input: {} }); expect(admitted.statusCode, admitted.body).toBe(202);
+  await s.wait(admitted.json().data.id, "DONE"); expect((await s.repository.snapshot()).executions[admitted.json().data.id]!.finalOutput).toBe("FIXTURE REPORT");
+});
+
 test.each(["analysis", "agent"].flatMap(kind => [true, false].map(selected => [kind, selected] as const)))("normal %s return selected=%s survives reopen and skips later reads/effects without approval", async (kind, selected) => {
   const records = new Records(), s = await setup(records, true, false, false, false, true);
   await prepareModelReadWorkflow(s, kind as "analysis" | "agent");
@@ -682,7 +766,7 @@ test.each(["direct", "chat"])("%s synthesis ignores forged browser source claims
   });
   expect(response.statusCode, response.body).toBe(200); expect(s.modelFetch).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT);
+  expect(body.messages[0].content).toBe(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
   const data = JSON.parse(body.messages[1].content);
   expect(data.MODEL_SOURCE_HINTS_JSON.sources.find((source: { toolId: string }) => source.toolId === s.read.tool_id)).toEqual({
     toolId: s.read.tool_id, action: s.read.name, connectionId: "erpbridge-default", dataClass: "confidential", review: "REVIEWED",
@@ -704,7 +788,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     if (route === "direct") {
       const response = await s.request("POST", "/api/synthesis", { prompt }); expect(response.statusCode, response.body).toBe(200);
       const candidate = response.json().data; expect(candidate.execution_profile_issues).toEqual([]);
-      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v13"); expect(candidate.yaml).toBe(yaml.trim());
+      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v14"); expect(candidate.yaml).toBe(yaml.trim());
       expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["flow"]);
       const created = await s.request("POST", "/api/workflows", { yaml: candidate.yaml }); expect(created.statusCode, created.body).toBe(201); workflowId = created.json().data.id;
     } else {
@@ -725,7 +809,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     const before = await s.repository.snapshot(), draft = before.workflows[workflowId!]!;
     expect(parse(draft.yaml).metadata.controlFlow).toEqual(source.metadata.controlFlow); expect(draft.publishedVersion).toBe(0);
     expect(before.executions).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledTimes(1);
-    const requestBody = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(requestBody.messages[0].content).toBe(NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT);
+    const requestBody = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(requestBody.messages[0].content).toBe(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
     const publication = await s.request("POST", `/api/workflows/${workflowId!}/publish`, {}); expect(publication.statusCode, publication.body).toBe(200);
     expect(publication.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v4");
     const admitted = await s.request("POST", `/api/workflows/${workflowId!}/run`, { mode: "async-operation", idempotencyKey: `explicit-${route}-${kind}-${selected}`, input: { sendReport: selected } });

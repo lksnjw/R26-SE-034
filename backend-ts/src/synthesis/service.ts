@@ -8,6 +8,7 @@ import type { GovernanceUser, ValidationGate } from "../governance/gate.js";
 import { inspectWorkflowDraft } from "../workflows/compiled-read.js";
 import { withWorkspaceCompilationIssues } from "../workflows/draft-validation.js";
 import type { ReviewedModelSourceContext } from "./reviewed-model-sources.js";
+import { generatedReturnCoverageIssues } from "./return-coverage.js";
 
 export type SynthesisResult = {
   candidate: CandidateReport;
@@ -108,8 +109,11 @@ export class SynthesisService {
     }
     const blueprint = parseWorkflowYAMLStrict(yaml);
     const offeredTools = input.liveTools ?? this.registries.snapshot().tools;
-    const executionIssues = blueprint.metadata?.controlFlow !== undefined || blueprint.steps.some(step => ["analysis", "agent"].includes(step.kind ?? "")) ?
-      inspectWorkflowDraft(blueprint, offeredTools, input.userRole).issues : [];
+    const executionIssues = [
+      ...(blueprint.metadata?.controlFlow !== undefined || blueprint.steps.some(step => ["analysis", "agent"].includes(step.kind ?? "")) ?
+        inspectWorkflowDraft(blueprint, offeredTools, input.userRole).issues : []),
+      ...generatedReturnCoverageIssues(blueprint),
+    ];
     if (executionIssues.length) withWorkspaceCompilationIssues(gate.result, executionIssues);
     const canExecute = gate.result.passed && gate.token !== null && executionIssues.length === 0;
     const temperature = providers.configuration?.temperature ?? 0;
