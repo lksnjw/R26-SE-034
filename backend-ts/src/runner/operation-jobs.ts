@@ -13,6 +13,7 @@ import { assertOperationReturnCompletion } from "./operation-return-checkpoints.
 import { operationValueState } from "./operation-merge-checkpoints.js";
 import { operationControlTransition } from "../workflows/operation-control-flow.js";
 import { scheduledReportPaths } from "./scheduled-report-paths.js";
+import { selectScheduledReportEvidence } from "./scheduled-report-evidence.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
 import { isOperationToolNode, resolveReadBinding, type CompiledOperationPlan, type OperationToolNode } from "../workflows/compiled-read.js";
 import { modelInputItemCount } from "../workflows/model-input.js";
@@ -106,7 +107,8 @@ function assertCoverageBeforeScheduledEffect(run: Execution, plan: CompiledOpera
   const source = run.scheduleSource;
   if (!source) return;
   const effectId = plan.ir.root.nodes[effectIndex]?.id;
-  const scheduledReads = effectId ? scheduledReportPaths(plan, live, source.reportWindowBinding).get(effectId) : undefined;
+  const evidence = effectId ? scheduledReportPaths(plan, live, source.reportWindowBinding).get(effectId) : undefined;
+  const scheduledReads = evidence ? selectScheduledReportEvidence(evidence, run.readProgress!) : undefined;
   if (!scheduledReads?.length) throw new Error("Scheduled effects require prior confirmed in-scope report coverage");
   const receipts = run.reportCoverages ?? (run.reportCoverage ? { [run.reportCoverage.nodeId]: run.reportCoverage } : {});
   const requiredReceipts: ReportCoverageReceipt[] = [];

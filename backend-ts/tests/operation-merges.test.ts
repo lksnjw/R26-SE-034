@@ -119,8 +119,8 @@ test.each([true, false])("no-live fixture merge selected=%s uses exact supplied 
   expect(result.outcome).toBe("SIMULATED_COMPLETE"); expect(result.valueOutputs.gate).toEqual({ value: { text: selected ? "yes" : "no", complete: true } });
   expect(result.trace.find(entry => entry.nodeId === "after")!.arguments).toEqual({ text: selected ? "yes" : "no", complete: true }); expect("finalOutput" in result && result.finalOutput).toBe("supplied follow-up");
 });
-test("merge control cannot silently activate calendar report/effect semantics", () => {
-  expect(() => scheduledReportPaths(compile(), [tool], { profile: "workflow-report-window-input-binding/v1", startAtInput: "startAt", endAtInput: "endAt" })).toThrow(/not branch merges/);
+test("calendar typed merges do not replace complete reviewed report evidence", () => {
+  expect(() => scheduledReportPaths(compile(), [tool], { profile: "workflow-report-window-input-binding/v1", startAtInput: "startAt", endAtInput: "endAt" })).toThrow(/complete report/);
 });
 test("selected prerequisite view excludes skipped actions while keeping exact merge ownership for model shapes", () => {
   const value = parseWorkflowYAMLStrict(stringify(source())), filtered = parseWorkflowYAMLStrict(selectedPrerequisiteYAML(value, "after", new Set(["lookup", "no"]))), result = { schema_ok: true, errors: [] as string[] };

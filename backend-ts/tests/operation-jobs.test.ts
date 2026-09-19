@@ -450,6 +450,74 @@ async function prepareBranchReports(s: Awaited<ReturnType<typeof setup>>, damage
   });
 }
 
+async function prepareCalendarJoin(s: Awaited<ReturnType<typeof setup>>, kind?: "analysis" | "agent") {
+  let model: any;
+  if (kind) { await prepareDecisionWorkflow(s, kind); model = structuredClone(parse((await s.repository.snapshot()).workflows.flow!.yaml).steps[1]); }
+  await prepareBranchReports(s);
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, source = parse(workflow.yaml), gate = source.metadata.controlFlow.root.nodes[0];
+    const reports = [source.steps[0], source.steps[2]], action = (nodeId: string) => ({ kind: "action", nodeId });
+    source.metadata.controlFlow.schemaVersion = "read-control-flow/v2"; source.steps = [];
+    for (const [index, branch] of ["then", "else"].entries()) {
+      const read = reports[index]; source.steps.push(read); gate[branch].nodes = [action(read.id)];
+      if (s.relatedOrderRead) {
+        const orderId = `${read.id}_orders`;
+        source.steps.push({ id: orderId, action: s.relatedOrderRead.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", orderIds: `{{${read.id}.structuredContent.orderIds}}` } });
+        gate[branch].nodes.push(action(orderId));
+      }
+    }
+    const ref = (nodeId: string, field: string) => ({ kind: "ref", source: "nodeOutput", nodeId, path: ["structuredContent", field] });
+    gate.merge = { schema: { type: "string" }, then: ref("yes_report", "summary"), else: ref("no_report", "summary") };
+    if (model) { model.input = "{{gate.value}}"; source.steps.push(model); source.metadata.controlFlow.root.nodes.push(action(model.id)); }
+    source.steps.push({ id: "after", action: s.write.name, parameters: { value: model ? `{{${model.id}.structuredContent.summary}}` : "{{gate.value}}" } });
+    source.metadata.controlFlow.root.nodes.push(action("after"), { kind: "return", id: "accepted_answer", output: { schema: { type: "boolean" }, value: ref("after", "accepted") } });
+    workflow.yaml = stringify(source); workflow.steps = source.steps.length;
+  });
+}
+
+test.each(["daily", "weekly", "monthly"].flatMap(cadence => ["cursor", "related"].flatMap(profile => [true, false].map(selected => [cadence, profile, selected] as const))))(
+  "calendar typed join cadence=%s reports=%s selected=%s requires exact own coverage before independent effect approval", async (cadence, profile, selected) => {
+    const s = await setup(null, true, false, false, profile as "cursor" | "related"); await prepareCalendarJoin(s);
+    const { id, at } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected }, cadence as "daily" | "weekly" | "monthly")); await s.wait(id, "AWAITING_APPROVAL");
+    const pending = (await s.repository.snapshot()).executions[id]!, own = selected ? "yes_report" : "no_report", other = selected ? "no_report" : "yes_report";
+    expect(pending.workflowSnapshot!.operationCompilation).toMatchObject({ schemaVersion: "workflow-operation-ir/v7", compilerVersion: "operation-compiler/v7" });
+    expect(Object.keys(pending.reportCoverages!)).toEqual(profile === "related" ? [own, `${own}_orders`] : [own]);
+    expect(pending.valueOutputs).toEqual({ gate: { value: (pending.stepOutputs![own] as { structuredContent: { summary: string } }).structuredContent.summary } }); expect(pending.finalOutput).toBeUndefined();
+    expect(pending.reportCoverages![other]).toBeUndefined(); expect(await s.review(id)).toMatchObject({ nodeId: "after", canDecide: true });
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(profile === "related" ? 2 : 3);
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "requester")).statusCode).toBe(403);
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE");
+    const done = (await s.repository.snapshot()).executions[id]!; expect(done.finalOutput).toBe(true);
+    expect(s.sdk.callTool.mock.calls.at(-1)![1]).toEqual({ value: pending.valueOutputs!.gate!.value });
+    const events = structuredClone((await s.repository.snapshot()).executionEvents[id]);
+    expect(await workflowScheduleRunner(s.services).runDue(at)).toEqual({ admitted: 0, skipped: 0, blocked: 0 });
+    expect((await s.repository.snapshot()).executionEvents[id]).toEqual(events); expect(s.sdk.callTool).toHaveBeenCalledTimes(profile === "related" ? 3 : 4);
+  });
+
+test.each(["analysis", "agent"].flatMap(kind => [true, false].map(selected => [kind, selected] as const)))(
+  "calendar model=%s selected=%s receives the acknowledged merge before a separately approved effect", async (kind, selected) => {
+    const s = await setup(null, true, false, false, "cursor", true); await prepareCalendarJoin(s, kind as "analysis" | "agent");
+    const { id } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected })); await s.wait(id, "AWAITING_APPROVAL");
+    const pending = (await s.repository.snapshot()).executions[id]!, body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]!.body));
+    expect(body.messages[1].content).toContain(JSON.stringify(pending.valueOutputs!.gate!.value).slice(1, -1));
+    expect(s.modelFetch).toHaveBeenCalledOnce(); expect(s.sdk.callTool).toHaveBeenCalledTimes(3); expect(pending.finalOutput).toBeUndefined();
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE");
+    expect((await s.repository.snapshot()).executions[id]!.finalOutput).toBe(true); expect(s.modelFetch).toHaveBeenCalledOnce(); expect(s.sdk.callTool).toHaveBeenCalledTimes(4);
+  });
+
+test.each(["missing No report", "wrong No window", "wrong No relation"])("calendar join activation checks every alternative, including unselected %s", async damage => {
+  const s = await setup(null, true, false, false, damage === "wrong No relation" ? "related" : "cursor"); await prepareCalendarJoin(s);
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml), gate = source.metadata.controlFlow.root.nodes[0];
+    if (damage === "missing No report") { source.steps = source.steps.filter((node: any) => node.id !== "no_report"); gate.else.nodes = []; gate.merge.else = { kind: "literal", value: "Summary is not complete report evidence" }; }
+    if (damage === "wrong No window") source.steps.find((node: any) => node.id === "no_report").parameters.startAt = "2026-01-01T00:00:00Z";
+    if (damage === "wrong No relation") source.steps.find((node: any) => node.id === "no_report_orders").parameters.orderIds = ["invented-key"];
+    state.workflows.flow!.yaml = stringify(source); state.workflows.flow!.steps = source.steps.length;
+  });
+  const response = await activateDecisionSchedule(s, { sendReport: true }); expect(response.statusCode, response.body).toBe(422);
+  expect(response.json().meta.code).toBe("SCHEDULE_REPORT_COVERAGE_REQUIRED"); expect((await s.repository.snapshot()).schedules).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
 test.each([true, false])("scheduled branch-local reports select=%s do not require sibling coverage receipts", async selected => {
   const s = await setup(); await prepareBranchReports(s);
   const { id } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected })); await s.wait(id, "AWAITING_APPROVAL");

@@ -4,7 +4,7 @@ import type { ReadSequence } from "./read-control-flow.js";
  * Keep continuing and terminated effect bounds separate: an early answer
  * cannot make a later effect look reachable or count two exclusive effects
  * as one executable path. No predicate evaluation or path enumeration. */
-export function decisionReturnScopes(root: ReadSequence, effectIds: ReadonlySet<string> = new Set()) {
+export function decisionReturnScopes(root: ReadSequence, effectIds: ReadonlySet<string> = new Set(), options: { merges?: boolean } = {}) {
   const predecessors = new Map<string, ReadonlySet<string>>(), unreachable = new Set<string>();
   let hasCondition = false, visits = 0;
   type Bounds = { continuing: number | null; terminated: number | null };
@@ -24,7 +24,7 @@ export function decisionReturnScopes(root: ReadSequence, effectIds: ReadonlySet<
       } else if (node.kind === "return") {
         if (continuing === null) unreachable.add(node.id);
         terminated = maximum(terminated, continuing); continuing = null;
-      } else if (node.kind === "if" && !node.merge) {
+      } else if (node.kind === "if" && (!node.merge || options.merges === true)) {
         hasCondition = true;
         const yes = visit(node.then, visible, continuing !== null, depth + 1), no = visit(node.else, visible, continuing !== null, depth + 1);
         if (continuing !== null) {
@@ -32,7 +32,10 @@ export function decisionReturnScopes(root: ReadSequence, effectIds: ReadonlySet<
           terminated = maximum(terminated, ended === null ? null : continuing + ended);
           continuing = resumed === null ? null : continuing + resumed;
         }
-      } else throw new Error("Calendar composition supports decisions and Returns, not branch merges or collections");
+        if (node.merge) visible.add(node.id);
+      } else throw new Error(options.merges
+        ? "Calendar composition supports decisions, typed merges and Returns, not collections"
+        : "Calendar composition supports decisions and Returns, not branch merges or collections");
     }
     return { continuing, terminated };
   };
