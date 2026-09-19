@@ -185,7 +185,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
       if (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 8 || !Number.isInteger(maxToolCalls) || maxToolCalls < 0 || maxToolCalls > 16 ||
           !Number.isInteger(maxWallTimeMs) || maxWallTimeMs < 1_000 || maxWallTimeMs > 120_000 || maxConcurrency !== 1)
         issues.push(`Step ${step.id} agent execution limits are unsupported`);
-      if (validInput && outputSchema && predicate && capabilities.length === allowedActions.length && step.data_class) agentNodes.push({ id: step.id, kind: "agent", instruction, input: input as CompiledModelInput,
+      if (validInput && outputSchema && predicate && (capabilities.length === allowedActions.length || purpose === "draft-inspection") && step.data_class) agentNodes.push({ id: step.id, kind: "agent", instruction, input: input as CompiledModelInput,
         allowedCapabilities: capabilities, outputSchema: structuredClone(outputSchema), completionPredicate: { path: [...predicatePath as string[]], equals: structuredClone(predicate.equals) as string | number | boolean | null },
         dataClass: step.data_class as ModelDataClass, model: (step.model ?? "").trim(), maxInputItems, maxInputChars, maxOutputTokens, maxTotalTokens, maxRounds, maxToolCalls, maxWallTimeMs,
         ...((step.description ?? "").trim() ? { description: step.description!.trim() } : {}) });
@@ -245,6 +245,28 @@ export type OperationAgentNode = { id: string; kind: "agent"; instruction: strin
   outputSchema: Record<string, unknown>; completionPredicate: { path: string[]; equals: string | number | boolean | null }; dataClass: ModelDataClass; model: string;
   maxInputItems: number; maxInputChars: number; maxOutputTokens: number; maxTotalTokens: number; maxRounds: number; maxToolCalls: number; maxWallTimeMs: number; description?: string };
 export type OperationNode = OperationToolNode | OperationAnalysisNode | OperationAgentNode;
+
+export type ModelFixtureNode = ReadIR["root"]["nodes"][number] | OperationAnalysisNode | (Omit<OperationAgentNode, "allowedCapabilities"> & { allowedActions: string[] });
+/** Non-authorizing fixture projection: no admission pins, provider binding,
+ * publication receipt or durable runtime plan are produced. */
+export function compileModelFixtureWorkflow(yaml: string, tools: readonly ToolDefinition[], role: string) {
+  if (Buffer.byteLength(yaml) > 200_000) throw new Error("Model simulation source exceeds supported bounds");
+  const blueprint = parseWorkflowYAMLStrict(yaml), built = buildActionBindingsIR(blueprint, tools, role, new Map(), true, "draft-inspection");
+  const definitions = new Map<string, ModelFixtureNode>([...built.ir.root.nodes, ...built.analysisNodes].map(node => [node.id, node]));
+  for (const node of built.agentNodes) {
+    const { allowedCapabilities: _privateCapabilities, ...fields } = node;
+    definitions.set(node.id, { ...fields, allowedActions: [...(blueprint.steps.find(step => step.id === node.id)!.allowed_actions ?? [])] });
+  }
+  if (!blueprint.steps.some(step => ["analysis", "agent"].includes(effectiveStepKind(step)))) built.issues.push("Model simulation requires a model node");
+  for (const node of built.ir.root.nodes) if (!tools.find(tool => tool.tool_id === node.capability.toolId)?.is_read_only)
+    built.issues.push("Model fixture simulation does not evaluate effects or runtime approvals");
+  const nodes = blueprint.steps.map(step => definitions.get(step.id));
+  if (nodes.some(node => !node)) built.issues.push("Model simulation has an unsupported node");
+  if (built.issues.length) throw new Error("Model fixture projection is unsupported");
+  const projection = { profile: "model-fixture-plan/v1" as const, nodes: nodes as ModelFixtureNode[],
+    ...(built.ir.flow ? { flow: structuredClone(built.ir.flow) } : {}), ...(built.ir.inputSchema ? { inputSchema: structuredClone(built.ir.inputSchema) } : {}) };
+  return { ...projection, sourceHash: workflowContentHash(yaml), simulationHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(projection)).digest("hex")}` };
+}
 export function isOperationToolNode(node: OperationNode): node is OperationToolNode { return node.kind === "action"; }
 export type OperationIR = { schemaVersion: "workflow-operation-ir/v1" | "workflow-operation-ir/v2" | "workflow-operation-ir/v3" | "workflow-operation-ir/v4" | "workflow-operation-ir/v5"; compilerVersion: "operation-compiler/v1" | "operation-compiler/v2" | "operation-compiler/v3" | "operation-compiler/v4" | "operation-compiler/v5"; trigger: { kind: "manual" }; flow?: ReadSequence;
   inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: OperationNode[] } };

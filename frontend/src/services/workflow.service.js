@@ -30,7 +30,7 @@ export const workflowService = {
     return unwrap(await apiClient.post("/canvas/validate-workflow", payload));
   },
   async simulate(id, revision, input, outputs, profile = "read-fixtures/v1") {
-    if (!["read-fixtures/v1", "read-fixtures/v2"].includes(profile)) throw new Error("Unsupported fixture profile");
+    if (!["read-fixtures/v1", "read-fixtures/v2", "model-fixtures/v1"].includes(profile)) throw new Error("Unsupported fixture profile");
     // Separate from real runs: no mode, approval, retry or idempotency receipt.
     return unwrap(await apiClient.post(`/workflows/${id}/run`, { dryRun: true, input,
       simulation: { profile, baseVersion: revision.version, baseHash: revision.contentHash, outputs },

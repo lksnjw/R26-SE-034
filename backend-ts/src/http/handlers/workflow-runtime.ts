@@ -224,6 +224,11 @@ export async function runWorkflowFor(
     return reply.status(422).send(fail("Workflow source exceeds supported limits", { traceId }));
   if (parsed.data.simulation !== undefined && !parsed.data.dryRun)
     return reply.status(400).send(fail("Fixture simulation requires dryRun; test data cannot be used for real execution", { code: "SIMULATION_MODE_REQUIRED", traceId }));
+  if (parsed.data.simulation && typeof parsed.data.simulation === "object" && (parsed.data.simulation as Record<string, unknown>).profile === "model-fixtures/v1") {
+    if (!["", "execute", "deterministic-read", "async-operation"].includes(parsed.data.mode) || parsed.data.idempotencyKey !== "")
+      return reply.status(422).send(fail("Model fixtures are not a run admission mode", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));
+    return handleReadFixtureSimulation(request, reply, services, user, workflow, parsed.data.simulation, parsed.data.input ?? {}, traceId);
+  }
   const operationPublication = await services.repository.read((state) => (state.versions[workflow.id] ?? []).findLast((version) => version.version === workflow.publishedVersion && version.artifactState === "PUBLISHED"));
   if (operationPublication?.compiledOperation || parsed.data.mode === "async-operation") {
     if (!["", "execute", "async-read", "async-operation"].includes(parsed.data.mode))

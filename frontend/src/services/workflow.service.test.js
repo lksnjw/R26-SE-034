@@ -17,6 +17,11 @@ test("iteration fixtures use the explicit v2 profile with unchanged revision and
 test("an unknown fixture profile is rejected before any request", async () => {
   const post = jest.spyOn(apiClient, "post"); await expect(workflowService.simulate("flow", {}, {}, {}, "live")).rejects.toThrow(); expect(post).not.toHaveBeenCalled();
 });
+test("model fixtures use a revision-bound dry request, never operation admission", async () => {
+  const post = jest.spyOn(apiClient, "post").mockResolvedValue({ data: { data: {} } }), outputs = { answer: { structuredContent: { summary: "Test" } } };
+  await workflowService.simulate("flow", { version: 3, contentHash: "hash" }, {}, outputs, "model-fixtures/v1");
+  expect(post).toHaveBeenCalledWith("/workflows/flow/run", { dryRun: true, input: {}, simulation: { profile: "model-fixtures/v1", baseVersion: 3, baseHash: "hash", outputs } }, { timeout: 30000 });
+});
 test("fixture simulation uses a revision-bound dry request with no live run options", async () => {
   const post = jest.spyOn(apiClient, "post").mockResolvedValue({ data: { data: { outcome: "SIMULATED_COMPLETE" } } });
   const outputs = { first: { content: [], structuredContent: { id: "test" } } };

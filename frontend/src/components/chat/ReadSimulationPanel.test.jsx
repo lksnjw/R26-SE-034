@@ -13,6 +13,33 @@ afterEach(() => { cleanup(); jest.restoreAllMocks(); sessionStorage.clear(); loc
 const open = (extra = {}) => render(<ReadSimulationPanel workflowId="flow" record={record} steps={steps} canControl {...extra} />);
 const evaluate = () => fireEvent.click(screen.getByRole("button", { name: "Evaluate simulation" }));
 
+const modelStep = kind => ({ id: "answer", kind, output_schema: { type: "object", properties: { summary: { type: "string" }, complete: { type: "boolean" } }, required: ["summary", "complete"], additionalProperties: false } });
+const modelResponse = extra => response({ simulation: "fixture-model/v1", approval: "not_granted", model_behavior: "not_tested", model_usage: "not_measured", agent_tool_calls: "not_simulated",
+  trace: [{ nodeId: "answer", kind: "analysis", outcome: "SUPPLIED_MODEL_OUTPUT", arguments: { invoices: [1], orders: [2] }, output: { structuredContent: { summary: "Supplied comparison", complete: true } } }], ...extra });
+test.each(["analysis", "agent"])("%s forms submit only schema fields and label supplied model answers without live authority", async kind => {
+  workflowService.simulate.mockResolvedValue(modelResponse({ trace: [{ nodeId: "answer", kind, outcome: "SUPPLIED_MODEL_OUTPUT", output: { structuredContent: { summary: "Supplied comparison", complete: true } } }] }));
+  open({ steps: [modelStep(kind)] });
+  fireEvent.click(screen.getByLabelText("Supply response for answer"));
+  fireEvent.click(screen.getByRole("button", { name: "Set summary", exact: true }));
+  fireEvent.change(screen.getByLabelText("answer test output · summary"), { target: { value: "Supplied comparison" } });
+  fireEvent.click(screen.getByRole("button", { name: "Set complete", exact: true }));
+  fireEvent.change(screen.getByLabelText("answer test output · complete"), { target: { value: "true" } });
+  expect(screen.queryByLabelText("answer test response text")).toBeNull(); expect(screen.queryByLabelText("answer test tool error")).toBeNull();
+  evaluate(); const result = await screen.findByRole("region", { name: "Simulation results" });
+  expect(workflowService.simulate).toHaveBeenCalledWith("flow", record, {}, { answer: { structuredContent: { summary: "Supplied comparison", complete: true } } }, "model-fixtures/v1");
+  expect(result.textContent).toContain("Supplied structured model answer accepted"); expect(result.textContent).toContain("not a real execution receipt");
+  expect(workflowService.run).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled();
+});
+test.each([{ model_behavior: "tested" }, { model_usage: "measured" }, { agent_tool_calls: 1 }, { approval: "granted" }, { tokens: { total: 5 } }, { simulation: "fixture-read/v1" }])("model fixture result rejects fabricated runtime proof %j", async change => {
+  workflowService.simulate.mockResolvedValue(modelResponse(change)); open({ steps: [modelStep("analysis")] }); evaluate();
+  await screen.findByRole("alert"); expect(screen.queryByRole("region", { name: "Simulation results" })).toBeNull();
+});
+test("model stop retains readable prior answers and never invents agent completion", async () => {
+  workflowService.simulate.mockResolvedValue(modelResponse({ outcome: "SIMULATED_STOPPED", reason: "FIXTURE_AGENT_INCOMPLETE", trace: [{ nodeId: "answer", kind: "agent", outcome: "FIXTURE_AGENT_INCOMPLETE" }] }));
+  open({ steps: [modelStep("agent")] }); evaluate(); const result = await screen.findByRole("region", { name: "Simulation results" });
+  expect(result.textContent).toContain("Supplied agent answer does not meet its completion predicate"); expect(result.textContent).toContain("incomplete");
+});
+
 const loopRecord = { ...record, authoring: { ...record.authoring, executionProfile: "collection-simulation-only", controlFlow: { kind: "sequence", nodes: [{ kind: "foreach", id: "each", maxItems: 3, body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "read" }] } }] } } };
 const loopResponse = change => response({ simulation: "fixture-read/v2", trace: [{ nodeId: "each", kind: "collection", outcome: "SIMULATED_COLLECTION_STARTED", count: 2, invocationId: "each", iterations: [] }, { nodeId: "read", kind: "action", outcome: "SIMULATED", invocationId: "each/0/read", iterations: [{ loopId: "each", index: 0 }], output: { content: [{ type: "text", text: "First supplied answer" }] } }, { nodeId: "read", kind: "action", outcome: "SIMULATED", invocationId: "each/1/read", iterations: [{ loopId: "each", index: 1 }], output: { content: [{ type: "text", text: "Second supplied answer" }] } }], finalOutput: ["First", "Second"], unusedFixtureIds: [], ...change });
 test("collection forms submit explicit per-item fixtures and display separate readable answers, never a shared node fixture", async () => {
