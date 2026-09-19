@@ -3,26 +3,30 @@ import { resolveReadBinding, type CompiledOperationPlan } from "../workflows/com
 import { operationControlTransition } from "../workflows/operation-control-flow.js";
 import { appendExecutionEvent, assertCurrentRunController } from "./read-checkpoints.js";
 import { assertOperationReturnEvidence, checkpointOperationReturn } from "./operation-return-checkpoints.js";
+import { assertOperationMergeEvidence, checkpointOperationMerge, operationValueState } from "./operation-merge-checkpoints.js";
 
 /** Called only inside the current worker's execution transaction. Selection
  * and skip receipts must be acknowledged before any model/SDK entry. */
 export function advanceOperationDecisions(state: RepositoryState, run: Execution, plan: CompiledOperationPlan):
   { kind: "action"; index: number; nodeId: string } | { kind: "complete" } | { kind: "failed" } {
   const progress = run.readProgress!;
-  if (!plan.ir.flow || !["workflow-operation-ir/v4", "workflow-operation-ir/v5", "workflow-operation-ir/v6"].includes(plan.ir.schemaVersion) || run.status !== "RUNNING" || run.operationSecret?.state !== "CLAIMED" ||
+  if (!plan.ir.flow || !["workflow-operation-ir/v4", "workflow-operation-ir/v5", "workflow-operation-ir/v6", "workflow-operation-ir/v7"].includes(plan.ir.schemaVersion) || run.status !== "RUNNING" || run.operationSecret?.state !== "CLAIMED" ||
       run.workflowSnapshot?.operationCompilation?.semanticHash !== plan.semanticHash || progress.cancellation) throw new Error("Operation decision checkpoint is not owned");
   assertCurrentRunController(state, run, run.operationSecret.actorId, run.operationSecret.admittedRole);
   for (let count = 0; count < 512; count++) {
+    assertOperationMergeEvidence(state, run, plan);
     assertOperationReturnEvidence(state, run, plan);
     const transition = operationControlTransition(plan.ir.flow, progress);
     if (transition.kind === "action" || transition.kind === "complete") return transition;
     const timestamp = new Date().toISOString();
     if (transition.kind === "return") {
       if (!checkpointOperationReturn(state, run, transition.node, transition.index)) return { kind: "failed" };
+    } else if (transition.kind === "merge") {
+      if (!checkpointOperationMerge(state, run, transition.node, transition.index)) return { kind: "failed" };
     } else if (transition.kind === "decision") {
       const { node, index } = transition;
       let predicate: unknown;
-      try { predicate = resolveReadBinding(node.predicate, { input: run.workflowSnapshot!.input, ...run.stepOutputs }); } catch { predicate = undefined; }
+      try { predicate = resolveReadBinding(node.predicate, operationValueState(run)); } catch { predicate = undefined; }
       const selected = typeof predicate === "boolean" ? predicate ? "then" as const : "else" as const : undefined;
       (progress.decisions ??= {})[node.id] = { status: selected ? "DONE" : "FAILED", ...(selected ? { selected } : {}), evaluatedAt: timestamp, stepIndex: index };
       (state.timelines[run.id] ??= []).push({ id: `control_${node.id}`, nodeId: node.id, label: `If ${node.id}`, status: selected ? "DONE" : "FAILED",

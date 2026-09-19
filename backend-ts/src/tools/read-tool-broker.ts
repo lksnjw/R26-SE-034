@@ -9,6 +9,7 @@ import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import type { ValidationToken } from "../validator/registry-validator.js";
 import { hasReservedBridgeRole } from "./erpbridge-contract.js";
 import type { ReadAdmissionPin, CompiledReadPlan } from "../workflows/compiled-read.js";
+import { selectedPrerequisiteYAML } from "../workflows/selected-prerequisite-view.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
 import { parseReadControlFlow } from "../workflows/read-control-flow.js";
 import { ReadIterationCheckpoints, type ReadSelectedEvidence } from "../runner/read-iteration-checkpoints.js";
@@ -122,7 +123,7 @@ export async function dispatchReadTool(
       // the exact-source capability below. This extra denial-only check proves
       // process prerequisites on the actual confirmed path, never on a skipped
       // branch that happened to appear earlier in the declaration catalog.
-      const prefix = stringify({ ...blueprint, steps: blueprint.steps.filter(step => step.id === authored.id || completed.has(step.id)) });
+      const prefix = selectedPrerequisiteYAML(blueprint, authored.id, completed);
       if (!services.validator.validatePlan("ReadConfirmedPath", prefix, actor.role).passed) throw new Error("Selected read path does not meet confirmed process prerequisites");
     }
   }

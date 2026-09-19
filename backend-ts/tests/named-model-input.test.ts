@@ -95,3 +95,10 @@ test("new named-input prompts retain frozen v12 and avoid contradictory single-i
     expect(instructions).not.toContain("input as ONE exact"); expect(instructions).not.toContain("joint multi-source analysis or hidden");
   }
 });
+
+test.each(["analysis", "agent"])("%s v3 patch describes only server-supplied merge sources without changing v2 provenance", kind => {
+  const prompt = systemInstructionsFor(`prompt/${kind}-node-patch/v3`);
+  for (const marker of ["conditionId.value", "allowedDataSources", "BOTH", "1–8", "Never create a merge", "unapplied proposal"])
+    expect(prompt.toUpperCase()).toContain(marker.toUpperCase());
+  expect(prompt).toContain(`prompt/${kind}-node-patch/v3`);
+});

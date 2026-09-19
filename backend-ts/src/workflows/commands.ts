@@ -76,7 +76,7 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
 export function selectedNodePatchSchema(node: { kind?: string | undefined }) {
   return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : node.kind === "agent" ? agentNodePatchSchema : nodePatchSchema;
 }
-export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : node.kind === "analysis" ? "prompt/analysis-node-patch/v2" : node.kind === "agent" ? "prompt/agent-node-patch/v2" : "prompt/node-patch/v2"; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : node.kind === "analysis" ? "prompt/analysis-node-patch/v3" : node.kind === "agent" ? "prompt/agent-node-patch/v3" : "prompt/node-patch/v2"; }
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
   return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : node.kind === "analysis" ? "updateAnalysis" : node.kind === "agent" ? "updateAgent" : "updateNode", nodeId: node.id, patch });
 }

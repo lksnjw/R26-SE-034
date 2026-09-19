@@ -29,7 +29,7 @@ import { prepareOperationExecution, type StoredOperationCompilation } from "../s
 import { modelDataClasses, type ModelDataClass } from "../src/providers/egress-policy.js";
 import { reviewedModelSourceContext } from "../src/synthesis/reviewed-model-sources.js";
 import { SynthesisService, assembleCandidatePrompt } from "../src/synthesis/service.js";
-import { TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -513,6 +513,88 @@ async function prepareModelReadWorkflow(s: Awaited<ReturnType<typeof setup>>, ki
   });
 }
 
+async function prepareMergedModelWorkflow(s: Awaited<ReturnType<typeof setup>>, kind: "analysis" | "agent", effect = false) {
+  await prepareModelReadWorkflow(s, kind);
+  await s.repository.mutate(state => {
+    const value = parse(state.workflows.flow!.yaml), model = value.steps[1];
+    model.data_class = "restricted";
+    const followup = { ...model, id: "followup", input: "{{gate.value}}" };
+    value.steps.push(followup, { id: effect ? "send" : "tail", action: effect ? s.write.name : s.read.name, parameters: { value: "{{gate.value}}" } });
+    value.trigger.config = { inputSchema: { type: "object", properties: { includeAnswer: { type: "boolean" } }, required: ["includeAnswer"], additionalProperties: false } };
+    const action = (nodeId: string) => ({ kind: "action", nodeId }), seq = (...nodes: any[]) => ({ kind: "sequence", nodes });
+    value.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: seq(action("lookup"), { kind: "if", id: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["includeAnswer"] },
+      then: seq(action(model.id)), else: seq(), merge: { schema: { type: "string" }, then: { kind: "ref", source: "nodeOutput", nodeId: model.id, path: ["structuredContent", "summary"] }, else: { kind: "literal", value: "Explicit no path" } } },
+      action("followup"), action(effect ? "send" : "tail"), { kind: "return", id: "answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "followup", path: ["structuredContent", "summary"] } } }) } };
+    state.workflows.flow!.yaml = stringify(value); state.workflows.flow!.steps = value.steps.length;
+  });
+  const runtime = s.providerRuntime!;
+  runtime.activate({ ...runtime.configuration!, egressPolicy: { ...runtime.configuration!.egressPolicy!, runtimeAnalysisDataClasses: ["restricted"], runtimeAgentDataClasses: ["restricted"] } });
+  if (kind === "agent") s.modelFetch.mockImplementation(async () => Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"summary":"FIXTURE REPORT","complete":true}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+}
+test.each(["analysis", "agent"].flatMap(kind => [true, false].map(selected => [kind, selected] as const)))(
+  "%s selected=%s merge feeds acknowledged model/read/Return without fake effects; original key replays no work", async (kind, selected) => {
+    const s = await setup(null, true, false, false, false, true); await prepareMergedModelWorkflow(s, kind as "analysis" | "agent");
+    const published = await s.publish(); expect(published.statusCode, published.body).toBe(200); expect(published.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v7");
+    const readiness = (await s.request("GET", "/api/workflows/flow/readiness")).json().data; expect(readiness.authoring).toMatchObject({ mergeNodesSupported: true, modelNodesSupported: true });
+    expect(readiness.authoring.nodes.find((node: any) => node.nodeId === "followup").dataSources.some((source: any) => source.expression === "{{gate.value}}")).toBe(true);
+    const key = `merged-${kind}-${selected}-0001`, admitted = await s.run(key, { includeAnswer: selected }); expect(admitted.statusCode, admitted.body).toBe(202);
+    const id = admitted.json().data.id; await s.wait(id, "DONE"); const state = await s.repository.snapshot(), run = state.executions[id]!;
+    expect(run.valueOutputs).toEqual({ gate: { value: selected ? "FIXTURE REPORT" : "Explicit no path" }, answer: { value: "FIXTURE REPORT" } });
+    expect(run.finalOutput).toBe("FIXTURE REPORT"); expect(run.runtimeApprovalSecret).toBeUndefined();
+    expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 2 : 1); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+    expect(s.sdk.callTool.mock.calls[1]![1]).toEqual({ value: selected ? "FIXTURE REPORT" : "Explicit no path" });
+    const modelBody = JSON.parse(String(s.modelFetch.mock.calls.at(-1)![1]!.body));
+    expect(modelBody.messages[1].content).toContain(selected ? "FIXTURE REPORT" : "Explicit no path");
+    expect((await s.run(key, { includeAnswer: selected })).json().data.id).toBe(id); expect((await s.repository.snapshot()).executionEvents[id]).toEqual(state.executionEvents[id]);
+    expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 2 : 1); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+  });
+test.each(["chat", "async-chat"].flatMap(route => ["analysis", "agent"].flatMap(kind => [true, false].map(selected => [route, kind, selected] as const))))(
+  "%s v15 generated %s branch handoff selected=%s is saved unpublished and runs only explicitly", async (route, kind, selected) => {
+    const s = await setup(null, true, false, false, false, true); await prepareMergedModelWorkflow(s, kind as "analysis" | "agent");
+    const provider = s.providerRuntime!;
+    provider.activate({ ...provider.configuration!, egressPolicy: { ...provider.configuration!.egressPolicy!, interactiveDataClasses: ["restricted"] } });
+    Object.assign(s.services, { synthesis: new SynthesisService(provider, s.services.registries, s.services.validator) });
+    const yaml = (await s.repository.snapshot()).workflows.flow!.yaml;
+    s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: yaml } }], usage: { prompt_tokens: 5, completion_tokens: 8 } }));
+    const session = (await s.request("POST", "/api/chat/sessions", {})).json().data, url = `/api/chat/sessions/${session.id}/messages`;
+    const command = { content: "Create a workflow to read the report, analyse it if includeAnswer is Yes, otherwise use the explicit no path; analyse the selected answer afterwards and return the summary. Preserve both outcomes.",
+      ...(route === "async-chat" ? { delivery: "async-chat", idempotencyKey: `merged-chat-${kind}-${selected}-0001` } : {}) };
+    const response = await s.request("POST", url, command); expect(response.statusCode, response.body).toBe(route === "async-chat" ? 202 : 200);
+    let workflowId: string;
+    if (route === "async-chat") {
+      const id = response.json().data.operation.id;
+      await vi.waitFor(async () => expect((await s.repository.snapshot()).chatOperations[id]!.status).toBe("ANSWERED"), { timeout: 4000 });
+      workflowId = (await s.repository.snapshot()).chatOperations[id]!.artifactRefs!.find(item => item.type === "workflow-draft")!.id;
+      const savedMessages = (await s.repository.snapshot()).chats[session.id]!.messages;
+      expect((await s.request("POST", url, command)).json().data.operation.id).toBe(id);
+      expect((await s.repository.snapshot()).chats[session.id]!.messages).toEqual(savedMessages);
+    } else workflowId = response.json().data.assistantMessage.artifacts.workflowId;
+    const before = await s.repository.snapshot(); expect(before.workflows[workflowId]!.yaml).toBe(yaml.trim());
+    expect(before.workflows[workflowId]!.publishedVersion).toBe(0); expect(before.executions).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)).messages[0].content).toBe(TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
+    const published = await s.request("POST", `/api/workflows/${workflowId}/publish`, {}); expect(published.statusCode, published.body).toBe(200);
+    expect(published.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v7");
+    const runCommand = { mode: "async-operation", input: { includeAnswer: selected }, idempotencyKey: `generated-merge-${route}-${kind}-${selected}-0001` }, runUrl = `/api/workflows/${workflowId}/run`;
+    const admission = await s.request("POST", runUrl, runCommand); expect(admission.statusCode, admission.body).toBe(202);
+    const runId = admission.json().data.id; await s.wait(runId, "DONE"); const saved = await s.repository.snapshot(), run = saved.executions[runId]!;
+    expect(run.valueOutputs).toEqual({ gate: { value: selected ? "FIXTURE REPORT" : "Explicit no path" }, answer: { value: "FIXTURE REPORT" } });
+    expect(run.runtimeApprovalSecret).toBeUndefined(); expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 3 : 2);
+    expect((await s.request("POST", runUrl, runCommand)).json().data.id).toBe(runId);
+    expect((await s.repository.snapshot()).executionEvents[runId]).toEqual(saved.executionEvents[runId]);
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 3 : 2);
+  });
+
+test.each([true, false])("selected=%s merged effect still waits for exact independent approval and returns no delivery fiction", async selected => {
+  const s = await setup(null, true, false, false, false, true); await prepareMergedModelWorkflow(s, "analysis", true);
+  expect((await s.publish()).statusCode).toBe(200); const key = `merge-effect-${selected}-0001`, admitted = await s.run(key, { includeAnswer: selected });
+  expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id; await s.wait(id, "AWAITING_APPROVAL");
+  expect(s.sdk.callTool).toHaveBeenCalledOnce(); const review = await s.review(id); expect(review.arguments).toEqual({ value: selected ? "FIXTURE REPORT" : "Explicit no path" });
+  expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "requester")).statusCode).toBe(403);
+  const accepted = await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer"); expect(accepted.statusCode, accepted.body).toBe(200);
+  expect(accepted.json().data).toMatchObject({ executionStatus: "PENDING", resumeQueued: true });
+  await s.wait(id, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect((await s.repository.snapshot()).executions[id]!.finalOutput).toBe("FIXTURE REPORT");
+});
+
 test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"].flatMap(kind => [true, false].map(selected => [route, kind, selected] as const))))(
   "%s v14 synthesis saves %s selected=%s typed answers only as a draft until explicit publish/run", async (route, kind, selected) => {
     const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind as "analysis" | "agent");
@@ -533,7 +615,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     if (route === "direct") {
       const response = await s.request("POST", "/api/synthesis", { prompt }); expect(response.statusCode, response.body).toBe(200);
       const candidate = response.json().data; expect(candidate.execution_profile_issues).toEqual([]); expect(candidate.validation.passed).toBe(true);
-      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v14"); expect(candidate.yaml).toBe(yaml.trim());
+      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v15"); expect(candidate.yaml).toBe(yaml.trim());
       expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["flow"]);
       const created = await s.request("POST", "/api/workflows", { yaml: candidate.yaml }); expect(created.statusCode, created.body).toBe(201); workflowId = created.json().data.id;
     } else {
@@ -552,7 +634,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     const before = await s.repository.snapshot(), draft = before.workflows[workflowId!]!;
     expect(parse(draft.yaml)).toEqual(source); expect(draft.publishedVersion).toBe(0); expect(before.executions).toEqual({});
     expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledOnce();
-    const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toBe(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
+    const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toBe(TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
     const published = await s.request("POST", `/api/workflows/${workflowId!}/publish`, {}); expect(published.statusCode, published.body).toBe(200); expect(published.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v6");
     if (selected) s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ summary: "Typed synthesis answer", ...(kind === "agent" ? { complete: true } : {}) }) } }], usage: { prompt_tokens: 9, completion_tokens: 4 } }));
     const command = { mode: "async-operation", idempotencyKey: `return-run-${route}-${kind}-${selected}-0001`, input: { includeAnswer: selected } };
@@ -766,7 +848,7 @@ test.each(["direct", "chat"])("%s synthesis ignores forged browser source claims
   });
   expect(response.statusCode, response.body).toBe(200); expect(s.modelFetch).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
+  expect(body.messages[0].content).toBe(TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
   const data = JSON.parse(body.messages[1].content);
   expect(data.MODEL_SOURCE_HINTS_JSON.sources.find((source: { toolId: string }) => source.toolId === s.read.tool_id)).toEqual({
     toolId: s.read.tool_id, action: s.read.name, connectionId: "erpbridge-default", dataClass: "confidential", review: "REVIEWED",
@@ -788,7 +870,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     if (route === "direct") {
       const response = await s.request("POST", "/api/synthesis", { prompt }); expect(response.statusCode, response.body).toBe(200);
       const candidate = response.json().data; expect(candidate.execution_profile_issues).toEqual([]);
-      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v14"); expect(candidate.yaml).toBe(yaml.trim());
+      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v15"); expect(candidate.yaml).toBe(yaml.trim());
       expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["flow"]);
       const created = await s.request("POST", "/api/workflows", { yaml: candidate.yaml }); expect(created.statusCode, created.body).toBe(201); workflowId = created.json().data.id;
     } else {
@@ -809,7 +891,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     const before = await s.repository.snapshot(), draft = before.workflows[workflowId!]!;
     expect(parse(draft.yaml).metadata.controlFlow).toEqual(source.metadata.controlFlow); expect(draft.publishedVersion).toBe(0);
     expect(before.executions).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledTimes(1);
-    const requestBody = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(requestBody.messages[0].content).toBe(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
+    const requestBody = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(requestBody.messages[0].content).toBe(TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
     const publication = await s.request("POST", `/api/workflows/${workflowId!}/publish`, {}); expect(publication.statusCode, publication.body).toBe(200);
     expect(publication.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v4");
     const admitted = await s.request("POST", `/api/workflows/${workflowId!}/run`, { mode: "async-operation", idempotencyKey: `explicit-${route}-${kind}-${selected}`, input: { sendReport: selected } });

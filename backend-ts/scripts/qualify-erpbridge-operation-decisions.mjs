@@ -22,7 +22,7 @@ try {
     const chat = await request("POST", `/api/chat/sessions/${session.id}/messages`, { content: `Create a local workflow to read synthetic Departments and conditionally count them with ${kind} on the Yes path.` });
     const draft = { id: chat.assistantMessage?.artifacts?.workflowId }, proposed = parse(chat.yaml);
     const afterPlanning = await workspace.repository.snapshot(), savedDraft = afterPlanning.workflows[draft.id];
-    if (!savedDraft || savedDraft.publishedVersion !== 0 || chat.workflowDraft?.generation_metadata?.promptTemplateVersion !== "prompt/candidate/v14" ||
+    if (!savedDraft || savedDraft.publishedVersion !== 0 || chat.workflowDraft?.generation_metadata?.promptTemplateVersion !== "prompt/candidate/v15" ||
         chat.validation?.passed !== true || JSON.stringify(proposed.metadata.controlFlow) !== JSON.stringify(qaModelDecisionBlueprint(kind).metadata.controlFlow) ||
         !chat.answer.includes("has not been published or executed") || Object.keys(afterPlanning.executions).length !== Object.keys(beforePlanning.executions).length)
       throw new Error("Conditional chat proposal was not preserved as an unpublished unexecuted draft");
@@ -63,6 +63,6 @@ try {
     const replay = await request("POST", `/api/workflows/${draft.id}/run`, command, 202);
     const after = await workspace.repository.snapshot();
     if (replay.id !== run.id || JSON.stringify(before.executionEvents[run.id]) !== JSON.stringify(after.executionEvents[run.id])) throw new Error("Replay changed decision run evidence");
-    console.log(`LOCAL Docker ${kind}/insert-${branch === "then" ? "Yes" : "No"}/select-${selected ? "Yes" : "No"}: v14 fixture chat saved/reopened; exact empty-branch model edit saved without execution; explicit publication/run; v4 decision DONE; 8 actual synthetic rows; ${modelSelected ? "bounded fixture answer matches" : "runtime model skipped with no answer or token usage"}; replay unchanged; no writes or email.`);
+    console.log(`LOCAL Docker ${kind}/insert-${branch === "then" ? "Yes" : "No"}/select-${selected ? "Yes" : "No"}: v15 fixture chat saved/reopened; exact empty-branch model edit saved without execution; explicit publication/run; v4 decision DONE; 8 actual synthetic rows; ${modelSelected ? "bounded fixture answer matches" : "runtime model skipped with no answer or token usage"}; replay unchanged; no writes or email.`);
   }
 } finally { await workspace.close(); }

@@ -56,7 +56,7 @@ test.each(["sibling input", "branch escape", "forward predicate", "unknown predi
   if (damage === "nonboolean predicate") gate.predicate = { kind: "ref", source: "nodeOutput", nodeId: "report", path: ["structuredContent", "text"] };
   if (damage === "duplicate owner") gate.else.nodes[0] = action("yes_model");
   if (damage === "missing owner") gate.then.nodes.pop();
-  if (damage === "merge") { value.metadata.controlFlow.schemaVersion = "read-control-flow/v2"; gate.merge = { schema: { type: "string" }, then: { kind: "literal", value: "yes" }, else: { kind: "literal", value: "no" } }; }
+  if (damage === "merge") { value.metadata.controlFlow.schemaVersion = "read-control-flow/v2"; gate.merge = { schema: { type: "string" }, then: { kind: "literal", value: true }, else: { kind: "literal", value: "no" } }; }
   if (damage === "loop") { value.metadata.controlFlow.schemaVersion = "read-control-flow/v3"; gate.then.nodes = [{ kind: "foreach", id: "each", maxItems: 2, items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "array", items: [] } }, body: seq(...gate.then.nodes), collect: { schema: { type: "string" }, value: { kind: "literal", value: "item" } } }]; }
   expect(() => compile(value)).toThrow("Operation compilation failed");
   expect(readAuthoringContract(parseWorkflowYAMLStrict(stringify(value)), tools, role, "synthetic-hash")).toMatchObject({ executionProfile: "unsupported-operation-control-flow", modelNodesSupported: false });

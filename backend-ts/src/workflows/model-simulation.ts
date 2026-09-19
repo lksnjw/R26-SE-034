@@ -34,9 +34,13 @@ export async function simulateModelWorkflow(yaml: string, input: Record<string, 
   boundFixtureData({ input, outputs: fixtures.outputs });
   let projection: ReturnType<typeof compileModelFixtureWorkflow>;
   try { projection = compileModelFixtureWorkflow(yaml, tools, role); }
-  catch { return { outcome: "PLAN_BLOCKED", issues: ["Model fixtures require a supported read/model draft without effects, collections or merges"], ...empty }; }
+  catch { return { outcome: "PLAN_BLOCKED", issues: ["Model fixtures require a supported read/model draft without effects or collections"], ...empty }; }
   const definitions = new Map(projection.nodes.map(node => [node.id, node]));
-  const returns = new Map(projection.flow ? structuralNodes(projection.flow).filter(node => node.kind === "return").map(node => [node.id, node.output.schema]) : []);
+  const values = new Map<string, { kind: "merge" | "return"; schema: Record<string, unknown> }>();
+  for (const node of projection.flow ? structuralNodes(projection.flow) : []) {
+    if (node.kind === "return") values.set(node.id, { kind: "return", schema: node.output.schema });
+    else if (node.kind === "if" && node.merge) values.set(node.id, { kind: "merge", schema: node.merge.schema });
+  }
   if (Object.keys(fixtures.outputs).some(id => !definitions.has(id))) throw new Error("Fixture names must match exact declared node IDs");
   // Internal interpreter projection only, never a publication/runtime artifact.
   const plan: CompiledReadPlan = { sourceHash: projection.sourceHash, semanticHash: projection.simulationHash, ir: {
@@ -114,11 +118,13 @@ export async function simulateModelWorkflow(yaml: string, input: Record<string, 
         ...(reason.kind === "branch" ? { conditionId: reason.conditionId, selectedBranch: reason.selected } : reason.kind === "return" ? { returnId: reason.returnId } : {}) }); },
       value: async (sourceIndex, id, kind, value, valid) => {
         failedNodeId = id;
-        const entry: ModelSimulationEntry = { nodeId: id, kind: "return", sourceIndex, outcome: "SIMULATED_RETURN" };
-        if (kind !== "return" || !valid || !returns.has(id)) return fail(entry, "VALUE_INVALID");
+        const definition = values.get(id), entry: ModelSimulationEntry = { nodeId: id, kind: kind === "merge" ? "merge" : "return", sourceIndex, outcome: kind === "merge" ? "SIMULATED_MERGE" : "SIMULATED_RETURN" };
+        if (!valid || !definition || definition.kind !== kind) return fail(entry, "VALUE_INVALID");
         const safe = withoutSecretFields({ value }) as { value: unknown };
-        if (!Object.hasOwn(safe, "value") || validateToolInput(returns.get(id), safe.value).length) return fail(entry, "VALUE_INVALID");
-        append({ ...entry, output: safe }); valueOutputs[id] = safe; finalOutput = safe.value; hasFinal = true; return safe;
+        if (!Object.hasOwn(safe, "value") || validateToolInput(definition.schema, safe.value).length) return fail(entry, "VALUE_INVALID");
+        append({ ...entry, output: safe }); valueOutputs[id] = safe;
+        if (kind === "return") { finalOutput = safe.value; hasFinal = true; }
+        return safe;
       },
     });
     return { outcome: "SIMULATED_COMPLETE", trace, stepOutputs, valueOutputs, ...(hasFinal ? { finalOutput } : {}),

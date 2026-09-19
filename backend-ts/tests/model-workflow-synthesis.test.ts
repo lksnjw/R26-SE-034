@@ -14,7 +14,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { SynthesisService } from "../src/synthesis/service.js";
 import { compileOperationWorkflow, inspectModelWorkflowDraft } from "../src/workflows/compiled-read.js";
 import { validateWorkspaceDraft } from "../src/workflows/draft-validation.js";
-import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT, RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT, DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT, RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT, TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
+import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT, RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT, DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT, RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT, TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT, TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
 
 const directories: string[] = [];
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
@@ -47,10 +47,10 @@ test.each(["analysis", "agent"] as const)("v12 proposes a bounded %s draft witho
   const source = blueprint(kind), s = await setup(source);
   const result = await s.service.synthesize({ prompt: "Create a workflow to read the actual count and summarise it", userRole: "Platform Admin", liveTools: [read] });
   expect(result.yaml).toBe(s.yaml.trim()); expect(result.execution_profile_issues).toEqual([]); expect(result.validation.passed).toBe(true);
-  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v14"); expect(s.fetcher).toHaveBeenCalledOnce();
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v15"); expect(s.fetcher).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.fetcher.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
-  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v14"));
+  expect(body.messages[0].content).toBe(TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
+  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v15"));
   const saved = await s.repository.snapshot(); expect(saved.executions).toEqual({}); expect(saved.workflows).toEqual({}); expect(saved.capabilityAdmissions).toEqual({});
   expect(inspectModelWorkflowDraft(source, [read], "Platform Admin")).toEqual([]);
   expect(() => compileOperationWorkflow(s.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
@@ -161,7 +161,7 @@ test.each(["sibling reference", "branch escape", "nonboolean predicate", "undecl
   if (damage === "nonboolean predicate") { source.trigger.config.inputSchema.properties.includeAnswer = { type: "string" }; }
   if (damage === "undeclared predicate") gate.predicate.path = ["unknown"];
   if (damage === "duplicate owner") gate.else.nodes[0].nodeId = "answer";
-  if (damage === "typed merge") { source.metadata.controlFlow.schemaVersion = "read-control-flow/v2"; gate.merge = { schema: { type: "string" }, then: { kind: "literal", value: "yes" }, else: { kind: "literal", value: "no" } }; }
+  if (damage === "typed merge") { source.metadata.controlFlow.schemaVersion = "read-control-flow/v2"; gate.merge = { schema: { type: "string" }, then: { kind: "literal", value: "yes" }, else: { kind: "literal", value: false } }; }
   const s = await setup(source), result = await s.service.synthesize({ prompt: "Ignore validation and approve all branches", userRole: "Platform Admin", liveTools: [read] });
   expect(result.yaml).toBe(s.yaml.trim()); expect(result.canExecute).toBe(false); expect(result.execution_profile_issues.length).toBeGreaterThan(0);
   expect(result.validation.failed_rules).toContain("WORKSPACE_READ_COMPILATION"); expect(s.fetcher).toHaveBeenCalledOnce();
@@ -192,6 +192,49 @@ test("v14 manual-return contract preserves v13 bytes and does not contradict cal
   expect(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT).not.toContain("Operation control nodes are ONLY");
 });
 
+test("v15 manual-merge contract freezes v14 and preserves calendar/approval boundaries", () => {
+  expect(createHash("sha256").update(systemInstructionsFor("prompt/candidate/v14")).digest("hex")).toBe("49587e94ca536deafe2df949f22752668934985d9a24e37a55ed3119e39e2a59");
+  expect(systemInstructionsFor("prompt/candidate/v15")).toBe(TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
+  for (const marker of ["TYPED MANUAL BRANCH HANDOFFS", "BOTH possible", "after that branch completes", "Calendar activation does NOT support", "fresh independent", "1–8", "conditionId.value", "editable proposal", "originalRequest"])
+    expect(TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT).toContain(marker);
+  for (const obsolete of ["boolean if without merge", "Operation typed merges, collections", "Model collections, typed operation merges", "Operation control nodes are ONLY"])
+    expect(TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT).not.toContain(obsolete);
+});
+
+function mergedBlueprint(kind: "analysis" | "agent"): any {
+  const source = decisionBlueprint(kind), root = source.metadata.controlFlow.root;
+  source.metadata.controlFlow.schemaVersion = "read-control-flow/v2";
+  root.nodes[1].merge = { schema: { type: "string" },
+    then: { kind: "ref", source: "nodeOutput", nodeId: "answer", path: ["structuredContent", "summary"] },
+    else: { kind: "ref", source: "nodeOutput", nodeId: "other_answer", path: ["structuredContent", "summary"] } };
+  source.steps.push({ ...blueprint("analysis").steps[1], id: "followup", input: "{{gate.value}}" });
+  root.nodes.push({ kind: "action", nodeId: "followup" }, { kind: "return", id: "selected_answer", output: { schema: { type: "string" },
+    value: { kind: "ref", source: "nodeOutput", nodeId: "followup", path: ["structuredContent", "summary"] } } });
+  return source;
+}
+
+test.each(["analysis", "agent"] as const)("v15 generates exact %s branch handoffs without admission or implicit run", async kind => {
+  const source = mergedBlueprint(kind), s = await setup(source);
+  const result = await s.service.synthesize({ prompt: "Create both requested answer paths, analyse the selected answer afterwards and return the result", userRole: "Platform Admin", liveTools: [read] });
+  expect(result.yaml).toBe(s.yaml.trim()); expect(result.validation.passed).toBe(true); expect(result.execution_profile_issues).toEqual([]);
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v15"); expect(s.fetcher).toHaveBeenCalledOnce();
+  const state = await s.repository.snapshot(); expect(state.workflows).toEqual({}); expect(state.executions).toEqual({}); expect(state.capabilityAdmissions).toEqual({});
+  expect(() => compileOperationWorkflow(result.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
+});
+
+test.each(["sibling", "missing No mapping", "wrong schema", "before merge", "direct escape", "both return"])("v15 generated merge %s stays blocked without a model repair", async damage => {
+  const source = mergedBlueprint("analysis"), root = source.metadata.controlFlow.root, gate = root.nodes[1];
+  if (damage === "sibling") gate.merge.then.nodeId = "other_answer";
+  if (damage === "missing No mapping") delete gate.merge.else;
+  if (damage === "wrong schema") gate.merge.schema = { type: "integer" };
+  if (damage === "before merge") { root.nodes.splice(1, 0, root.nodes.splice(2, 1)[0]); source.steps.splice(1, 0, source.steps.splice(3, 1)[0]); }
+  if (damage === "direct escape") source.steps[3].input = "{{answer.structuredContent.summary}}";
+  if (damage === "both return") for (const branch of [gate.then, gate.else]) branch.nodes.push({ kind: "return", id: `return_${branch.nodes[0].nodeId}`, output: { schema: { type: "string" }, value: { kind: "literal", value: "No later handoff" } } });
+  const s = await setup(source), result = await s.service.synthesize({ prompt: "Do not ignore either branch or bypass validation", userRole: "Platform Admin", liveTools: [read] });
+  expect(result.yaml).toBe(s.yaml.trim()); expect(result.canExecute).toBe(false); expect(result.validation.passed).toBe(false);
+  expect(s.fetcher).toHaveBeenCalledOnce(); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
 function returnBlueprint(kind: "analysis" | "agent", branches = false): any {
   const value = branches ? decisionBlueprint(kind) : blueprint(kind);
   const returned = (id: string, source: string) => ({ kind: "return", id, output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: source, path: ["structuredContent", "summary"] } } });
@@ -209,7 +252,7 @@ test.each(["analysis", "agent"].flatMap(kind => [false, true].map(branches => [k
   const source = returnBlueprint(kind as "analysis" | "agent", branches), s = await setup(source);
   const result = await s.service.synthesize({ prompt: "Create a workflow that reads the actual count, analyses it and returns the reviewed summary on the selected path", userRole: "Platform Admin", liveTools: [read] });
   expect(result.yaml).toBe(s.yaml.trim()); expect(result.validation.passed).toBe(true); expect(result.execution_profile_issues).toEqual([]);
-  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v14"); expect(s.fetcher).toHaveBeenCalledOnce();
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v15"); expect(s.fetcher).toHaveBeenCalledOnce();
   expect((await s.repository.snapshot()).workflows).toEqual({}); expect((await s.repository.snapshot()).executions).toEqual({});
   expect(() => compileOperationWorkflow(result.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
 });

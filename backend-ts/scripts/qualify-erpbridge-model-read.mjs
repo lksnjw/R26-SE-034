@@ -91,7 +91,7 @@ export async function main(args) {
           !candidate.validation.passed ||
           candidate.execution_profile_issues.length ||
           candidate.candidate.generation_metadata.promptTemplateVersion !==
-            "prompt/candidate/v14"
+            "prompt/candidate/v15"
         )
           throw new Error(
             "Local synthesis did not prove the expected versioned draft",
@@ -232,7 +232,7 @@ export async function main(args) {
         if (JSON.stringify(replay.tokens) !== JSON.stringify(privateRun.tokens)) throw new Error("Replay usage did not match recorded counts");
         if (JSON.stringify(await workspace.repository.read(state => state.executionEvents[run.id])) !== JSON.stringify(events)) throw new Error("Replay unexpectedly added execution events");
         console.log(
-          `LOCAL Docker ${dataClass}/${kind}: v14 fixture draft follows reviewed source hint; published; DONE; ${actualRows.length} actual synthetic rows; matching fixture departmentCount; ${kind === "agent" ? "two model rounds and one dynamic governed Docker read; " : ""}${saved.durationMs} ms whole-run sample; no effect or approval; replay returned the same run without new events.`,
+          `LOCAL Docker ${dataClass}/${kind}: v15 fixture draft follows reviewed source hint; published; DONE; ${actualRows.length} actual synthetic rows; matching fixture departmentCount; ${kind === "agent" ? "two model rounds and one dynamic governed Docker read; " : ""}${saved.durationMs} ms whole-run sample; no effect or approval; replay returned the same run without new events.`,
         );
       }
     }

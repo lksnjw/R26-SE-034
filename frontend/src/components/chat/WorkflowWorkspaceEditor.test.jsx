@@ -143,7 +143,7 @@ test("operation decision canvas shows skipped model/effect evidence and allows s
   expect(screen.queryByRole("button", { name: "Wrap node in collection" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
   expect(screen.queryByRole("checkbox", { name: "Declare branch output" })).toBeNull();
-  expect(screen.getByText(/Typed branch merges and collections are not supported/)).toBeTruthy();
+  expect(screen.getByText(/Typed branch output is unavailable without current server guidance/)).toBeTruthy();
   expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
 });
 
@@ -639,6 +639,35 @@ test("branch merge and new return require explicit reviewed commands", async () 
   fireEvent.change(screen.getByRole("textbox", { name: "If yes output" }), { target: { value: "yes value" } }); fireEvent.change(screen.getByRole("textbox", { name: "If no output" }), { target: { value: "no value" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview branch output edit" })); expect(workflowService.command).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
   await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "setConditionMerge", nodeId: "gate", merge: { schema: { type: "string" }, then: { kind: "literal", value: "yes value" }, else: { kind: "literal", value: "no value" } } }));
+});
+
+const operationBranchFlow = () => ({ kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }, { kind: "if", id: "gate",
+  predicate: { kind: "literal", value: false }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "summary" }, { kind: "action", nodeId: "deliver" }] }, else: { kind: "sequence", nodes: [] } }] });
+test.each([true, false, undefined])("operation branch output editor requires current server support=%s and only saves on Apply", async supported => {
+  const saved = analysisRecord(); saved.authoring = { ...saved.authoring, executionProfile: "decision-operation-v1", mergeNodesSupported: supported, controlFlow: operationBranchFlow(),
+    conditions: [{ nodeId: "gate", dataSources: [], mergeSources: { then: [], else: [] } }] };
+  workflowService.readiness.mockResolvedValue(saved); await open(); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
+  if (!supported) { expect(screen.queryByRole("checkbox", { name: "Declare branch output" })).toBeNull(); expect(screen.getByText(/unavailable without current server guidance/)).toBeTruthy(); }
+  else {
+    fireEvent.click(screen.getByRole("checkbox", { name: "Declare branch output" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "If yes output" }), { target: { value: "Reviewed Yes output" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "If no output" }), { target: { value: "Reviewed No output" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview branch output edit" })); expect(workflowService.command).not.toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "Node change preview" }).querySelector("pre")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+    await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "setConditionMerge", nodeId: "gate", merge: { schema: { type: "string" }, then: { kind: "literal", value: "Reviewed Yes output" }, else: { kind: "literal", value: "Reviewed No output" } } }));
+  }
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("operation canvas shows the exact committed typed branch value beside its recorded decision", async () => {
+  const saved = analysisRecord(), flow = operationBranchFlow(); flow.nodes[1].merge = { schema: { type: "integer" }, then: { kind: "literal", value: 8 }, else: { kind: "literal", value: 0 } };
+  saved.authoring = { ...saved.authoring, controlFlow: flow, mergeNodesSupported: true, conditions: [{ nodeId: "gate", dataSources: [] }] };
+  workflowService.readiness.mockResolvedValue(saved); executionService.list.mockResolvedValue([{ id: "merged-run", workflowId: "report", status: "DONE", startedAt: "2026-10-08T00:00:00Z", workflowSnapshot: { yaml: saved.yaml },
+    readProgress: { decisions: { gate: { status: "DONE", selected: "else" } }, values: { gate: { kind: "merge", status: "DONE" } } }, valueOutputs: { gate: { value: 0 } } }]);
+  await open(); expect(await screen.findByText("Saved selected-branch value · no tool call")).toBeTruthy();
+  expect(screen.getByText("If no · Selected")).toBeTruthy(); expect(within(screen.getByRole("region", { name: "Condition gate" })).getByText("0")).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Condition gate" }).querySelector("pre")).toBeNull();
 });
 
 test("a new return preserves its explicit destination in a readable preview", async () => {

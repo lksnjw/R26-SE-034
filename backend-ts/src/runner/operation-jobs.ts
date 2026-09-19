@@ -10,6 +10,7 @@ import { publicExecution } from "../redact/public-model-usage.js";
 import { newReadProgress, appendExecutionEvent, assertCurrentRunController } from "./read-checkpoints.js";
 import { advanceOperationDecisions } from "./operation-control-checkpoints.js";
 import { assertOperationReturnCompletion } from "./operation-return-checkpoints.js";
+import { operationValueState } from "./operation-merge-checkpoints.js";
 import { operationControlTransition } from "../workflows/operation-control-flow.js";
 import { scheduledReportPaths } from "./scheduled-report-paths.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
@@ -113,7 +114,7 @@ function assertCoverageBeforeScheduledEffect(run: Execution, plan: CompiledOpera
     const receipt = receipts[node.id];
     if (!receipt || !tool?.report_coverage_contract || tool.tool_id !== receipt.toolId || node.capability.contractHash !== receipt.contractHash)
       throw new Error("Scheduled report coverage no longer matches the reviewed read contract");
-    const args = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs }) as Record<string, unknown>;
+    const args = resolveReadBinding(node.inputs, operationValueState(run)) as Record<string, unknown>;
     assertScheduledReportCoverageReceipt(receipt, { tool, nodeId: node.id, contractHash: node.capability.contractHash, args,
       output: recordValue(run.stepOutputs?.[node.id]), startAt: source.reportWindow.startAt, endAt: source.reportWindow.endAt });
     requiredReceipts.push(receipt);
@@ -376,7 +377,7 @@ export class OperationJobQueue {
                 status: "RUNNING", phase: "PREPARING", startedAt, sideEffect: false });
               appendExecutionEvent(state, run, "node.agent_preparing", { dataClass: node.dataClass, maxRounds: node.maxRounds, maxToolCalls: node.maxToolCalls }, node.id, attemptId);
             } else if (progress.attempts[node.id]!.status !== "PREPARING") throw new Error("A runtime-agent invocation cannot be replayed");
-            return resolveReadBinding(node.input, { input: snapshot.input, ...run.stepOutputs });
+            return resolveReadBinding(node.input, operationValueState(run));
           });
           const inputJSON = JSON.stringify(resolvedInput), itemCount = modelInputItemCount(node.input, resolvedInput);
           if (itemCount > node.maxInputItems || [...inputJSON].length > node.maxInputChars) throw new Error("Runtime-agent input exceeds its reviewed bounds");
@@ -395,7 +396,7 @@ export class OperationJobQueue {
                   const intentKey = `${node.id}:model:${round}`, intentId = `intent-${randomBytes(16).toString("hex")}`;
                   await repository.mutateExecution(id, state => {
                     assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, current = run.operationSecret!.agentProvider;
-                    const fresh = resolveReadBinding(node.input, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
+                    const fresh = resolveReadBinding(node.input, operationValueState(run));
                     if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(resolvedInput)) ||
                         run.operationSecret!.intents[intentKey] || !current || !canonicalJSONBytes(current).equals(canonicalJSONBytes(captured)))
                       throw new Error("Runtime-agent model intent facts changed or are already used");
@@ -487,7 +488,7 @@ export class OperationJobQueue {
                 status: "RUNNING", phase: "PREPARING", startedAt, sideEffect: false });
               appendExecutionEvent(state, run, "node.analysis_preparing", { dataClass: node.dataClass }, node.id, attemptId);
             } else if (progress.attempts[node.id]!.status !== "PREPARING") throw new Error("An analysis invocation cannot be replayed");
-            return resolveReadBinding(node.input, { input: snapshot.input, ...run.stepOutputs });
+            return resolveReadBinding(node.input, operationValueState(run));
           });
           const inputJSON = JSON.stringify(resolvedInput), itemCount = modelInputItemCount(node.input, resolvedInput);
           if (itemCount > node.maxInputItems || [...inputJSON].length > node.maxInputChars) throw new Error("Analysis input exceeds its reviewed bounds");
@@ -500,7 +501,7 @@ export class OperationJobQueue {
           const intentId = `intent-${randomBytes(16).toString("hex")}`;
           await repository.mutateExecution(id, state => {
             assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, current = run.operationSecret!.analysisProvider;
-            const fresh = resolveReadBinding(node.input, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
+            const fresh = resolveReadBinding(node.input, operationValueState(run));
             if (attempt.status !== "PREPARING" || run.readProgress!.nextStepIndex !== index || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(resolvedInput)) ||
                 run.operationSecret!.intents[node.id] || !current || !canonicalJSONBytes(current).equals(canonicalJSONBytes(captured)))
               throw new Error("Analysis intent facts changed or are already used");
@@ -559,7 +560,7 @@ export class OperationJobQueue {
             (state.timelines[id] ??= []).push({ id: `timeline-${node.id}`, nodeId: node.id, attemptId, label: node.capability.action, status: "RUNNING", phase: "PREPARING", startedAt, sideEffect: node.effectClass !== "read" });
             appendExecutionEvent(state, run, "node.preparing", {}, node.id, attemptId);
           } else if (progress.attempts[node.id]!.status !== "PREPARING") throw new Error("An operation invocation cannot be replayed");
-          return resolveReadBinding(node.inputs, { input: snapshot.input, ...run.stepOutputs }) as Record<string, unknown>;
+          return resolveReadBinding(node.inputs, operationValueState(run)) as Record<string, unknown>;
         });
         if (validateToolInput(tool.input_schema, args).length) throw new Error("Resolved operation arguments are invalid");
         const issues = validateToolArguments(node.capability.action, args, tool);
@@ -597,7 +598,7 @@ export class OperationJobQueue {
             const intentKey = `${node.id}:cursor:${ordinal}`, cursorIntentId = `intent-${randomBytes(16).toString("hex")}`;
             const persistCursorIntent = async () => { await repository.mutateExecution(id, state => {
               assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, progress = run.reportPageSecret?.[node.id];
-              const fresh = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
+              const fresh = resolveReadBinding(node.inputs, operationValueState(run));
               if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || !progress ||
                   progress.profile !== "schedule-report-cursors/v1" || progress.nextCursor !== cursorState.cursor || progress.pages.length + 1 !== ordinal ||
                   run.operationSecret!.intents[intentKey]) throw new Error("Report cursor intent facts changed or are already used");
@@ -691,7 +692,7 @@ export class OperationJobQueue {
             const intentKey = `${node.id}:page:${page}`, pageIntentId = `intent-${randomBytes(16).toString("hex")}`;
             const persistPageIntent = async () => { await repository.mutateExecution(id, state => {
               assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, progress = run.reportPageSecret?.[node.id];
-              const fresh = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
+              const fresh = resolveReadBinding(node.inputs, operationValueState(run));
               if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || !progress ||
                   progress.profile !== "schedule-report-pages/v1" || progress.nextPage !== page ||
                   run.operationSecret!.intents[intentKey]) throw new Error("Report page intent facts changed or are already used");
@@ -769,7 +770,7 @@ export class OperationJobQueue {
         const intentId = `intent-${randomBytes(16).toString("hex")}`;
         const persistIntent = async () => { await repository.mutateExecution(id, state => {
           assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!;
-          const fresh = resolveReadBinding(node.inputs, { input: run.workflowSnapshot!.input, ...run.stepOutputs });
+          const fresh = resolveReadBinding(node.inputs, operationValueState(run));
           if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || run.operationSecret!.intents[node.id]) throw new Error("Operation intent facts changed or are already used");
           if (node.effectClass !== "read") assertCoverageBeforeScheduledEffect(run, plan, live, index);
           const record = run.runtimeApprovalSecret?.records[run.runtimeApprovalSecret.activeId];

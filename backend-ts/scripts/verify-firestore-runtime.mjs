@@ -27,7 +27,7 @@ import { requestRuntimeApproval, runtimeApprovalPolicyHash, consumeRuntimeApprov
 import { reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.js";
-import { TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -109,7 +109,7 @@ const fixtureTools = [tool, reportTool, relatedInvoiceTool, relatedOrderTool, op
 const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions: { tools: "fixture-v1", rules: "fixture-v1" } }), hash: () => resolvedParameterHashBytes(canonicalJSONBytes(fixtureTools)),
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
-const calls = [], reports = [], relatedInvoiceReports = [], relatedOrderReports = [], models = [], operations = [], readbacks = [], emails = [];
+const calls = [], reports = [], relatedInvoiceReports = [], relatedOrderReports = [], models = [], operations = [], readbacks = [], emails = [], mergedModelInputs = [];
 let sdkHook, modelHook, returnSynthesisFixture;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
@@ -159,7 +159,7 @@ async function start(repositoryValue) {
   const providerRuntime = new ProviderRuntime(repository, executor, async (url, init) => {
     assert.equal(url, "https://provider.fixture.example.test/v1/chat/completions"); const request = JSON.parse(String(init.body)); models.push(request.model); await modelHook?.(request, init.signal);
     if (request.messages[0]?.content.includes("TASK: WORKFLOW DRAFT SYNTHESIS") && returnSynthesisFixture) {
-      assert.equal(request.messages[0].content, TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
+      assert.equal(request.messages[0].content, TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
       assert(JSON.parse(request.messages[1].content).USER_REQUEST.includes("Create a workflow"));
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: stringify(returnSynthesisFixture) } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
     }
@@ -198,6 +198,10 @@ async function start(repositoryValue) {
       }
       const candidate = stringify(source);
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: candidate } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
+    }
+    if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS") && JSON.parse(request.messages[1].content).INSTRUCTION === "LOCAL verify exact merged source") {
+      const value = JSON.parse(request.messages[1].content).INPUT; assert.equal(typeof value, "string"); mergedModelInputs.push(value);
+      return Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ id: value }) } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
     }
     if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS"))
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"id":"ANALYSIS-FIXTURE-ONE"}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
@@ -340,7 +344,7 @@ try {
   assert.equal((await request("POST", `/api/chat/sessions/${chatId}/messages`, jointCommand, 202)).data.operation.id, jointOperation.id);
   assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation + 3); assert.equal(emails.length, 0);
   const modelsAfterAutomation = models.length;
-  log("actual Firestore async v14 recurring chats saved exact boolean Yes delivery/empty No trees, named joint analysis and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
+  log("actual Firestore async v15 recurring chats saved exact boolean Yes delivery/empty No trees, named joint analysis and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
 
   const saved = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).chats, saved.chats); assert.deepEqual((await repository.snapshot()).executions, saved.executions);
@@ -788,7 +792,52 @@ try {
     assert.deepEqual((await repository.snapshot()).executions[id], saved);
     assert.equal((await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id, id);
     assert.deepEqual((await repository.snapshot()).executionEvents[id], events); assert.equal(models.length, expectedModels); assert.equal(calls.length, expectedReads); assert.equal(operations.length, effectCount);
-    log(`actual Firestore v14 background ${kind}/select=${selected}: saved unpublished typed-return draft, fresh restart/chat replay, explicit v6 run, persisted exact answer, fresh restart/run replay without repeated planning/model/connector work`);
+    log(`actual Firestore v15 background ${kind}/select=${selected}: saved unpublished typed-return draft, fresh restart/chat replay, explicit v6 run, persisted exact answer, fresh restart/run replay without repeated planning/model/connector work`);
+  }
+  for (const [kind, selected, loseACK] of [["analysis", true, false], ["analysis", false, false], ["agent", true, false], ["agent", false, false], ["analysis", true, true]]) {
+    const blueprint = parseWorkflowYAMLStrict(kind === "agent" ? durableAgentYAML : durableAnalysisYAML), [lookup, model] = blueprint.steps;
+    const workflowId = `merge_${kind}_${selected}_${loseACK ? "lost" : "normal"}`, action = nodeId => ({ kind: "action", nodeId }), seq = (...nodes) => ({ kind: "sequence", nodes });
+    const followup = { ...parseWorkflowYAMLStrict(durableAnalysisYAML).steps[1], id: "merged_followup", instruction: "LOCAL verify exact merged source", input: "{{merge_gate.value}}" };
+    blueprint.steps = [lookup, model, followup, { ...structuredClone(lookup), id: "merged_tail", parameters: { id: "{{merge_gate.value}}" } }];
+    blueprint.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: seq(action(lookup.id), { kind: "if", id: "merge_gate", predicate: { kind: "literal", value: selected },
+      then: seq(action(model.id)), else: seq(), merge: { schema: { type: "string" }, then: { kind: "ref", source: "nodeOutput", nodeId: model.id, path: ["structuredContent", "id"] },
+        else: { kind: "literal", value: "Explicit no path" } } }, action(followup.id), action("merged_tail"), { kind: "return", id: "merged_answer", output: { schema: { type: "string" },
+        value: { kind: "ref", source: "nodeOutput", nodeId: followup.id, path: ["structuredContent", "id"] } } }) } };
+    await repository.mutate(state => { state.workflows[workflowId] = { ...state.workflows.single, id: workflowId, name: workflowId, yaml: stringify(blueprint),
+      steps: blueprint.steps.length, publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions[workflowId] = []; });
+    assert.equal((await request("POST", `/api/workflows/${workflowId}/publish`, {}, 200)).data.compiledOperation.schemaVersion, "workflow-operation-ir/v7");
+    const modelCount = models.length, readCount = calls.length, effectCount = operations.length, inputCount = mergedModelInputs.length;
+    const checkpointWriter = persistence.saveExecutionCheckpoint.bind(persistence); let lostMergeACK = false;
+    if (loseACK) persistence.saveExecutionCheckpoint = async checkpoint => { await checkpointWriter(checkpoint);
+      if (!lostMergeACK && checkpoint.execution?.workflowId === workflowId && checkpoint.execution?.status === "RUNNING" && checkpoint.execution?.readProgress?.values?.merge_gate?.status === "DONE") {
+        lostMergeACK = true; throw new Error("Synthetic actual Firestore merge post-COMMIT acknowledgement loss");
+      }
+    };
+    const command = { mode: "async-operation", input: {}, idempotencyKey: `firestore-${workflowId}-0001` }, id = (await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id;
+    if (loseACK) { await waitFor(() => lostMergeACK, "typed merge post-COMMIT ACK loss"); persistence.saveExecutionCheckpoint = checkpointWriter; await repository.recoverPersistenceState(); }
+    else await waitFor(async () => (await repository.snapshot()).executions[id].status === "DONE", "typed merged follow-up completion");
+    const saved = (await repository.snapshot()).executions[id], expected = selected ? kind === "agent" ? "AGENT-FOLLOW-UP" : "ANALYSIS-FIXTURE-ONE" : "Explicit no path";
+    assert.deepEqual(saved.valueOutputs.merge_gate, { value: expected }); assert.equal(saved.readProgress.values.merge_gate.kind, "merge");
+    if (loseACK) { assert.equal(saved.stepOutputs.merged_followup, undefined); assert.equal(saved.operationSecret.intents.merged_followup, undefined); assert.equal(saved.valueOutputs.merged_answer, undefined); }
+    else { assert.equal(saved.finalOutput, expected); assert.deepEqual(saved.valueOutputs.merged_answer, { value: expected });
+      assert.deepEqual(saved.stepOutputs.merged_followup, { structuredContent: { id: expected } }); assert.equal(calls.at(-1), expected); assert.equal(mergedModelInputs.at(-1), expected); }
+    assert.equal(saved.runtimeApprovalSecret, undefined); assert.equal(operations.length, effectCount);
+    const expectedModels = modelCount + (selected ? kind === "agent" ? 2 : 1 : 0) + (loseACK ? 0 : 1), expectedReads = readCount + (selected && kind === "agent" ? 2 : 1) + (loseACK ? 0 : 1);
+    assert.equal(models.length, expectedModels); assert.equal(calls.length, expectedReads); assert.equal(mergedModelInputs.length, inputCount + (loseACK ? 0 : 1));
+    const events = (await repository.snapshot()).executionEvents[id]; await stop(); await start(await openApplicationRepository(config));
+    const restored = (await repository.snapshot()).executions[id]; assert.equal(restored.status, loseACK ? "RECOVERY_REQUIRED" : "DONE"); assert.deepEqual(restored.valueOutputs, saved.valueOutputs);
+    const restoredEvents = (await repository.snapshot()).executionEvents[id];
+    if (!loseACK) { assert.deepEqual(restored, saved); assert.deepEqual(restoredEvents, events); }
+    else {
+      assert.deepEqual(restoredEvents.slice(0, events.length), events);
+      assert.equal(restoredEvents.length, events.length + 1);
+      assert.equal(restoredEvents.at(-1).type, "run.recovery_required");
+      assert.equal(restoredEvents.at(-1).sequence, events.at(-1).sequence + 1);
+      assert.equal(restored.stepOutputs.merged_followup, undefined); assert.equal(restored.operationSecret.intents.merged_followup, undefined);
+    }
+    assert.equal((await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id, id);
+    assert.deepEqual((await repository.snapshot()).executionEvents[id], restoredEvents); assert.equal(models.length, expectedModels); assert.equal(calls.length, expectedReads); assert.equal(operations.length, effectCount);
+    log(`actual Firestore v7 ${kind}/selected=${selected}/${loseACK ? "lost-ACK" : "normal"}: exact committed branch handoff, ${loseACK ? "no dependent dispatch after lost acknowledgement" : "exact subsequent model/read/Return"}, fresh restart and original-key replay without repeated work`);
   }
   const modelsAfterDurableAgent = models.length;
   log("actual Firestore bounded runtime-agent used only its reviewed read allow-list, persisted every model/tool intent and structured answer, survived restarts, required independent approval for the later effect, and replayed neither model, ERP read nor operation");

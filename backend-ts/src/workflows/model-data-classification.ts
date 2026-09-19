@@ -1,6 +1,7 @@
 import { modelDataClasses, type ModelDataClass } from "../providers/egress-policy.js";
 import type { CompiledOperationPlan, ReadAdmissionPin, ReadBinding } from "./compiled-read.js";
 import { operationControlDependencies } from "./operation-control-flow.js";
+import { controlNodes } from "./read-control-flow.js";
 
 export class ModelDataClassViolation extends Error {
   constructor(nodeId: string, declared: ModelDataClass, required: ModelDataClass) {
@@ -17,6 +18,8 @@ export function assertModelDataClassification(plan: CompiledOperationPlan, revie
   if (!plan.ir.root.nodes.some(node => node.kind === "analysis" || node.kind === "agent")) return;
   const outputs = new Map<string, ModelDataClass>();
   const controlDependencies = operationControlDependencies(plan.ir.flow);
+  const merges = new Map(plan.ir.flow ? controlNodes(plan.ir.flow).filter(node => node.merge).map(node => [node.id, node]) : []);
+  const resolving = new Set<string>();
   const rank = (value: ModelDataClass) => {
     const index = modelDataClasses.indexOf(value);
     if (index < 0) throw new Error("Unknown reviewed data classification");
@@ -28,7 +31,19 @@ export function assertModelDataClassification(plan: CompiledOperationPlan, revie
       case "literal": return "public";
       case "ref": {
         if (binding.source === "workflowInput") return "restricted";
-        const value = outputs.get(binding.nodeId ?? "");
+        const id = binding.nodeId ?? "";
+        let value = outputs.get(id);
+        const merge = merges.get(id);
+        if (!value && merge?.merge) {
+          if (resolving.has(id)) throw new Error("Model classification has a cyclic merge source");
+          resolving.add(id);
+          try {
+            // Both possible values AND selection remain sensitive, even if
+            // one run takes a public/empty path. Never declassify by routing.
+            value = highest(bindingClass(merge.merge.then), bindingClass(merge.merge.else), bindingClass(merge.predicate));
+            outputs.set(id, value);
+          } finally { resolving.delete(id); }
+        }
         if (!value) throw new Error("Model classification requires an exact preceding output source");
         return value;
       }

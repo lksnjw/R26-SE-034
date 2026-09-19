@@ -6,6 +6,7 @@ import { decisionOperationCandidatePrompt } from "./decision-operation-candidate
 import { recurringDecisionCandidatePrompt } from "./recurring-decision-candidate.js";
 import { namedModelCandidatePrompt, namedModelPatchPrompt } from "./named-model-inputs.js";
 import { typedReturnCandidatePrompt } from "./typed-return-candidate.js";
+import { typedMergeCandidatePrompt, typedMergeModelPatchPrompt } from "./typed-merge-candidate.js";
 
 /** Repository-owned instructions only. Never interpolate request, registry,
  * document, tool-result or model-generated text into this privileged channel. */
@@ -133,8 +134,11 @@ export const DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT = decisionOperationCandi
 export const RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT = recurringDecisionCandidatePrompt(DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT);
 export const NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT = namedModelCandidatePrompt(RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT);
 export const TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT = typedReturnCandidatePrompt(NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT);
+export const TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT = typedMergeCandidatePrompt(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
 export const NAMED_ANALYSIS_PATCH_SYSTEM_PROMPT = namedModelPatchPrompt(ANALYSIS_NODE_PATCH_SYSTEM_PROMPT, "analysis");
 export const NAMED_AGENT_PATCH_SYSTEM_PROMPT = namedModelPatchPrompt(AGENT_NODE_PATCH_SYSTEM_PROMPT, "agent");
+export const MERGE_ANALYSIS_PATCH_SYSTEM_PROMPT = typedMergeModelPatchPrompt(NAMED_ANALYSIS_PATCH_SYSTEM_PROMPT, "analysis");
+export const MERGE_AGENT_PATCH_SYSTEM_PROMPT = typedMergeModelPatchPrompt(NAMED_AGENT_PATCH_SYSTEM_PROMPT, "agent");
 
 export const MODIFIER_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 
@@ -179,11 +183,14 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/candidate/v12": return RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v13": return NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v14": return TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT;
+    case "prompt/candidate/v15": return TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/node-patch/v2": return NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/analysis-node-patch/v1": return ANALYSIS_NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/analysis-node-patch/v2": return NAMED_ANALYSIS_PATCH_SYSTEM_PROMPT;
+    case "prompt/analysis-node-patch/v3": return MERGE_ANALYSIS_PATCH_SYSTEM_PROMPT;
     case "prompt/agent-node-patch/v1": return AGENT_NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/agent-node-patch/v2": return NAMED_AGENT_PATCH_SYSTEM_PROMPT;
+    case "prompt/agent-node-patch/v3": return MERGE_AGENT_PATCH_SYSTEM_PROMPT;
     case "prompt/condition-patch/v1": return CONDITION_PATCH_SYSTEM_PROMPT;
     case "prompt/return-patch/v1": return RETURN_PATCH_SYSTEM_PROMPT;
     case "prompt/collection-patch/v1": return COLLECTION_PATCH_SYSTEM_PROMPT;

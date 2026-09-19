@@ -15,7 +15,7 @@ export function inspectOperationDecisions(root: ReadSequence, nodes: Array<{ id:
   const visit = (block: ReadSequence) => { for (const node of block.nodes) {
     if (node.kind === "action") continue;
     if (node.kind === "return") continue;
-    if (node.kind !== "if" || node.merge) { issues.push("Operation decisions do not yet support collections or typed merges"); continue; }
+    if (node.kind !== "if") { issues.push("Operation decisions do not yet support collections"); continue; }
     if (node.predicate.kind === "ref" && schemaAt(node.predicate.source === "workflowInput" ? inputSchema : outputs.get(node.predicate.nodeId!), node.predicate.path)?.type !== "boolean")
       issues.push(`Operation condition ${node.id} requires an exact declared boolean predicate`);
     visit(node.then); visit(node.else);
@@ -27,6 +27,7 @@ export function inspectOperationDecisions(root: ReadSequence, nodes: Array<{ id:
 
 export type OperationControlTransition = { kind: "action"; nodeId: string; index: number } | { kind: "decision"; node: Extract<ReadSequence["nodes"][number], { kind: "if" }>; index: number } |
   { kind: "return"; node: Extract<ReadSequence["nodes"][number], { kind: "return" }>; index: number } |
+  { kind: "merge"; node: Extract<ReadSequence["nodes"][number], { kind: "if" }>; selected: "then" | "else"; index: number } |
   { kind: "skip"; nodeId: string; index: number; conditionId: string; selected: "then" | "else"; returnId?: never } |
   { kind: "skip"; nodeId: string; index: number; returnId: string; conditionId?: never; selected?: never } | { kind: "complete" };
 
@@ -63,7 +64,7 @@ export function operationControlTransition(root: ReadSequence, progress: Pick<Re
       if (receipt.kind !== "return" || receipt.status !== "DONE" || receipt.stepIndex !== index) throw new Error("Operation return lacks an exact confirmed receipt");
       returnedValues.add(node.id); returned = node.id; continue;
     }
-    if (node.kind !== "if" || node.merge) throw new Error("Unsupported operation control primitive");
+    if (node.kind !== "if") throw new Error("Unsupported operation control primitive");
     const index = accounted.size, receipt = progress.decisions?.[node.id];
     if (!receipt) { transition = { kind: "decision", node, index }; return; }
     if (receipt.status !== "DONE" || !["then", "else"].includes(receipt.selected ?? "") || receipt.stepIndex !== index) throw new Error("Operation decision lacks an exact confirmed receipt");
@@ -71,6 +72,12 @@ export function operationControlTransition(root: ReadSequence, progress: Pick<Re
     if (receipt.selected === "else") skip(node.then, { conditionId: node.id, selected: "else" });
     if (!transition) returned = visit(node[receipt.selected!]);
     if (!transition && receipt.selected === "then") skip(node.else, { conditionId: node.id, selected: "then" });
+    if (!transition && !returned && node.merge) {
+      const index = accounted.size, value = progress.values?.[node.id];
+      if (!value) { transition = { kind: "merge", node, selected: receipt.selected!, index }; return; }
+      if (value.kind !== "merge" || value.status !== "DONE" || value.stepIndex !== index) throw new Error("Operation merge lacks an exact confirmed receipt");
+      returnedValues.add(node.id);
+    }
   }
     return returned;
   };
@@ -96,7 +103,7 @@ export function operationControlDependencies(root: ReadSequence | undefined): Ma
   const visit = (block: ReadSequence, parents: ReadBinding[]) => { for (const node of block.nodes) {
     if (node.kind === "action") dependencies.set(node.nodeId, parents);
     else if (node.kind === "return") continue;
-    else if (node.kind === "if" && !node.merge) { visit(node.then, [...parents, node.predicate]); visit(node.else, [...parents, node.predicate]); }
+    else if (node.kind === "if") { visit(node.then, [...parents, node.predicate]); visit(node.else, [...parents, node.predicate]); }
     else throw new Error("Unsupported operation control dependency");
   } };
   if (root) visit(root, []);
