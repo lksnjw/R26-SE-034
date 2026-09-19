@@ -627,6 +627,7 @@ test("return selection scopes chat and previews a false output without saving or
   flow.nodes.push({ kind: "return", id: "answer", output });
   showConditions({ authoring: { profile: "read-authoring/v1", controlFlow: flow, returns: [{ nodeId: "answer", dataSources: [] }] } });
   const onNodeContext = jest.fn(); await open({ onNodeContext }); fireEvent.click(screen.getByRole("button", { name: "Select return answer" }));
+  expect(screen.getByText(/Scheduled returns do not activate a schedule, approve an effect or prove delivery/)).toBeTruthy();
   await waitFor(() => expect(onNodeContext).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "answer", version: 1, contentHash: record.contentHash })));
   fireEvent.change(screen.getByRole("combobox", { name: "Return value" }), { target: { value: "false" } }); fireEvent.click(screen.getByRole("button", { name: "Preview return edit" }));
   expect(workflowService.command).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
@@ -647,6 +648,7 @@ test.each([true, false, undefined])("operation branch output editor requires cur
   const saved = analysisRecord(); saved.authoring = { ...saved.authoring, executionProfile: "decision-operation-v1", mergeNodesSupported: supported, controlFlow: operationBranchFlow(),
     conditions: [{ nodeId: "gate", dataSources: [], mergeSources: { then: [], else: [] } }] };
   workflowService.readiness.mockResolvedValue(saved); await open(); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
+  expect(screen.getByText(/Calendar activation also checks complete report evidence and reachable effects; branch merges are not schedulable/)).toBeTruthy();
   if (!supported) { expect(screen.queryByRole("checkbox", { name: "Declare branch output" })).toBeNull(); expect(screen.getByText(/unavailable without current server guidance/)).toBeTruthy(); }
   else {
     fireEvent.click(screen.getByRole("checkbox", { name: "Declare branch output" }));

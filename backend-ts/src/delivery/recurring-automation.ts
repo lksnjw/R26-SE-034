@@ -117,6 +117,7 @@ export function recurringAutomationCandidateContext(request: RecurringDeliveryRe
       "The delivery body must explicitly reference every requested report resource, or its mapped analysis result. A single related-order summary does not prove invoice content was included.",
       "For a conditional request preserve the original decision_request and its review requirement. Use only declared boolean references and exact owned Yes/No scopes; missing comparisons remain unresolved, not unconditional delivery.",
       "Every delivery's preceding scope must contain each requested report and corresponding analysis; sibling and after-join outputs are unavailable. Empty no-delivery paths are allowed, never inferred consent.",
+      "An explicitly requested final Return may follow required delivery or end an explicit no-delivery path; never put requested reads/analysis/delivery after a Return. Return does not activate a calendar or prove delivery. Calendar branch merges remain unsupported.",
     ],
   };
 }

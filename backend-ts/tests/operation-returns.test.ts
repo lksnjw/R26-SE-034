@@ -129,6 +129,6 @@ test.each([true, false])("model fixture return selected=%s matches real traversa
   expect(result.outcome, JSON.stringify(result)).toBe("SIMULATED_COMPLETE"); expect(result.valueOutputs).toEqual(selected ? { answer: { value: "Supplied answer" } } : {});
   if (selected) { expect(result).toMatchObject({ finalOutput: "Supplied answer" }); expect(result.trace.find(entry => entry.nodeId === "last")).toMatchObject({ outcome: "AFTER_RETURN", returnId: "answer" }); }
 });
-test("calendar admission still denies return graphs rather than ignoring early termination", () => {
-  expect(() => scheduledReportPaths(compile(), [tool], { profile: "report-window-input-binding/v1", startAtInput: "start", endAtInput: "end" } as any)).toThrow(/decision-only/);
+test("calendar admission does not ignore unreachable work or replace complete report coverage with a Return", () => {
+  expect(() => scheduledReportPaths(compile(), [tool], { profile: "report-window-input-binding/v1", startAtInput: "start", endAtInput: "end" } as any)).toThrow(/coverage|complete report|Unreachable/);
 });

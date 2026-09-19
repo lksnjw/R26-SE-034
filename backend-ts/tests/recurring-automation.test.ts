@@ -282,6 +282,40 @@ test("unrequested recurring decisions are not invented as a way to suppress deli
   expect(() => inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toThrow("without a requested conditional outcome");
 });
 
+test("a recurring final Return preserves all requested reports/delivery without inventing a conditional request", async () => {
+  const { request, workflow, tools } = await fixture();
+  workflow.metadata.controlFlow = { schemaVersion: "read-control-flow/v2", root: { kind: "sequence", nodes: [
+    ...workflow.steps.map((step: any) => ({ kind: "action", nodeId: step.id })),
+    { kind: "return", id: "answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "invoice_report", path: ["structuredContent", "summary"] } } },
+  ] } };
+  expect(inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toMatchObject({ status: "CAPABILITIES_MAPPED", scheduleActive: false, readyForPublication: false });
+});
+
+test.each([false, true])("recurring branch Returns preserve delivery/read scope with branch-local reports=%s", async local => {
+  const { request, workflow, tools } = await conditionalFixture(false, local, true), gate = workflow.metadata.controlFlow.root.nodes.at(-1);
+  workflow.metadata.controlFlow.schemaVersion = "read-control-flow/v2";
+  for (const branch of ["then", "else"]) gate[branch].nodes.push({ kind: "return", id: `${branch}_answer`, output: { schema: { type: "string" }, value: { kind: "literal", value: `Explicit ${branch} outcome` } } });
+  expect(inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toMatchObject({ status: "CAPABILITIES_MAPPED", deliveryBodyBound: true });
+});
+
+test.each(["early", "both-end", "extra-on-one-path"])("recurring Return %s cannot conceal unreachable work or multiple deliveries", async damage => {
+  const { request, workflow, tools } = await conditionalFixture(), root = workflow.metadata.controlFlow.root, gate = root.nodes.at(-1);
+  const end = (id: string) => ({ kind: "return", id, output: { schema: { type: "string" }, value: { kind: "literal", value: "Not proof of delivery" } } });
+  workflow.metadata.controlFlow.schemaVersion = "read-control-flow/v2";
+  if (damage === "early") gate.then.nodes.unshift(end("early"));
+  if (damage === "both-end") { const send = gate.then.nodes.pop(); gate.then.nodes.push(end("yes")); gate.else.nodes.push(end("no")); root.nodes.push(send); }
+  if (damage === "extra-on-one-path") { const extra = { ...structuredClone(workflow.steps[2]), id: "extra" }; workflow.steps.push(extra); gate.then.nodes.push({ kind: "action", nodeId: "extra" }, end("answer")); }
+  expect(() => inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toThrow(/unreachable|multiple delivery effects/);
+});
+
+test("terminated delivery and later continuing-path delivery are exclusive rather than two effects on one possible path", async () => {
+  const { request, workflow, tools } = await conditionalFixture(), root = workflow.metadata.controlFlow.root, gate = root.nodes.at(-1);
+  workflow.metadata.controlFlow.schemaVersion = "read-control-flow/v2";
+  gate.then.nodes.push({ kind: "return", id: "yes_answer", output: { schema: { type: "string" }, value: { kind: "literal", value: "Explicit first outcome" } } });
+  const extra = { ...structuredClone(workflow.steps[2]), id: "other_delivery" }; workflow.steps.push(extra); root.nodes.push({ kind: "action", nodeId: extra.id });
+  expect(inspectRecurringAutomationCandidate(stringify(workflow), request, tools, "Platform Admin")).toMatchObject({ status: "CAPABILITIES_MAPPED", scheduleActive: false });
+});
+
 test("two sequential decisions cannot each send the same report on one possible path", async () => {
   const { request, workflow, tools } = await conditionalFixture();
   const duplicate = { ...structuredClone(workflow.steps[2]), id: "second_delivery" }; workflow.steps.push(duplicate);

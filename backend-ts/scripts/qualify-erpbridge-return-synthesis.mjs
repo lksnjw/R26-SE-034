@@ -6,7 +6,7 @@ import { createQaWorkspace, qaModelDecisionBlueprint, qaPlanningResponse } from 
 import { ProviderRuntime } from "../src/providers/runtime.js";
 import { SynthesisService } from "../src/synthesis/service.js";
 import { buildApp } from "../src/http/app.js";
-import { generationPromptHash, TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { generationPromptHash, CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 if (process.argv.length !== 3 || process.argv[2] !== "--run-reviewed-return-synthesis") throw new Error("Use --run-reviewed-return-synthesis against the already-running isolated Docker QA bridge");
 const workspace = await createQaWorkspace({ modelReadFixture: true });
@@ -22,9 +22,9 @@ try {
   const provider = new ProviderRuntime(workspace.repository, workspace.services.executor, async (url, init) => {
     assert.equal(url, "https://fixture.invalid/v1/chat/completions"); const body = JSON.parse(String(init.body));
     if (body.messages[0].content.includes("TASK: WORKFLOW DRAFT SYNTHESIS")) {
-      assert.equal(body.messages[0].content, TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
+      assert.equal(body.messages[0].content, CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT);
       const data = JSON.parse(body.messages[1].content); assert(data.USER_REQUEST.includes("Create a workflow"));
-      assert(data.MODEL_SOURCE_HINTS_JSON.advisoryOnly); planningCalls++; planningHash = generationPromptHash(body.messages[1].content, "prompt/candidate/v15");
+      assert(data.MODEL_SOURCE_HINTS_JSON.advisoryOnly); planningCalls++; planningHash = generationPromptHash(body.messages[1].content, "prompt/candidate/v16");
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: stringify(fixture) } }], usage: { prompt_tokens: 2, completion_tokens: 3 } });
     }
     modelCalls++; return Response.json(qaPlanningResponse(body, true));
@@ -40,7 +40,7 @@ try {
     return response.json().data;
   };
   for (const route of ["direct", "chat", "async-chat"]) for (const kind of ["analysis", "agent"]) for (const selected of [true, false]) {
-    fixture = qaModelDecisionBlueprint(kind); fixture.name = `LOCAL v15 ${kind} terminal answers`;
+    fixture = qaModelDecisionBlueprint(kind); fixture.name = `LOCAL v16 ${kind} terminal answers`;
     fixture.metadata.controlFlow.schemaVersion = "read-control-flow/v2";
     const gate = fixture.metadata.controlFlow.root.nodes[1];
     gate.then.nodes.push({ kind: "return", id: "answer", output: { schema: { type: "integer" }, value: { kind: "ref", source: "nodeOutput", nodeId: "count", path: ["structuredContent", "departmentCount"] } } });
@@ -50,7 +50,7 @@ try {
     let workflowId;
     if (route === "direct") {
       const candidate = await request("POST", "/api/synthesis", { prompt }); assert.equal(candidate.validation.passed, true);
-      assert.deepEqual(parse(candidate.yaml), fixture); assert.equal(candidate.candidate.generation_metadata.promptTemplateVersion, "prompt/candidate/v15");
+      assert.deepEqual(parse(candidate.yaml), fixture); assert.equal(candidate.candidate.generation_metadata.promptTemplateVersion, "prompt/candidate/v16");
       assert.equal(candidate.candidate.generation_metadata.promptSha256, planningHash);
       workflowId = (await request("POST", "/api/workflows", { yaml: candidate.yaml }, 201)).id;
     } else {
@@ -62,7 +62,7 @@ try {
         const operation = await wait(async () => { const value = (await workspace.repository.snapshot()).chatOperations[id]; return !["QUEUED", "RUNNING"].includes(value.status) && value; }, "saved background chat answer");
         assert.equal(operation.status, "ANSWERED"); workflowId = operation.artifactRefs.find(value => value.type === "workflow-draft").id;
         assert.equal((await request("POST", `/api/chat/sessions/${chat.id}/messages`, command, 202)).operation.id, id);
-      } else { workflowId = response.assistantMessage.artifacts.workflowId; assert.equal(response.workflowDraft.generation_metadata.promptTemplateVersion, "prompt/candidate/v15"); assert.equal(response.workflowDraft.generation_metadata.promptSha256, planningHash); }
+      } else { workflowId = response.assistantMessage.artifacts.workflowId; assert.equal(response.workflowDraft.generation_metadata.promptTemplateVersion, "prompt/candidate/v16"); assert.equal(response.workflowDraft.generation_metadata.promptSha256, planningHash); }
       const reopened = await request("GET", `/api/chat/sessions/${chat.id}`); assert.equal(reopened.messages.at(-1).artifacts.workflowId, workflowId);
       assert(reopened.messages.at(-1).text.includes("has not been published or executed"));
     }
@@ -81,6 +81,6 @@ try {
     const events = (await workspace.repository.snapshot()).executionEvents[saved.id];
     assert.equal((await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).id, saved.id);
     assert.deepEqual((await workspace.repository.snapshot()).executionEvents[saved.id], events); assert.equal(modelCalls, beforeModel + (selected ? kind === "agent" ? 2 : 1 : 0));
-    console.log(`PASS actual Docker ${route}/${kind}/${selected ? "Yes" : "No"}: v15 exact saved proposal, v6 explicit run, typed answer, original chat/run replay, no effects; synthetic ERP and in-process models only`);
+    console.log(`PASS actual Docker ${route}/${kind}/${selected ? "Yes" : "No"}: v16 exact saved proposal, v6 explicit run, typed answer, original chat/run replay, no effects; synthetic ERP and in-process models only`);
   }
 } finally { await app?.close(); await workspace.close(); }

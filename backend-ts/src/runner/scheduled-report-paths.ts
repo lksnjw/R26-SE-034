@@ -4,23 +4,19 @@ import type { ReportWindowInputBinding } from "../repository/store.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { reportCoverageParameters } from "../tools/report-coverage-contract.js";
 import { isOperationToolNode, type CompiledOperationPlan, type OperationToolNode, type ReadBinding } from "../workflows/compiled-read.js";
-import type { ReadSequence } from "../workflows/read-control-flow.js";
+import { decisionReturnScopes } from "../workflows/decision-return-scopes.js";
 
 /** Lexical/dominating predecessors, never the flattened source prefix. Branch
  * locals do not become evidence for a sibling or an action after the join.
  * This walks the bounded tree; it does not enumerate boolean combinations. */
 function predecessors(plan: CompiledOperationPlan): Map<string, string[]> {
-  const result = new Map<string, string[]>();
-  const visit = (block: ReadSequence, inherited: string[]) => {
-    const visible = [...inherited];
-    for (const node of block.nodes) {
-      if (node.kind === "action") { result.set(node.nodeId, [...visible]); visible.push(node.nodeId); }
-      else if (node.kind === "if" && !node.merge) { visit(node.then, visible); visit(node.else, visible); }
-      else throw new HandlerFailure(422, "Scheduled operations require supported decision-only control flow", { code: "SCHEDULE_OPERATION_CONTROL_UNSUPPORTED" });
-    }
-  };
-  visit(plan.ir.flow ?? { kind: "sequence", nodes: plan.ir.root.nodes.map(node => ({ kind: "action", nodeId: node.id })) }, []);
-  return result;
+  try {
+    const scopes = decisionReturnScopes(plan.ir.flow ?? { kind: "sequence", nodes: plan.ir.root.nodes.map(node => ({ kind: "action", nodeId: node.id })) });
+    if (scopes.unreachable.length) throw new Error(`Unreachable calendar work after Return: ${scopes.unreachable.join(", ")}`);
+    return new Map([...scopes.predecessors].map(([id, visible]) => [id, [...visible]]));
+  } catch (error) {
+    throw new HandlerFailure(422, error instanceof Error ? error.message : "Unsupported calendar control flow", { code: "SCHEDULE_OPERATION_CONTROL_UNSUPPORTED" });
+  }
 }
 
 function parameterReference(binding: ReadBinding, parameter: string, name: string): boolean {

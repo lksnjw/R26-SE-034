@@ -169,7 +169,7 @@ test("connected recurring request saves exact useful capability steps without ru
   expect(workflows[0]).toMatchObject({ yaml: candidate.yaml, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false, trigger: { type: "manual" } });
   expect(state.schedules).toEqual({}); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
   const providerBody = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-  expect(providerBody.messages[0].content).toContain("prompt/candidate/v15");
+  expect(providerBody.messages[0].content).toContain("prompt/candidate/v16");
   const context = JSON.parse(providerBody.messages[1].content).SERVER_DERIVED_CONTEXT_JSON;
   expect(context.automation_request).toEqual(recurringAutomationCandidateContext(candidate.request).automation_request);
 });
@@ -210,13 +210,66 @@ test.each([false, true].flatMap(analysis => [false, true].map(async => [analysis
     expect(messages.at(-1).text).toContain("have not been published, scheduled or executed");
     expect(state.executions).toEqual({}); expect(state.schedules).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
     const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-    expect(body.messages[0].content).toContain("prompt/candidate/v15"); expect(body.messages[0].content).not.toContain(candidate.text);
+    expect(body.messages[0].content).toContain("prompt/candidate/v16"); expect(body.messages[0].content).not.toContain(candidate.text);
     expect(JSON.parse(body.messages[1].content).SERVER_DERIVED_CONTEXT_JSON.automation_request.decision_request.originalRequest).toBe(candidate.text);
     if (asynchronous) {
       const replay = await s.send(candidate.text, extra); expect(replay.statusCode).toBe(202); expect(replay.json().data.operation.id).toBe(response.json().data.operation.id);
       expect(s.fetchImplementation).toHaveBeenCalledOnce(); expect(Object.values((await s.repository.snapshot()).workflows)).toHaveLength(1);
     }
   });
+function returningRecurringCandidate(withAnalysis: boolean) {
+  const candidate = conditionalRecurringCandidate(withAnalysis);
+  candidate.text += " Return the confirmed report summary after any required delivery; otherwise return the explicit no-delivery outcome.";
+  candidate.request = recurringDeliveryRequest(candidate.text)!;
+  candidate.source.metadata.automation_request = recurringAutomationCandidateContext(candidate.request).automation_request;
+  const flow = candidate.source.metadata.controlFlow;
+  flow.schemaVersion = "read-control-flow/v2";
+  const gate = flow.root.nodes.at(-1);
+  gate.then.nodes.push({ kind: "return", id: "report_answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput",
+    nodeId: withAnalysis ? "invoice_analysis" : "invoice_report", path: ["structuredContent", withAnalysis ? "text" : "summary"] } } });
+  gate.else.nodes.push({ kind: "return", id: "not_requested_answer", output: { schema: { type: "string" }, value: { kind: "literal", value: "Explicitly not requested" } } });
+  return { ...candidate, yaml: stringify(candidate.source).trim() };
+}
+
+test.each([false, true].flatMap(analysis => [false, true].map(async => [analysis, async] as const)))(
+  "calendar Return chat analysis=%s async=%s saves exact inactive answers with original requirements and no dispatch", async (analysis, asynchronous) => {
+    const candidate = returningRecurringCandidate(analysis), s = await setup({ bridge: true, automationTools: true, analysisTools: analysis, candidateYaml: candidate.yaml });
+    const extra = asynchronous ? { delivery: "async-chat", idempotencyKey: `returning-recurring-${analysis}-0001` } : {};
+    const response = await s.send(candidate.text, extra); expect(response.statusCode, response.body).toBe(asynchronous ? 202 : 200);
+    if (asynchronous) await vi.waitFor(async () => {
+      const job = await s.app.inject({ method: "GET", url: `/api/chat/operations/${response.json().data.operation.id}`, headers: s.headers });
+      expect(job.statusCode, job.body).toBe(200); expect(job.json().data.operation.status).toBe("ANSWERED");
+    });
+    const reopened = await s.app.inject({ method: "GET", url: `/api/chat/sessions/${s.sessionId}`, headers: s.headers });
+    const artifact = reopened.json().data.messages.at(-1).artifacts;
+    expect(artifact).toMatchObject({ intent: "WORKFLOW", can_execute: false, automationRequest: { decisionRequest: candidate.request.decisionRequest },
+      automationComposition: { status: "CAPABILITIES_MAPPED", readyForPublication: false, scheduleActive: false } });
+    expect(artifact.automationComposition.remainingRequirements).toContain(RECURRING_DECISION_REQUIREMENT);
+    const state = await s.repository.snapshot(), workflow = state.workflows[artifact.workflowId]!;
+    expect(workflow).toMatchObject({ yaml: candidate.yaml, publishedVersion: 0, canRun: false });
+    expect(parse(workflow.yaml).metadata.controlFlow).toEqual(candidate.source.metadata.controlFlow);
+    expect(state.executions).toEqual({}); expect(state.schedules).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
+    expect(body.messages[0].content).toContain("CALENDAR FINAL ANSWERS"); expect(body.messages[0].content).not.toContain(candidate.text);
+    expect(JSON.parse(body.messages[1].content).SERVER_DERIVED_CONTEXT_JSON.automation_request.decision_request.originalRequest).toBe(candidate.text);
+    if (asynchronous) {
+      const replay = await s.send(candidate.text, extra); expect(replay.statusCode).toBe(202); expect(replay.json().data.operation.id).toBe(response.json().data.operation.id);
+      expect(s.fetchImplementation).toHaveBeenCalledOnce(); expect(Object.values((await s.repository.snapshot()).workflows)).toHaveLength(1);
+    }
+  });
+
+test("calendar chat cannot erase requested delivery behind an early Return or lose its unmet original intent", async () => {
+  const candidate = returningRecurringCandidate(false), branch = candidate.source.metadata.controlFlow.root.nodes.at(-1).then;
+  branch.nodes.unshift(branch.nodes.pop());
+  const s = await setup({ bridge: true, automationTools: true, candidateYaml: stringify(candidate.source).trim() });
+  const response = await s.send(candidate.text); expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.assistantMessage.artifacts).toMatchObject({ intent: "WORKFLOW", compositionFailure: "COMPOSITION_UNAVAILABLE", can_execute: false,
+    automationRequest: { decisionRequest: candidate.request.decisionRequest, scheduleActive: false } });
+  const state = await s.repository.snapshot(), workflow = Object.values(state.workflows)[0]!;
+  expect(workflow.steps).toBe(0); expect(parse(workflow.yaml).metadata.unresolved_requirements).toEqual(candidate.request.requirements);
+  expect(state.executions).toEqual({}); expect(state.schedules).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
+});
+
 test("unsafe recurring model output falls back to the empty shell and preserves every gate", async () => {
   const candidate = recurringCandidate("invented@example.test"), s = await setup({ bridge: true, automationTools: true, candidateYaml: candidate.yaml });
   const result = await s.send(candidate.text); expect(result.statusCode, result.body).toBe(200);

@@ -16,7 +16,7 @@ try {
     assert.equal(url, "https://fixture.invalid/v1/chat/completions");
     const request = JSON.parse(String(init.body)), system = request.messages[0]?.content;
     if (system.includes("TASK: WORKFLOW DRAFT SYNTHESIS")) {
-      assert(system.includes("prompt/candidate/v15"));
+      assert(system.includes("prompt/candidate/v16"));
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: stringify(fixture) } }], usage: { prompt_tokens: 2, completion_tokens: 3 } });
     }
     modelCalls++;
@@ -62,7 +62,7 @@ try {
     const chat = await request("POST", "/api/chat/sessions", {}, 201), before = modelCalls;
     const answer = await request("POST", `/api/chat/sessions/${chat.id}/messages`, { content: `Create a workflow comparing two confirmed synthetic Department reads with a bounded ${kind}.` });
     const id = answer.assistantMessage.artifacts.workflowId;
-    assert.deepEqual(parse(answer.yaml), fixture); assert.equal(answer.workflowDraft.generation_metadata.promptTemplateVersion, "prompt/candidate/v15");
+    assert.deepEqual(parse(answer.yaml), fixture); assert.equal(answer.workflowDraft.generation_metadata.promptTemplateVersion, "prompt/candidate/v16");
     assert.equal(modelCalls, before); assert.equal((await request("GET", `/api/chat/sessions/${chat.id}`)).messages.at(-1).artifacts.workflowId, id);
     const ready = await request("GET", `/api/workflows/${id}/readiness`);
     const edited = await request("POST", `/api/workflows/${id}/commands`, { baseVersion: ready.version, baseHash: ready.contentHash,

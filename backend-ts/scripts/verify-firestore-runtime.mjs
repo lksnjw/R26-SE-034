@@ -27,7 +27,7 @@ import { requestRuntimeApproval, runtimeApprovalPolicyHash, consumeRuntimeApprov
 import { reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.js";
-import { TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -159,7 +159,7 @@ async function start(repositoryValue) {
   const providerRuntime = new ProviderRuntime(repository, executor, async (url, init) => {
     assert.equal(url, "https://provider.fixture.example.test/v1/chat/completions"); const request = JSON.parse(String(init.body)); models.push(request.model); await modelHook?.(request, init.signal);
     if (request.messages[0]?.content.includes("TASK: WORKFLOW DRAFT SYNTHESIS") && returnSynthesisFixture) {
-      assert.equal(request.messages[0].content, TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
+      assert.equal(request.messages[0].content, CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT);
       assert(JSON.parse(request.messages[1].content).USER_REQUEST.includes("Create a workflow"));
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: stringify(returnSynthesisFixture) } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
     }
@@ -344,7 +344,7 @@ try {
   assert.equal((await request("POST", `/api/chat/sessions/${chatId}/messages`, jointCommand, 202)).data.operation.id, jointOperation.id);
   assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation + 3); assert.equal(emails.length, 0);
   const modelsAfterAutomation = models.length;
-  log("actual Firestore async v15 recurring chats saved exact boolean Yes delivery/empty No trees, named joint analysis and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
+  log("actual Firestore async v16 recurring chats saved exact boolean Yes delivery/empty No trees, named joint analysis and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
 
   const saved = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).chats, saved.chats); assert.deepEqual((await repository.snapshot()).executions, saved.executions);
@@ -792,7 +792,7 @@ try {
     assert.deepEqual((await repository.snapshot()).executions[id], saved);
     assert.equal((await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id, id);
     assert.deepEqual((await repository.snapshot()).executionEvents[id], events); assert.equal(models.length, expectedModels); assert.equal(calls.length, expectedReads); assert.equal(operations.length, effectCount);
-    log(`actual Firestore v15 background ${kind}/select=${selected}: saved unpublished typed-return draft, fresh restart/chat replay, explicit v6 run, persisted exact answer, fresh restart/run replay without repeated planning/model/connector work`);
+    log(`actual Firestore v16 background ${kind}/select=${selected}: saved unpublished typed-return draft, fresh restart/chat replay, explicit v6 run, persisted exact answer, fresh restart/run replay without repeated planning/model/connector work`);
   }
   for (const [kind, selected, loseACK] of [["analysis", true, false], ["analysis", false, false], ["agent", true, false], ["agent", false, false], ["analysis", true, true]]) {
     const blueprint = parseWorkflowYAMLStrict(kind === "agent" ? durableAgentYAML : durableAnalysisYAML), [lookup, model] = blueprint.steps;
@@ -999,6 +999,61 @@ try {
     const state = await repository.snapshot(); assert.equal(Object.values(state.executions).filter(run => run.workflowId === workflowId && run.scheduleSource).length, 1);
     assert.equal(operations.length, effectsBefore + 1); assert.equal(reports.length, readsBefore + 3); assert.equal(models.length, modelsBefore);
     log(`actual Firestore scheduled ${selected ? "Yes" : "No"} branch survived claim ACK loss and approval/completion restarts, retained only its complete cursor report receipt, skipped its sibling and dispatched exactly once after independent approval`);
+  }
+
+  for (const [selected, loseACK] of [[true, false], [false, false], [true, true]]) {
+    const workflowId = `calendarReturn_${selected}_${loseACK}`, action = nodeId => ({ kind: "action", nodeId }), seq = (...nodes) => ({ kind: "sequence", nodes });
+    const schema = { type: "object", properties: { operationAccepted: { type: "boolean" }, reportId: { type: "string" } }, required: ["operationAccepted", "reportId"], additionalProperties: false };
+    const ref = (nodeId, field) => ({ kind: "ref", source: "nodeOutput", nodeId, path: ["structuredContent", field] });
+    const returned = (id, accepted) => ({ kind: "return", id, output: { schema, value: { kind: "object", fields: { operationAccepted: accepted, reportId: ref("report", "reportId") } } } });
+    const source = { name: workflowId, description: "Return the confirmed report outcome only after required independent effect approval.", trigger: { type: "manual", config: { inputSchema: { type: "object", properties: {
+      reportStartAt: { type: "string" }, reportEndAt: { type: "string" }, sendReport: { type: "boolean" } }, required: ["reportStartAt", "reportEndAt", "sendReport"], additionalProperties: false } } },
+      steps: [{ id: "report", action: reportTool.name, parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}" } },
+        { id: "send", action: operationTool.name, parameters: { id: "{{report.structuredContent.reportId}}" } }],
+      metadata: { controlFlow: { schemaVersion: "read-control-flow/v2", root: seq(action("report"), { kind: "if", id: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] },
+        then: seq(action("send"), returned("accepted_answer", ref("send", "accepted"))), else: seq(returned("not_requested_answer", { kind: "literal", value: false })) }) } } };
+    await repository.mutate(state => {
+      for (const saved of Object.values(state.schedules)) { saved.state = "PAUSED"; saved.nextRunAt = null; }
+      state.workflows[workflowId] = { ...state.workflows.operation, id: workflowId, name: workflowId, yaml: stringify(source), steps: 2, publishedVersion: 0, draftVersion: 1, canRun: false };
+      state.versions[workflowId] = [];
+    });
+    assert.equal((await request("POST", `/api/workflows/${workflowId}/publish`, {}, 200)).data.compiledOperation.schemaVersion, "workflow-operation-ir/v6");
+    const publication = (await repository.snapshot()).workflows[workflowId], readsBefore = reports.length, effectsBefore = operations.length, modelsBefore = models.length;
+    const schedule = (await request("PUT", `/api/workflows/${workflowId}/schedule`, { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+      workflowVersion: publication.publishedVersion, workflowHash: workflowContentHash(publication.yaml), enabled: true, timezone: "UTC",
+      localTime: new Date(Date.now() + 120_000).toISOString().slice(11, 16), reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE",
+      misfireGraceSeconds: 300, servicePrincipalId: "owner", input: { sendReport: selected }, reportWindowBinding }, 200)).data;
+    assert.equal(reports.length, readsBefore); assert.equal(operations.length, effectsBefore);
+    await workflowScheduleRunner(services).runDue(Date.parse(schedule.nextRunAt));
+    const pending = await waitFor(async () => Object.values((await repository.snapshot()).executions).find(run => run.workflowId === workflowId && run.status === (selected ? "AWAITING_APPROVAL" : "DONE")), "calendar final answer/wait");
+    if (selected) {
+      assert.equal(pending.finalOutput, undefined); assert.equal(pending.valueOutputs, undefined);
+      await stop(); await start(await openApplicationRepository(config)); assert.deepEqual((await repository.snapshot()).executions[pending.id], pending);
+    } else assert.equal(pending.runtimeApprovalSecret, undefined);
+    const checkpointWriter = persistence.saveExecutionCheckpoint.bind(persistence); let lostReturnACK = false;
+    if (loseACK) persistence.saveExecutionCheckpoint = async checkpoint => { await checkpointWriter(checkpoint);
+      if (!lostReturnACK && checkpoint.execution?.workflowId === workflowId && checkpoint.execution?.status === "RUNNING" && checkpoint.execution?.readProgress?.values?.accepted_answer?.status === "DONE") {
+        lostReturnACK = true; throw new Error("Synthetic actual Firestore calendar Return post-COMMIT acknowledgement loss");
+      }
+    };
+    if (selected) {
+      const review = (await request("GET", `/api/executions/${pending.id}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+      await request("POST", `/api/executions/${pending.id}/approve`, { approvalId: review.id, baseVersion: review.version, reviewHash: review.reviewHash, decisionKey: `approve-${workflowId}` }, 200, "reviewer");
+      if (loseACK) { await waitFor(() => lostReturnACK, "calendar Return ACK loss"); persistence.saveExecutionCheckpoint = checkpointWriter; await repository.recoverPersistenceState(); }
+      else await waitFor(async () => (await repository.snapshot()).executions[pending.id].status === "DONE", "calendar approved final answer");
+    }
+    const saved = (await repository.snapshot()).executions[pending.id], answerId = selected ? "accepted_answer" : "not_requested_answer";
+    const expected = { operationAccepted: selected, reportId: pending.stepOutputs.report.structuredContent.reportId };
+    assert.deepEqual(saved.finalOutput, expected); assert.deepEqual(saved.valueOutputs, { [answerId]: { value: expected } });
+    assert.equal(saved.readProgress.values[answerId].status, "DONE"); assert.equal(saved.reportCoverages.report.pagination.pageCount, 3);
+    if (!selected) { assert.equal(saved.stepOutputs.send, undefined); assert.equal(saved.operationSecret.intents.send, undefined); }
+    await stop(); await start(await openApplicationRepository(config));
+    const restored = (await repository.snapshot()).executions[pending.id]; assert.equal(restored.status, loseACK ? "RECOVERY_REQUIRED" : "DONE"); assert.deepEqual(restored.finalOutput, expected);
+    const events = structuredClone((await repository.snapshot()).executionEvents[pending.id]);
+    assert.deepEqual(await workflowScheduleRunner(services).runDue(Date.parse(schedule.nextRunAt)), { admitted: 0, skipped: 0, blocked: 0 });
+    assert.deepEqual((await repository.snapshot()).executionEvents[pending.id], events);
+    assert.equal(reports.length, readsBefore + 3); assert.equal(operations.length, effectsBefore + (selected ? 1 : 0)); assert.equal(models.length, modelsBefore);
+    log(`actual Firestore calendar Return selected=${selected}/lostACK=${loseACK}: complete report, independent effect approval or explicit no-effect answer, saved final value, fresh restart and no occurrence/effect replay`);
   }
 
   const operationsBeforeLostOperation = operations.length;
