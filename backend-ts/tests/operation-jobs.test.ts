@@ -29,7 +29,7 @@ import { prepareOperationExecution, type StoredOperationCompilation } from "../s
 import { modelDataClasses, type ModelDataClass } from "../src/providers/egress-policy.js";
 import { reviewedModelSourceContext } from "../src/synthesis/reviewed-model-sources.js";
 import { SynthesisService, assembleCandidatePrompt } from "../src/synthesis/service.js";
-import { RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -513,6 +513,43 @@ async function prepareModelReadWorkflow(s: Awaited<ReturnType<typeof setup>>, ki
   });
 }
 
+test.each(["analysis", "agent"] as const)("named %s receives both acknowledged sources, survives reopen and never replays inference", async kind => {
+  const records = new Records(), s = await setup(records, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  const modelId = kind === "analysis" ? "summarize" : "research";
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml); source.steps.splice(1, 0, { id: "second", action: s.read.name, parameters: { value: "second report" } });
+    source.steps[2].input = { first: "{{lookup.structuredContent.value}}", second: "{{second.structuredContent.value}}" };
+    state.workflows.flow!.yaml = stringify(source); state.workflows.flow!.steps = 3;
+  });
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ summary: "JOINT SOURCES", ...(kind === "agent" ? { complete: true } : {}) }) } }], usage: { prompt_tokens: 9, completion_tokens: 4 } }));
+  const publication = await s.publish(); expect(publication.statusCode, publication.body).toBe(200); expect(publication.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v5");
+  const key = `named-${kind}-reopen-0001`, response = await s.run(key); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+  await s.wait(id, "DONE"); expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledOnce();
+  const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(JSON.parse(body.messages[1].content).INPUT).toEqual({ first: "FIXTURE REPORT", second: "SECOND REPORT" });
+  const run = (await s.repository.snapshot()).executions[id]!; expect(run.stepOutputs?.[modelId]).toMatchObject({ structuredContent: { summary: "JOINT SOURCES" } });
+  expect(run.tokens).toEqual({ input: 9, output: 4, total: 13 }); expect(run.runtimeApprovalSecret).toBeUndefined();
+  expect((await s.run(key)).json().data.id).toBe(id); await s.app.close();
+  const reopened = await Repository.open(records); expect((await reopened.snapshot()).executions[id]).toEqual(run);
+  const services = { ...s.services, repository: reopened, validator: new RegistryValidator(s.services.registries, reopened) }, app = await buildApp(services); closers.push(app);
+  const replay = await app.inject({ method: "POST", url: "/api/workflows/flow/run", headers: { authorization: `Bearer ${jwt.sign({}, s.services.config.jwtSecret, { subject: "requester", expiresIn: 3600 })}` },
+    payload: { mode: "async-operation", idempotencyKey: key, input: {} } });
+  expect(replay.statusCode, replay.body).toBe(202); expect(replay.json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledOnce();
+});
+
+test.each(["analysis", "agent"].flatMap(kind => ["items", "characters"].map(limit => [kind, limit] as const)))("named %s enforces aggregate %s before model entry without approval or effect", async (kind, limit) => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind as "analysis" | "agent");
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml); source.steps.splice(1, 0, { id: "second", action: s.read.name, parameters: { value: "second report" } });
+    source.steps[2].input = { first: "{{lookup.structuredContent.value}}", second: "{{second.structuredContent.value}}" };
+    if (limit === "items") source.steps[2].max_input_items = 1; else source.steps[2].max_input_chars = 10;
+    state.workflows.flow!.yaml = stringify(source); state.workflows.flow!.steps = 3;
+  });
+  expect((await s.publish()).statusCode).toBe(200); const admitted = await s.run(`named-${kind}-${limit}-0001`); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id; await s.wait(id, "FAILED");
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).not.toHaveBeenCalled();
+  const run = (await s.repository.snapshot()).executions[id]!; expect(run.runtimeApprovalSecret).toBeUndefined(); expect(run.stepOutputs?.[kind === "analysis" ? "summarize" : "research"]).toBeUndefined();
+});
+
 async function reviewReadClass(s: Awaited<ReturnType<typeof setup>>, toolId: string, dataClass: ModelDataClass) {
   const discovery = await s.request("POST", "/api/registry/capabilities/discovery", {}); expect(discovery.statusCode, discovery.body).toBe(200);
   const observation = discovery.json().data.observations.find((value: { toolId: string }) => value.toolId === toolId)!;
@@ -567,7 +604,7 @@ test.each(["direct", "chat"])("%s synthesis ignores forged browser source claims
   });
   expect(response.statusCode, response.body).toBe(200); expect(s.modelFetch).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT);
+  expect(body.messages[0].content).toBe(NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT);
   const data = JSON.parse(body.messages[1].content);
   expect(data.MODEL_SOURCE_HINTS_JSON.sources.find((source: { toolId: string }) => source.toolId === s.read.tool_id)).toEqual({
     toolId: s.read.tool_id, action: s.read.name, connectionId: "erpbridge-default", dataClass: "confidential", review: "REVIEWED",
@@ -589,7 +626,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     if (route === "direct") {
       const response = await s.request("POST", "/api/synthesis", { prompt }); expect(response.statusCode, response.body).toBe(200);
       const candidate = response.json().data; expect(candidate.execution_profile_issues).toEqual([]);
-      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v12"); expect(candidate.yaml).toBe(yaml.trim());
+      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v13"); expect(candidate.yaml).toBe(yaml.trim());
       expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["flow"]);
       const created = await s.request("POST", "/api/workflows", { yaml: candidate.yaml }); expect(created.statusCode, created.body).toBe(201); workflowId = created.json().data.id;
     } else {
@@ -610,7 +647,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     const before = await s.repository.snapshot(), draft = before.workflows[workflowId!]!;
     expect(parse(draft.yaml).metadata.controlFlow).toEqual(source.metadata.controlFlow); expect(draft.publishedVersion).toBe(0);
     expect(before.executions).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledTimes(1);
-    const requestBody = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(requestBody.messages[0].content).toBe(RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT);
+    const requestBody = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(requestBody.messages[0].content).toBe(NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT);
     const publication = await s.request("POST", `/api/workflows/${workflowId!}/publish`, {}); expect(publication.statusCode, publication.body).toBe(200);
     expect(publication.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v4");
     const admitted = await s.request("POST", `/api/workflows/${workflowId!}/run`, { mode: "async-operation", idempotencyKey: `explicit-${route}-${kind}-${selected}`, input: { sendReport: selected } });
@@ -901,6 +938,55 @@ async function prepareTwoReportAnalysis(s: Awaited<ReturnType<typeof setup>>) {
     choices: [{ message: { content: JSON.stringify({ summary }) } }], usage: { prompt_tokens: 11, completion_tokens: 7 },
   }));
 }
+
+test.each(["manual", "daily", "decision-yes", "decision-no"])("%s joint named report analysis reaches only independent email approval or an empty path", async mode => {
+  const s = await setup(null, true, false, true, "related", true); await prepareTwoReportAnalysis(s);
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, source = parse(workflow.yaml), original = source.steps[2];
+    source.steps = [...source.steps.slice(0, 2), { ...original, id: "jointAnalysis", instruction: "Compare the complete invoice and related order reports together",
+      input: { invoices: "{{lookupReport.structuredContent.summary}}", orders: "{{lookupOrders.structuredContent.summary}}" } },
+      { ...source.steps[4], parameters: { ...source.steps[4].parameters, body: "{{jointAnalysis.structuredContent.summary}}" } }];
+    if (mode.startsWith("decision-")) {
+      source.trigger.config.inputSchema.properties.sendReport = { type: "boolean" }; source.trigger.config.inputSchema.required.push("sendReport");
+      source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [
+        { kind: "action", nodeId: "lookupReport" }, { kind: "action", nodeId: "lookupOrders" },
+        { kind: "if", id: "sendGate", predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] },
+          then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "jointAnalysis" }, { kind: "action", nodeId: "send" }] }, else: { kind: "sequence", nodes: [] } },
+      ] } } };
+    }
+    workflow.yaml = stringify(source); workflow.steps = source.steps.length;
+  });
+  s.modelFetch.mockReset(); s.modelFetch.mockImplementation(async () => Response.json({ choices: [{ message: { content: '{"summary":"JOINT INVOICE AND ORDER FINDING"}' } }], usage: { prompt_tokens: 15, completion_tokens: 9 } }));
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(200);
+  expect(published.json().data.compiledOperation).toMatchObject({ schemaVersion: "workflow-operation-ir/v5", compilerVersion: "operation-compiler/v5" });
+  let id: string;
+  const key = `joint-report-${mode}-0001`, runInput = { reportStartAt: "2026-10-07T00:00:00Z", reportEndAt: "2026-10-08T00:00:00Z",
+    ...(mode.startsWith("decision-") ? { sendReport: mode === "decision-yes" } : {}) };
+  if (mode !== "daily") { const admitted = await s.run(key, runInput); expect(admitted.statusCode, admitted.body).toBe(202); id = admitted.json().data.id; }
+  else {
+    const workflow = (await s.repository.snapshot()).workflows.flow!;
+    const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0, enabled: true,
+      workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), timezone: "UTC", localTime: "09:00", reportingPeriod: "previous-calendar-day",
+      misfirePolicy: "FIRE_ONCE", misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+    expect(saved.statusCode, saved.body).toBe(200);
+    expect(await workflowScheduleRunner(s.services).runDue(Date.parse(saved.json().data.nextRunAt))).toEqual({ admitted: 1, skipped: 0, blocked: 0 });
+    id = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId;
+  }
+  await s.wait(id, mode === "decision-no" ? "DONE" : "AWAITING_APPROVAL");
+  expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead), exactBridgeName(s.relatedOrderRead!)]);
+  if (mode === "decision-no") {
+    expect(s.modelFetch).not.toHaveBeenCalled(); const run = (await s.repository.snapshot()).executions[id]!;
+    expect(run.readProgress!.attempts.jointAnalysis!.status).toBe("SKIPPED"); expect(run.stepOutputs?.jointAnalysis).toBeUndefined(); expect(run.runtimeApprovalSecret).toBeUndefined();
+  } else {
+    expect(s.modelFetch).toHaveBeenCalledOnce(); const run = (await s.repository.snapshot()).executions[id]!;
+    const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)), data = JSON.parse(body.messages[1].content);
+    expect(data.INPUT).toEqual({ invoices: (run.stepOutputs!.lookupReport as any).structuredContent.summary, orders: (run.stepOutputs!.lookupOrders as any).structuredContent.summary });
+    expect(await s.review(id)).toMatchObject({ arguments: { recipient: "manager@example.test", subject: "Reviewed reports", body: "JOINT INVOICE AND ORDER FINDING" }, canDecide: true });
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE");
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(3); expect(s.modelFetch).toHaveBeenCalledOnce();
+  }
+  if (mode !== "daily") { expect((await s.run(key, runInput)).json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledTimes(mode === "decision-no" ? 2 : 3); }
+});
 
 test.each(["manual", "daily"])("%s two-report analysis joins both outputs and waits for independent email approval", async mode => {
   const s = await setup(null, true, false, true, "related", true); await prepareTwoReportAnalysis(s);

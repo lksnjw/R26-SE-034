@@ -17,6 +17,7 @@ import OperationReconciliationEvidence from "../executions/OperationReconciliati
 import OperationStatusQueries from "../executions/OperationStatusQueries";
 import { isActiveExecution } from "../../utils/executionEvents";
 import NodePrompt from "./NodePrompt";
+import ModelInputFields from "./ModelInputFields";
 import ConditionFields, { ScopeSelect, branchDestination, flowConditions, flowReturns } from "./ConditionFields";
 import ReadValueFields, { SchemaContractFields, ReadBindingFields } from "./ReadValueFields";
 import ReadSimulationPanel from "./ReadSimulationPanel";
@@ -269,7 +270,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
         <div><h4 className="text-xs font-semibold">Add structured analysis</h4><p className="mt-1 text-[10px] leading-4 text-gray-500">Place one bounded model transformation after its source read and before the effect that consumes it.</p></div>
         <input aria-label="New analysis ID" className={input} value={newAnalysisId} onChange={event => setNewAnalysisId(event.target.value)} pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" placeholder="Unique stable analysis ID" maxLength={64} required />
         <textarea aria-label="New analysis instruction" className={`${input} min-h-20 resize-y`} value={newAnalysisInstruction} onChange={event => setNewAnalysisInstruction(event.target.value)} placeholder="What should the model derive from the acknowledged input?" maxLength={4000} required />
-        <input aria-label="New analysis input" className={`${input} font-mono`} value={newAnalysisInput} onChange={event => setNewAnalysisInput(event.target.value)} placeholder="{{prior_node.structuredContent.field}}" maxLength={1000} required />
+        <ModelInputFields value={newAnalysisInput} onChange={setNewAnalysisInput} label="New analysis input" />
         <div className="grid gap-3 sm:grid-cols-2"><select aria-label="New analysis data class" className={input} value={newAnalysisClass} onChange={event => setNewAnalysisClass(event.target.value)}><option value="public">Public</option><option value="internal">Internal</option><option value="confidential">Confidential</option><option value="restricted">Restricted</option></select><input aria-label="New analysis model" className={input} value={newAnalysisModel} onChange={event => setNewAnalysisModel(event.target.value)} placeholder="Reviewed provider default" maxLength={256} /></div>
         <ModelInsertionPosition model={placementModel} value={newAnalysisBefore} onChange={setNewAnalysisBefore} label="New analysis position" />
         <SchemaContractFields schema={newAnalysisSchema} onChange={setNewAnalysisSchema} label="Structured answer contract" />
@@ -286,7 +287,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
         <input aria-label="New agent ID" className={input} value={newAgentId} onChange={event => setNewAgentId(event.target.value)} pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" placeholder="Unique stable agent ID" maxLength={64} required />
         {!!authoring?.connectionChoices?.length && <select aria-label="New agent ERPBridge connection" className={input} value={agentConnectionId} onChange={event => { setNewAgentConnectionId(event.target.value); setNewAgentAction(""); }}>{authoring.connectionChoices.map(item => <option key={item.id} value={item.id}>{item.id}{item.primary ? " · primary" : ""}</option>)}</select>}
         <textarea aria-label="New agent instruction" className={`${input} min-h-20 resize-y`} value={newAgentInstruction} onChange={event => setNewAgentInstruction(event.target.value)} placeholder="What evidence should the bounded agent gather and return?" maxLength={4000} required />
-        <input aria-label="New agent input" className={`${input} font-mono`} value={newAgentInput} onChange={event => setNewAgentInput(event.target.value)} placeholder="{{prior_node.structuredContent.field}}" maxLength={1000} required />
+        <ModelInputFields value={newAgentInput} onChange={setNewAgentInput} label="New agent input" />
         <label className="block text-xs text-gray-500">Allowed reviewed read<select aria-label="New agent allowed action" className={input} value={newAgentAction} onChange={event => setNewAgentAction(event.target.value)} required><option value="" disabled>Select one exact read capability</option>{agentReadActions.map(action => <option key={action} value={action}>{action}</option>)}</select></label>
         <div className="grid gap-3 sm:grid-cols-2"><select aria-label="New agent data class" className={input} value={newAgentClass} onChange={event => setNewAgentClass(event.target.value)}><option value="public">Public</option><option value="internal">Internal</option><option value="confidential">Confidential</option><option value="restricted">Restricted</option></select><input aria-label="New agent model" className={input} value={newAgentModel} onChange={event => setNewAgentModel(event.target.value)} placeholder="Reviewed provider default" maxLength={256} /></div>
         <ModelInsertionPosition model={placementModel} value={newAgentBefore} onChange={setNewAgentBefore} label="New agent position" />

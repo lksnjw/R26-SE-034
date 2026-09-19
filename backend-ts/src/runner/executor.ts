@@ -330,6 +330,7 @@ export class Executor {
     outputTokens: number;
     cached: boolean;
   }> {
+    if (step.input && typeof step.input === "object") throw new Error("Named model inputs require the checkpointed compiled operation runner");
     const resolved = resolveVariables({ input: step.input ?? "" }, state).input;
     if (containsBraces(resolved))
       throw new Error("analysis input contains unresolved template variables");

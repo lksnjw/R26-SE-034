@@ -6,11 +6,12 @@ import type { RepositoryState } from "../repository/store.js";
 import { readControlFlowSchema, readPredicateSchema, structuralNodes } from "./read-control-flow.js";
 import { draftFlow, locateFlowNode, insertionScope, moveDraftNode, saveDraftFlow } from "./draft-control-edits.js";
 import { readMergeSchema, readReturnSchema } from "./read-values.js";
+import { modelInputSchema } from "../models/model-input.js";
 
 export const nodeIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 const connectionIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 export const nodePatchSchema = z.object({ action: z.string().min(1).max(128).optional(), connection_id: connectionIdSchema.optional(), description: z.string().max(2000).optional(), parameters: jsonObjectSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
-const analysisInputSchema = z.string().min(1).max(1000).regex(/^\{\{[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+\}\}$/).refine(value => !value.startsWith("{{input."), "Analysis input must come from a prior node output");
+const analysisInputSchema = modelInputSchema;
 const analysisOutputSchema = jsonObjectSchema.refine(value => value.type === "object", "Analysis output schema must be an object");
 export const analysisNodePatchSchema = z.object({ description: z.string().max(2000).optional(), instruction: z.string().min(1).max(4000).optional(),
   input: analysisInputSchema.optional(), output_schema: analysisOutputSchema.optional(),
@@ -75,7 +76,7 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
 export function selectedNodePatchSchema(node: { kind?: string | undefined }) {
   return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : node.kind === "agent" ? agentNodePatchSchema : nodePatchSchema;
 }
-export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : node.kind === "analysis" ? "prompt/analysis-node-patch/v1" : node.kind === "agent" ? "prompt/agent-node-patch/v1" : "prompt/node-patch/v2"; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : node.kind === "analysis" ? "prompt/analysis-node-patch/v2" : node.kind === "agent" ? "prompt/agent-node-patch/v2" : "prompt/node-patch/v2"; }
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
   return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : node.kind === "analysis" ? "updateAnalysis" : node.kind === "agent" ? "updateAgent" : "updateNode", nodeId: node.id, patch });
 }

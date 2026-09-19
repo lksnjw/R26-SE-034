@@ -79,6 +79,33 @@ async function analysisFixture() {
   return { ...source, request, workflow, tools: recurringAnalysisTools(source.tools) };
 }
 
+test.each(["flat", "root reports", "branch-local"])("recurring %s can map one joint invoice/order analysis without dropping coverage", async placement => {
+  const s = placement === "flat" ? await analysisFixture() : await conditionalFixture(true, placement === "branch-local");
+  const joint = { ...s.workflow.steps[2], id: "joint_analysis", instruction: "Compare the confirmed invoice and related order evidence together; state limitations",
+    input: { invoices: "{{invoice_report.structuredContent.summary}}", orders: "{{order_report.structuredContent.summary}}" } };
+  s.workflow.steps.splice(2, 2, joint); s.workflow.steps[3].parameters.body = "{{joint_analysis.structuredContent.text}}";
+  if (s.workflow.metadata.controlFlow) {
+    const gate = s.workflow.metadata.controlFlow.root.nodes.find((node: any) => node.kind === "if");
+    gate.then.nodes = s.workflow.steps.slice(placement === "branch-local" ? 0 : 2).map((step: any) => ({ kind: "action", nodeId: step.id }));
+  }
+  const result = inspectRecurringAutomationCandidate(stringify(s.workflow), s.request, s.tools, "Platform Admin");
+  expect(result).toMatchObject({ status: "CAPABILITIES_MAPPED", analysis: { status: "MAPPED" }, deliveryBodyBound: true, scheduleActive: false, readyForPublication: false });
+  expect(result.mappedSteps.filter(value => value.capability === "analysis")).toEqual([
+    { stepId: "joint_analysis", capability: "analysis", tool: "Bounded analysis", resource: "invoices", sourceStepId: "invoice_report" },
+    { stepId: "joint_analysis", capability: "analysis", tool: "Bounded analysis", resource: "orders", sourceStepId: "order_report" },
+  ]);
+  const wrong = structuredClone(s.workflow); wrong.steps[2].input.orders = "{{invoice_report.structuredContent.summary}}";
+  expect(() => inspectRecurringAutomationCandidate(stringify(wrong), s.request, s.tools, "Platform Admin")).toThrow(/Required unresolved outcome/);
+});
+
+test("joint recurring analysis does not permit overlapping per-resource analysis or unrelated model sources", async () => {
+  const s = await analysisFixture();
+  s.workflow.steps[2].input = { invoices: "{{invoice_report.structuredContent.summary}}", orders: "{{order_report.structuredContent.summary}}" };
+  expect(() => inspectRecurringAutomationCandidate(stringify(s.workflow), s.request, s.tools, "Platform Admin")).toThrow(/duplicate analysis/);
+  s.workflow.steps[2].input.orders = "{{order_analysis.structuredContent.text}}";
+  expect(() => inspectRecurringAutomationCandidate(stringify(s.workflow), s.request, s.tools, "Platform Admin")).toThrow(/declared report output|forward/);
+});
+
 test("all requested per-resource analyses and joined delivery map without granting publication, egress or a schedule", async () => {
   const { request, workflow, tools } = await analysisFixture();
   expect(request.requirements).toContain(analysisRequirement);

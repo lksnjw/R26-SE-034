@@ -7,7 +7,11 @@ type StepStructureResult = {
 
 const priorOutputReference = /^\{\{\s*([a-zA-Z0-9_-]+)\.(?:output|structuredContent)(?:\.[a-zA-Z0-9_.-]+)?\s*\}\}$/;
 
-function sourceReference(workflow: WorkflowBlueprint, stepIndex: number, input: string | undefined): string | null {
+function sourceReference(workflow: WorkflowBlueprint, stepIndex: number, input: WorkflowBlueprint["steps"][number]["input"]): string | null {
+  if (input && typeof input === "object") {
+    const refs = Object.values(input).map(value => sourceReference(workflow, stepIndex, value));
+    return refs.length && refs.every(value => value !== null && !value.startsWith("!")) ? refs.join(",") : refs.find(value => value?.startsWith("!")) ?? null;
+  }
   const sourceID = priorOutputReference.exec((input ?? "").trim())?.[1];
   if (sourceID === undefined) return null;
   return workflow.steps.slice(0, stepIndex).some((prior) => prior.id === sourceID) ? sourceID : `!${sourceID}`;

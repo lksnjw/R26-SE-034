@@ -69,7 +69,7 @@ test("analysis node commands edit only the bounded analysis contract and add onl
     { id: "last", action: "demo.echo", parameters: { value: "{{summary.structuredContent.summary}}" } },
   ] });
   const patch = analysisNodePatchSchema.parse({ instruction: "Return a concise reviewed summary", max_output_tokens: 256 });
-  expect(selectedNodePatchVersion({ kind: "analysis" })).toBe("prompt/analysis-node-patch/v1");
+  expect(selectedNodePatchVersion({ kind: "analysis" })).toBe("prompt/analysis-node-patch/v2");
   expect(selectedNodePatchCommand({ id: "summary", kind: "analysis" }, patch)).toEqual({ type: "updateAnalysis", nodeId: "summary", patch });
   const updated = parseWorkflowYAMLStrict(applyWorkflowCommand(source, { type: "updateAnalysis", nodeId: "summary", patch }));
   expect(updated.steps[1]).toMatchObject({ id: "summary", kind: "analysis", instruction: "Return a concise reviewed summary", input: "{{first.structuredContent.value}}",
@@ -149,7 +149,7 @@ test("bounded agent commands edit only its allow-list, completion contract and b
     { id: "last", action: "demo.echo", parameters: { value: "{{research.structuredContent.summary}}" } },
   ] });
   const patch = agentNodePatchSchema.parse({ instruction: "Gather only the reviewed evidence", max_rounds: 2, max_tool_calls: 2 });
-  expect(selectedNodePatchVersion({ kind: "agent" })).toBe("prompt/agent-node-patch/v1");
+  expect(selectedNodePatchVersion({ kind: "agent" })).toBe("prompt/agent-node-patch/v2");
   expect(selectedNodePatchCommand({ id: "research", kind: "agent" }, patch)).toEqual({ type: "updateAgent", nodeId: "research", patch });
   const updated = parseWorkflowYAMLStrict(applyWorkflowCommand(source, { type: "updateAgent", nodeId: "research", patch }));
   expect(updated.steps[1]).toMatchObject({ id: "research", kind: "agent", instruction: "Gather only the reviewed evidence", allowed_actions: ["demo.echo"],

@@ -8,7 +8,7 @@ import { appendExecutionEvent, assertCurrentRunController } from "./read-checkpo
 export function advanceOperationDecisions(state: RepositoryState, run: Execution, plan: CompiledOperationPlan):
   { kind: "action"; index: number; nodeId: string } | { kind: "complete" } | { kind: "failed" } {
   const progress = run.readProgress!;
-  if (!plan.ir.flow || plan.ir.schemaVersion !== "workflow-operation-ir/v4" || run.status !== "RUNNING" || run.operationSecret?.state !== "CLAIMED" ||
+  if (!plan.ir.flow || !["workflow-operation-ir/v4", "workflow-operation-ir/v5"].includes(plan.ir.schemaVersion) || run.status !== "RUNNING" || run.operationSecret?.state !== "CLAIMED" ||
       run.workflowSnapshot?.operationCompilation?.semanticHash !== plan.semanticHash || progress.cancellation) throw new Error("Operation decision checkpoint is not owned");
   assertCurrentRunController(state, run, run.operationSecret.actorId, run.operationSecret.admittedRole);
   for (let count = 0; count < 512; count++) {

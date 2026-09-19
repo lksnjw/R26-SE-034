@@ -2,6 +2,7 @@ import { effectiveStepKind, type WorkflowBlueprint } from "../models/schemas.js"
 import type { ToolDefinition } from "../registry/schemas.js";
 import { inspectModelWorkflowDraft } from "../workflows/compiled-read.js";
 import type { RecurringRequestedResource } from "./recurring-automation.js";
+import { modelInputSchema } from "../models/model-input.js";
 
 export type RecurringAnalysisMapping = { index: number; id: string; sourceStepId: string; resource: RecurringRequestedResource };
 export type RecurringReportSource = { index: number; id: string; resource: RecurringRequestedResource };
@@ -18,15 +19,21 @@ export function inspectRecurringAnalysis(blueprint: WorkflowBlueprint, requested
     if (!blueprint.metadata?.controlFlow && (nodes.length > resources.length || nodes.length > 2)) issues.push("Recurring analysis permits at most one bounded analysis per requested report resource");
   }
   for (const { step, index } of nodes) {
-    const input = exactOutputReference(step.input), report = input && reports.find(value => value.id === input.root);
+    const parsed = modelInputSchema.safeParse(step.input);
+    const inputs = parsed.success ? (typeof parsed.data === "string" ? [parsed.data] : Object.values(parsed.data)).map(exactOutputReference) : [];
+    const selected = inputs.map(input => input && reports.find(value => value.id === input.root));
     const visible = predecessors?.get(step.id), priorReports = visible ? reports.filter(value => visible.has(value.id)) : reports;
-    if (!report || input?.path[0] !== "structuredContent" || visible && !visible.has(report.id) || (!visible || !blueprint.metadata?.controlFlow) && reports.some(value => value.index >= index)) {
+    if (!inputs.length || inputs.some((input, i) => !selected[i] || input?.path[0] !== "structuredContent" || visible && !visible.has(selected[i]!.id)) ||
+        (!visible || !blueprint.metadata?.controlFlow) && reports.some(value => value.index >= index)) {
       issues.push(`Analysis ${step.id} must consume a declared report output after all report reads`); continue;
     }
     if (priorReports.length > 2 || priorReports.some(value => priorReports.filter(other => other.resource === value.resource).length > 1))
       issues.push(`Analysis ${step.id} requires unique requested reports in its preceding scope`);
-    if (mappings.some(value => value.resource === report.resource && (!visible || visible.has(value.id)))) issues.push(`Requested resource ${report.resource} has duplicate analysis nodes`);
-    mappings.push({ index, id: step.id, sourceStepId: report.id, resource: report.resource });
+    const unique = [...new Map(selected.map(report => [report!.id, report!])).values()];
+    for (const report of unique) {
+      if (mappings.some(value => value.resource === report.resource && (!visible || visible.has(value.id)))) issues.push(`Requested resource ${report.resource} has duplicate analysis nodes`);
+      mappings.push({ index, id: step.id, sourceStepId: report.id, resource: report.resource });
+    }
   }
   return { mappings, issues, bound: requested && resources.length > 0 && resources.every(resource => mappings.some(value => value.resource === resource)) };
 }

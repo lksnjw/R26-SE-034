@@ -21,9 +21,11 @@ export async function processNodeProposal(input: { context: unknown; content: st
     return assertNodeContext(state, context, user);
   });
   const structural = ["if", "return", "foreach"].includes(scoped.node.kind ?? "");
-  const authoring = structural ? readAuthoringContract(parseWorkflowYAMLStrict(scoped.workflow.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()) : undefined;
+  const modelNode = ["analysis", "agent"].includes(scoped.node.kind ?? "");
+  const authoring = structural || modelNode ? readAuthoringContract(parseWorkflowYAMLStrict(scoped.workflow.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()) : undefined;
   const collection = authoring?.collections?.find(node => node.nodeId === scoped.node.id);
   const prompt = promptData({ instruction: input.content, node: withoutSecretFields(scoped.node),
+    ...(modelNode ? { allowedDataSources: authoring?.nodes.find(node => node.nodeId === scoped.node.id)?.dataSources.filter(source => source.binding.source === "nodeOutput") ?? [] } : {}),
     ...(scoped.node.kind === "if" ? { allowedBooleanSources: authoring?.conditions?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
     ...(scoped.node.kind === "return" ? { allowedDataSources: authoring?.returns?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
     ...(scoped.node.kind === "foreach" ? { allowedItemSources: collection?.itemSources ?? [], allowedCollectSources: collection?.collectSources ?? [] } : {}),

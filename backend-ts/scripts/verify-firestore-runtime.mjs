@@ -166,7 +166,8 @@ async function start(repositoryValue) {
     const recurringContext = candidateData.SERVER_DERIVED_CONTEXT_JSON;
     if (recurringContext?.profile === "recurring-automation-candidate-context/v1") {
       const unresolved = recurringContext.required_unresolved_requirements.filter(value => !value.startsWith("Add exact reviewed ERP report") &&
-        !value.startsWith("Add one exact reviewed ERP report") && !value.startsWith("Add one exact reviewed email"));
+        !value.startsWith("Add one exact reviewed ERP report") && !value.startsWith("Add one exact reviewed email") &&
+        !(recurringContext.automation_request.analysis_requested && value.startsWith("Add a supported bounded analysis node")));
       const source = { name: "Daily invoice and related-order report", description: "Maps reviewed report contracts into one blocked recurring delivery draft.",
         trigger: { type: "manual", config: { inputSchema: { type: "object", properties: { reportStartAt: { type: "string" }, reportEndAt: { type: "string" } },
           required: ["reportStartAt", "reportEndAt"], additionalProperties: false } } }, steps: [
@@ -174,11 +175,18 @@ async function start(repositoryValue) {
           { id: "order_report", action: relatedOrderTool.name, description: "Read every related order", parameters: { startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", orderIds: "{{invoice_report.structuredContent.orderIds}}" } },
           { id: "deliver_report", action: emailTool.name, description: "Propose reviewed email delivery", parameters: { recipient: "manager@example.test", subject: "Daily invoice and order report", body: "Invoices: {{invoice_report.structuredContent.reportId}}\nOrders: {{order_report.structuredContent.reportId}}" } },
         ], metadata: { automation_request: recurringContext.automation_request, unresolved_requirements: unresolved } };
+      if (recurringContext.automation_request.analysis_requested) {
+        source.steps.splice(2, 0, { id: "joint_analysis", kind: "analysis", description: "Joint confirmed invoice/order analysis", instruction: "Compare only the exact complete invoice and related order report identities; state limits",
+          input: { invoices: "{{invoice_report.structuredContent.reportId}}", orders: "{{order_report.structuredContent.reportId}}" }, data_class: "restricted",
+          max_input_items: 100, max_input_chars: 20000, max_output_tokens: 512,
+          output_schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false } });
+        source.steps[3].parameters.body = "{{joint_analysis.structuredContent.summary}}";
+      }
       if (recurringContext.automation_request.decision_request) {
         source.trigger.config.inputSchema.properties.sendReport = { type: "boolean" }; source.trigger.config.inputSchema.required.push("sendReport");
         source.metadata.controlFlow = { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [
           { kind: "action", nodeId: "invoice_report" }, { kind: "action", nodeId: "order_report" }, { kind: "if", id: "send_gate",
-            predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "deliver_report" }] },
+            predicate: { kind: "ref", source: "workflowInput", path: ["sendReport"] }, then: { kind: "sequence", nodes: source.steps.slice(2).map(step => ({ kind: "action", nodeId: step.id })) },
             else: { kind: "sequence", nodes: [] } },
         ] } };
       }
@@ -314,8 +322,19 @@ try {
   assert.equal(conditionalWorkflow.publishedVersion, 0); assert.equal(conditionalWorkflow.canRun, false);
   assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation + 2); assert.equal(emails.length, 0); assert.equal(operations.length, 0);
   assert.equal((await request("POST", `/api/chat/sessions/${chatId}/messages`, conditionalCommand, 202)).data.operation.id, conditionalChat.id);
+  const jointCommand = { content: "Jointly analyse invoice and order details together and send the report to manager@example.test daily only if the declared sendReport boolean workflow input is true; otherwise do not deliver.",
+    delivery: "async-chat", idempotencyKey: "firestore-joint-recurring-chat-0001" };
+  const jointOperation = (await request("POST", `/api/chat/sessions/${chatId}/messages`, jointCommand, 202)).data.operation;
+  await waitFor(async () => (await repository.snapshot()).chatOperations[jointOperation.id]?.status === "ANSWERED", "joint recurring chat draft");
+  const jointArtifact = (await request("GET", `/api/chat/sessions/${chatId}`, undefined, 200)).data.messages.findLast(message => message.artifacts?.automationRequest)?.artifacts;
+  assert.equal(jointArtifact.automationComposition.analysis.status, "MAPPED");
+  const jointWorkflow = structuredClone((await repository.snapshot()).workflows[jointArtifact.workflowId]), jointSource = parseWorkflowYAMLStrict(jointWorkflow.yaml);
+  assert.deepEqual(jointSource.steps[2].input, { invoices: "{{invoice_report.structuredContent.reportId}}", orders: "{{order_report.structuredContent.reportId}}" });
+  assert.equal(jointSource.metadata.controlFlow.root.nodes[2].else.nodes.length, 0); assert.equal(jointWorkflow.publishedVersion, 0);
+  assert.equal((await request("POST", `/api/chat/sessions/${chatId}/messages`, jointCommand, 202)).data.operation.id, jointOperation.id);
+  assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation + 3); assert.equal(emails.length, 0);
   const modelsAfterAutomation = models.length;
-  log("actual Firestore async v12 recurring chat saved the exact boolean Yes delivery/empty No tree and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
+  log("actual Firestore async v13 recurring chats saved exact boolean Yes delivery/empty No trees, named joint analysis and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
 
   const saved = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).chats, saved.chats); assert.deepEqual((await repository.snapshot()).executions, saved.executions);
@@ -324,6 +343,7 @@ try {
   assert.equal((await repository.snapshot()).chats[chatId].messages.findLast(message => message.artifacts?.proposal)?.artifacts.proposal.status, "APPLIED");
   assert.deepEqual((await repository.snapshot()).workflows[automation.workflowId], automationWorkflow); assert.equal((await repository.snapshot()).schedules[`schedule-${automation.workflowId}`], undefined);
   assert.deepEqual((await repository.snapshot()).workflows[conditionalArtifact.workflowId], conditionalWorkflow);
+  assert.deepEqual((await repository.snapshot()).workflows[jointArtifact.workflowId], jointWorkflow);
   assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.runtimeAnalysisDataClasses, ["internal"]);
   assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.runtimeAgentDataClasses, ["internal"]);
   assert.deepEqual((await repository.snapshot()).providers[persistedProviderId].egressPolicy.interactiveDataClasses, ["restricted"]);
@@ -606,6 +626,41 @@ try {
   assert.deepEqual((await repository.snapshot()).executions[durableAnalysisRun], completedDurableAnalysis);
   assert.equal(models.length, analysisModelsBefore + 1); assert.deepEqual(operations.slice(analysisOperationsBefore), ["ANALYSIS-FIXTURE-ONE"]);
   log("actual Firestore durable read-analysis-operation captured the reviewed provider privately, persisted bounded structured output/tokens, survived pre/post-approval restarts, required independent approval and never replayed model or SDK effects");
+
+  const namedSource = parseWorkflowYAMLStrict(durableAnalysisYAML);
+  namedSource.steps.splice(1, 0, { id: "analysis_second", action: "read", parameters: { id: "named-second" } });
+  namedSource.steps[2].input = { first: "{{analysis_lookup.structuredContent.id}}", second: "{{analysis_second.structuredContent.id}}" };
+  namedSource.steps[2].instruction = "Compare both acknowledged named identifiers before the separate governed operation";
+  await repository.mutate(state => { state.workflows.namedAnalysis = { ...state.workflows.durableAnalysis, id: "namedAnalysis", yaml: stringify(namedSource), steps: 4,
+    publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions.namedAnalysis = []; });
+  assert.equal((await request("POST", "/api/workflows/namedAnalysis/publish", {}, 200)).data.compiledOperation.schemaVersion, "workflow-operation-ir/v5");
+  const namedModelsBefore = models.length, namedEffectsBefore = operations.length, namedCallsBefore = calls.length;
+  modelHook = async body => {
+    const data = JSON.parse(body.messages[1].content);
+    assert.equal(data.INSTRUCTION, namedSource.steps[2].instruction);
+    assert.deepEqual(data.INPUT, { first: "ANALYSIS-SOURCE", second: "NAMED-SECOND" });
+  };
+  const namedCommand = { mode: "async-operation", idempotencyKey: "firestore-named-analysis-0001", input: {} };
+  const namedRun = (await request("POST", "/api/workflows/namedAnalysis/run", namedCommand, 202)).data.id;
+  await waitFor(async () => {
+    const run = (await repository.snapshot()).executions[namedRun];
+    assert(!["FAILED", "CANCELLED", "UNCERTAIN"].includes(run.status), `Named analysis stopped before approval: ${JSON.stringify(run.errors)}`);
+    return run.status === "AWAITING_APPROVAL";
+  }, "named analysis independent approval");
+  modelHook = undefined;
+  assert.equal(models.length, namedModelsBefore + 1); assert.equal(calls.length, namedCallsBefore + 2); assert.equal(operations.length, namedEffectsBefore);
+  const namedWaiting = (await repository.snapshot()).executions[namedRun];
+  await stop(); await start(await openApplicationRepository(config)); assert.deepEqual((await repository.snapshot()).executions[namedRun], namedWaiting);
+  const namedReview = (await request("GET", `/api/executions/${namedRun}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
+  assert.deepEqual(namedReview.arguments, { id: "ANALYSIS-FIXTURE-ONE" });
+  await request("POST", `/api/executions/${namedRun}/approve`, { approvalId: namedReview.id, baseVersion: namedReview.version, reviewHash: namedReview.reviewHash,
+    decisionKey: "firestore-named-analysis-approved-0001" }, 200, "reviewer");
+  await waitFor(async () => (await repository.snapshot()).executions[namedRun].status === "DONE", "named analysis approved operation");
+  const namedDone = (await repository.snapshot()).executions[namedRun]; await stop(); await start(await openApplicationRepository(config));
+  assert.deepEqual((await repository.snapshot()).executions[namedRun], namedDone);
+  assert.equal((await request("POST", "/api/workflows/namedAnalysis/run", namedCommand, 202)).data.id, namedRun);
+  assert.equal(models.length, namedModelsBefore + 1); assert.equal(operations.length, namedEffectsBefore + 1); assert.equal(calls.length, namedCallsBefore + 2);
+  log("actual Firestore named analysis received two exact acknowledged inputs under v5, survived approval/completion restarts and retained original-key replay without repeating model or connector work");
 
   const durableAgentYAML = stringify({ name: "Durable bounded agent", description: "Actual Firestore bounded agent may select only one reviewed ERP read before an independently approved operation.", trigger: { type: "manual" }, steps: [
     { id: "agent_lookup", action: "read", parameters: { id: "agent-source" } },

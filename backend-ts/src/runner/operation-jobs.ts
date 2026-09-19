@@ -13,6 +13,7 @@ import { operationControlTransition } from "../workflows/operation-control-flow.
 import { scheduledReportPaths } from "./scheduled-report-paths.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
 import { isOperationToolNode, resolveReadBinding, type CompiledOperationPlan, type OperationToolNode } from "../workflows/compiled-read.js";
+import { modelInputItemCount } from "../workflows/model-input.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { validateToolArguments } from "../agent/workflow-runtime-validator.js";
 import { discoverTools } from "../agent/tool-discovery.js";
@@ -376,8 +377,7 @@ export class OperationJobQueue {
             } else if (progress.attempts[node.id]!.status !== "PREPARING") throw new Error("A runtime-agent invocation cannot be replayed");
             return resolveReadBinding(node.input, { input: snapshot.input, ...run.stepOutputs });
           });
-          const inputJSON = JSON.stringify(resolvedInput), itemCount = Array.isArray(resolvedInput) ? resolvedInput.length :
-            resolvedInput !== null && typeof resolvedInput === "object" ? Object.keys(resolvedInput).length : 1;
+          const inputJSON = JSON.stringify(resolvedInput), itemCount = modelInputItemCount(node.input, resolvedInput);
           if (itemCount > node.maxInputItems || [...inputJSON].length > node.maxInputChars) throw new Error("Runtime-agent input exceeds its reviewed bounds");
           const captured = initial.operationSecret!.agentProvider;
           if (!captured || !services.providerRuntime) throw new Error("Captured runtime-agent provider is unavailable");
@@ -488,8 +488,7 @@ export class OperationJobQueue {
             } else if (progress.attempts[node.id]!.status !== "PREPARING") throw new Error("An analysis invocation cannot be replayed");
             return resolveReadBinding(node.input, { input: snapshot.input, ...run.stepOutputs });
           });
-          const inputJSON = JSON.stringify(resolvedInput), itemCount = Array.isArray(resolvedInput) ? resolvedInput.length :
-            resolvedInput !== null && typeof resolvedInput === "object" ? Object.keys(resolvedInput).length : 1;
+          const inputJSON = JSON.stringify(resolvedInput), itemCount = modelInputItemCount(node.input, resolvedInput);
           if (itemCount > node.maxInputItems || [...inputJSON].length > node.maxInputChars) throw new Error("Analysis input exceeds its reviewed bounds");
           const captured = initial.operationSecret!.analysisProvider;
           if (!captured || !services.providerRuntime) throw new Error("Captured analysis provider is unavailable");

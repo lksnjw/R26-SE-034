@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { namedModelInputSchema } from "./model-input.js";
 
 export const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
   z.union([
@@ -30,7 +31,7 @@ export const workflowStepBlueprintSchema = z.object({
   connection_id: z.string().optional(),
   parameters: jsonObjectSchema.optional(),
   instruction: z.string().optional(),
-  input: z.string().optional(),
+  input: z.union([z.string(), namedModelInputSchema]).optional(),
   output_schema: jsonObjectSchema.optional(),
   allowed_actions: z.array(z.string()).optional(),
   completion_predicate: jsonObjectSchema.optional(),

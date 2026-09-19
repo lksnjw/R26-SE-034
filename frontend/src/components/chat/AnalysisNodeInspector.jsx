@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Icon } from "@iconify/react";
 import NodePrompt from "./NodePrompt";
 import { SchemaContractFields } from "./ReadValueFields";
+import ModelInputFields from "./ModelInputFields";
+import ReadableValue from "./ReadableValue";
 
 const inputClass = "mt-1 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackground";
 const buttonClass = "inline-flex min-h-8 items-center gap-1.5 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800";
@@ -22,7 +24,7 @@ export default function AnalysisNodeInspector({ node, canEdit, busy, onPreview, 
 
   if (!canEdit) return <aside aria-label="Selected analysis details" className="workspace-reveal mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
     <div className="flex items-center gap-2"><Icon icon="lucide:brain-circuit" className="h-4 w-4 text-primary" /><h4 className="text-sm font-semibold">Structured analysis · {node.id}</h4></div>
-    <dl className="mt-4 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-xs"><dt className="text-gray-500">Instruction</dt><dd>{instruction}</dd><dt className="text-gray-500">Input</dt><dd className="break-all font-mono text-[10px]">{analysisInput}</dd><dt className="text-gray-500">Data class</dt><dd>{dataClass}</dd><dt className="text-gray-500">Model</dt><dd>{model || "Active reviewed provider default"}</dd><dt className="text-gray-500">Limits</dt><dd>{maxInputItems} items · {maxInputChars.toLocaleString()} characters · {maxOutputTokens.toLocaleString()} output tokens</dd></dl>
+    <dl className="mt-4 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-xs"><dt className="text-gray-500">Instruction</dt><dd>{instruction}</dd><dt className="text-gray-500">Input</dt><dd><ReadableValue value={analysisInput} /></dd><dt className="text-gray-500">Data class</dt><dd>{dataClass}</dd><dt className="text-gray-500">Model</dt><dd>{model || "Active reviewed provider default"}</dd><dt className="text-gray-500">Limits</dt><dd>{maxInputItems} items · {maxInputChars.toLocaleString()} characters · {maxOutputTokens.toLocaleString()} output tokens</dd></dl>
   </aside>;
 
   return <aside aria-label="Selected analysis details" className="workspace-reveal mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
@@ -31,9 +33,7 @@ export default function AnalysisNodeInspector({ node, canEdit, busy, onPreview, 
       data_class: dataClass, model, max_input_items: Number(maxInputItems), max_input_chars: Number(maxInputChars), max_output_tokens: Number(maxOutputTokens) }); }}>
       <label className="block text-xs text-gray-500">Label<input aria-label="Analysis label" className={inputClass} value={description} onChange={event => setDescription(event.target.value)} maxLength={2000} /></label>
       <label className="block text-xs text-gray-500">Instruction<textarea aria-label="Analysis instruction" className={`${inputClass} min-h-24 resize-y leading-5`} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={4000} required /></label>
-      <label className="block text-xs text-gray-500">Acknowledged prior output<input aria-label="Analysis input" className={`${inputClass} font-mono`} list={`analysis-sources-${node.id}`} value={analysisInput} onChange={event => setAnalysisInput(event.target.value)} placeholder="{{prior_node.structuredContent.field}}" maxLength={1000} required /></label>
-      <datalist id={`analysis-sources-${node.id}`}>{sources.map(item => <option key={item.expression} value={item.expression}>{item.label}</option>)}</datalist>
-      <p className="-mt-2 text-[10px] leading-4 text-gray-500">Use one exact field from an earlier saved node. Workflow input, templates and future outputs are rejected.</p>
+      <ModelInputFields value={analysisInput} onChange={setAnalysisInput} sources={sources} label="Analysis input" />
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block text-xs text-gray-500">Data classification<select aria-label="Analysis data class" className={inputClass} value={dataClass} onChange={event => setDataClass(event.target.value)}><option value="public">Public</option><option value="internal">Internal</option><option value="confidential">Confidential</option><option value="restricted">Restricted</option></select></label>
         <label className="block text-xs text-gray-500">Pinned model<input aria-label="Analysis model" className={inputClass} value={model} onChange={event => setModel(event.target.value)} placeholder="Use reviewed provider default" maxLength={256} /></label>

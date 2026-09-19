@@ -15,6 +15,8 @@ import type { ModelDataClass } from "../providers/egress-policy.js";
 import { connectionToolKey, MCP_CONNECTION_ID_PATTERN } from "../tools/mcp-dispatch-context.js";
 import { inspectOperationDecisions } from "./operation-control-flow.js";
 import { usesCheckpointedOperationWorkflow } from "./execution-shape.js";
+import { modelInputReferences, type CompiledModelInput } from "./model-input.js";
+import { safeModelInputName } from "../models/model-input.js";
 
 export type ReadReference = { kind: "ref"; source: "workflowInput" | "nodeOutput"; nodeId?: string; path: string[] };
 export type ReadBinding = ReadReference | { kind: "literal"; value: string | number | boolean | null } |
@@ -112,14 +114,22 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
       if (value !== null && !(typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))) { issues.push("Read parameters must be finite JSON values"); return { kind: "literal", value: null }; }
       return { kind: "literal", value: value as number | boolean | null };
     };
+    const validateModelInput = (input: ReadBinding, label: string): input is CompiledModelInput => {
+      const refs = modelInputReferences(input);
+      if (!refs || input.kind === "object" && !Object.keys(input.fields).every(safeModelInputName)) {
+        issues.push(`Step ${step.id} ${label} input must be one exact prior-output reference or 1–8 named exact prior-output references`); return false;
+      }
+      for (const ref of refs) {
+        if (ref.source !== "nodeOutput") issues.push(`Step ${step.id} ${label} input must come from an acknowledged prior node output`);
+        else if (schemaAt(outputs.get(ref.nodeId!), ref.path) === undefined) issues.push(`Step ${step.id} ${label} input must select a declared prior output`);
+      }
+      return true;
+    };
     if (kind === "analysis" && operations) {
       const instruction = (step.instruction ?? "").trim(), input = binding(step.input ?? "", 0), outputSchema = step.output_schema;
       modelBindings.set(step.id, input);
       if (instruction === "" || instruction.length > 4_000) issues.push(`Step ${step.id} requires a bounded analysis instruction`);
-      if (!/^\{\{[\s\S]+\}\}$/.test((step.input ?? "").trim()) || input.kind !== "ref") issues.push(`Step ${step.id} analysis input must be one exact prior-output reference`);
-      if (input.kind === "ref" && input.source !== "nodeOutput") issues.push(`Step ${step.id} analysis input must come from an acknowledged prior node output`);
-      if (input.kind === "ref" && input.source === "nodeOutput" && schemaAt(outputs.get(input.nodeId!), input.path) === undefined)
-        issues.push(`Step ${step.id} analysis input must select a declared prior output`);
+      const validInput = validateModelInput(input, "analysis");
       if (!outputSchema || outputSchema.type !== "object") issues.push(`Step ${step.id} requires an object output_schema`);
       else issues.push(...validateToolSchemaProfile(outputSchema));
       if (!step.data_class) issues.push(`Step ${step.id} requires an explicit analysis data_class`);
@@ -129,7 +139,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
       if (!Number.isInteger(maxInputItems) || maxInputItems < 1 || maxInputItems > 10_000 || !Number.isInteger(maxInputChars) || maxInputChars < 1 || maxInputChars > 200_000)
         issues.push(`Step ${step.id} analysis limits are unsupported`);
       if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 8_192) issues.push(`Step ${step.id} analysis output limit is unsupported`);
-      if (input.kind === "ref" && outputSchema && step.data_class) analysisNodes.push({ id: step.id, kind: "analysis", instruction, input,
+      if (validInput && outputSchema && step.data_class) analysisNodes.push({ id: step.id, kind: "analysis", instruction, input: input as CompiledModelInput,
         outputSchema: structuredClone(outputSchema), dataClass: step.data_class as ModelDataClass, model: (step.model ?? "").trim(), maxInputItems, maxInputChars, maxOutputTokens,
         ...((step.description ?? "").trim() ? { description: step.description!.trim() } : {}) });
       if (outputSchema) outputs.set(step.id, { type: "object", properties: { structuredContent: outputSchema }, required: ["structuredContent"], additionalProperties: false });
@@ -139,10 +149,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
       const instruction = (step.instruction ?? "").trim(), input = binding(step.input ?? "", 0), outputSchema = step.output_schema;
       modelBindings.set(step.id, input);
       if (instruction === "" || instruction.length > 4_000) issues.push(`Step ${step.id} requires a bounded agent instruction`);
-      if (!/^\{\{[\s\S]+\}\}$/.test((step.input ?? "").trim()) || input.kind !== "ref") issues.push(`Step ${step.id} agent input must be one exact prior-output reference`);
-      if (input.kind === "ref" && input.source !== "nodeOutput") issues.push(`Step ${step.id} agent input must come from an acknowledged prior node output`);
-      if (input.kind === "ref" && input.source === "nodeOutput" && schemaAt(outputs.get(input.nodeId!), input.path) === undefined)
-        issues.push(`Step ${step.id} agent input must select a declared prior output`);
+      const validInput = validateModelInput(input, "agent");
       if (!outputSchema || outputSchema.type !== "object") issues.push(`Step ${step.id} requires an object output_schema`);
       else issues.push(...validateToolSchemaProfile(outputSchema));
       const predicate = step.completion_predicate as Record<string, unknown> | undefined;
@@ -178,7 +185,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
       if (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 8 || !Number.isInteger(maxToolCalls) || maxToolCalls < 0 || maxToolCalls > 16 ||
           !Number.isInteger(maxWallTimeMs) || maxWallTimeMs < 1_000 || maxWallTimeMs > 120_000 || maxConcurrency !== 1)
         issues.push(`Step ${step.id} agent execution limits are unsupported`);
-      if (input.kind === "ref" && outputSchema && predicate && capabilities.length === allowedActions.length && step.data_class) agentNodes.push({ id: step.id, kind: "agent", instruction, input,
+      if (validInput && outputSchema && predicate && capabilities.length === allowedActions.length && step.data_class) agentNodes.push({ id: step.id, kind: "agent", instruction, input: input as CompiledModelInput,
         allowedCapabilities: capabilities, outputSchema: structuredClone(outputSchema), completionPredicate: { path: [...predicatePath as string[]], equals: structuredClone(predicate.equals) as string | number | boolean | null },
         dataClass: step.data_class as ModelDataClass, model: (step.model ?? "").trim(), maxInputItems, maxInputChars, maxOutputTokens, maxTotalTokens, maxRounds, maxToolCalls, maxWallTimeMs,
         ...((step.description ?? "").trim() ? { description: step.description!.trim() } : {}) });
@@ -231,15 +238,15 @@ export function inspectWorkflowDraft(blueprint: WorkflowBlueprint, tools: readon
 
 export type OperationToolNode = ReadIR["root"]["nodes"][number] & { effectClass: "read" | "write" | "notification";
   readback?: { profile: "operation-readback-binding/v1"; toolId: string; contractHash: string; admission: ReadAdmissionPin } };
-export type OperationAnalysisNode = { id: string; kind: "analysis"; instruction: string; input: ReadReference; outputSchema: Record<string, unknown>;
+export type OperationAnalysisNode = { id: string; kind: "analysis"; instruction: string; input: CompiledModelInput; outputSchema: Record<string, unknown>;
   dataClass: ModelDataClass; model: string; maxInputItems: number; maxInputChars: number; maxOutputTokens: number; description?: string };
 export type OperationAgentCapability = { toolId: string; action: string; remoteName: string; contractHash: string; admission: ReadAdmissionPin };
-export type OperationAgentNode = { id: string; kind: "agent"; instruction: string; input: ReadReference; allowedCapabilities: OperationAgentCapability[];
+export type OperationAgentNode = { id: string; kind: "agent"; instruction: string; input: CompiledModelInput; allowedCapabilities: OperationAgentCapability[];
   outputSchema: Record<string, unknown>; completionPredicate: { path: string[]; equals: string | number | boolean | null }; dataClass: ModelDataClass; model: string;
   maxInputItems: number; maxInputChars: number; maxOutputTokens: number; maxTotalTokens: number; maxRounds: number; maxToolCalls: number; maxWallTimeMs: number; description?: string };
 export type OperationNode = OperationToolNode | OperationAnalysisNode | OperationAgentNode;
 export function isOperationToolNode(node: OperationNode): node is OperationToolNode { return node.kind === "action"; }
-export type OperationIR = { schemaVersion: "workflow-operation-ir/v1" | "workflow-operation-ir/v2" | "workflow-operation-ir/v3" | "workflow-operation-ir/v4"; compilerVersion: "operation-compiler/v1" | "operation-compiler/v2" | "operation-compiler/v3" | "operation-compiler/v4"; trigger: { kind: "manual" }; flow?: ReadSequence;
+export type OperationIR = { schemaVersion: "workflow-operation-ir/v1" | "workflow-operation-ir/v2" | "workflow-operation-ir/v3" | "workflow-operation-ir/v4" | "workflow-operation-ir/v5"; compilerVersion: "operation-compiler/v1" | "operation-compiler/v2" | "operation-compiler/v3" | "operation-compiler/v4" | "operation-compiler/v5"; trigger: { kind: "manual" }; flow?: ReadSequence;
   inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: OperationNode[] } };
 export type CompiledOperationPlan = { ir: OperationIR; semanticHash: string; sourceHash: string };
 export type OperationCompilationReceipt = { schemaVersion: OperationIR["schemaVersion"]; compilerVersion: OperationIR["compilerVersion"]; semanticHash: string; sourceHash: string;
@@ -275,8 +282,9 @@ export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefin
     built.issues.push("Deterministic read-only workflows must use the read profile");
   if (built.issues.length) throw new Error(`Operation compilation failed: ${built.issues.join("; ")}`);
   const hasAgent = nodes.some(node => node.kind === "agent"), hasAnalysis = nodes.some(node => node.kind === "analysis");
-  const ir: OperationIR = { schemaVersion: built.ir.flow ? "workflow-operation-ir/v4" : hasAgent ? "workflow-operation-ir/v3" : hasAnalysis ? "workflow-operation-ir/v2" : "workflow-operation-ir/v1",
-    compilerVersion: built.ir.flow ? "operation-compiler/v4" : hasAgent ? "operation-compiler/v3" : hasAnalysis ? "operation-compiler/v2" : "operation-compiler/v1", trigger: { kind: "manual" },
+  const namedInputs = nodes.some(node => node.kind !== "action" && node.input.kind === "object");
+  const ir: OperationIR = { schemaVersion: namedInputs ? "workflow-operation-ir/v5" : built.ir.flow ? "workflow-operation-ir/v4" : hasAgent ? "workflow-operation-ir/v3" : hasAnalysis ? "workflow-operation-ir/v2" : "workflow-operation-ir/v1",
+    compilerVersion: namedInputs ? "operation-compiler/v5" : built.ir.flow ? "operation-compiler/v4" : hasAgent ? "operation-compiler/v3" : hasAnalysis ? "operation-compiler/v2" : "operation-compiler/v1", trigger: { kind: "manual" },
     ...(built.ir.flow ? { flow: structuredClone(built.ir.flow) } : {}),
     ...(built.ir.inputSchema ? { inputSchema: built.ir.inputSchema } : {}), root: { kind: "sequence", nodes } };
   return { ir, semanticHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(ir)).digest("hex")}`, sourceHash: workflowContentHash(yaml) };

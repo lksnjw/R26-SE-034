@@ -15,6 +15,16 @@ const agent = (dataClass: ModelDataClass = "internal", source = "read"): Operati
 const plan = (...nodes: OperationNode[]): CompiledOperationPlan => ({ ir: { schemaVersion: "workflow-operation-ir/v3", compilerVersion: "operation-compiler/v3", trigger: { kind: "manual" },
   root: { kind: "sequence", nodes } }, semanticHash: "fixture-only", sourceHash: "fixture-only" });
 
+test.each(["analysis", "agent"] as const)("named %s aggregates every source floor even when the first source is public", kind => {
+  const node = kind === "analysis" ? analysis("internal") : agent("internal");
+  node.input = { kind: "object", fields: { first: reference("read"), second: reference("private") } };
+  const classify = (value: ReadAdmissionPin): ModelDataClass => value.capabilityId === "private" ? "confidential" : "public";
+  expect(() => assertModelDataClassification(plan(action(), action("private"), node), classify)).toThrow(/confidential/);
+  node.dataClass = "confidential";
+  expect(() => assertModelDataClassification(plan(action(), action("private"), node), classify)).not.toThrow();
+  expect(() => assertModelDataClassification(plan(action(), action("private"), node, analysis("internal", "last", node.id)), classify)).toThrow(/last.*confidential/);
+});
+
 test.each(modelDataClasses.flatMap(source => modelDataClasses.map(declared => [source, declared] as const)))("reviewed %s sources cannot be downgraded to %s", (source, declared) => {
   const run = () => assertModelDataClassification(plan(action(), analysis(declared)), () => source);
   if (modelDataClasses.indexOf(declared) < modelDataClasses.indexOf(source)) expect(run).toThrow(ModelDataClassViolation);
