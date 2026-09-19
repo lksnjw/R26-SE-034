@@ -89,6 +89,40 @@ function agentRecord() {
   ] } };
 }
 
+test("saved model-workflow return is readable beside its node and skipped effect has no answer", async () => {
+  const value = analysisRecord(), returned = { kind: "return", id: "answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "summary", path: ["structuredContent", "summary"] } } };
+  value.authoring = { ...value.authoring, returnNodesSupported: true, controlFlow: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }, { kind: "action", nodeId: "summary" }, returned, { kind: "action", nodeId: "deliver" }] } };
+  workflowService.readiness.mockResolvedValue(value);
+  const savedRun = { id: "returned-run", workflowId: "report", status: "DONE", startedAt: "2026-10-08T00:00:00Z", workflowSnapshot: { version: 1, contentHash: record.contentHash, yaml: value.yaml }, finalOutput: "Reviewed answer",
+    readProgress: { attempts: { first: { status: "DONE" }, summary: { status: "DONE" }, deliver: { status: "SKIPPED" } }, values: { answer: { kind: "return", status: "DONE" } } },
+    stepOutputs: { first: { structuredContent: { value: "source" } }, summary: { structuredContent: { summary: "Reviewed answer" } } }, valueOutputs: { answer: { value: "Reviewed answer" } } };
+  executionService.list.mockResolvedValue([savedRun]); executionService.get.mockResolvedValue(savedRun);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "deliver", status: "SKIPPED", outcome: "AFTER_RETURN", returnId: "answer" }]);
+  await open(); expect(await screen.findByText("Saved workflow return · no tool call")).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "Return answer" })).getByText("Reviewed answer")).toBeTruthy();
+  expect(screen.getByText(/workflow returned at answer.*no answer/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Select return answer" }));
+  expect(screen.getByRole("button", { name: "Preview return edit" })).toBeTruthy();
+  expect(workflowService.run).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled();
+});
+
+test.each([true, false, undefined])("operation return insertion requires explicit server guidance: %s", async supported => {
+  const value = analysisRecord(); value.authoring.returnNodesSupported = supported;
+  workflowService.readiness.mockResolvedValue(value); await open();
+  expect(screen.getByRole("button", { name: "Add return" }).disabled).toBe(supported !== true);
+  if (supported === true) {
+    fireEvent.click(screen.getByRole("button", { name: "Add return" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "New return ID" }), { target: { value: "answer" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Return value" }), { target: { value: "Readable result" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview new return" }));
+    expect(workflowService.command).not.toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "Node change preview" }).querySelector("pre")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+    await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), expect.objectContaining({ type: "addReturn", nodeId: "answer", output: { schema: { type: "string" }, value: { kind: "literal", value: "Readable result" } } })));
+  }
+  expect(workflowService.run).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled();
+});
+
 test("operation decision canvas shows skipped model/effect evidence and allows scoped model editing without offering unsupported primitives", async () => {
   const saved = analysisRecord(), flow = { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }, { kind: "if", id: "gate",
     predicate: { kind: "literal", value: false }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "summary" }, { kind: "action", nodeId: "deliver" }] },
@@ -109,7 +143,7 @@ test("operation decision canvas shows skipped model/effect evidence and allows s
   expect(screen.queryByRole("button", { name: "Wrap node in collection" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
   expect(screen.queryByRole("checkbox", { name: "Declare branch output" })).toBeNull();
-  expect(screen.getByText(/Typed branch outputs, returns and collections are not supported/)).toBeTruthy();
+  expect(screen.getByText(/Typed branch merges and collections are not supported/)).toBeTruthy();
   expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
 });
 

@@ -513,6 +513,84 @@ async function prepareModelReadWorkflow(s: Awaited<ReturnType<typeof setup>>, ki
   });
 }
 
+test.each(["analysis", "agent"].flatMap(kind => [true, false].map(selected => [kind, selected] as const)))("normal %s return selected=%s survives reopen and skips later reads/effects without approval", async (kind, selected) => {
+  const records = new Records(), s = await setup(records, true, false, false, false, true);
+  await prepareModelReadWorkflow(s, kind as "analysis" | "agent");
+  const modelId = kind === "analysis" ? "summarize" : "research";
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml), action = (nodeId: string) => ({ kind: "action", nodeId }), seq = (...nodes: unknown[]) => ({ kind: "sequence", nodes });
+    source.steps.push({ id: "tail", action: s.read.name, parameters: { value: "never after return" } },
+      { id: "send", action: s.write.name, parameters: { value: "never after return" } }, { id: "last", action: s.read.name, parameters: { value: "other path continues" } });
+    const output = (nodeId: string, field: string) => ({ schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId, path: ["structuredContent", field] } });
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: seq(action("lookup"),
+      { kind: "if", id: "gate", predicate: { kind: "literal", value: selected }, then: seq(action(modelId), { kind: "return", id: "answer", output: output(modelId, "summary") }, action("tail"), action("send")), else: seq() },
+      action("last"), { kind: "return", id: "fallback", output: output("last", "value") }) } };
+    state.workflows.flow!.yaml = stringify(source); state.workflows.flow!.steps = source.steps.length;
+  });
+  if (selected) s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ summary: "Typed answer", ...(kind === "agent" ? { complete: true } : {}) }) } }], usage: { prompt_tokens: 9, completion_tokens: 4 } }));
+  const published = await s.publish(); expect(published.statusCode, published.body).toBe(200); expect(published.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v6");
+  const key = `typed-return-${kind}-${selected}-0001`, admitted = await s.run(key); expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id;
+  await s.wait(id, "DONE"); const before = await s.repository.snapshot(), run = before.executions[id]!;
+  expect(run.finalOutput).toBe(selected ? "Typed answer" : "OTHER PATH CONTINUES");
+  expect(run.valueOutputs).toEqual(selected ? { answer: { value: "Typed answer" } } : { fallback: { value: "OTHER PATH CONTINUES" } });
+  expect(run.readProgress!.values![selected ? "answer" : "fallback"]).toMatchObject({ status: "DONE", kind: "return" });
+  expect(run.runtimeApprovalSecret).toBeUndefined(); expect(run.operationSecret!.intents.send).toBeUndefined();
+  expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 1 : 0); expect(s.sdk.callTool).toHaveBeenCalledTimes(selected ? 1 : 2);
+  for (const skipped of selected ? ["tail", "send", "last"] : [modelId, "tail", "send"]) {
+    expect(run.readProgress!.attempts[skipped]!.status).toBe("SKIPPED"); expect(run.stepOutputs?.[skipped]).toBeUndefined();
+    expect(before.timelines[id]!.find(entry => entry.nodeId === skipped)).toMatchObject({ status: "SKIPPED", outcome: selected ? "AFTER_RETURN" : "NOT_SELECTED" });
+  }
+  const view = await s.request("GET", `/api/executions/${id}`); expect(view.json().data.valueOutputs).toEqual(run.valueOutputs); expect(view.json().data.finalOutput).toBe(run.finalOutput);
+  expect((await s.run(key)).json().data.id).toBe(id); await s.app.close();
+  const reopened = await Repository.open(records); expect((await reopened.snapshot()).executions[id]).toEqual(run);
+  const app = await buildApp({ ...s.services, repository: reopened, validator: new RegistryValidator(s.services.registries, reopened) }); closers.push(app);
+  const replay = await app.inject({ method: "POST", url: "/api/workflows/flow/run", headers: { authorization: `Bearer ${jwt.sign({}, s.services.config.jwtSecret, { subject: "requester", expiresIn: 3600 })}` },
+    payload: { mode: "async-operation", idempotencyKey: key, input: {} } });
+  expect(replay.statusCode, replay.body).toBe(202); expect(replay.json().data.id).toBe(id);
+  expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 1 : 0); expect(s.sdk.callTool).toHaveBeenCalledTimes(selected ? 1 : 2);
+  expect((await reopened.snapshot()).executionEvents[id]).toEqual(before.executionEvents[id]);
+});
+
+test("post-commit return acknowledgement loss retains the answer but never replays the model or later read", async () => {
+  const records = new Records(), s = await setup(records, true, false, false, false, true); await prepareModelReadWorkflow(s, "analysis");
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml); source.steps.push({ id: "tail", action: s.read.name, parameters: { value: "never after return" } });
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: { kind: "sequence", nodes: [
+      { kind: "action", nodeId: "lookup" }, { kind: "action", nodeId: "summarize" }, { kind: "return", id: "answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "summarize", path: ["structuredContent", "summary"] } } }, { kind: "action", nodeId: "tail" },
+    ] } } }; state.workflows.flow!.yaml = stringify(source); state.workflows.flow!.steps = 3;
+  });
+  expect((await s.publish()).statusCode).toBe(200); records.loseWhen = state => Object.values(state.executions).some(run => run.status === "RUNNING" && run.readProgress?.values?.answer?.status === "DONE");
+  const admitted = await s.run("typed-return-lost-ack-0001"); expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id;
+  await vi.waitFor(() => expect(records.loseWhen).toBeUndefined()); await s.app.close();
+  const repository = await Repository.open(records), queue = operationJobQueue({ ...s.services, repository });
+  try {
+    await queue.start(); const run = (await repository.snapshot()).executions[id]!;
+    expect(run.status).toBe("RECOVERY_REQUIRED"); expect(run.finalOutput).toBe("FIXTURE REPORT"); expect(run.valueOutputs!.answer).toEqual({ value: "FIXTURE REPORT" });
+    expect(run.readProgress!.attempts.tail!.status).toBe("SKIPPED"); expect(run.stepOutputs?.tail).toBeUndefined();
+    expect(s.modelFetch).toHaveBeenCalledOnce(); expect(s.sdk.callTool).toHaveBeenCalledOnce();
+  } finally { await queue.stop(); await repository.close(); }
+});
+
+test.each(["early", "missing"])("normal operation %s return has no later model/tool/effect dispatch", async mode => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, "analysis");
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml), action = (nodeId: string) => ({ kind: "action", nodeId });
+    source.trigger.config = { inputSchema: { type: "object", properties: { answer: { type: "string" } }, additionalProperties: false } };
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: { kind: "sequence", nodes: [
+      ...(mode === "missing" ? [action("lookup")] : []), { kind: "return", id: "answer", output: { schema: { type: "string" },
+        value: mode === "early" ? { kind: "literal", value: "No work requested" } : { kind: "ref", source: "workflowInput", path: ["answer"] } } },
+      ...(mode === "early" ? [action("lookup")] : []), action("summarize"),
+    ] } } }; state.workflows.flow!.yaml = stringify(source);
+  });
+  const pub = await s.publish(); expect(pub.statusCode, pub.body).toBe(200); const admitted = await s.run(`typed-return-${mode}-0001`); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id; await s.wait(id, mode === "early" ? "DONE" : "FAILED"); const run = (await s.repository.snapshot()).executions[id]!;
+  expect(s.modelFetch).not.toHaveBeenCalled(); expect(s.sdk.callTool).toHaveBeenCalledTimes(mode === "early" ? 0 : 1);
+  if (mode === "early") expect(run.finalOutput).toBe("No work requested"); else {
+    expect(run.failure).toMatchObject({ failureCategory: "OPERATION_RETURN_INVALID", failedStepId: "answer" }); expect(run.valueOutputs).toBeUndefined(); expect(run.finalOutput).toBeUndefined();
+    expect(run.stepOutputs!.lookup).toBeDefined();
+  }
+});
+
 test.each(["analysis", "agent"] as const)("named %s receives both acknowledged sources, survives reopen and never replays inference", async kind => {
   const records = new Records(), s = await setup(records, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
   const modelId = kind === "analysis" ? "summarize" : "research";

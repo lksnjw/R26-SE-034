@@ -706,6 +706,46 @@ try {
   assert.deepEqual((await repository.snapshot()).executions[durableAgentRun], completedDurableAgent);
   assert.equal(models.length, agentModelsBefore + 2); assert.deepEqual(calls.slice(agentCallsBefore), ["agent-source", "agent-follow-up"]);
   assert.deepEqual(operations.slice(agentOperationsBefore), ["AGENT-FOLLOW-UP"]);
+  for (const [kind, selected, loseACK] of [["analysis", true, false], ["analysis", false, false], ["agent", true, false], ["agent", false, false], ["analysis", true, true]]) {
+    const blueprint = parseWorkflowYAMLStrict(kind === "agent" ? durableAgentYAML : durableAnalysisYAML);
+    const [lookup, model, effect] = blueprint.steps, action = nodeId => ({ kind: "action", nodeId }), seq = (...nodes) => ({ kind: "sequence", nodes });
+    const workflowId = `return_${kind}_${selected}_${loseACK ? "lost" : "normal"}`;
+    blueprint.steps.push({ ...structuredClone(lookup), id: "return_tail", parameters: { id: "must-not-read-after-return" } });
+    blueprint.metadata = { controlFlow: { schemaVersion: "read-control-flow/v2", root: seq(action(lookup.id),
+      { kind: "if", id: "return_gate", predicate: { kind: "literal", value: selected }, then: seq(action(model.id),
+        { kind: "return", id: "answer", output: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: model.id, path: ["structuredContent", "id"] } } }, action(effect.id)),
+        else: seq({ kind: "return", id: "not_requested", output: { schema: { type: "string" }, value: { kind: "literal", value: "Model answer not requested" } } }) }, action("return_tail")) } };
+    await repository.mutate(state => { state.workflows[workflowId] = { ...state.workflows.single, id: workflowId, name: workflowId,
+      yaml: stringify(blueprint), steps: blueprint.steps.length, publishedVersion: 0, draftVersion: 1, canRun: false }; state.versions[workflowId] = []; });
+    assert.equal((await request("POST", `/api/workflows/${workflowId}/publish`, {}, 200)).data.compiledOperation.schemaVersion, "workflow-operation-ir/v6");
+    const modelCount = models.length, effectCount = operations.length, readCount = calls.length;
+    const checkpointWriter = persistence.saveExecutionCheckpoint.bind(persistence); let lostReturnACK = false;
+    if (loseACK) persistence.saveExecutionCheckpoint = async checkpoint => { await checkpointWriter(checkpoint);
+      if (!lostReturnACK && checkpoint.execution?.workflowId === workflowId && checkpoint.execution?.status === "RUNNING" && checkpoint.execution?.readProgress?.values?.answer?.status === "DONE") {
+        lostReturnACK = true; throw new Error("Synthetic actual Firestore return post-COMMIT acknowledgement loss");
+      }
+    };
+    const command = { mode: "async-operation", input: {}, idempotencyKey: `firestore-${workflowId}-0001` };
+    const id = (await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id;
+    if (loseACK) { await waitFor(() => lostReturnACK, "typed return post-COMMIT ACK loss"); persistence.saveExecutionCheckpoint = checkpointWriter; await repository.recoverPersistenceState(); }
+    else await waitFor(async () => (await repository.snapshot()).executions[id].status === "DONE", "typed model return completion");
+    const saved = (await repository.snapshot()).executions[id], answerId = selected ? "answer" : "not_requested";
+    const expected = selected ? kind === "agent" ? "AGENT-FOLLOW-UP" : "ANALYSIS-FIXTURE-ONE" : "Model answer not requested";
+    assert.deepEqual(saved.valueOutputs, { [answerId]: { value: expected } }); assert.equal(saved.finalOutput, expected);
+    assert.equal(saved.readProgress.values[answerId].status, "DONE"); assert.equal(saved.readProgress.attempts.return_tail.status, "SKIPPED");
+    assert.equal(saved.stepOutputs.return_tail, undefined); assert.equal(saved.runtimeApprovalSecret, undefined); assert.equal(saved.operationSecret.intents[effect.id], undefined);
+    assert.equal(models.length, modelCount + (selected ? kind === "agent" ? 2 : 1 : 0));
+    assert.equal(calls.length, readCount + (selected && kind === "agent" ? 2 : 1)); assert.equal(operations.length, effectCount);
+    const eventCount = (await repository.snapshot()).executionEvents[id].length;
+    await stop(); await start(await openApplicationRepository(config));
+    const restored = (await repository.snapshot()).executions[id];
+    assert.equal(restored.status, loseACK ? "RECOVERY_REQUIRED" : "DONE"); assert.deepEqual(restored.valueOutputs, saved.valueOutputs); assert.equal(restored.finalOutput, expected);
+    if (!loseACK) assert.deepEqual(restored, saved);
+    assert.equal((await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id, id);
+    assert.equal(models.length, modelCount + (selected ? kind === "agent" ? 2 : 1 : 0)); assert.equal(calls.length, readCount + (selected && kind === "agent" ? 2 : 1)); assert.equal(operations.length, effectCount);
+    assert.equal((await repository.snapshot()).executionEvents[id].length, eventCount + (loseACK ? 1 : 0));
+    log(`actual Firestore ${kind} return select=${selected}, lost-ACK=${loseACK}: exact saved answer, no later read/effect/approval, restart and original-key replay without extra connector/model work`);
+  }
   const modelsAfterDurableAgent = models.length;
   log("actual Firestore bounded runtime-agent used only its reviewed read allow-list, persisted every model/tool intent and structured answer, survived restarts, required independent approval for the later effect, and replayed neither model, ERP read nor operation");
 

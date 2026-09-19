@@ -10,6 +10,7 @@ import { safeMcpResult } from "../tools/mcp-result.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import type { CompletedRead } from "./read-completion-evidence.js";
+import { structuralNodes } from "./read-control-flow.js";
 
 const safeID = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/).refine(value => !["input", "__proto__", "constructor", "prototype"].includes(value));
 const fixturesSchema = z.object({ profile: z.literal("model-fixtures/v1"), baseVersion: z.number().int().min(1),
@@ -28,13 +29,14 @@ class SimulationStop extends Error { constructor(readonly code: string) { super(
  * provider or broker can be passed; test answers never become run evidence. */
 export async function simulateModelWorkflow(yaml: string, input: Record<string, unknown>, fixtures: ModelFixtures, tools: readonly ToolDefinition[], role: string,
   validateSelected?: (nodeId: string, args: Record<string, unknown>, prior: readonly CompletedRead[], visit: ReadVisit) => boolean) {
-  const trace: ModelSimulationEntry[] = [], stepOutputs: Record<string, unknown> = {}, used = new Set<string>(), prior: CompletedRead[] = [];
-  const empty = { trace, stepOutputs, valueOutputs: {}, usedFixtureIds: [], unusedFixtureIds: Object.keys(fixtures.outputs) };
+  const trace: ModelSimulationEntry[] = [], stepOutputs: Record<string, unknown> = {}, valueOutputs: Record<string, { value: unknown }> = {}, used = new Set<string>(), prior: CompletedRead[] = [];
+  const empty = { trace, stepOutputs, valueOutputs, usedFixtureIds: [], unusedFixtureIds: Object.keys(fixtures.outputs) };
   boundFixtureData({ input, outputs: fixtures.outputs });
   let projection: ReturnType<typeof compileModelFixtureWorkflow>;
   try { projection = compileModelFixtureWorkflow(yaml, tools, role); }
-  catch { return { outcome: "PLAN_BLOCKED", issues: ["Model fixtures require a supported read/model draft without effects, collections, merges or returns"], ...empty }; }
+  catch { return { outcome: "PLAN_BLOCKED", issues: ["Model fixtures require a supported read/model draft without effects, collections or merges"], ...empty }; }
   const definitions = new Map(projection.nodes.map(node => [node.id, node]));
+  const returns = new Map(projection.flow ? structuralNodes(projection.flow).filter(node => node.kind === "return").map(node => [node.id, node.output.schema]) : []);
   if (Object.keys(fixtures.outputs).some(id => !definitions.has(id))) throw new Error("Fixture names must match exact declared node IDs");
   // Internal interpreter projection only, never a publication/runtime artifact.
   const plan: CompiledReadPlan = { sourceHash: projection.sourceHash, semanticHash: projection.simulationHash, ir: {
@@ -108,14 +110,21 @@ export async function simulateModelWorkflow(yaml: string, input: Record<string, 
         if (predicate === undefined) return fail(entry, "PREDICATE_INVALID");
         append({ ...entry, selectedBranch: predicate ? "then" : "else" });
       },
-      skipped: async (sourceIndex, id, reason) => { failedNodeId = id; append({ nodeId: id, kind: definitions.get(id)!.kind, sourceIndex, outcome: "NOT_SELECTED",
-        ...(reason.kind === "branch" ? { conditionId: reason.conditionId, selectedBranch: reason.selected } : {}) }); },
-      value: async () => { throw new SimulationStop("SIMULATION_UNSUPPORTED_VALUE"); },
+      skipped: async (sourceIndex, id, reason) => { failedNodeId = id; append({ nodeId: id, kind: definitions.get(id)!.kind, sourceIndex, outcome: reason.kind === "return" ? "AFTER_RETURN" : "NOT_SELECTED",
+        ...(reason.kind === "branch" ? { conditionId: reason.conditionId, selectedBranch: reason.selected } : reason.kind === "return" ? { returnId: reason.returnId } : {}) }); },
+      value: async (sourceIndex, id, kind, value, valid) => {
+        failedNodeId = id;
+        const entry: ModelSimulationEntry = { nodeId: id, kind: "return", sourceIndex, outcome: "SIMULATED_RETURN" };
+        if (kind !== "return" || !valid || !returns.has(id)) return fail(entry, "VALUE_INVALID");
+        const safe = withoutSecretFields({ value }) as { value: unknown };
+        if (!Object.hasOwn(safe, "value") || validateToolInput(returns.get(id), safe.value).length) return fail(entry, "VALUE_INVALID");
+        append({ ...entry, output: safe }); valueOutputs[id] = safe; finalOutput = safe.value; hasFinal = true; return safe;
+      },
     });
-    return { outcome: "SIMULATED_COMPLETE", trace, stepOutputs, valueOutputs: {}, ...(hasFinal ? { finalOutput } : {}),
+    return { outcome: "SIMULATED_COMPLETE", trace, stepOutputs, valueOutputs, ...(hasFinal ? { finalOutput } : {}),
       usedFixtureIds: [...used], unusedFixtureIds: Object.keys(fixtures.outputs).filter(id => !used.has(id)), ...identity };
   } catch (error) {
     return { outcome: "SIMULATED_STOPPED", reason: error instanceof SimulationStop ? error.code : "SIMULATION_EVALUATION_FAILED", ...(failedNodeId ? { failedNodeId } : {}),
-      trace, stepOutputs, valueOutputs: {}, ...(hasFinal ? { finalOutput } : {}), usedFixtureIds: [...used], unusedFixtureIds: Object.keys(fixtures.outputs).filter(id => !used.has(id)), ...identity };
+      trace, stepOutputs, valueOutputs, ...(hasFinal ? { finalOutput } : {}), usedFixtureIds: [...used], unusedFixtureIds: Object.keys(fixtures.outputs).filter(id => !used.has(id)), ...identity };
   }
 }

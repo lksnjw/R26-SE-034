@@ -47,7 +47,7 @@ test("operation decisions have a distinct pinned v4 meaning and scope-aware draf
   expect(no.dataSources.some(item => item.expression.includes("yes_model"))).toBe(false);
 });
 
-test.each(["sibling input", "branch escape", "forward predicate", "unknown predicate", "nonboolean predicate", "duplicate owner", "missing owner", "merge", "return", "loop"])("operation compilation rejects %s without flattening", damage => {
+test.each(["sibling input", "branch escape", "forward predicate", "unknown predicate", "nonboolean predicate", "duplicate owner", "missing owner", "merge", "loop"])("operation compilation rejects %s without flattening", damage => {
   const value = source(), gate = value.metadata.controlFlow.root.nodes[1];
   if (damage === "sibling input") value.steps[3].input = "{{yes_model.structuredContent.summary}}";
   if (damage === "branch escape") { value.steps.push({ id: "after", action: read.name, parameters: { value: "{{yes_model.structuredContent.summary}}" } }); value.metadata.controlFlow.root.nodes.push(action("after")); }
@@ -57,7 +57,6 @@ test.each(["sibling input", "branch escape", "forward predicate", "unknown predi
   if (damage === "duplicate owner") gate.else.nodes[0] = action("yes_model");
   if (damage === "missing owner") gate.then.nodes.pop();
   if (damage === "merge") { value.metadata.controlFlow.schemaVersion = "read-control-flow/v2"; gate.merge = { schema: { type: "string" }, then: { kind: "literal", value: "yes" }, else: { kind: "literal", value: "no" } }; }
-  if (damage === "return") { value.metadata.controlFlow.schemaVersion = "read-control-flow/v2"; gate.then.nodes.unshift({ kind: "return", id: "early", output: { schema: { type: "boolean" }, value: { kind: "literal", value: true } } }); }
   if (damage === "loop") { value.metadata.controlFlow.schemaVersion = "read-control-flow/v3"; gate.then.nodes = [{ kind: "foreach", id: "each", maxItems: 2, items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "array", items: [] } }, body: seq(...gate.then.nodes), collect: { schema: { type: "string" }, value: { kind: "literal", value: "item" } } }]; }
   expect(() => compile(value)).toThrow("Operation compilation failed");
   expect(readAuthoringContract(parseWorkflowYAMLStrict(stringify(value)), tools, role, "synthetic-hash")).toMatchObject({ executionProfile: "unsupported-operation-control-flow", modelNodesSupported: false });

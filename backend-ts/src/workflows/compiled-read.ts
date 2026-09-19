@@ -7,7 +7,7 @@ import { exactBridgeName } from "../tools/erpbridge-contract.js";
 import { validateToolInput, validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
-import { parseReadControlFlow, validateReadControlFlow, controlNodes, loopNodes, type ReadSequence } from "./read-control-flow.js";
+import { parseReadControlFlow, validateReadControlFlow, controlNodes, loopNodes, structuralNodes, type ReadSequence } from "./read-control-flow.js";
 import { checkBinding, schemaAt } from "./read-binding-validation.js";
 import { ReadValueBudget } from "./read-value-budget.js";
 import { assertOperationReadbackTarget } from "../tools/operation-readback-contract.js";
@@ -268,7 +268,7 @@ export function compileModelFixtureWorkflow(yaml: string, tools: readonly ToolDe
   return { ...projection, sourceHash: workflowContentHash(yaml), simulationHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(projection)).digest("hex")}` };
 }
 export function isOperationToolNode(node: OperationNode): node is OperationToolNode { return node.kind === "action"; }
-export type OperationIR = { schemaVersion: "workflow-operation-ir/v1" | "workflow-operation-ir/v2" | "workflow-operation-ir/v3" | "workflow-operation-ir/v4" | "workflow-operation-ir/v5"; compilerVersion: "operation-compiler/v1" | "operation-compiler/v2" | "operation-compiler/v3" | "operation-compiler/v4" | "operation-compiler/v5"; trigger: { kind: "manual" }; flow?: ReadSequence;
+export type OperationIR = { schemaVersion: "workflow-operation-ir/v1" | "workflow-operation-ir/v2" | "workflow-operation-ir/v3" | "workflow-operation-ir/v4" | "workflow-operation-ir/v5" | "workflow-operation-ir/v6"; compilerVersion: "operation-compiler/v1" | "operation-compiler/v2" | "operation-compiler/v3" | "operation-compiler/v4" | "operation-compiler/v5" | "operation-compiler/v6"; trigger: { kind: "manual" }; flow?: ReadSequence;
   inputSchema?: Record<string, unknown>; root: { kind: "sequence"; nodes: OperationNode[] } };
 export type CompiledOperationPlan = { ir: OperationIR; semanticHash: string; sourceHash: string };
 export type OperationCompilationReceipt = { schemaVersion: OperationIR["schemaVersion"]; compilerVersion: OperationIR["compilerVersion"]; semanticHash: string; sourceHash: string;
@@ -305,8 +305,9 @@ export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefin
   if (built.issues.length) throw new Error(`Operation compilation failed: ${built.issues.join("; ")}`);
   const hasAgent = nodes.some(node => node.kind === "agent"), hasAnalysis = nodes.some(node => node.kind === "analysis");
   const namedInputs = nodes.some(node => node.kind !== "action" && node.input.kind === "object");
-  const ir: OperationIR = { schemaVersion: namedInputs ? "workflow-operation-ir/v5" : built.ir.flow ? "workflow-operation-ir/v4" : hasAgent ? "workflow-operation-ir/v3" : hasAnalysis ? "workflow-operation-ir/v2" : "workflow-operation-ir/v1",
-    compilerVersion: namedInputs ? "operation-compiler/v5" : built.ir.flow ? "operation-compiler/v4" : hasAgent ? "operation-compiler/v3" : hasAnalysis ? "operation-compiler/v2" : "operation-compiler/v1", trigger: { kind: "manual" },
+  const hasReturn = built.ir.flow && structuralNodes(built.ir.flow).some(node => node.kind === "return");
+  const ir: OperationIR = { schemaVersion: hasReturn ? "workflow-operation-ir/v6" : namedInputs ? "workflow-operation-ir/v5" : built.ir.flow ? "workflow-operation-ir/v4" : hasAgent ? "workflow-operation-ir/v3" : hasAnalysis ? "workflow-operation-ir/v2" : "workflow-operation-ir/v1",
+    compilerVersion: hasReturn ? "operation-compiler/v6" : namedInputs ? "operation-compiler/v5" : built.ir.flow ? "operation-compiler/v4" : hasAgent ? "operation-compiler/v3" : hasAnalysis ? "operation-compiler/v2" : "operation-compiler/v1", trigger: { kind: "manual" },
     ...(built.ir.flow ? { flow: structuredClone(built.ir.flow) } : {}),
     ...(built.ir.inputSchema ? { inputSchema: built.ir.inputSchema } : {}), root: { kind: "sequence", nodes } };
   return { ir, semanticHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(ir)).digest("hex")}`, sourceHash: workflowContentHash(yaml) };

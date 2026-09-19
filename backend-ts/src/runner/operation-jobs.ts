@@ -9,6 +9,7 @@ import { withoutSecretFields } from "../redact/secrets.js";
 import { publicExecution } from "../redact/public-model-usage.js";
 import { newReadProgress, appendExecutionEvent, assertCurrentRunController } from "./read-checkpoints.js";
 import { advanceOperationDecisions } from "./operation-control-checkpoints.js";
+import { assertOperationReturnCompletion } from "./operation-return-checkpoints.js";
 import { operationControlTransition } from "../workflows/operation-control-flow.js";
 import { scheduledReportPaths } from "./scheduled-report-paths.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
@@ -352,7 +353,7 @@ export class OperationJobQueue {
         const next = plan.ir.flow ? await repository.mutateExecution(id, state => {
           assertContext(); const run = state.executions[id]!;
           const next = advanceOperationDecisions(state, run, plan);
-          if (next.kind === "failed") finish(state, run, "FAILED", "The decision predicate was not a confirmed boolean. No branch was entered and no later effect ran.");
+          if (next.kind === "failed") finish(state, run, "FAILED", "The selected control boundary has no confirmed contract-valid value. No later node or effect ran.");
           return next;
         }) : await repository.readAuthoritative(state => { const index = state.executions[id]!.readProgress!.nextStepIndex;
           return index < plan.ir.root.nodes.length ? { kind: "action" as const, index } : { kind: "complete" as const }; });
@@ -826,7 +827,7 @@ export class OperationJobQueue {
         if (run.readProgress!.nextStepIndex !== plan.ir.root.nodes.length || (plan.ir.flow ? operationControlTransition(plan.ir.flow, run.readProgress!).kind !== "complete" :
           Object.values(run.readProgress!.attempts).some(attempt => attempt.status !== "DONE"))) throw new Error("Operation is incomplete");
         const last = plan.ir.root.nodes.findLast(node => run.readProgress!.attempts[node.id]?.status === "DONE");
-        if (last) run.finalOutput = run.stepOutputs![last.id]; else delete run.finalOutput;
+        if (!assertOperationReturnCompletion(state, run, plan)) { if (last) run.finalOutput = run.stepOutputs![last.id]; else delete run.finalOutput; }
         const selectedEffect = plan.ir.root.nodes.some(node => node.kind === "action" && node.effectClass !== "read" && run.readProgress!.attempts[node.id]?.status === "DONE");
         finish(state, run, "DONE", plan.ir.flow ? selectedEffect
           ? "All selected steps have acknowledged results; unselected branches were not executed. Operation acceptance does not prove recipient delivery."
