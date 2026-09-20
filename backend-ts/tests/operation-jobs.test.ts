@@ -29,7 +29,7 @@ import { prepareOperationExecution, type StoredOperationCompilation } from "../s
 import { modelDataClasses, type ModelDataClass } from "../src/providers/egress-policy.js";
 import { reviewedModelSourceContext } from "../src/synthesis/reviewed-model-sources.js";
 import { SynthesisService, assembleCandidatePrompt } from "../src/synthesis/service.js";
-import { CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { RELATED_KEY_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -835,7 +835,7 @@ test.each(["chat", "async-chat"].flatMap(route => ["analysis", "agent"].flatMap(
     } else workflowId = response.json().data.assistantMessage.artifacts.workflowId;
     const before = await s.repository.snapshot(); expect(before.workflows[workflowId]!.yaml).toBe(yaml.trim());
     expect(before.workflows[workflowId]!.publishedVersion).toBe(0); expect(before.executions).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)).messages[0].content).toBe(CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT);
+    expect(JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)).messages[0].content).toBe(RELATED_KEY_CANDIDATE_SYSTEM_PROMPT);
     const published = await s.request("POST", `/api/workflows/${workflowId}/publish`, {}); expect(published.statusCode, published.body).toBe(200);
     expect(published.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v7");
     const runCommand = { mode: "async-operation", input: { includeAnswer: selected }, idempotencyKey: `generated-merge-${route}-${kind}-${selected}-0001` }, runUrl = `/api/workflows/${workflowId}/run`;
@@ -879,7 +879,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     if (route === "direct") {
       const response = await s.request("POST", "/api/synthesis", { prompt }); expect(response.statusCode, response.body).toBe(200);
       const candidate = response.json().data; expect(candidate.execution_profile_issues).toEqual([]); expect(candidate.validation.passed).toBe(true);
-      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v17"); expect(candidate.yaml).toBe(yaml.trim());
+      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v18"); expect(candidate.yaml).toBe(yaml.trim());
       expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["flow"]);
       const created = await s.request("POST", "/api/workflows", { yaml: candidate.yaml }); expect(created.statusCode, created.body).toBe(201); workflowId = created.json().data.id;
     } else {
@@ -898,7 +898,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     const before = await s.repository.snapshot(), draft = before.workflows[workflowId!]!;
     expect(parse(draft.yaml)).toEqual(source); expect(draft.publishedVersion).toBe(0); expect(before.executions).toEqual({});
     expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledOnce();
-    const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toBe(CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT);
+    const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toBe(RELATED_KEY_CANDIDATE_SYSTEM_PROMPT);
     const published = await s.request("POST", `/api/workflows/${workflowId!}/publish`, {}); expect(published.statusCode, published.body).toBe(200); expect(published.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v6");
     if (selected) s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ summary: "Typed synthesis answer", ...(kind === "agent" ? { complete: true } : {}) }) } }], usage: { prompt_tokens: 9, completion_tokens: 4 } }));
     const command = { mode: "async-operation", idempotencyKey: `return-run-${route}-${kind}-${selected}-0001`, input: { includeAnswer: selected } };
@@ -1112,7 +1112,7 @@ test.each(["direct", "chat"])("%s synthesis ignores forged browser source claims
   });
   expect(response.statusCode, response.body).toBe(200); expect(s.modelFetch).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT);
+  expect(body.messages[0].content).toBe(RELATED_KEY_CANDIDATE_SYSTEM_PROMPT);
   const data = JSON.parse(body.messages[1].content);
   expect(data.MODEL_SOURCE_HINTS_JSON.sources.find((source: { toolId: string }) => source.toolId === s.read.tool_id)).toEqual({
     toolId: s.read.tool_id, action: s.read.name, connectionId: "erpbridge-default", dataClass: "confidential", review: "REVIEWED",
@@ -1134,7 +1134,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     if (route === "direct") {
       const response = await s.request("POST", "/api/synthesis", { prompt }); expect(response.statusCode, response.body).toBe(200);
       const candidate = response.json().data; expect(candidate.execution_profile_issues).toEqual([]);
-      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v17"); expect(candidate.yaml).toBe(yaml.trim());
+      expect(candidate.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v18"); expect(candidate.yaml).toBe(yaml.trim());
       expect(Object.keys((await s.repository.snapshot()).workflows)).toEqual(["flow"]);
       const created = await s.request("POST", "/api/workflows", { yaml: candidate.yaml }); expect(created.statusCode, created.body).toBe(201); workflowId = created.json().data.id;
     } else {
@@ -1155,7 +1155,7 @@ test.each(["direct", "chat", "async-chat"].flatMap(route => ["analysis", "agent"
     const before = await s.repository.snapshot(), draft = before.workflows[workflowId!]!;
     expect(parse(draft.yaml).metadata.controlFlow).toEqual(source.metadata.controlFlow); expect(draft.publishedVersion).toBe(0);
     expect(before.executions).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).toHaveBeenCalledTimes(1);
-    const requestBody = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(requestBody.messages[0].content).toBe(CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT);
+    const requestBody = JSON.parse(String(s.modelFetch.mock.calls[0]![1]?.body)); expect(requestBody.messages[0].content).toBe(RELATED_KEY_CANDIDATE_SYSTEM_PROMPT);
     const publication = await s.request("POST", `/api/workflows/${workflowId!}/publish`, {}); expect(publication.statusCode, publication.body).toBe(200);
     expect(publication.json().data.compiledOperation.schemaVersion).toBe("workflow-operation-ir/v4");
     const admitted = await s.request("POST", `/api/workflows/${workflowId!}/run`, { mode: "async-operation", idempotencyKey: `explicit-${route}-${kind}-${selected}`, input: { sendReport: selected } });

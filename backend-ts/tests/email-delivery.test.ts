@@ -20,8 +20,8 @@ import { SynthesisService } from "../src/synthesis/service.js";
 import { recurringAnalysisTools, reportAnalysis } from "./fixtures/recurring-analysis-tools.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import { RECURRING_DECISION_REQUIREMENT } from "../src/delivery/recurring-decision-scopes.js";
-import { recurringJoinWorkflow } from "./fixtures/recurring-join-workflow.js";
-import { CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { recurringCrossJoinWorkflow, recurringJoinWorkflow } from "./fixtures/recurring-join-workflow.js";
+import { RELATED_KEY_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -171,7 +171,7 @@ test("connected recurring request saves exact useful capability steps without ru
   expect(workflows[0]).toMatchObject({ yaml: candidate.yaml, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false, trigger: { type: "manual" } });
   expect(state.schedules).toEqual({}); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
   const providerBody = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-  expect(providerBody.messages[0].content).toContain("prompt/candidate/v17");
+  expect(providerBody.messages[0].content).toContain("prompt/candidate/v18");
   const context = JSON.parse(providerBody.messages[1].content).SERVER_DERIVED_CONTEXT_JSON;
   expect(context.automation_request).toEqual(recurringAutomationCandidateContext(candidate.request).automation_request);
 });
@@ -212,17 +212,18 @@ test.each([false, true].flatMap(analysis => [false, true].map(async => [analysis
     expect(messages.at(-1).text).toContain("have not been published, scheduled or executed");
     expect(state.executions).toEqual({}); expect(state.schedules).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
     const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-    expect(body.messages[0].content).toContain("prompt/candidate/v17"); expect(body.messages[0].content).not.toContain(candidate.text);
+    expect(body.messages[0].content).toContain("prompt/candidate/v18"); expect(body.messages[0].content).not.toContain(candidate.text);
     expect(JSON.parse(body.messages[1].content).SERVER_DERIVED_CONTEXT_JSON.automation_request.decision_request.originalRequest).toBe(candidate.text);
     if (asynchronous) {
       const replay = await s.send(candidate.text, extra); expect(replay.statusCode).toBe(202); expect(replay.json().data.operation.id).toBe(response.json().data.operation.id);
       expect(s.fetchImplementation).toHaveBeenCalledOnce(); expect(Object.values((await s.repository.snapshot()).workflows)).toHaveLength(1);
     }
   });
-test.each(["reports", "branch-analysis", "joined-analysis"].flatMap(mode => [false, true].map(asynchronous => [mode, asynchronous] as const)))(
+test.each(["reports", "branch-analysis", "joined-analysis", "cross-join-keys"].flatMap(mode => [false, true].map(asynchronous => [mode, asynchronous] as const)))(
   "calendar joined %s chat async=%s preserves exact inactive handoff, original request and replay without dispatch", async (mode, asynchronous) => {
     const registry = await RegistryService.load(resolve("tests/fixtures/recurring-tools.json"), resolve("tests/fixtures/rules.json"));
-    const candidate = recurringJoinWorkflow(recurringAnalysisTools(registry.snapshot().tools), mode as "reports" | "branch-analysis" | "joined-analysis"), yaml = stringify(candidate.workflow).trim();
+    const tools = recurringAnalysisTools(registry.snapshot().tools);
+    const candidate = mode === "cross-join-keys" ? recurringCrossJoinWorkflow(tools) : recurringJoinWorkflow(tools, mode as "reports" | "branch-analysis" | "joined-analysis"), yaml = stringify(candidate.workflow).trim();
     const s = await setup({ bridge: true, automationTools: true, analysisTools: true, candidateYaml: yaml });
     const extra = asynchronous ? { delivery: "async-chat", idempotencyKey: "joined-recurring-" + mode + "-0001" } : {};
     const response = await s.send(candidate.text, extra); expect(response.statusCode, response.body).toBe(asynchronous ? 202 : 200);
@@ -234,14 +235,14 @@ test.each(["reports", "branch-analysis", "joined-analysis"].flatMap(mode => [fal
     const messages = reopened.json().data.messages, artifact = messages.at(-1).artifacts, state = await s.repository.snapshot(), workflow = state.workflows[artifact.workflowId]!;
     expect(artifact).toMatchObject({ intent: "WORKFLOW", can_execute: false, automationRequest: { decisionRequest: candidate.request.decisionRequest },
       automationComposition: { status: "CAPABILITIES_MAPPED", deliveryBodyBound: true, readyForPublication: false, scheduleActive: false,
-        analysis: { status: mode === "reports" ? "NOT_REQUESTED" : "MAPPED" } } });
+        analysis: { status: mode === "reports" || mode === "cross-join-keys" ? "NOT_REQUESTED" : "MAPPED" } } });
     expect(artifact.automationComposition.remainingRequirements).toContain(RECURRING_DECISION_REQUIREMENT);
     expect(workflow).toMatchObject({ yaml, publishedVersion: 0, canRun: false }); expect(parse(workflow.yaml).metadata.controlFlow).toEqual(candidate.workflow.metadata.controlFlow);
     const readiness = await s.app.inject({ method: "GET", url: "/api/workflows/" + workflow.id + "/readiness", headers: s.headers });
     expect(readiness.statusCode, readiness.body).toBe(200); expect(readiness.json().data.can_attempt_run).toBe(false);
     expect((await s.app.inject({ method: "POST", url: "/api/workflows/" + workflow.id + "/publish", headers: s.headers, payload: {} })).statusCode).toBe(422);
     expect(state.executions).toEqual({}); expect(state.schedules).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
-    const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toBe(CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT);
+    const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toBe(RELATED_KEY_CANDIDATE_SYSTEM_PROMPT);
     expect(body.messages[0].content).not.toContain(candidate.text);
     expect(JSON.parse(body.messages[1].content).SERVER_DERIVED_CONTEXT_JSON.automation_request.decision_request.originalRequest).toBe(candidate.text);
     if (asynchronous) {
@@ -251,12 +252,16 @@ test.each(["reports", "branch-analysis", "joined-analysis"].flatMap(mode => [fal
     }
   });
 
-test.each(["missing No content", "wrong recipient", "unrelated analysis"])("unsafe joined calendar %s saves a truthful unresolved shell instead of a passing draft", async damage => {
+test.each(["missing No content", "wrong recipient", "unrelated analysis", "invented No keys", "model No keys"])("unsafe joined calendar %s saves a truthful unresolved shell instead of a passing draft", async damage => {
   const registry = await RegistryService.load(resolve("tests/fixtures/recurring-tools.json"), resolve("tests/fixtures/rules.json"));
-  const candidate = recurringJoinWorkflow(recurringAnalysisTools(registry.snapshot().tools), "joined-analysis");
+  const tools = recurringAnalysisTools(registry.snapshot().tools), candidate = damage.endsWith("No keys") ?
+    recurringCrossJoinWorkflow(tools) : recurringJoinWorkflow(tools, "joined-analysis");
   if (damage === "missing No content") candidate.workflow.metadata.controlFlow.root.nodes[0].merge.else.fields.invoices = { kind: "literal", value: "Fake invoice report" };
   if (damage === "wrong recipient") candidate.workflow.steps.at(-1).parameters.recipient = "invented@example.test";
   if (damage === "unrelated analysis") candidate.workflow.steps.find((step: any) => step.kind === "analysis").input.orders = "{{gate.value.invoices}}";
+  if (damage === "invented No keys") candidate.workflow.metadata.controlFlow.root.nodes[0].merge.else.fields.orderIds =
+    { kind: "array", items: ["invented"].map(value => ({ kind: "literal", value })) };
+  if (damage === "model No keys") candidate.workflow.metadata.controlFlow.root.nodes[0].merge.else.fields.orderIds.nodeId = "invented_analysis";
   const s = await setup({ bridge: true, automationTools: true, analysisTools: true, candidateYaml: stringify(candidate.workflow) }), response = await s.send(candidate.text);
   expect(response.statusCode, response.body).toBe(200); expect(response.json().data.assistantMessage.artifacts).toMatchObject({ compositionFailure: "COMPOSITION_UNAVAILABLE", can_execute: false });
   const state = await s.repository.snapshot(), saved = Object.values(state.workflows)[0]!;

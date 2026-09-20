@@ -137,7 +137,7 @@ export async function verifyFirestoreRecurringJoins(context) {
     assert.equal(models.length, before.models + 1 + expectedModels); assert.equal(relatedInvoiceReports.length, before.invoices + 1);
     assert.equal(relatedOrderReports.length, before.orders + (crossKeys && loseACK ? 0 : 1)); assert.equal(emails.length, before.emails + (loseACK ? 0 : 1));
     assert.equal(Object.values((await snapshot()).executions).filter(run => run.workflowId === workflowId).length, 1);
-    log("actual Firestore v17 recurring joined chat " + caseId + ": exact inactive draft/restart/chat replay, explicit review/publication/calendar activation, selected-only report/model answers, " +
+    log("actual Firestore v18 recurring joined chat " + caseId + ": exact inactive draft/restart/chat replay, explicit review/publication/calendar activation, selected-only report/model answers, " +
       (loseACK ? (crossKeys ? "persisted selected key join but fenced related read and delivery after lost ACK, recovery-required restart" :
         "persisted analysis answer but fenced dependent delivery after lost ACK, recovery-required restart") : "separate approval restart, one fixture acceptance/final answer") + " and no replay");
   } } finally { setAnalysisFixture(undefined); setSynthesisFixture(undefined); await restoreProvider(); }

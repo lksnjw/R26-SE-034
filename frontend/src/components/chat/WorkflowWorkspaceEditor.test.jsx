@@ -649,6 +649,9 @@ test.each([true, false, undefined])("operation branch output editor requires cur
     conditions: [{ nodeId: "gate", dataSources: [], mergeSources: { then: [], else: [] } }] };
   workflowService.readiness.mockResolvedValue(saved); await open(); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
   expect(screen.getByText(/Calendar joins require complete reports on every continuing path/)).toBeTruthy();
+  expect(screen.getByText(/Selected invoice keys may pass through a typed branch output to a later related-order read/)).toBeTruthy();
+  expect(screen.getByText(/not invented or model-generated keys/)).toBeTruthy();
+  expect(screen.getByText(/keys alone are not report content/)).toBeTruthy();
   expect(screen.getByText(/If No means no delivery, end that path before any shared send/)).toBeTruthy();
   if (!supported) { expect(screen.queryByRole("checkbox", { name: "Declare branch output" })).toBeNull(); expect(screen.getByText(/unavailable without current server guidance/)).toBeTruthy(); }
   else {
