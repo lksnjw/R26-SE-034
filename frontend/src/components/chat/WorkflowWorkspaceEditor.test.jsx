@@ -648,7 +648,8 @@ test.each([true, false, undefined])("operation branch output editor requires cur
   const saved = analysisRecord(); saved.authoring = { ...saved.authoring, executionProfile: "decision-operation-v1", mergeNodesSupported: supported, controlFlow: operationBranchFlow(),
     conditions: [{ nodeId: "gate", dataSources: [], mergeSources: { then: [], else: [] } }] };
   workflowService.readiness.mockResolvedValue(saved); await open(); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
-  expect(screen.getByText(/Calendar activation also checks complete report evidence and reachable effects; branch merges are not schedulable/)).toBeTruthy();
+  expect(screen.getByText(/Calendar joins require complete reports on every continuing path/)).toBeTruthy();
+  expect(screen.getByText(/If No means no delivery, end that path before any shared send/)).toBeTruthy();
   if (!supported) { expect(screen.queryByRole("checkbox", { name: "Declare branch output" })).toBeNull(); expect(screen.getByText(/unavailable without current server guidance/)).toBeTruthy(); }
   else {
     fireEvent.click(screen.getByRole("checkbox", { name: "Declare branch output" }));

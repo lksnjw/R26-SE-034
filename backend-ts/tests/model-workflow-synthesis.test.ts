@@ -14,7 +14,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import { SynthesisService } from "../src/synthesis/service.js";
 import { compileOperationWorkflow, inspectModelWorkflowDraft } from "../src/workflows/compiled-read.js";
 import { validateWorkspaceDraft } from "../src/workflows/draft-validation.js";
-import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT, RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT, DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT, RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT, TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT, TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT, CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
+import { MODEL_WORKFLOW_CANDIDATE_SYSTEM_PROMPT, REVIEWED_SOURCE_CANDIDATE_SYSTEM_PROMPT, RECURRING_ANALYSIS_CANDIDATE_SYSTEM_PROMPT, DECISION_OPERATION_CANDIDATE_SYSTEM_PROMPT, RECURRING_DECISION_CANDIDATE_SYSTEM_PROMPT, TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT, TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT, CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT, CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT, RECURRING_COMPOSITION_CANDIDATE_SYSTEM_PROMPT, generationPromptHash, systemInstructionsFor } from "../src/prompts/contracts.js";
 
 const directories: string[] = [];
 afterEach(async () => { for (const path of directories.splice(0)) await rm(path, { recursive: true, force: true }); });
@@ -47,10 +47,10 @@ test.each(["analysis", "agent"] as const)("v12 proposes a bounded %s draft witho
   const source = blueprint(kind), s = await setup(source);
   const result = await s.service.synthesize({ prompt: "Create a workflow to read the actual count and summarise it", userRole: "Platform Admin", liveTools: [read] });
   expect(result.yaml).toBe(s.yaml.trim()); expect(result.execution_profile_issues).toEqual([]); expect(result.validation.passed).toBe(true);
-  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v16"); expect(s.fetcher).toHaveBeenCalledOnce();
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v17"); expect(s.fetcher).toHaveBeenCalledOnce();
   const body = JSON.parse(String(s.fetcher.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toBe(CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT);
-  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v16"));
+  expect(body.messages[0].content).toBe(CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT);
+  expect(result.candidate.generation_metadata.promptSha256).toBe(generationPromptHash(body.messages[1].content, "prompt/candidate/v17"));
   const saved = await s.repository.snapshot(); expect(saved.executions).toEqual({}); expect(saved.workflows).toEqual({}); expect(saved.capabilityAdmissions).toEqual({});
   expect(inspectModelWorkflowDraft(source, [read], "Platform Admin")).toEqual([]);
   expect(() => compileOperationWorkflow(s.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
@@ -210,6 +210,15 @@ test("v16 calendar answers freeze v15 and do not grant activation, approval or b
     expect(CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT).not.toContain(obsolete);
 });
 
+test("v17 calendar joins freeze v16 and require field-sensitive all-path content without activation authority", () => {
+  expect(createHash("sha256").update(systemInstructionsFor("prompt/candidate/v16")).digest("hex")).toBe("28e5c34dd9c6a862ef14f0ae0768fd65baf721da2a2fcf7993b7eebd9f860e8a");
+  expect(systemInstructionsFor("prompt/candidate/v17")).toBe(CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT);
+  for (const marker of ["CALENDAR TYPED JOINS", "FIELD-SENSITIVE", "EVERY continuing alternative", "If No means do not deliver", "exact recipient", "both alternatives", "fresh independent approval", "schedule_active false", "cross-join related-key", "originalRequest", "operation acceptance is not delivery proof"])
+    expect(CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT).toContain(marker);
+  for (const obsolete of ["does NOT support typed branch merges", "Calendar typed merges, model collections", "Calendar branch merges, model collections", "declared boolean if without merge", "TYPED MANUAL BRANCH HANDOFFS"])
+    expect(CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT).not.toContain(obsolete);
+});
+
 function mergedBlueprint(kind: "analysis" | "agent"): any {
   const source = decisionBlueprint(kind), root = source.metadata.controlFlow.root;
   source.metadata.controlFlow.schemaVersion = "read-control-flow/v2";
@@ -226,7 +235,7 @@ test.each(["analysis", "agent"] as const)("v15 generates exact %s branch handoff
   const source = mergedBlueprint(kind), s = await setup(source);
   const result = await s.service.synthesize({ prompt: "Create both requested answer paths, analyse the selected answer afterwards and return the result", userRole: "Platform Admin", liveTools: [read] });
   expect(result.yaml).toBe(s.yaml.trim()); expect(result.validation.passed).toBe(true); expect(result.execution_profile_issues).toEqual([]);
-  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v16"); expect(s.fetcher).toHaveBeenCalledOnce();
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v17"); expect(s.fetcher).toHaveBeenCalledOnce();
   const state = await s.repository.snapshot(); expect(state.workflows).toEqual({}); expect(state.executions).toEqual({}); expect(state.capabilityAdmissions).toEqual({});
   expect(() => compileOperationWorkflow(result.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
 });
@@ -261,7 +270,7 @@ test.each(["analysis", "agent"].flatMap(kind => [false, true].map(branches => [k
   const source = returnBlueprint(kind as "analysis" | "agent", branches), s = await setup(source);
   const result = await s.service.synthesize({ prompt: "Create a workflow that reads the actual count, analyses it and returns the reviewed summary on the selected path", userRole: "Platform Admin", liveTools: [read] });
   expect(result.yaml).toBe(s.yaml.trim()); expect(result.validation.passed).toBe(true); expect(result.execution_profile_issues).toEqual([]);
-  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v16"); expect(s.fetcher).toHaveBeenCalledOnce();
+  expect(result.candidate.generation_metadata.promptTemplateVersion).toBe("prompt/candidate/v17"); expect(s.fetcher).toHaveBeenCalledOnce();
   expect((await s.repository.snapshot()).workflows).toEqual({}); expect((await s.repository.snapshot()).executions).toEqual({});
   expect(() => compileOperationWorkflow(result.yaml, [read], "Platform Admin", new Map())).toThrow(/reviewed capability pin/);
 });

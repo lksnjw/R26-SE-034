@@ -8,6 +8,7 @@ import { namedModelCandidatePrompt, namedModelPatchPrompt } from "./named-model-
 import { typedReturnCandidatePrompt } from "./typed-return-candidate.js";
 import { typedMergeCandidatePrompt, typedMergeModelPatchPrompt } from "./typed-merge-candidate.js";
 import { calendarReturnCandidatePrompt } from "./calendar-return-candidate.js";
+import { calendarJoinCandidatePrompt } from "./calendar-join-candidate.js";
 
 /** Repository-owned instructions only. Never interpolate request, registry,
  * document, tool-result or model-generated text into this privileged channel. */
@@ -137,6 +138,7 @@ export const NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT = namedModelCandidatePrompt(REC
 export const TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT = typedReturnCandidatePrompt(NAMED_MODEL_CANDIDATE_SYSTEM_PROMPT);
 export const TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT = typedMergeCandidatePrompt(TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT);
 export const CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT = calendarReturnCandidatePrompt(TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT);
+export const CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT = calendarJoinCandidatePrompt(CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT);
 export const NAMED_ANALYSIS_PATCH_SYSTEM_PROMPT = namedModelPatchPrompt(ANALYSIS_NODE_PATCH_SYSTEM_PROMPT, "analysis");
 export const NAMED_AGENT_PATCH_SYSTEM_PROMPT = namedModelPatchPrompt(AGENT_NODE_PATCH_SYSTEM_PROMPT, "agent");
 export const MERGE_ANALYSIS_PATCH_SYSTEM_PROMPT = typedMergeModelPatchPrompt(NAMED_ANALYSIS_PATCH_SYSTEM_PROMPT, "analysis");
@@ -187,6 +189,7 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/candidate/v14": return TYPED_RETURN_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v15": return TYPED_MERGE_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/candidate/v16": return CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT;
+    case "prompt/candidate/v17": return CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT;
     case "prompt/node-patch/v2": return NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/analysis-node-patch/v1": return ANALYSIS_NODE_PATCH_SYSTEM_PROMPT;
     case "prompt/analysis-node-patch/v2": return NAMED_ANALYSIS_PATCH_SYSTEM_PROMPT;

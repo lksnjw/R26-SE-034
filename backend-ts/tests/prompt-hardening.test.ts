@@ -32,7 +32,7 @@ const call = (name = read.mcp_tool_name, args: Record<string, unknown> = { id: "
 afterEach(() => vi.unstubAllGlobals());
 
 test.each(["prompt/query/v2", "prompt/action/v2", "prompt/runtime-agent/v1", "prompt/candidate/v3", "prompt/candidate/v4", "prompt/candidate/v5", "prompt/candidate/v6", "prompt/candidate/v7", "prompt/candidate/v8", "prompt/candidate/v9", "prompt/candidate/v10", "prompt/candidate/v11", "prompt/node-patch/v2", "prompt/analysis-node-patch/v1", "prompt/condition-patch/v1", "prompt/return-patch/v1", "prompt/collection-patch/v1", "prompt/workflow-modifier/v2", "prompt/analysis/v2",
-  "prompt/execution-analysis/v2", "prompt/data-flow/v2", "prompt/provider-test/v1", "prompt/candidate/v12", "prompt/candidate/v13", "prompt/candidate/v14", "prompt/candidate/v15", "prompt/candidate/v16", "prompt/analysis-node-patch/v2", "prompt/agent-node-patch/v2", "prompt/analysis-node-patch/v3", "prompt/agent-node-patch/v3"])("%s has an independent trusted instruction channel", async (version) => {
+  "prompt/execution-analysis/v2", "prompt/data-flow/v2", "prompt/provider-test/v1", "prompt/candidate/v12", "prompt/candidate/v13", "prompt/candidate/v14", "prompt/candidate/v15", "prompt/candidate/v16", "prompt/candidate/v17", "prompt/analysis-node-patch/v2", "prompt/agent-node-patch/v2", "prompt/analysis-node-patch/v3", "prompt/agent-node-patch/v3"])("%s has an independent trusted instruction channel", async (version) => {
   const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: "ok" } }] }));
   const client = new OpenAICompatibleClient({ ...configuration, fetchImplementation });
   const data = promptData({ USER_REQUEST: attack, priorSummary: attack });

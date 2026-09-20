@@ -27,8 +27,9 @@ import { requestRuntimeApproval, runtimeApprovalPolicyHash, consumeRuntimeApprov
 import { reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.js";
-import { CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 import { verifyFirestoreCalendarJoins } from "./firestore-calendar-joins.mjs";
+import { verifyFirestoreRecurringJoins } from "./firestore-recurring-joins.mjs";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -160,7 +161,7 @@ async function start(repositoryValue) {
   const providerRuntime = new ProviderRuntime(repository, executor, async (url, init) => {
     assert.equal(url, "https://provider.fixture.example.test/v1/chat/completions"); const request = JSON.parse(String(init.body)); models.push(request.model); await modelHook?.(request, init.signal);
     if (request.messages[0]?.content.includes("TASK: WORKFLOW DRAFT SYNTHESIS") && returnSynthesisFixture) {
-      assert.equal(request.messages[0].content, CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT);
+      assert.equal(request.messages[0].content, CALENDAR_JOIN_CANDIDATE_SYSTEM_PROMPT);
       assert(JSON.parse(request.messages[1].content).USER_REQUEST.includes("Create a workflow"));
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: stringify(returnSynthesisFixture) } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
     }
@@ -345,7 +346,7 @@ try {
   assert.equal((await request("POST", `/api/chat/sessions/${chatId}/messages`, jointCommand, 202)).data.operation.id, jointOperation.id);
   assert.equal(calls.length, callsBeforeAutomation); assert.equal(models.length, modelsBeforeAutomation + 3); assert.equal(emails.length, 0);
   const modelsAfterAutomation = models.length;
-  log("actual Firestore async v16 recurring chats saved exact boolean Yes delivery/empty No trees, named joint analysis and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
+  log("actual Firestore async v17 recurring chats saved exact boolean Yes delivery/empty No trees, named joint analysis and original conditional request without scheduling, publishing or SDK effects; original-key replay used no extra model call");
 
   const saved = await repository.snapshot(); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).chats, saved.chats); assert.deepEqual((await repository.snapshot()).executions, saved.executions);
@@ -793,7 +794,7 @@ try {
     assert.deepEqual((await repository.snapshot()).executions[id], saved);
     assert.equal((await request("POST", `/api/workflows/${workflowId}/run`, command, 202)).data.id, id);
     assert.deepEqual((await repository.snapshot()).executionEvents[id], events); assert.equal(models.length, expectedModels); assert.equal(calls.length, expectedReads); assert.equal(operations.length, effectCount);
-    log(`actual Firestore v16 background ${kind}/select=${selected}: saved unpublished typed-return draft, fresh restart/chat replay, explicit v6 run, persisted exact answer, fresh restart/run replay without repeated planning/model/connector work`);
+    log(`actual Firestore v17 background ${kind}/select=${selected}: saved unpublished typed-return draft, fresh restart/chat replay, explicit v6 run, persisted exact answer, fresh restart/run replay without repeated planning/model/connector work`);
   }
   for (const [kind, selected, loseACK] of [["analysis", true, false], ["analysis", false, false], ["agent", true, false], ["agent", false, false], ["analysis", true, true]]) {
     const blueprint = parseWorkflowYAMLStrict(kind === "agent" ? durableAgentYAML : durableAnalysisYAML), [lookup, model] = blueprint.steps;
@@ -840,6 +841,9 @@ try {
     assert.deepEqual((await repository.snapshot()).executionEvents[id], restoredEvents); assert.equal(models.length, expectedModels); assert.equal(calls.length, expectedReads); assert.equal(operations.length, effectCount);
     log(`actual Firestore v7 ${kind}/selected=${selected}/${loseACK ? "lost-ACK" : "normal"}: exact committed branch handoff, ${loseACK ? "no dependent dispatch after lost acknowledgement" : "exact subsequent model/read/Return"}, fresh restart and original-key replay without repeated work`);
   }
+  await verifyFirestoreRecurringJoins({ getRepository: () => repository, getServices: () => services,
+    restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, request, waitFor, log,
+    tools: fixtureTools, setSynthesisFixture: source => { returnSynthesisFixture = source; }, models, relatedInvoiceReports, relatedOrderReports, emails });
   const modelsAfterDurableAgent = models.length;
   log("actual Firestore bounded runtime-agent used only its reviewed read allow-list, persisted every model/tool intent and structured answer, survived restarts, required independent approval for the later effect, and replayed neither model, ERP read nor operation");
 
@@ -904,7 +908,8 @@ try {
   const completedScheduledExecution = structuredClone((await repository.snapshot()).executions[scheduledExecution.id]);
   await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).executions[scheduledExecution.id], completedScheduledExecution);
-  assert.equal(Object.values((await repository.snapshot()).executions).filter(value => value.scheduleSource?.scheduledFor === scheduledFor).length, 1);
+  assert.equal(Object.values((await repository.snapshot()).executions).filter(value => value.scheduleSource?.scheduleId === schedule.id &&
+    value.scheduleSource.scheduleRevision === schedule.revision && value.scheduleSource.scheduledFor === scheduledFor).length, 1);
   assert.equal(operations.length, operationsBeforeSchedule + 1); assert.deepEqual(reports.map(value => value.cursor), ["", "cursor-firestore-2", "cursor-firestore-3"]);
   log("actual Firestore daily schedule claim and first opaque-cursor report checkpoint survived separate post-COMMIT acknowledgement losses; restart resumed from the protected second cursor without replay, persisted three-page stable-snapshot/complete/exhausted/count evidence without raw cursors, required fresh independent approval, dispatched once and persisted without a model call");
 
@@ -927,13 +932,14 @@ try {
     localTime: new Date(Date.now() + 120_000).toISOString().slice(11, 16), reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE",
     misfireGraceSeconds: 300, servicePrincipalId: "owner", input: {}, reportWindowBinding }, 200)).data;
   const relatedScheduledFor = relatedSchedule.nextRunAt, operationsBeforeRelatedSchedule = operations.length;
+  const invoicesBeforeRelatedSchedule = relatedInvoiceReports.length, ordersBeforeRelatedSchedule = relatedOrderReports.length;
   assert.deepEqual(await workflowScheduleRunner(services).runDue(Date.parse(relatedScheduledFor)), { admitted: 1, skipped: 0, blocked: 0 });
   const relatedExecution = await waitFor(async () => Object.values((await repository.snapshot()).executions)
     .find(value => value.workflowId === "relatedScheduledOperation" && value.scheduleSource?.scheduledFor === relatedScheduledFor && value.status === "AWAITING_APPROVAL"),
   "related-record scheduled operation approval wait");
   const relatedWindow = reportWindowFor("UTC", relatedScheduledFor, "previous-calendar-day");
-  assert.deepEqual(relatedInvoiceReports, [{ startAt: relatedWindow.startAt, endAt: relatedWindow.endAt }]);
-  assert.deepEqual(relatedOrderReports, [{ startAt: relatedWindow.startAt, endAt: relatedWindow.endAt, orderIds: ["order-related-2", "order-related-1"] }]);
+  assert.deepEqual(relatedInvoiceReports.slice(invoicesBeforeRelatedSchedule), [{ startAt: relatedWindow.startAt, endAt: relatedWindow.endAt }]);
+  assert.deepEqual(relatedOrderReports.slice(ordersBeforeRelatedSchedule), [{ startAt: relatedWindow.startAt, endAt: relatedWindow.endAt, orderIds: ["order-related-2", "order-related-1"] }]);
   assert.deepEqual(Object.keys(relatedExecution.reportCoverages).sort(), ["invoices", "orders"]);
   const projectedRelation = relatedExecution.reportCoverages.invoices.relatedRecords, matchedRelation = relatedExecution.reportCoverages.orders.relatedRecords;
   assert.equal(projectedRelation.mode, "PROJECTED"); assert.equal(matchedRelation.mode, "REQUESTED_MATCHED");
@@ -942,11 +948,13 @@ try {
   assert.equal(operations.length, operationsBeforeRelatedSchedule); assert.equal(models.length, modelsBeforeSchedule);
   const relatedExecutionBeforeRestart = structuredClone(relatedExecution); await stop(); await start(await openApplicationRepository(config));
   assert.deepEqual((await repository.snapshot()).executions[relatedExecution.id].reportCoverages, relatedExecutionBeforeRestart.reportCoverages);
+  assert.equal(relatedInvoiceReports.length, invoicesBeforeRelatedSchedule + 1); assert.equal(relatedOrderReports.length, ordersBeforeRelatedSchedule + 1);
   const relatedReview = (await request("GET", `/api/executions/${relatedExecution.id}?view=approval`, undefined, 200, "reviewer")).data.runtimeApproval;
   await request("POST", `/api/executions/${relatedExecution.id}/approve`, { approvalId: relatedReview.id, baseVersion: relatedReview.version,
     reviewHash: relatedReview.reviewHash, decisionKey: "firestore-related-report-approval-0001" }, 200, "reviewer");
   await waitFor(async () => (await repository.snapshot()).executions[relatedExecution.id].status === "DONE", "related-record scheduled operation completion");
   assert.equal(operations.length, operationsBeforeRelatedSchedule + 1); assert.equal(operations.at(-1), "related-report-operation");
+  assert.equal(relatedInvoiceReports.length, invoicesBeforeRelatedSchedule + 1); assert.equal(relatedOrderReports.length, ordersBeforeRelatedSchedule + 1);
   log("actual Firestore related-record schedule persisted and reloaded separate invoice/order receipts with one matching projected/requested key-set hash, then required fresh independent approval before one synthetic effect");
 
   for (const selected of [true, false]) {

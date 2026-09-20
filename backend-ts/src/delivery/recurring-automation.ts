@@ -6,6 +6,7 @@ import type { RecipientResolution } from "./recipient-resolution.js";
 import { effectiveStepKind } from "../models/schemas.js";
 import { deliveryOutputReferences, inspectRecurringAnalysis } from "./recurring-analysis.js";
 import { recurringDecisionRequest, recurringDecisionScopes, RECURRING_DECISION_REQUIREMENT } from "./recurring-decision-scopes.js";
+import { inspectRecurringJoinProvenance } from "./recurring-join-provenance.js";
 
 export type RecurringRequestedResource = "invoices" | "orders";
 
@@ -116,8 +117,8 @@ export function recurringAutomationCandidateContext(request: RecurringDeliveryRe
       "If analysis was requested, use one supported bounded analysis per requested report resource within each delivery scope after its report reads; bind that delivery to every in-scope analysis result.",
       "The delivery body must explicitly reference every requested report resource, or its mapped analysis result. A single related-order summary does not prove invoice content was included.",
       "For a conditional request preserve the original decision_request and its review requirement. Use only declared boolean references and exact owned Yes/No scopes; missing comparisons remain unresolved, not unconditional delivery.",
-      "Every delivery's preceding scope must contain each requested report and corresponding analysis; sibling and after-join outputs are unavailable. Empty no-delivery paths are allowed, never inferred consent.",
-      "An explicitly requested final Return may follow required delivery or end an explicit no-delivery path; never put requested reads/analysis/delivery after a Return. Return does not activate a calendar or prove delivery. Calendar branch merges remain unsupported.",
+      "Every possible continuing path to delivery needs every requested report and corresponding analysis. A declared typed join may export only its selected compatible field; field-level report/analysis provenance is checked across all alternatives. No sibling or direct branch-local escape, invented content or inferred consent.",
+      "An explicitly requested final Return may follow required delivery or end an explicit no-delivery path; never put requested work after a Return. A terminated branch cannot merge or deliver later. Preserve original Yes/No meanings; no automatic scheduling, publication, approval or delivery proof.",
     ],
   };
 }
@@ -190,18 +191,23 @@ export function inspectRecurringAutomationCandidate(rawYAML: string, request: Re
       issues.push(`Requested business resource ${resource} was mapped more than once`);
   }
 
-  const relation = relatedRecordStatus(request, reportSteps, scopes.predecessors);
-  const analysis = inspectRecurringAnalysis(blueprint, request.analysisRequested, request.requestedResources, reportSteps, tools, userRole, scopes.predecessors);
+  let joined: ReturnType<typeof inspectRecurringJoinProvenance> | undefined;
+  if (scopes.hasMerges) try {
+    joined = inspectRecurringJoinProvenance(blueprint, reportSteps, deliverySteps, request.requestedResources, request.analysisRequested);
+    issues.push(...joined.issues);
+  } catch (error) { issues.push("Recurring joined provenance failed: " + (error instanceof Error ? error.message : "unsupported evidence")); }
+  const relation = joined?.relatedRecords ?? relatedRecordStatus(request, reportSteps, scopes.predecessors);
+  const analysis = joined?.analysis ?? inspectRecurringAnalysis(blueprint, request.analysisRequested, request.requestedResources, reportSteps, tools, userRole, scopes.predecessors);
   issues.push(...analysis.issues);
   for (const mapping of analysis.mappings) mappedSteps.push({ stepId: mapping.id, capability: "analysis", tool: "Bounded analysis", resource: mapping.resource, sourceStepId: mapping.sourceStepId });
   const sourceOrder = new Map(blueprint.steps.map((step, index) => [step.id, index]));
   mappedSteps.sort((left, right) => sourceOrder.get(left.stepId)! - sourceOrder.get(right.stepId)!);
   const exactRecipient = request.requestedAddresses.length === 1 ? request.requestedAddresses[0]! : null;
-  let recipientBound = deliverySteps.length > 0, deliveryBodyBound = deliverySteps.length > 0;
+  let recipientBound = deliverySteps.length > 0, deliveryBodyBound = joined?.deliveryBodyBound ?? deliverySteps.length > 0;
   for (const delivery of deliverySteps) {
     const contract = delivery.tool.email_delivery_contract!;
     const visible = scopes.predecessors.get(delivery.id) ?? new Set<string>(), reports = reportSteps.filter(report => visible.has(report.id));
-    if (reports.length > 2 || request.requestedResources.some(resource => reports.filter(report => report.resource === resource).length !== 1))
+    if (!joined && (reports.length > 2 || request.requestedResources.some(resource => reports.filter(report => report.resource === resource).length !== 1)))
       issues.push(`Delivery ${delivery.id} requires exactly one preceding in-scope report for each requested resource`);
     if (exactRecipient === null) {
       recipientBound = false;
@@ -210,8 +216,8 @@ export function inspectRecurringAutomationCandidate(rawYAML: string, request: Re
     const sources = reports.map(report => request.analysisRequested ? analysis.mappings.find(value => value.sourceStepId === report.id && visible.has(value.id)) ?? report : report);
     const body = deliveryOutputReferences(delivery.parameters[contract.body_parameter]);
     const exact = body?.every(ref => ref.path[0] === "structuredContent" && sources.some(source => source.id === ref.root && visible.has(source.id)));
-    if (!(exact && sources.length > 0 && sources.every(source => body!.some(ref => ref.root === source.id)))) deliveryBodyBound = false;
-    if (request.analysisRequested && sources.some(source => !analysis.mappings.some(value => value.id === source.id)))
+    if (!joined && !(exact && sources.length > 0 && sources.every(source => body!.some(ref => ref.root === source.id)))) deliveryBodyBound = false;
+    if (!joined && request.analysisRequested && sources.some(source => !analysis.mappings.some(value => value.id === source.id)))
       analysis.bound = false;
   }
   if (!scopes.structured && deliverySteps.length > 1) issues.push("A recurring draft may not silently select multiple delivery effects");

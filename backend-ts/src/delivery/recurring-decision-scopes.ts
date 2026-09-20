@@ -16,25 +16,26 @@ export function recurringDecisionRequest(text: string) {
 /** Pure bounded authoring scopes. Publication and scheduling independently
  * validate capabilities, source classes, exact coverage and approval. */
 export function recurringDecisionScopes(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, requested: boolean) {
-  const issues: string[] = [], predecessors = new Map<string, ReadonlySet<string>>();
+  const issues: string[] = [], predecessors = new Map<string, ReadonlySet<string>>(); let hasMerges = false;
   const raw = blueprint.metadata?.controlFlow;
   if (raw === undefined) {
     const prior = new Set<string>();
     for (const step of blueprint.steps) { predecessors.set(step.id, new Set(prior)); prior.add(step.id); }
-    return { predecessors, issues, structured: false };
+    return { predecessors, issues, structured: false, hasMerges };
   }
   issues.push(...inspectWorkflowDraft(blueprint, tools, role).issues);
   try {
     const root = parseReadControlFlow(raw).root;
     const deliveryNames = new Set(tools.filter(tool => !tool.is_read_only && tool.email_delivery_contract).flatMap(tool => [tool.name, tool.mcp_tool_name]));
     const deliveryIds = new Set(blueprint.steps.filter(step => deliveryNames.has(step.action ?? "")).map(step => step.id));
-    const scopes = decisionReturnScopes(root, deliveryIds);
+    hasMerges = controlNodes(root).some(node => node.merge !== undefined);
+    const scopes = decisionReturnScopes(root, deliveryIds, { merges: true });
     for (const [id, visible] of scopes.predecessors) predecessors.set(id, visible);
     if (scopes.hasCondition && !requested) issues.push("A recurring decision was added without a requested conditional outcome");
     for (const node of controlNodes(root)) if (node.predicate.kind !== "ref")
       issues.push(`Recurring condition ${node.id} must retain a declared boolean reference, not a constant delivery choice`);
     if (scopes.unreachable.length) issues.push(`Recurring work is unreachable after Return: ${scopes.unreachable.join(", ")}`);
     if (scopes.maxEffects > 1) issues.push("A recurring draft may not silently select multiple delivery effects on one possible path");
-  } catch { issues.push("Recurring composition requires supported decisions/Returns without branch merges or collections"); }
-  return { predecessors, issues, structured: true };
+  } catch { issues.push("Recurring composition requires supported decisions, typed merges and Returns without collections"); }
+  return { predecessors, issues, structured: true, hasMerges };
 }
