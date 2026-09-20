@@ -7,6 +7,7 @@ import { deliveryOutputReferences, exactOutputReference, type RecurringAnalysisM
 import type { RecurringAutomationComposition, RecurringRequestedResource } from "./recurring-automation.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { RecurringPathLogic } from "./recurring-path-logic.js";
+import { ReportKeyLineage } from "../workflows/report-key-lineage.js";
 
 type Report = { id: string; index: number; resource: RecurringRequestedResource; tool: ToolDefinition; parameters: Record<string, unknown> };
 type Delivery = { id: string; tool: ToolDefinition; parameters: Record<string, unknown> };
@@ -40,6 +41,10 @@ export function inspectRecurringJoinProvenance(blueprint: WorkflowBlueprint, rep
   };
   visit(root, 1, 0);
   const byReport = new Map(reports.map(report => [report.id, report])), steps = new Map(blueprint.steps.map((step, index) => [step.id, { step, index }]));
+  const keyLineage = new ReportKeyLineage(root, reports.flatMap(report => {
+    const projection = report.tool.report_coverage_contract?.key_projection;
+    return projection ? [{ nodeId: report.id, path: ["structuredContent", ...projection.keys_path] }] : [];
+  }));
   const combine = (proofs: readonly Proof[], guard = 1): Proof => {
     const combined: Proof = new Map();
     for (const proof of proofs) for (const [id, source] of proof) {
@@ -110,8 +115,9 @@ export function inspectRecurringJoinProvenance(blueprint: WorkflowBlueprint, rep
       if (resources.includes("invoices") && resources.includes("orders")) {
         const primary = selected.find(report => report.resource === "invoices"), related = selected.find(report => report.resource === "orders");
         const projected = primary?.tool.report_coverage_contract?.key_projection, requested = related?.tool.report_coverage_contract?.requested_key_coverage;
+        const keys = requested ? exactOutputReference(related!.parameters[requested.keys_parameter]) : undefined;
         if (!projected || !requested || requested.relation_name !== projected.relation_name ||
-            related!.parameters[requested.keys_parameter] !== "{{" + primary!.id + ".structuredContent." + projected.keys_path.join(".") + "}}" ||
+            !keys || !keyLineage.matches({ kind: "ref", source: "nodeOutput", nodeId: keys.root, path: keys.path }, primary!.id, related!.id) ||
             relationName && relationName !== requested.relation_name) relatedMatched = false;
         else relationName = requested.relation_name;
       }

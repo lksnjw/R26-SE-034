@@ -3,6 +3,20 @@ import { recurringAutomationCandidateContext, recurringDeliveryRequest } from ".
 import { reportAnalysis } from "./recurring-analysis-tools.js";
 
 export type RecurringJoinMode = "reports" | "branch-analysis" | "joined-analysis";
+export function recurringCrossJoinWorkflow(tools: readonly ToolDefinition[], reportField = "summary") {
+  const candidate = recurringJoinWorkflow(tools, "reports", reportField), workflow = candidate.workflow, gate = workflow.metadata.controlFlow.root.nodes[0];
+  const order = { ...workflow.steps.find((step: any) => step.id === "yes_orders"), id: "shared_orders" };
+  order.parameters = { ...order.parameters, orderIds: "{{gate.value.orderIds}}" };
+  workflow.steps = workflow.steps.filter((step: any) => !step.id.endsWith("_orders"));
+  for (const branch of ["then", "else"]) gate[branch].nodes = gate[branch].nodes.filter((node: any) => !node.nodeId.endsWith("_orders"));
+  gate.merge.schema = { type: "object", properties: { invoices: { type: "string" }, orderIds: { type: "array", items: { type: "string" }, maxItems: 100 } }, required: ["invoices", "orderIds"], additionalProperties: false };
+  for (const [branch, id] of [["then", "yes_invoices"], ["else", "no_invoices"]] as const)
+    gate.merge[branch] = { kind: "object", fields: { invoices: { kind: "ref", source: "nodeOutput", nodeId: id, path: ["structuredContent", reportField] },
+      orderIds: { kind: "ref", source: "nodeOutput", nodeId: id, path: ["structuredContent", "orderIds"] } } };
+  workflow.steps.splice(2, 0, order); workflow.metadata.controlFlow.root.nodes.splice(1, 0, { kind: "action", nodeId: order.id });
+  workflow.steps.at(-1).parameters.body = "Invoices: {{gate.value.invoices}}\nOrders: {{shared_orders.structuredContent." + reportField + "}}";
+  return candidate;
+}
 export function recurringJoinWorkflow(tools: readonly ToolDefinition[], mode: RecurringJoinMode = "reports", reportField = "summary") {
   const text = (mode === "reports" ? "Get" : "Analyse") + " invoice and related order reports daily: if the declared usePrimary boolean is true use the primary report branch, otherwise use the alternative report branch. Join the chosen invoice and order content, then email both to manager@example.test and return its confirmed acceptance status.";
   const request = recurringDeliveryRequest(text)!, steps: any[] = [];

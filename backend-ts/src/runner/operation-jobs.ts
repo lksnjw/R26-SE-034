@@ -14,6 +14,7 @@ import { operationValueState } from "./operation-merge-checkpoints.js";
 import { operationControlTransition } from "../workflows/operation-control-flow.js";
 import { scheduledReportPaths } from "./scheduled-report-paths.js";
 import { selectScheduledReportEvidence } from "./scheduled-report-evidence.js";
+import { assertScheduledRelatedRead } from "./scheduled-related-read.js";
 import { prepareOperationExecution } from "../workflows/operation-compilation-lifecycle.js";
 import { isOperationToolNode, resolveReadBinding, type CompiledOperationPlan, type OperationToolNode } from "../workflows/compiled-read.js";
 import { modelInputItemCount } from "../workflows/model-input.js";
@@ -565,6 +566,8 @@ export class OperationJobQueue {
           return resolveReadBinding(node.inputs, operationValueState(run)) as Record<string, unknown>;
         });
         if (validateToolInput(tool.input_schema, args).length) throw new Error("Resolved operation arguments are invalid");
+        if (initial.scheduleSource && node.effectClass === "read" && tool.report_coverage_contract?.requested_key_coverage)
+          await repository.readAuthoritative(state => assertScheduledRelatedRead(state, state.executions[id]!, plan, live, node, args));
         const issues = validateToolArguments(node.capability.action, args, tool);
         if (issues.missing.length || issues.invalid.length) throw new Error("Resolved operation arguments failed runtime validation");
         if (hasReservedBridgeRole(tool)) {
@@ -600,6 +603,7 @@ export class OperationJobQueue {
             const intentKey = `${node.id}:cursor:${ordinal}`, cursorIntentId = `intent-${randomBytes(16).toString("hex")}`;
             const persistCursorIntent = async () => { await repository.mutateExecution(id, state => {
               assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, progress = run.reportPageSecret?.[node.id];
+              assertScheduledRelatedRead(state, run, plan, live, node, args);
               const fresh = resolveReadBinding(node.inputs, operationValueState(run));
               if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || !progress ||
                   progress.profile !== "schedule-report-cursors/v1" || progress.nextCursor !== cursorState.cursor || progress.pages.length + 1 !== ordinal ||
@@ -694,6 +698,7 @@ export class OperationJobQueue {
             const intentKey = `${node.id}:page:${page}`, pageIntentId = `intent-${randomBytes(16).toString("hex")}`;
             const persistPageIntent = async () => { await repository.mutateExecution(id, state => {
               assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!, progress = run.reportPageSecret?.[node.id];
+              assertScheduledRelatedRead(state, run, plan, live, node, args);
               const fresh = resolveReadBinding(node.inputs, operationValueState(run));
               if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || !progress ||
                   progress.profile !== "schedule-report-pages/v1" || progress.nextPage !== page ||
@@ -772,6 +777,7 @@ export class OperationJobQueue {
         const intentId = `intent-${randomBytes(16).toString("hex")}`;
         const persistIntent = async () => { await repository.mutateExecution(id, state => {
           assertContext(); const run = state.executions[id]!, attempt = run.readProgress!.attempts[node.id]!;
+          assertScheduledRelatedRead(state, run, plan, live, node, args);
           const fresh = resolveReadBinding(node.inputs, operationValueState(run));
           if (attempt.status !== "PREPARING" || !canonicalJSONBytes(fresh).equals(canonicalJSONBytes(args)) || run.operationSecret!.intents[node.id]) throw new Error("Operation intent facts changed or are already used");
           if (node.effectClass !== "read") assertCoverageBeforeScheduledEffect(run, plan, live, index);

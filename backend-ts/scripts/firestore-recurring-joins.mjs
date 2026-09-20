@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stringify } from "yaml";
-import { recurringJoinWorkflow } from "../tests/fixtures/recurring-join-workflow.js";
+import { recurringCrossJoinWorkflow, recurringJoinWorkflow } from "../tests/fixtures/recurring-join-workflow.js";
 import { recurringAutomationCandidateContext, recurringDeliveryRequest } from "../src/delivery/recurring-automation.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../src/parser/workflow.js";
 import { workflowScheduleRunner } from "../src/runner/workflow-schedules.js";
@@ -13,10 +13,11 @@ export async function verifyFirestoreRecurringJoins(context) {
   const snapshot = () => getRepository().snapshot();
   const cases = ["reports", "branch-analysis", "joined-analysis"].flatMap(mode => [true, false].map(selected => ({ mode, selected, loseACK: false })));
   cases.push(...[true, false].map(selected => ({ mode: "joined-analysis", selected, loseACK: true })));
+  cases.push(...[true, false].flatMap(selected => [false, true].map(loseACK => ({ mode: "reports", crossKeys: true, selected, loseACK }))));
   const restoreProvider = await reviewFixtureAnalysisEgress(context);
-  try { for (const { mode, selected, loseACK } of cases) {
-    const caseId = mode + "-" + selected + "-" + (loseACK ? "lostACK" : "normal");
-    const candidate = recurringJoinWorkflow(tools, mode, "reportId"), text = "Create a workflow to " + candidate.text;
+  try { for (const { mode, crossKeys = false, selected, loseACK } of cases) {
+    const caseId = (crossKeys ? "cross-join-keys" : mode) + "-" + selected + "-" + (loseACK ? "lostACK" : "normal");
+    const candidate = crossKeys ? recurringCrossJoinWorkflow(tools, "reportId") : recurringJoinWorkflow(tools, mode, "reportId"), text = "Create a workflow to " + candidate.text;
     const analysisFixture = prepareRecurringAnalysisFixture(candidate.workflow, mode, selected, tools), analysisCalls = [];
     const originalRequest = recurringDeliveryRequest(text);
     candidate.workflow.metadata.automation_request = structuredClone(recurringAutomationCandidateContext(originalRequest).automation_request);
@@ -69,8 +70,9 @@ export async function verifyFirestoreRecurringJoins(context) {
     let lostACK = false;
     if (loseACK) persistence.saveExecutionCheckpoint = async checkpoint => {
       await checkpointWriter(checkpoint);
-      if (!lostACK && checkpoint.execution?.workflowId === workflowId && checkpoint.execution.stepOutputs?.joined_analysis) {
-        lostACK = true; throw new Error("Synthetic recurring joined analysis result post-COMMIT acknowledgement loss");
+      if (!lostACK && checkpoint.execution?.workflowId === workflowId &&
+          (crossKeys ? checkpoint.execution.valueOutputs?.gate : checkpoint.execution.stepOutputs?.joined_analysis)) {
+        lostACK = true; throw new Error("Synthetic recurring joined result post-COMMIT acknowledgement loss");
       }
     };
     let pending;
@@ -83,7 +85,8 @@ export async function verifyFirestoreRecurringJoins(context) {
       } else pending = await waitFor(async () => Object.values((await snapshot()).executions).find(run => run.workflowId === workflowId && run.status === "AWAITING_APPROVAL"), "generated recurring join independent approval");
     } finally { persistence.saveExecutionCheckpoint = checkpointWriter; setAnalysisFixture(undefined); }
     const own = selected ? "yes" : "no", other = selected ? "no" : "yes";
-    assert.deepEqual(Object.keys(pending.reportCoverages).sort(), [own + "_invoices", own + "_orders"].sort());
+    assert.deepEqual(Object.keys(pending.reportCoverages).sort(),
+      [own + "_invoices", ...(crossKeys && loseACK ? [] : [crossKeys ? "shared_orders" : own + "_orders"])].sort());
     assert.equal(pending.stepOutputs[other + "_invoices"], undefined); assert.equal(pending.stepOutputs[other + "_orders"], undefined);
     const analysisOutputs = Object.fromEntries(analysisCalls.map(call => [call.nodeId, call.output]));
     for (const [id, output] of Object.entries(analysisOutputs)) {
@@ -93,7 +96,8 @@ export async function verifyFirestoreRecurringJoins(context) {
     const expectedModels = mode === "reports" ? 0 : mode === "branch-analysis" ? 2 : 1;
     assert.equal(analysisCalls.length, expectedModels); assert.equal(models.length, before.models + 1 + expectedModels);
     assert.equal(pending.tokens.total, expectedModels * 18);
-    const expectedGate = mode === "reports" ? { invoices: "related-report-operation", orders: "related-report-operation" } :
+    const expectedGate = crossKeys ? { invoices: "related-report-operation", orderIds: pending.stepOutputs[own + "_invoices"].structuredContent.orderIds } :
+      mode === "reports" ? { invoices: "related-report-operation", orders: "related-report-operation" } :
       mode === "branch-analysis" ? { invoices: analysisOutputs[own + "_invoice_analysis"].text, orders: analysisOutputs[own + "_order_analysis"].text } :
       { invoices: pending.stepOutputs[own + "_invoices"].structuredContent, orders: pending.stepOutputs[own + "_orders"].structuredContent };
     assert.deepEqual(pending.valueOutputs.gate, { value: expectedGate });
@@ -109,6 +113,7 @@ export async function verifyFirestoreRecurringJoins(context) {
       assert.deepEqual(restored.stepOutputs, pending.stepOutputs); assert.deepEqual(restored.valueOutputs, pending.valueOutputs);
       assert.deepEqual(restored.reportCoverages, pending.reportCoverages); assert.equal(restored.finalOutput, undefined);
       assert.equal(restored.runtimeApprovalSecret, undefined); assert.equal(restored.operationSecret.intents.deliver, undefined);
+      if (crossKeys) { assert.equal(restored.stepOutputs.shared_orders, undefined); assert.equal(restored.operationSecret.intents.shared_orders, undefined); }
       const events = (await snapshot()).executionEvents[pending.id];
       assert.deepEqual(events.slice(0, savedEvents.length), savedEvents); assert.equal(events.length, savedEvents.length + 1);
       assert.equal(events.at(-1).type, "run.recovery_required");
@@ -122,16 +127,18 @@ export async function verifyFirestoreRecurringJoins(context) {
     const done = structuredClone((await snapshot()).executions[pending.id]); assert.equal(done.finalOutput, true);
     assert.deepEqual(done.valueOutputs.answer, { value: true }); assert.deepEqual(emails.at(-1), {
       recipient: "manager@example.test", subject: "Daily chosen invoice and order report", body: mode === "joined-analysis" ? analysisOutputs.joined_analysis.text :
-        "Invoices: " + expectedGate.invoices + "\nOrders: " + expectedGate.orders,
+        "Invoices: " + expectedGate.invoices + "\nOrders: " + (crossKeys ? done.stepOutputs.shared_orders.structuredContent.reportId : expectedGate.orders),
     });
     await restart(); assert.deepEqual((await snapshot()).executions[pending.id], done);
     }
     const events = structuredClone((await snapshot()).executionEvents[pending.id]);
     assert.deepEqual(await workflowScheduleRunner(getServices()).runDue(Date.parse(schedule.nextRunAt)), { admitted: 0, skipped: 0, blocked: 0 });
     assert.deepEqual((await snapshot()).executionEvents[pending.id], events);
-    assert.equal(models.length, before.models + 1 + expectedModels); assert.equal(relatedInvoiceReports.length, before.invoices + 1); assert.equal(relatedOrderReports.length, before.orders + 1); assert.equal(emails.length, before.emails + (loseACK ? 0 : 1));
+    assert.equal(models.length, before.models + 1 + expectedModels); assert.equal(relatedInvoiceReports.length, before.invoices + 1);
+    assert.equal(relatedOrderReports.length, before.orders + (crossKeys && loseACK ? 0 : 1)); assert.equal(emails.length, before.emails + (loseACK ? 0 : 1));
     assert.equal(Object.values((await snapshot()).executions).filter(run => run.workflowId === workflowId).length, 1);
     log("actual Firestore v17 recurring joined chat " + caseId + ": exact inactive draft/restart/chat replay, explicit review/publication/calendar activation, selected-only report/model answers, " +
-      (loseACK ? "persisted analysis answer but fenced dependent delivery after lost ACK, recovery-required restart" : "separate approval restart, one fixture acceptance/final answer") + " and no replay");
+      (loseACK ? (crossKeys ? "persisted selected key join but fenced related read and delivery after lost ACK, recovery-required restart" :
+        "persisted analysis answer but fenced dependent delivery after lost ACK, recovery-required restart") : "separate approval restart, one fixture acceptance/final answer") + " and no replay");
   } } finally { setAnalysisFixture(undefined); setSynthesisFixture(undefined); await restoreProvider(); }
 }

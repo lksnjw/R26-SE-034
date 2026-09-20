@@ -104,6 +104,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "operation-fixture-secret-at-least-32-characters", MCP_MODE: "mock", STORAGE_DRIVER: "memory", STORAGE_ENCRYPTION_KEY: "x".repeat(32) });
   const validator = new RegistryValidator(registries, repository);
   let dispatchAdmissionHook: (() => Promise<void>) | undefined;
+  let relatedReadAdmissionHook: (() => Promise<void>) | undefined;
   const authorize = admissionAuthorizer(repository, registries);
   const sdk = { metadataComplete: true, connect: vi.fn(async () => {}), close: vi.fn(async () => {}), listTools: vi.fn(async () => tools.map(tool => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), outputSchema: tool.bridge_contract!.output_schema!,
     _meta: { "toolplane.resourceDigest": tool.bridge_contract!.resource_digest, "toolplane.resourceVersion": "1.0.0", "io.erpbridge/allowedRoles": [] } }))),
@@ -121,7 +122,8 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
       readback && name === exactBridgeName(readback) ? { content: [], structuredContent: { value: args.value, state: "ABSENT", settled: true, observedAt: new Date().toISOString() } } :
       { content: [], structuredContent: { accepted: true, id: "fixture-message" } }) };
   const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator, sdkClient: sdk,
-    admissionAuthorizer: async (...args) => { await authorize(...args); if (!args[0].is_read_only) await dispatchAdmissionHook?.(); } }); closers.push(session);
+    admissionAuthorizer: async (...args) => { await authorize(...args); if (!args[0].is_read_only) await dispatchAdmissionHook?.();
+      if (args[0].tool_id === relatedOrderRead?.tool_id) await relatedReadAdmissionHook?.(); } }); closers.push(session);
   await repository.mutate(state => {
     const now = new Date().toISOString();
     state.roles.review = { id: "review", name: "Independent approver", description: "Review only", permissions: ["execution:approve"], createdAt: now };
@@ -160,7 +162,8 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
   };
   const admit = async () => { const pub = await publish(); expect(pub.statusCode, pub.body).toBe(200); const response = await run(); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id; await wait(id, "AWAITING_APPROVAL"); return id as string; };
   return { repository, services, app, actor, read, reportRead, relatedOrderRead, write, readback, email, sdk, session, providerRuntime, modelFetch, request, publish, run, review, command, wait, admit,
-    setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; } };
+    setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; },
+    setRelatedReadAdmissionHook: (hook: () => Promise<void>) => { relatedReadAdmissionHook = hook; } };
 }
 
 test("operation admission receipt survives changed draft and revoked run permission without another dispatch", async () => {
@@ -474,6 +477,87 @@ async function prepareCalendarJoin(s: Awaited<ReturnType<typeof setup>>, kind?: 
     workflow.yaml = stringify(source); workflow.steps = source.steps.length;
   });
 }
+
+async function prepareCrossJoinKeys(s: Awaited<ReturnType<typeof setup>>, shape: "keys" | "object" = "keys") {
+  await prepareCalendarJoin(s);
+  await s.repository.mutate(state => {
+    const workflow = state.workflows.flow!, source = parse(workflow.yaml), gate = source.metadata.controlFlow.root.nodes[0];
+    source.steps = source.steps.filter((step: any) => !step.id.endsWith("_orders"));
+    for (const branch of ["then", "else"]) gate[branch].nodes = gate[branch].nodes.filter((node: any) => !node.nodeId.endsWith("_orders"));
+    const ref = (nodeId: string, ...path: string[]) => ({ kind: "ref", source: "nodeOutput", nodeId, path });
+    if (shape === "keys") {
+      gate.merge.schema = { type: "object", properties: { keys: { type: "array", items: { type: "string" }, maxItems: 100 }, summary: { type: "string" } }, required: ["keys", "summary"], additionalProperties: false };
+      for (const [branch, id] of [["then", "yes_report"], ["else", "no_report"]] as const)
+        gate.merge[branch] = { kind: "object", fields: { keys: ref(id!, "structuredContent", "orderIds"), summary: ref(id!, "structuredContent", "summary") } };
+    } else {
+      gate.merge.schema = s.reportRead.bridge_contract!.output_schema;
+      gate.merge.then = ref("yes_report", "structuredContent"); gate.merge.else = ref("no_report", "structuredContent");
+    }
+    source.steps.splice(2, 0, { id: "shared_orders", action: s.relatedOrderRead!.name, parameters: {
+      startAt: "{{input.reportStartAt}}", endAt: "{{input.reportEndAt}}", orderIds: shape === "keys" ? "{{gate.value.keys}}" : "{{gate.value.orderIds}}" } });
+    source.steps.at(-1).parameters.value = "{{gate.value.summary}} {{shared_orders.structuredContent.summary}}";
+    source.metadata.controlFlow.root.nodes.splice(1, 0, { kind: "action", nodeId: "shared_orders" });
+    workflow.yaml = stringify(source); workflow.steps = source.steps.length;
+  });
+}
+
+test.each(["keys", "object"].flatMap(shape => [true, false].map(selected => [shape, selected] as const)))(
+  "calendar %s keys cross selected=%s join before related read and independent effect approval", async (shape, selected) => {
+    const s = await setup(null, true, false, false, "related"); await prepareCrossJoinKeys(s, shape as "keys" | "object");
+    const { id } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected })); await s.wait(id, "AWAITING_APPROVAL");
+    const pending = (await s.repository.snapshot()).executions[id]!, own = selected ? "yes_report" : "no_report";
+    expect(Object.keys(pending.reportCoverages!)).toEqual([own, "shared_orders"]);
+    expect(s.sdk.callTool.mock.calls.map(call => call[0])).toEqual([exactBridgeName(s.reportRead), exactBridgeName(s.relatedOrderRead!)]);
+    expect(s.sdk.callTool.mock.calls[1]![1]).toMatchObject({ orderIds: ["order-1", "order-2"] });
+    expect(pending.readProgress!.values!.gate).toMatchObject({ kind: "merge", status: "DONE" }); expect(pending.finalOutput).toBeUndefined();
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "requester")).statusCode).toBe(403);
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE");
+    expect((await s.repository.snapshot()).executions[id]!.finalOutput).toBe(true);
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(3); expect(s.modelFetch).not.toHaveBeenCalled();
+  });
+
+test.each(["literal No keys", "wrong No field", "unselected No source", "model keys"])(
+  "cross-join calendar rejects %s before activation or SDK entry", async damage => {
+    const s = await setup(null, true, false, false, "related"); await prepareCrossJoinKeys(s);
+    await s.repository.mutate(state => {
+      const workflow = state.workflows.flow!, source = parse(workflow.yaml), fields = source.metadata.controlFlow.root.nodes[0].merge.else.fields;
+      if (damage === "literal No keys") fields.keys = { kind: "array", items: ["order-1", "order-2"].map(value => ({ kind: "literal", value })) };
+      if (damage === "wrong No field") fields.keys.path = ["structuredContent", "items"];
+      if (damage === "unselected No source") fields.keys.nodeId = "yes_report";
+      if (damage === "model keys") fields.keys.nodeId = "invented_analysis";
+      workflow.yaml = stringify(source);
+    });
+    const publication = await s.publish();
+    const response = publication.statusCode === 422 ? publication : await activateDecisionSchedule(s, { sendReport: true });
+    expect(response.statusCode, response.body).toBe(422);
+    expect((await s.repository.snapshot()).schedules).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  });
+
+test.each(["missing receipt", "changed output", "receipt hash", "wrong window", "merge value", "primary not done", "missing acknowledgment", "missing completion event"])(
+  "cross-join related read rechecks %s at admission before the SDK can enter", async damage => {
+    const s = await setup(null, true, false, false, "related"); await prepareCrossJoinKeys(s);
+    let altered = false;
+    s.setRelatedReadAdmissionHook(async () => {
+      if (altered) return;
+      const run = Object.values((await s.repository.snapshot()).executions).find(value => value.scheduleSource && value.reportCoverages?.yes_report);
+      if (!run) return; altered = true;
+      await s.repository.mutateExecution(run.id, state => {
+        const current = state.executions[run.id]!;
+        if (damage === "missing receipt") { delete current.reportCoverages!.yes_report; delete current.reportCoverage; }
+        if (damage === "changed output") (current.stepOutputs!.yes_report as any).structuredContent.orderIds = ["invented"];
+        if (damage === "receipt hash") current.reportCoverages!.yes_report!.outputHash = "sha256:" + "0".repeat(64);
+        if (damage === "wrong window") current.reportCoverages!.yes_report!.startAt = "2020-01-01T00:00:00Z";
+        if (damage === "merge value") (current.valueOutputs!.gate!.value as any).keys = ["invented"];
+        if (damage === "primary not done") current.readProgress!.attempts.yes_report!.status = "FAILED";
+        if (damage === "missing acknowledgment") delete current.operationSecret!.intents.yes_report;
+        if (damage === "missing completion event") state.executionEvents[run.id] = state.executionEvents[run.id]!.filter(event => event.type !== "node.completed");
+      });
+    });
+    const { id } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: true })); await s.wait(id, "FAILED");
+    expect(altered).toBe(true); expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).not.toHaveBeenCalled();
+    const failed = (await s.repository.snapshot()).executions[id]!;
+    expect(failed.operationSecret!.intents.shared_orders).toBeUndefined(); expect(failed.runtimeApprovalSecret).toBeUndefined(); expect(failed.finalOutput).toBeUndefined();
+  });
 
 test.each(["daily", "weekly", "monthly"].flatMap(cadence => ["cursor", "related"].flatMap(profile => [true, false].map(selected => [cadence, profile, selected] as const))))(
   "calendar typed join cadence=%s reports=%s selected=%s requires exact own coverage before independent effect approval", async (cadence, profile, selected) => {
