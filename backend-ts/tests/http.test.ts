@@ -127,6 +127,7 @@ describe("complete HTTP route graph", () => {
     expect(new Set(actual).size).toBe(actual.length);
     expect(captured.filter((route) => !actual.includes(route))).toEqual([]);
     expect(actual.filter((route) => !captured.includes(route)).sort()).toEqual([
+      "GET /api/dashboard/tasks",
       "GET /api/workflows/:id/run-receipts/:key",
       "POST /api/executions/:id/approve", "POST /api/executions/:id/reject", "POST /api/executions/:id/reconcile",
       "GET /api/executions/:id/report-page-resolutions", "POST /api/executions/:id/report-page-resolutions",

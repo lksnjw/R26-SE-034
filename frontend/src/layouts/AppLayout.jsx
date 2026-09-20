@@ -27,7 +27,10 @@ function AppLayout({ children }) {
 
       <div className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden">
         <Topbar />
-        {hasAny(["chat:use", "workflow:write"]) && <Link to={workspaceReturnPath(user)} className="border-b border-gray-200 px-4 py-2 text-xs font-medium text-primary dark:border-gray-800">← Back to workspace</Link>}
+        {(hasAny(["chat:use", "workflow:write"]) || hasAny(["workflow:read", "workflow:read_own", "execution:read_own"])) && <nav aria-label="Workspace shortcuts" className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-4 py-2 text-xs font-medium text-primary dark:border-gray-800">
+          {hasAny(["chat:use", "workflow:write"]) && <Link to={workspaceReturnPath(user)}>← Back to workspace</Link>}
+          {hasAny(["workflow:read", "workflow:read_own", "execution:read_own"]) && <Link to="/dashboard">Dashboard</Link>}
+        </nav>}
         <ServerUnreachableBanner />
         <MobileNav />
         <main className="h-0 min-h-0 flex-1 overflow-hidden bg-white p-4 transition-colors duration-200 dark:bg-darkBackgroundVery sm:p-6">

@@ -17,6 +17,7 @@ import {
   handleSynthesisCanvasRoute,
   SYNTHESIS_CANVAS_UNHANDLED,
 } from "./synthesis-canvas.js";
+import { getPersonalDashboard } from "./personal-dashboard.js";
 
 export const ANALYTICS_UNHANDLED = Symbol("analytics-unhandled");
 
@@ -34,6 +35,7 @@ export async function handleAnalyticsCatalogRoute(
 ): Promise<unknown | typeof ANALYTICS_UNHANDLED> {
   const base = services.config.apiBasePath;
   try {
+    if (route.path === `${base}/dashboard/tasks` && route.method === "GET") return await getPersonalDashboard(request, reply, user, services);
     const synthesisCanvasResponse = await handleSynthesisCanvasRoute(
       route,
       request,

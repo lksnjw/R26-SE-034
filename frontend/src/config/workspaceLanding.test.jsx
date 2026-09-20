@@ -5,10 +5,9 @@ import { DEFAULT_ROUTE, NAVIGATION_GROUPS } from "../constants/navigation";
 import { isWorkspacePath } from "../layouts/WorkspaceLayout";
 import { workspaceKey, workspaceReturnPath, writeWorkspaceValue } from "../utils/workspaceSession";
 
-test("authenticated landing is chat, not dashboard", () => {
+test("authenticated landing stays chat with a separate personal task dashboard", () => {
   expect(protectedRouteDefinitions.find((route) => route.path === "/").Component).toBe(lazyRouteComponents.ChatPage);
-  expect(protectedRouteDefinitions.some((route) => route.path === "/activity" || route.id.startsWith("dashboard."))).toBe(false);
-  expect(Object.hasOwn(lazyRouteComponents, "DashboardPage")).toBe(false);
+  expect(protectedRouteDefinitions.find((route) => route.path === "/dashboard").Component).toBe(lazyRouteComponents.DashboardPage);
   expect(DEFAULT_ROUTE).toEqual({ main: "chat", sub: "home" });
   expect(NAVIGATION_GROUPS.some((group) => group.id === "dashboard")).toBe(false);
 });

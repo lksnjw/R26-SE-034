@@ -5,6 +5,7 @@ export type RoutePolicy = Readonly<{ required: string[]; any: boolean }>;
 /** Mandatory HTTP authorization policy. Unknown protected routes fail closed. */
 export function routePolicy(route: RouteDefinition): RoutePolicy | null {
   const path = route.path;
+  if (path === "/api/dashboard/tasks" && route.method === "GET") return { required: ["workflow:read", "workflow:read_own", "execution:read_own"], any: true };
   if (path === "/api/workflows/:id/run-receipts/:key") return { required: ["workflow:read", "execution:read_own"], any: true };
   if (path.startsWith("/api/import")) return { required: ["registry:write"], any: false };
   // Must precede the general profile self-service exemption.

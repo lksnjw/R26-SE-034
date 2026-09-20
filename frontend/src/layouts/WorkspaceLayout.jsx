@@ -22,6 +22,7 @@ export default function WorkspaceLayout({ children }) {
   }, [returnKey, location.pathname, location.search]);
   const { toggleTheme, isDarkMode } = useTheme();
   const links = [
+    { to: "/dashboard", label: "Dashboard", permissions: ["workflow:read", "workflow:read_own", "execution:read_own"] },
     { to: "/workflows", label: "Workflows", permissions: ["workflow:read", "workflow:read_own"] },
     { to: "/executions", label: "Runs", permissions: ["workflow:read", "execution:read_own"] },
     { to: "/executions/reviews", label: "Reviews", permissions: ["execution:approve", "execution:reconcile"] },

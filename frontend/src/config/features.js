@@ -4,6 +4,7 @@ import { appConfig } from "./app";
 export const features = Object.freeze({
   authentication: true,
   workflows: true,
+  dashboard: true,
   company: true,
   chat: true,
   executions: true,

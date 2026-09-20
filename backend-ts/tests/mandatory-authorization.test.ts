@@ -41,6 +41,22 @@ function workflow(id: string, ownerId: string, yaml = "name: Test\ndescription: 
   return { id, name: "Test", description: "Test workflow", owner: { id: ownerId, name: ownerId }, assignedUserIds: [], status: "PENDING", trigger: { type: "manual" }, steps: 1, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [], canRun: true, createdAt: now, updatedAt: now, yaml, archived: false };
 }
 
+test("personal dashboard is authenticated, scoped, read-only and available to a client", async () => {
+  const s = await setup(false), url = "/api/dashboard/tasks?month=2026-10&timezone=Asia%2FColombo", before = await s.repository.snapshot();
+  expect((await s.app.inject({ method: "GET", url })).statusCode).toBe(401);
+  const response = await s.app.inject({ method: "GET", url, headers: s.headers("client") });
+  expect(response.statusCode, response.body).toBe(200); expect(response.json().data).toMatchObject({ profile: "personal-task-dashboard/v1", scope: "personal", events: [], timezone: "Asia/Colombo" });
+  expect(await s.repository.snapshot()).toEqual(before); expect(s.callToolDirect).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled();
+});
+test.each(["month=2026-13&timezone=UTC", "month=2026-10&timezone=Invalid", "month=2026-10&timezone=UTC&actor=admin"])("personal dashboard rejects invalid or authority-changing query %s", async query => {
+  const s = await setup(false); expect((await s.app.inject({ method: "GET", url: `/api/dashboard/tasks?${query}`, headers: s.headers("client") })).statusCode).toBe(400);
+});
+test("personal dashboard cannot present current counts after authoritative storage denial", async () => {
+  const s = await setup(false); vi.spyOn(s.repository, "readAuthoritative").mockRejectedValue(new Error("private storage exception"));
+  const response = await s.app.inject({ method: "GET", url: "/api/dashboard/tasks?month=2026-10&timezone=UTC", headers: s.headers("client") });
+  expect(response.statusCode).toBe(503); expect(response.body).not.toContain("private storage"); expect(response.json().data).toBeNull();
+});
+
 describe.each([false, true])("mandatory authorization with advisory policy enabled=%s", (enabled) => {
   test("client cannot access administration, credentials or workflow writes", async () => {
     const s = await setup(enabled);
