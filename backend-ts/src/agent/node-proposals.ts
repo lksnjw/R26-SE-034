@@ -1,7 +1,8 @@
 import { ok } from "../models/schemas.js";
 import { HandlerFailure, nextID, now, type CurrentUser, type HandlerServices } from "../http/handlers/common.js";
 import { assertChatAuthority } from "../http/handlers/model-selection.js";
-import { assertNodeContext, applyWorkflowCommand, nodeContextSchema, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand } from "../workflows/commands.js";
+import { assertNodeContext, applyWorkflowCommand, nodeContextSchema, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand, selectedNodePatchPreview } from "../workflows/commands.js";
+import { selectedConditionGuidance } from "../workflows/selected-condition-guidance.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { promptData } from "../prompts/contracts.js";
 import type { ChatProcessingHooks } from "./chat-context.js";
@@ -26,7 +27,7 @@ export async function processNodeProposal(input: { context: unknown; content: st
   const collection = authoring?.collections?.find(node => node.nodeId === scoped.node.id);
   const prompt = promptData({ instruction: input.content, node: withoutSecretFields(scoped.node),
     ...(modelNode ? { allowedDataSources: authoring?.nodes.find(node => node.nodeId === scoped.node.id)?.dataSources.filter(source => source.binding.source === "nodeOutput") ?? [] } : {}),
-    ...(scoped.node.kind === "if" ? { allowedBooleanSources: authoring?.conditions?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
+    ...(scoped.node.kind === "if" ? selectedConditionGuidance(scoped.node.id, authoring) : {}),
     ...(scoped.node.kind === "return" ? { allowedDataSources: authoring?.returns?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
     ...(scoped.node.kind === "foreach" ? { allowedItemSources: collection?.itemSources ?? [], allowedCollectSources: collection?.collectSources ?? [] } : {}),
     tools: structural ? [] : services.registries.snapshot().tools.filter(tool => tool.allowed_roles.includes(user.role)).map(tool => ({ name: tool.name, inputSchema: tool.input_schema })) });
@@ -49,7 +50,7 @@ export async function processNodeProposal(input: { context: unknown; content: st
     const fresh = assertNodeContext(state, context, user);
     const chat = assertChatAuthority(state, user, sessionId);
     const proposal = { id: nextID(state, "proposal"), ...context, command, before: fresh.node,
-      after: { ...fresh.node, ...patch }, validation, status: "PROPOSED", modelBinding: provider.binding };
+      after: selectedNodePatchPreview(fresh.node, patch), validation, status: "PROPOSED", modelBinding: provider.binding };
     const message = { id: nextID(state, "msg"), role: "assistant", text: "Node change proposed. Review and apply it to save a new draft; nothing has been published or executed.",
       createdAt: now(), traceId, artifacts: { intent: "NODE_PATCH_PROPOSAL", proposal } };
     chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();

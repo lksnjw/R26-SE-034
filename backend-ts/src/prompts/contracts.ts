@@ -82,6 +82,9 @@ export const CONDITION_PATCH_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 TASK: ONE SELECTED CONDITION PATCH (prompt/condition-patch/v1)
 Return exactly one JSON object with only predicate. A predicate is {kind:"literal",value:boolean} or {kind:"ref",source:"workflowInput",path:[safe field names]} or {kind:"ref",source:"nodeOutput",nodeId:"exact preceding in-scope action ID",path:[safe field names]}. Preserve boolean meaning: do not coerce a string, number, missing value or arbitrary prose into true/false. Change only the selected condition's predicate. Never output id, kind, branches, action, parameters, other nodes, source YAML, permission, approval or execution flags. Branch contents and scope are immutable for this proposal. Do not invent output fields or remove a condition to evade a prerequisite. If the requested change requires other nodes, unsupported comparisons/loops/effects, unknown data or unsafe scope, return {} so the backend rejects it. This is a proposal only; backend compilation and current authority decide whether it can be saved, published or run.`;
 
+import { conditionEditPatchInstructions } from "./condition-edit-patch.js";
+export const CONDITION_EDIT_PATCH_SYSTEM_PROMPT = conditionEditPatchInstructions(SAFETY_CONTRACT);
+
 export const COLLECTION_PATCH_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 
 TASK: ONE SELECTED COLLECTION PATCH (prompt/collection-patch/v1)
@@ -201,6 +204,7 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/agent-node-patch/v2": return NAMED_AGENT_PATCH_SYSTEM_PROMPT;
     case "prompt/agent-node-patch/v3": return MERGE_AGENT_PATCH_SYSTEM_PROMPT;
     case "prompt/condition-patch/v1": return CONDITION_PATCH_SYSTEM_PROMPT;
+    case "prompt/condition-patch/v2": return CONDITION_EDIT_PATCH_SYSTEM_PROMPT;
     case "prompt/return-patch/v1": return RETURN_PATCH_SYSTEM_PROMPT;
     case "prompt/collection-patch/v1": return COLLECTION_PATCH_SYSTEM_PROMPT;
     case "prompt/workflow-modifier/v2": return MODIFIER_SYSTEM_PROMPT;

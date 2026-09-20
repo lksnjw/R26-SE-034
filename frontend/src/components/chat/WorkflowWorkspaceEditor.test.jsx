@@ -705,6 +705,25 @@ test("condition prompts use the saved asynchronous node scope and do not call to
   expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.proposeNode).not.toHaveBeenCalled();
 });
 
+test.each([false, true])("reopened selected-condition chat output preview requires exact Apply and fences stale revision=%s", async stale => {
+  showConditions(); const selected = conditionFlow.nodes[0], merge = { schema: { type: "string" }, then: { kind: "literal", value: "Reviewed Yes result" }, else: { kind: "literal", value: "Reviewed No result" } };
+  const change = { ...proposal, nodeId: "gate", before: selected, after: { ...selected, merge }, baseVersion: stale ? 0 : 1, command: { type: "updateCondition", nodeId: "gate", patch: { merge } }, validation: { passed: true } };
+  await open({ savedProposals: [change], onNodeContext: jest.fn() }); fireEvent.click(screen.getByRole("button", { name: "Select condition gate" }));
+  expect(screen.getByText(/Request a condition or typed branch-output change/)).toBeTruthy();
+  if (stale) {
+    expect(screen.queryByRole("region", { name: "Node change preview" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply to draft" })).toBeNull();
+    expect(workflowService.command).not.toHaveBeenCalled(); return;
+  }
+  const preview = screen.getByRole("region", { name: "Node change preview" }); expect(within(preview).getByText("Reviewed Yes result")).toBeTruthy(); expect(within(preview).getByText("Reviewed No result")).toBeTruthy();
+  expect(preview.querySelector("pre")).toBeNull(); expect(workflowService.command).not.toHaveBeenCalled();
+  const apply = within(preview).getByRole("button", { name: "Apply to draft" }); expect(apply.disabled).toBe(stale);
+  fireEvent.click(apply);
+  if (stale) expect(workflowService.command).not.toHaveBeenCalled();
+  else await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: record.contentHash, proposalId: change.id }), change.command));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
 test("adding an action into an explicit branch submits its destination instead of a detached flat declaration", async () => {
   showConditions(); await open(); fireEvent.click(screen.getByRole("button", { name: "Add node" }));
   fireEvent.change(screen.getByRole("textbox", { name: "New node ID" }), { target: { value: "more" } });

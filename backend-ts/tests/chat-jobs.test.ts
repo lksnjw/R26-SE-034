@@ -32,11 +32,11 @@ class Persistence implements PersistenceBackend {
   }
   async close() {} async probe() {}
 }
-async function setup(options: { persistence?: PersistenceBackend; timeoutMs?: number; noBridge?: boolean } = {}) {
+async function setup(options: { persistence?: PersistenceBackend; timeoutMs?: number; noBridge?: boolean; toolFile?: string } = {}) {
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "chat-job-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }), storageEncryptionKey: "x".repeat(32), erpbridgeRoleMap: { "Platform Admin": "admin" } };
   const repository = await Repository.open(options.persistence ?? null);
   await repository.mutate(state => { for (const id of ["owner", "other"]) state.users[id] = { id, name: id, email: `${id}@example.test`, roleId: "role_admin", permissionOverrides: [], status: "Active", initials: "U", departmentId: null, lastLoginAt: null, createdAt: new Date().toISOString() }; });
-  const registries = await RegistryService.load(resolve("tests/fixtures/chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
+  const registries = await RegistryService.load(resolve("tests/fixtures", options.toolFile ?? "chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
   const validator = new RegistryValidator(registries, repository), executor = new Executor(new ToolRegistry(), validator);
   const fetchImplementation = vi.fn<typeof fetch>(async (_url, init) => {
     const input = JSON.parse(String(init?.body));
@@ -221,9 +221,9 @@ test("node scope overrides action prose, saves a reviewable proposal atomically 
   expect(s.fetchImplementation).toHaveBeenCalledOnce();
 });
 
-async function conditionalNodeSetup(output: unknown = { predicate: { kind: "literal", value: false } }) {
-  const s = await nodeSetup();
-  const source = stringify({ name: "Conditional chat report", trigger: { type: "manual" }, steps: [{ id: "echo", action: "demo.echo", parameters: { value: "fixture" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "echo" }] }, else: { kind: "sequence", nodes: [] } }] } } } });
+async function conditionalNodeSetup(output: unknown = { predicate: { kind: "literal", value: false } }, options: Parameters<typeof setup>[0] = {}) {
+  const s = await nodeSetup({ ...options, toolFile: "condition-chat-tools.json" });
+  const source = stringify({ name: "Conditional chat report", description: "Read the selected fixture path", trigger: { type: "manual" }, steps: [{ id: "echo", action: "demo.echo", parameters: { value: "fixture" } }], metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "echo" }] }, else: { kind: "sequence", nodes: [] } }] } } } });
   await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
   s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: JSON.stringify(output) } }] }));
   return { ...s, source, nodeContext: { ...s.nodeContext, nodeId: "gate", baseHash: workflowContentHash(source) } };
@@ -290,6 +290,38 @@ test("saved condition chat job returns an owned predicate-only proposal with sel
   expect(state.workflows.report!.yaml).toBe(s.source); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled();
   const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)); expect(body.model).toBe("model-b"); expect(body.messages[0].content).toContain("ONE SELECTED CONDITION PATCH");
 });
+test.each([false, true])("saved condition chat persists a typed output proposal with atomic predicate edit=%s and no execution", async combined => {
+  const merge = { schema: { type: "string" }, then: { kind: "ref", source: "nodeOutput", nodeId: "echo", path: ["structuredContent", "value"] }, else: { kind: "literal", value: "Explicit No output" } },
+    patch = { merge, ...(combined ? { predicate: { kind: "literal", value: false } } : {}) };
+  const persistence = new Persistence(), s = await conditionalNodeSetup(patch, { persistence }), content = "Change the selected output; do not send mail";
+  const receipt = (await s.send(content, { nodeContext: s.nodeContext, model: "model-b" })).json().data;
+  expect(await s.terminal(receipt.operation.id)).toMatchObject({ status: "ANSWERED", attempts: [] });
+  const snapshot = await s.repository.snapshot(), proposal = (snapshot.chats[s.sessionId]!.messages.at(-1)!.artifacts as any).proposal;
+  expect(proposal).toMatchObject({ ...s.nodeContext, status: "PROPOSED", validation: { passed: true }, command: { type: "updateCondition", nodeId: "gate", patch }, modelBinding: { model: "model-b" } });
+  expect(proposal.after.then).toEqual(proposal.before.then); expect(proposal.after.else).toEqual(proposal.before.else);
+  expect(snapshot.workflows.report!.yaml).toBe(s.source); expect(snapshot.executions).toEqual({});
+  const request = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)), data = JSON.parse(request.messages[1].content);
+  expect(request.model).toBe("model-b"); expect(data.tools).toEqual([]); expect(data.allowedMergeSources.then.some((hint: any) => hint.binding.nodeId === "echo")).toBe(true);
+  expect(data.allowedMergeSources.else.some((hint: any) => hint.binding.nodeId === "echo")).toBe(false);
+  await s.app.close(); apps.splice(apps.indexOf(s.app), 1);
+  const reopened = await setup({ persistence, toolFile: "condition-chat-tools.json" });
+  expect((await reopened.repository.snapshot()).chats[s.sessionId]!.messages).toEqual(snapshot.chats[s.sessionId]!.messages);
+  const replay = await reopened.app.inject({ method: "POST", url: `/api/chat/sessions/${s.sessionId}/messages`, headers: reopened.headers(), payload: { content, delivery: "async-chat", idempotencyKey: "chat-job-fixture-00001", nodeContext: s.nodeContext, model: "model-b" } });
+  expect(replay.json().data.operation.id).toBe(receipt.operation.id); expect(reopened.fetchImplementation).not.toHaveBeenCalled();
+  expect(s.callTool).not.toHaveBeenCalled(); expect(reopened.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["edit", "cancel", "revocation"])("a condition-output proposal cannot commit after %s during model generation", async kind => {
+  const merge = { schema: { type: "string" }, then: { kind: "literal", value: "Yes" }, else: { kind: "literal", value: "No" } }, s = await conditionalNodeSetup({ merge }), entered = barrier(), release = barrier();
+  s.fetchImplementation.mockImplementationOnce(async () => { entered.release(); await release.promise; return Response.json({ choices: [{ message: { content: JSON.stringify({ merge }) } }] }); });
+  const id = (await s.send("Change output", { nodeContext: s.nodeContext })).json().data.operation.id; await entered.promise;
+  if (kind === "edit") await s.repository.mutate(state => { state.workflows.report!.draftVersion++; });
+  else if (kind === "revocation") await s.repository.mutate(state => { state.users.owner!.status = "Inactive"; });
+  else await s.app.inject({ method: "POST", url: `/api/chat/operations/${id}/cancel`, headers: s.headers(), payload: {} });
+  release.release(); expect((await s.terminal(id)).status).toBe(kind === "cancel" ? "CANCELLED" : "FAILED");
+  const state = await s.repository.snapshot(); expect(state.chats[s.sessionId]!.messages).toHaveLength(1); expect(state.workflows.report!.yaml).toBe(s.source); expect(s.callTool).not.toHaveBeenCalled();
+});
+
 test.each([{ parameters: {} }, { predicate: { kind: "literal", value: true }, else: { kind: "sequence", nodes: [] } }, { predicate: { kind: "literal", value: 0 } }])("saved condition chat rejects scope-escaping model output %j without applying or dispatching", async output => {
   const s = await conditionalNodeSetup(output), id = (await s.send("Edit", { nodeContext: s.nodeContext })).json().data.operation.id;
   expect((await s.terminal(id)).status).toBe("FAILED");

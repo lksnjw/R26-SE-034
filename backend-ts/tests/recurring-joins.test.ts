@@ -7,6 +7,8 @@ import { RECURRING_DECISION_REQUIREMENT } from "../src/delivery/recurring-decisi
 import { RecurringPathLogic } from "../src/delivery/recurring-path-logic.js";
 import { recurringAnalysisTools, analysisRequirement } from "./fixtures/recurring-analysis-tools.js";
 import { recurringCrossJoinWorkflow, recurringJoinWorkflow, type RecurringJoinMode } from "./fixtures/recurring-join-workflow.js";
+import { applyWorkflowCommand, selectedNodePatchCommand, selectedNodePatchSchema } from "../src/workflows/commands.js";
+import { parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 
 async function fixture(mode: RecurringJoinMode = "reports") {
   const registry = await RegistryService.load(resolve("tests/fixtures/recurring-tools.json"), resolve("tests/fixtures/rules.json"));
@@ -22,6 +24,26 @@ test("recurring related report may follow exact selected primary keys across the
   expect(inspectRecurringAutomationCandidate(stringify(s.workflow), s.request, s.tools, "Platform Admin")).toMatchObject({
     status: "CAPABILITIES_MAPPED", relatedRecords: { status: "MATCHED", relationName: "invoice-orders" }, deliveryBodyBound: true, readyForPublication: false, scheduleActive: false,
   });
+});
+
+test("selected-condition typed-output repair preserves the complete cross-join request and exact key provenance", async () => {
+  const s = await crossJoinFixture(), original = structuredClone(s.workflow), selected = s.workflow.metadata.controlFlow.root.nodes[0], merge = selected.merge;
+  delete selected.merge;
+  const patch = selectedNodePatchSchema(selected).parse({ merge }), command = selectedNodePatchCommand(selected, patch);
+  const yaml = applyWorkflowCommand(stringify(s.workflow), command), next = parseWorkflowYAMLStrict(yaml);
+  expect(next.steps).toEqual(original.steps); expect(next.metadata!.controlFlow).toEqual(original.metadata.controlFlow);
+  expect(inspectRecurringAutomationCandidate(yaml, s.request, s.tools, "Platform Admin")).toMatchObject({ status: "CAPABILITIES_MAPPED", readyForPublication: false, scheduleActive: false });
+});
+test.each(["literal", "sibling", "wrong path", "model"])("selected-condition patch schema does not authorize counterfeit cross-join %s keys", async damage => {
+  const s = await crossJoinFixture(), node = s.workflow.metadata.controlFlow.root.nodes[0], merge = structuredClone(node.merge), fields = merge.else.fields;
+  if (damage === "literal") fields.orderIds = { kind: "array", items: [{ kind: "literal", value: "invented-order" }] };
+  if (damage === "sibling") fields.orderIds.nodeId = "yes_invoices";
+  if (damage === "wrong path") fields.orderIds.path = ["structuredContent", "items"];
+  if (damage === "model") fields.orderIds.nodeId = "invented_analysis";
+  const patch = selectedNodePatchSchema(node).parse({ merge }), yaml = applyWorkflowCommand(stringify(s.workflow), selectedNodePatchCommand(node, patch));
+  // JSON shape acceptance is deliberately not semantic or business proof.
+  expect(() => inspectRecurringAutomationCandidate(yaml, s.request, s.tools, "Platform Admin")).toThrow("Recurring automation candidate failed its server contract");
+  expect(s.workflow.metadata.controlFlow.root.nodes[0]).toEqual(node);
 });
 test.each(["literal", "sibling", "wrong path", "model"])("recurring joined key proposal denies unselected %s lineage", async damage => {
   const s = await crossJoinFixture(), fields = s.workflow.metadata.controlFlow.root.nodes[0].merge.else.fields;

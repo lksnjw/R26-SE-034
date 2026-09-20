@@ -30,6 +30,7 @@ import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/cano
 import { RELATED_KEY_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 import { verifyFirestoreCalendarJoins } from "./firestore-calendar-joins.mjs";
 import { verifyFirestoreRecurringJoins } from "./firestore-recurring-joins.mjs";
+import { firestoreConditionPatchResponse, verifyFirestoreConditionProposals } from "./firestore-condition-proposals.mjs";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -165,6 +166,8 @@ async function start(repositoryValue) {
       assert(JSON.parse(request.messages[1].content).USER_REQUEST.includes("Create a workflow"));
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: stringify(returnSynthesisFixture) } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
     }
+    const conditionPatch = firestoreConditionPatchResponse(request);
+    if (conditionPatch) return conditionPatch;
     const node = request.messages[0].content.includes("ONE SELECTED NODE PATCH"), owner = request.messages[0].content.includes("ONE SELECTED COLLECTION PATCH"),
       agent = request.messages[0].content.includes("TASK: BOUNDED RUNTIME ERP AGENT"), answered = request.messages.some(message => message.role === "tool");
     if (owner) assert.deepEqual(JSON.parse(request.messages[1].content).tools, []);
@@ -311,6 +314,7 @@ try {
   await request("POST", "/api/workflows/collection_edit/commands", applyPayload, 409);
   assert.equal((await repository.snapshot()).chats[chatId].messages.at(-1).artifacts.proposal.status, "APPLIED"); assert.equal(calls.length, callsBeforeNode);
   log("collection-owner saved chat used its dedicated tools-free patch contract and selected model; exact explicit once-only draft apply preserved body/actions and never published or dispatched");
+  await verifyFirestoreConditionProposals({ request, repository: () => repository, restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, log });
 
   const callsBeforeAutomation = calls.length, modelsBeforeAutomation = models.length;
   const automation = (await request("POST", `/api/chat/sessions/${chatId}/messages`, { content: "Send daily invoice and order details to manager@example.test" }, 200)).data.assistantMessage.artifacts;

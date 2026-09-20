@@ -25,7 +25,8 @@ import { boundMcpConnection, selectedMcpConnectionId } from "../../tools/mcp-dis
 import { effectiveStepKind } from "../../models/schemas.js";
 import { hasWorkflowEffects, usesCheckpointedOperationWorkflow } from "../../workflows/execution-shape.js";
 import { operationModelReadinessIssues } from "../../workflows/operation-model-readiness.js";
-import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand,
+import { selectedConditionGuidance } from "../../workflows/selected-condition-guidance.js";
+import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand, selectedNodePatchPreview,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
 
@@ -140,7 +141,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       const availableTools = services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role));
       const promptTools = node.kind === "agent" ? availableTools.filter(tool => tool.is_read_only && (node.allowed_actions ?? []).some(action => action === tool.name || action === tool.mcp_tool_name)) : availableTools;
       const prompt = promptData({ instruction: value.prompt, node: withoutSecretFields(node),
-        ...(node.kind === "if" ? { allowedBooleanSources: authoring?.conditions?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
+        ...(node.kind === "if" ? selectedConditionGuidance(node.id, authoring) : {}),
         ...(node.kind === "return" ? { allowedDataSources: authoring?.returns?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
         ...(node.kind === "foreach" ? { allowedItemSources: collection?.itemSources ?? [], allowedCollectSources: collection?.collectSources ?? [] } : {}),
         tools: structural ? [] : promptTools.map((tool) => ({ name: tool.name, inputSchema: tool.input_schema, readOnly: tool.is_read_only })) });
@@ -162,7 +163,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         if (!fresh || !permitted(fresh, user, true)) throw new HandlerFailure(404, "Workflow not editable");
         assertCurrentWorkflowEditor(state, fresh, user);
         requireBase(fresh, value.baseVersion, value.baseHash);
-        const result = { id: nextID(state, "proposal"), workflowId, nodeId: node.id, baseVersion: value.baseVersion, baseHash: value.baseHash, command: change, before: node, after: { ...node, ...proposed }, validation, status: "PROPOSED", modelBinding: provider.binding };
+        const result = { id: nextID(state, "proposal"), workflowId, nodeId: node.id, baseVersion: value.baseVersion, baseHash: value.baseHash, command: change, before: node, after: selectedNodePatchPreview(node, proposed), validation, status: "PROPOSED", modelBinding: provider.binding };
         if (value.sessionId) {
           const chat = state.chats[value.sessionId];
           if (!chat || chat.ownerId !== user.id) throw new HandlerFailure(404, "Chat session not found");

@@ -39,6 +39,10 @@ const agentNodeSchema = z.object({ id: nodeIdSchema, kind: z.literal("agent"), .
   .refine(value => value.max_total_tokens === undefined || value.max_output_tokens === undefined || value.max_total_tokens >= value.max_output_tokens,
     "Total token budget must cover one output turn");
 export const conditionPatchSchema = z.object({ predicate: readPredicateSchema }).strict();
+// v1 remains addressable; v2 permits one atomic predicate/output edit without
+// granting the model ownership of the condition's identity or either path.
+export const conditionEditPatchSchema = z.object({ predicate: readPredicateSchema.optional(), merge: readMergeSchema.nullable().optional() }).strict()
+  .refine(value => value.predicate !== undefined || value.merge !== undefined, "Condition patch must change a predicate or branch output");
 export const returnPatchSchema = z.object({ output: readReturnSchema }).strict();
 const destinationSchema = z.union([z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict(), z.object({ loopId: nodeIdSchema, scope: z.literal("body") }).strict()]);
 const collectionConfig = { items: readReturnSchema.refine(value => value.schema.type === "array", "Collection requires an array schema"), maxItems: z.number().int().min(1).max(100), collect: readReturnSchema };
@@ -57,7 +61,7 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("moveNode"), nodeId: nodeIdSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
   z.object({ type: z.literal("addCondition"), conditionId: nodeIdSchema, predicate: readPredicateSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
   z.object({ type: z.literal("wrapNode"), nodeId: nodeIdSchema, conditionId: nodeIdSchema, predicate: readPredicateSchema, branch: z.enum(["then", "else"]) }).strict(),
-  z.object({ type: z.literal("updateCondition"), nodeId: nodeIdSchema, patch: conditionPatchSchema }).strict(),
+  z.object({ type: z.literal("updateCondition"), nodeId: nodeIdSchema, patch: conditionEditPatchSchema }).strict(),
   z.object({ type: z.literal("removeCondition"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("setConditionMerge"), nodeId: nodeIdSchema, merge: readMergeSchema.nullable() }).strict(),
   z.object({ type: z.literal("addReturn"), nodeId: nodeIdSchema, output: readReturnSchema, beforeNodeId: nodeIdSchema.nullable(), destination: destinationSchema.optional() }).strict(),
@@ -74,9 +78,14 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
 export function selectedNodePatchSchema(node: { kind?: string | undefined }) {
-  return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : node.kind === "agent" ? agentNodePatchSchema : nodePatchSchema;
+  return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionEditPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : node.kind === "agent" ? agentNodePatchSchema : nodePatchSchema;
 }
-export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v1" : node.kind === "analysis" ? "prompt/analysis-node-patch/v3" : node.kind === "agent" ? "prompt/agent-node-patch/v3" : "prompt/node-patch/v2"; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v2" : node.kind === "analysis" ? "prompt/analysis-node-patch/v3" : node.kind === "agent" ? "prompt/agent-node-patch/v3" : "prompt/node-patch/v2"; }
+export function selectedNodePatchPreview(node: { kind?: string | undefined }, patch: Record<string, unknown>) {
+  const after: Record<string, unknown> = { ...node, ...patch };
+  if (node.kind === "if" && patch.merge === null) delete after.merge;
+  return after;
+}
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
   return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : node.kind === "analysis" ? "updateAnalysis" : node.kind === "agent" ? "updateAgent" : "updateNode", nodeId: node.id, patch });
 }
@@ -163,7 +172,11 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
     } else if (change.type === "updateCondition" || change.type === "removeCondition") {
       const found = locateFlowNode(root, change.nodeId);
       if (!found || found.node.kind !== "if") throw new HandlerFailure(422, "Selected condition does not exist");
-      if (change.type === "updateCondition") found.node.predicate = change.patch.predicate;
+      if (change.type === "updateCondition") {
+        if (change.patch.predicate !== undefined) found.node.predicate = change.patch.predicate;
+        if (change.patch.merge === null) delete found.node.merge;
+        else if (change.patch.merge !== undefined) found.node.merge = change.patch.merge;
+      }
       else {
         if (found.node.then.nodes.length || found.node.else.nodes.length) throw new HandlerFailure(422, "Move or remove the contents of both paths before removing this condition");
         found.block.nodes.splice(found.index, 1);

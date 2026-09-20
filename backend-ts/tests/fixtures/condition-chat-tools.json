@@ -1,0 +1,16 @@
+[
+  {
+    "tool_id": "TEST-CONDITION-ECHO",
+    "name": "demo.echo",
+    "mcp_tool_name": "demo.echo",
+    "description": "Declared conditional output fixture, never a live deployment.",
+    "input_schema": { "type": "object", "properties": { "value": { "type": "string" } }, "required": ["value"], "additionalProperties": false },
+    "required_parameters": ["value"], "allowed_roles": ["Platform Admin"], "is_read_only": true, "risk_level": "low",
+    "bridge_contract": {
+      "profile": "toolplane-v1", "resource_version": "1.0.0",
+      "resource_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "remote_roles": ["admin"],
+      "output_schema": { "type": "object", "properties": { "value": { "type": "string" } }, "required": ["value"], "additionalProperties": false }
+    }
+  }
+]

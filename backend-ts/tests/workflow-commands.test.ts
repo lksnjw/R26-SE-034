@@ -22,7 +22,7 @@ const blueprint = { name: "Report", description: "Read report", trigger: { type:
   { id: "last", action: "demo.echo", parameters: { value: "tail" } },
 ] };
 const yaml = stringify(blueprint);
-async function setup(output: unknown = { parameters: { value: "proposed" } }) {
+async function setup(output: unknown = { parameters: { value: "proposed" } }, toolFile = "chat-read-tools.json") {
   const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "commands-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" });
   const repository = new Repository(null), now = new Date().toISOString();
   await repository.mutate((state) => {
@@ -32,7 +32,7 @@ async function setup(output: unknown = { parameters: { value: "proposed" } }) {
     state.versions.report = [{ version: 1, artifactState: "PUBLISHED", yaml }];
     state.chats.chat = { id: "chat", ownerId: "admin", title: "Node changes", createdAt: now, updatedAt: now, messageCount: 0, messages: [] };
   });
-  const registries = await RegistryService.load(resolve("tests/fixtures/chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
+  const registries = await RegistryService.load(resolve("tests/fixtures", toolFile), resolve("tests/fixtures/rules.json"));
   const validator = new RegistryValidator(registries, repository), executor = new Executor(new ToolRegistry(), validator);
   const fetchImplementation = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: JSON.stringify(output) } }] }));
   const providerRuntime = new ProviderRuntime(repository, executor, fetchImplementation);
@@ -302,8 +302,8 @@ test("a lost command acknowledgement never claims the already-saved draft was un
 });
 
 async function conditionSetup(output: unknown = { predicate: { kind: "literal", value: false } }) {
-  const s = await setup(output);
-  const source = stringify({ name: "Conditional report", trigger: { type: "manual" }, steps: ["first", "last"].map(id => ({ id, action: "demo.echo", parameters: { value: id } })),
+  const s = await setup(output, "condition-chat-tools.json");
+  const source = stringify({ name: "Conditional report", description: "Read the selected fixture path", trigger: { type: "manual" }, steps: ["first", "last"].map(id => ({ id, action: "demo.echo", parameters: { value: id } })),
     metadata: { controlFlow: { schemaVersion: "read-control-flow/v1", root: { kind: "sequence", nodes: [{ kind: "if", id: "gate", predicate: { kind: "literal", value: true }, then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] }, else: { kind: "sequence", nodes: [{ kind: "action", nodeId: "last" }] } }] } } } });
   await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
   return { ...s, source, hash: workflowContentHash(source) };
@@ -391,14 +391,67 @@ test("selected condition model proposals change only the predicate and acceptanc
   const proposal = response.json().data; expect(proposal.command).toEqual({ type: "updateCondition", nodeId: "gate", patch: { predicate: { kind: "literal", value: false } } });
   expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(s.source);
   const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-  expect(body.messages[0].content).toContain("ONE SELECTED CONDITION PATCH"); expect(body.messages[0].content).toContain("Branch contents and scope are immutable");
+  expect(body.messages[0].content).toContain("ONE SELECTED CONDITION PATCH"); expect(body.messages[0].content).toContain("then/else branch contents and every other node are immutable");
   expect(JSON.parse(body.messages[1].content).tools).toEqual([]);
   const applied = await s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(), payload: { baseVersion: 1, baseHash: s.hash, command: proposal.command, proposalId: proposal.id } });
   expect(applied.statusCode, applied.body).toBe(200);
   expect(parseWorkflowYAMLStrict(applied.json().data.yaml).steps).toEqual(parseWorkflowYAMLStrict(s.source).steps);
   expect((await s.repository.snapshot()).executions).toEqual({});
 });
-test.each([{ predicate: { kind: "literal", value: false }, then: { kind: "sequence", nodes: [] } }, { action: "demo.echo" }, { predicate: { kind: "literal", value: "false" } }, { predicate: { kind: "ref", source: "workflowInput", path: ["__proto__"] } }])("condition proposal %j cannot escape its narrow patch contract", async output => {
+const conditionMerge = { schema: { type: "string" }, then: { kind: "ref", source: "nodeOutput", nodeId: "first", path: ["structuredContent", "value"] }, else: { kind: "ref", source: "nodeOutput", nodeId: "last", path: ["structuredContent", "value"] } };
+test.each([false, true])("selected condition chat proposes exact typed branch outputs with combined predicate edit=%s", async combined => {
+  const patch = { merge: conditionMerge, ...(combined ? { predicate: { kind: "literal", value: false } } : {}) }, s = await conditionSetup(patch);
+  const result = await s.propose({ nodeId: "gate", baseHash: s.hash }); expect(result.statusCode, result.body).toBe(200);
+  const proposal = result.json().data, state = await s.repository.snapshot();
+  expect(proposal.validation.passed, JSON.stringify(proposal.validation)).toBe(true);
+  expect(proposal).toMatchObject({ status: "PROPOSED", command: { type: "updateCondition", nodeId: "gate", patch }, after: { merge: conditionMerge } });
+  expect(proposal.after.then).toEqual(proposal.before.then); expect(proposal.after.else).toEqual(proposal.before.else); expect(proposal.after.id).toBe("gate");
+  expect(state.workflows.report!.yaml).toBe(s.source); expect(state.versions.report).toHaveLength(1); expect(state.executions).toEqual({});
+  const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)), guidance = JSON.parse(body.messages[1].content);
+  expect(body.messages[0].content).toContain("prompt/condition-patch/v2"); expect(guidance.tools).toEqual([]);
+  expect(guidance.allowedMergeSources.then.some((source: any) => source.binding.nodeId === "first")).toBe(true);
+  expect(guidance.allowedMergeSources.then.some((source: any) => source.binding.nodeId === "last")).toBe(false);
+  expect(guidance.allowedMergeSources.else.some((source: any) => source.binding.nodeId === "last")).toBe(true);
+  const apply = (command = proposal.command, actor = "admin", hash = s.hash) => s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(actor), payload: { baseVersion: 1, baseHash: hash, proposalId: proposal.id, command } });
+  expect((await apply({ ...proposal.command, patch: { ...patch, merge: null } })).statusCode).toBe(409);
+  expect((await apply(proposal.command, "client")).statusCode).toBe(403);
+  const applied = await apply(); expect(applied.statusCode, applied.body).toBe(200); expect(applied.json().data).toMatchObject({ version: 2, publishedVersion: 1, canRun: false, validation: { passed: true } });
+  const next = parseWorkflowYAMLStrict(applied.json().data.yaml) as any, original = parseWorkflowYAMLStrict(s.source) as any;
+  expect(next.steps).toEqual(original.steps); expect(next.metadata.controlFlow.schemaVersion).toBe("read-control-flow/v2");
+  expect(next.metadata.controlFlow.root.nodes[0]).toEqual({ ...original.metadata.controlFlow.root.nodes[0], ...patch });
+  const savedVersions = (await s.repository.snapshot()).versions.report;
+  expect(savedVersions!.filter(item => item.version === 2)).toHaveLength(1);
+  expect((await apply()).statusCode).toBe(409); expect((await s.repository.snapshot()).versions.report).toEqual(savedVersions); expect(s.fetchImplementation).toHaveBeenCalledOnce();
+});
+
+test("selected condition output removal uses null explicitly, preserves the predicate and previews the actual absence", async () => {
+  const s = await conditionSetup({ merge: null }), original = parseWorkflowYAMLStrict(s.source) as any;
+  original.metadata.controlFlow.schemaVersion = "read-control-flow/v2"; original.metadata.controlFlow.root.nodes[0].merge = conditionMerge;
+  const source = stringify(original), hash = workflowContentHash(source); await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
+  const response = await s.propose({ nodeId: "gate", baseHash: hash }); expect(response.statusCode, response.body).toBe(200);
+  const proposal = response.json().data; expect(proposal.after).not.toHaveProperty("merge"); expect(proposal.before.merge).toEqual(conditionMerge);
+  const applied = await s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(), payload: { baseVersion: 1, baseHash: hash, proposalId: proposal.id, command: proposal.command } });
+  expect(applied.statusCode, applied.body).toBe(200); const next = parseWorkflowYAMLStrict(applied.json().data.yaml) as any;
+  expect(next.metadata.controlFlow.root.nodes[0]).toEqual(proposal.after); expect(next.steps).toEqual(original.steps);
+});
+
+test.each([
+  { ...conditionMerge, then: conditionMerge.else }, // sibling output
+  { ...conditionMerge, then: { kind: "ref", source: "nodeOutput", nodeId: "future", path: ["structuredContent", "value"] } },
+  { ...conditionMerge, else: { kind: "ref", source: "nodeOutput", nodeId: "gate", path: ["value"] } },
+  { ...conditionMerge, schema: { type: "boolean" } },
+])("invalid condition output scope/type %j is visible as a blocked proposal and never executable", async merge => {
+  const s = await conditionSetup({ merge }), result = await s.propose({ nodeId: "gate", baseHash: s.hash });
+  expect(result.statusCode, result.body).toBe(200); const proposal = result.json().data; expect(proposal.validation.passed).toBe(false);
+  expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(s.source);
+  const applied = await s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(), payload: { baseVersion: 1, baseHash: s.hash, proposalId: proposal.id, command: proposal.command } });
+  expect(applied.statusCode, applied.body).toBe(200); expect(applied.json().data).toMatchObject({ canRun: false, validation: { passed: false } });
+  const ready = await s.app.inject({ method: "GET", url: "/api/workflows/report/readiness", headers: s.headers() }); expect(ready.json().data.can_attempt_run).toBe(false);
+  const published = await s.app.inject({ method: "POST", url: "/api/workflows/report/publish", headers: s.headers(), payload: {} }); expect(published.statusCode).toBeGreaterThanOrEqual(400);
+  expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
+test.each([{ predicate: { kind: "literal", value: false }, then: { kind: "sequence", nodes: [] } }, { action: "demo.echo" }, { predicate: { kind: "literal", value: "false" } }, { predicate: { kind: "ref", source: "workflowInput", path: ["__proto__"] } }, {}, { merge: { ...conditionMerge, approved: true } }, { merge: conditionMerge, id: "other" }])("condition proposal %j cannot escape its narrow patch contract", async output => {
   const s = await conditionSetup(output); expect((await s.propose({ nodeId: "gate", baseHash: s.hash })).statusCode).toBe(422);
   expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(s.source); expect((await s.repository.snapshot()).chats.chat!.messages).toHaveLength(0);
 });
