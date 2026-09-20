@@ -31,12 +31,22 @@ test("generated headers bind exact backend origins without credentials or wildca
 test("RE2-compatible rewrite allowlist supports Windows and URL paths, not private/API namespaces", async () => {
   const base = JSON.parse(await readFile(new URL("../../firebase.json", import.meta.url), "utf8"));
   const pattern = new RegExp(base.hosting.rewrites[0].regex);
-  for (const path of ["/", "/chat", "/chat/session", "/settings/providers", "/profile/security", "/login"]) {
+  for (const path of ["/", "/chat", "/dashboard", "/chat/session", "/settings/providers", "/profile/security", "/login"]) {
     assert.equal(pattern.test(path), true); assert.equal(pattern.test(path.replaceAll("/", "\\")), true);
   }
   for (const path of ["/api", "/api/missing", "/ws", "/assets/missing.js", "/.env", "/.git/config", "/activity", "/chatty", "/a-missing-screen"]) {
     assert.equal(pattern.test(path), false); assert.equal(pattern.test(path.replaceAll("/", "\\")), false);
   }
+});
+test("every declared protected frontend route has a permitted Hosting deep link", async () => {
+  const base = JSON.parse(await readFile(new URL("../../firebase.json", import.meta.url), "utf8"));
+  const source = await readFile(new URL("../src/config/router.jsx", import.meta.url), "utf8");
+  const pattern = new RegExp(base.hosting.rewrites[0].regex);
+  const routes = [...source.matchAll(/path:\s*"(\/[^"\n]*)"/g)]
+    .map(match => match[1].replace(/:[A-Za-z]+/g, "saved-id"));
+  assert.ok(routes.includes("/dashboard"));
+  assert.ok(routes.length > 30);
+  for (const route of routes) assert.equal(pattern.test(route), true, "Hosting route missing: " + route);
 });
 test("release guard rejects changed source/assets/config and wrong deployment identity", async () => {
   const base = JSON.parse(await readFile(new URL("../../firebase.json", import.meta.url), "utf8"));

@@ -3,7 +3,7 @@
     "public": "frontend/dist",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**", "**/*.map", "**/*.pem", "**/*.key"],
     "predeploy": ["node frontend/scripts/verify-hosting-artifact.mjs --base-template"],
-    "rewrites": [{ "regex": "^[/\\\\]($|(?:chat|company|workflows|builder|executions|analytics|users|roles|audit|settings|registry|mcp-bridge|datafeed|registry-search|profile|login|register|forgot-password|unauthorized)(?:[/\\\\].*)?$)", "destination": "/index.html" }],
+    "rewrites": [{ "regex": "^[/\\\\]($|(?:chat|dashboard|company|workflows|builder|executions|analytics|users|roles|audit|settings|registry|mcp-bridge|datafeed|registry-search|profile|login|register|forgot-password|unauthorized)(?:[/\\\\].*)?$)", "destination": "/index.html" }],
     "headers": [
       { "regex": ".*", "headers": [
         { "key": "Cache-Control", "value": "no-cache, max-age=0, must-revalidate" },

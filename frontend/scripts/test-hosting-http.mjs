@@ -7,7 +7,7 @@ const manifest = JSON.parse(await readFile(new URL("../.hosting/release-manifest
 assert.equal(manifest.bindings.emulatorOnly, true, "Use an isolated emulator artifact");
 const request = path => fetch(base + path, { redirect: "manual", signal: AbortSignal.timeout(5000) });
 const shell = await (await request("/")).text(); assert.match(shell, /id="root"/);
-for (const path of ["/chat", "/chat/saved-chat", "/workflows/saved-workflow", "/builder/workflow", "/executions/run", "/settings", "/settings/providers", "/login", "/unauthorized", "/profile/security"]) {
+for (const path of ["/chat", "/dashboard", "/chat/saved-chat", "/workflows/saved-workflow", "/builder/workflow", "/executions/run", "/settings", "/settings/providers", "/login", "/unauthorized", "/profile/security"]) {
   const response = await request(path);
   assert.equal(response.status, 200, `Deep link ${path}`); assert.equal(await response.text(), shell);
   assert.match(response.headers.get("cache-control"), /no-cache/);
@@ -28,4 +28,4 @@ assert.ok(asset);
 const response = await request(`/${asset.path}`);
 assert.equal(response.status, 200); assert.match(response.headers.get("cache-control"), /immutable/);
 assert.equal((await response.arrayBuffer()).byteLength, asset.bytes);
-console.log("Actual Firebase Hosting emulator passed: 10 deep links, 13 API/private/removed/unknown misses, 3 write-method misses, immutable asset, CSP and revalidation headers. No backend/ERP effects dispatched.");
+console.log("Actual Firebase Hosting emulator passed: 11 deep links including dashboard, 13 API/private/removed/unknown misses, 3 write-method misses, immutable asset, CSP and revalidation headers. No backend/ERP effects dispatched.");
