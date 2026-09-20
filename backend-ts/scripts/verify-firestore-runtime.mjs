@@ -112,7 +112,7 @@ const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
 const calls = [], reports = [], relatedInvoiceReports = [], relatedOrderReports = [], models = [], operations = [], readbacks = [], emails = [], mergedModelInputs = [];
-let sdkHook, modelHook, returnSynthesisFixture;
+let sdkHook, modelHook, returnSynthesisFixture, recurringAnalysisFixture;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
   const deadline = performance.now() + 20_000;
@@ -205,6 +205,10 @@ async function start(repositoryValue) {
       const value = JSON.parse(request.messages[1].content).INPUT; assert.equal(typeof value, "string"); mergedModelInputs.push(value);
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ id: value }) } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
     }
+    if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS") && recurringAnalysisFixture) {
+      const output = await recurringAnalysisFixture(JSON.parse(request.messages[1].content));
+      return Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify(output) } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
+    }
     if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS"))
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"id":"ANALYSIS-FIXTURE-ONE"}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
     if (agent) return Response.json({ choices: [{ finish_reason: answered ? "stop" : "tool_calls", message: answered
@@ -215,7 +219,7 @@ async function start(repositoryValue) {
       content: "", tool_calls: [{ id: "fixture-chat-read", type: "function", function: { name: "read", arguments: '{"id":"chat"}' } }],
     } }], usage: { prompt_tokens: 5, completion_tokens: 7 } });
   });
-  providerRuntime.activate({ id: "fixture-provider", name: "Fixture provider", type: "openai_compatible", baseURL: "https://provider.fixture.example.test/v1", apiKey: "synthetic-provider-secret", model: "fixture-model-a", additionalModels: ["fixture-model-b"], temperature: 0, timeoutMs: 10_000,
+  await providerRuntime.activateStoredOrStatic({ id: "fixture-provider", name: "Fixture provider", type: "openai_compatible", baseURL: "https://provider.fixture.example.test/v1", apiKey: "synthetic-provider-secret", model: "fixture-model-a", additionalModels: ["fixture-model-b"], temperature: 0, timeoutMs: 10_000,
     egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: ["internal"], interactiveDataClasses: ["restricted"],
       reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "owner", name: "owner" } } });
   services = { config, repository, registries, validator, executor, providerRuntime, synthesis: new SynthesisService(providerRuntime, registries, validator), erpbridgeSession: session };
@@ -843,7 +847,8 @@ try {
   }
   await verifyFirestoreRecurringJoins({ getRepository: () => repository, getServices: () => services,
     restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, request, waitFor, log,
-    tools: fixtureTools, setSynthesisFixture: source => { returnSynthesisFixture = source; }, models, relatedInvoiceReports, relatedOrderReports, emails });
+    tools: fixtureTools, setSynthesisFixture: source => { returnSynthesisFixture = source; },
+    setAnalysisFixture: handler => { recurringAnalysisFixture = handler; }, models, relatedInvoiceReports, relatedOrderReports, emails });
   const modelsAfterDurableAgent = models.length;
   log("actual Firestore bounded runtime-agent used only its reviewed read allow-list, persisted every model/tool intent and structured answer, survived restarts, required independent approval for the later effect, and replayed neither model, ERP read nor operation");
 
