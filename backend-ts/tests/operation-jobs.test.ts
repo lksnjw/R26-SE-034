@@ -537,6 +537,50 @@ test.each(["sibling", "join", "late", "window"] as const)("schedule rejects %s c
   expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
 });
 
+test.each([true, false].flatMap(selected => ["decision", "pending merge", "missing merge", "forged value"].map(damage => [selected, damage] as const)))(
+  "calendar joined selected=%s altered %s cannot approve or dispatch", async (selected, damage) => {
+    const s = await setup(null, true, false, false, "cursor"); await prepareCalendarJoin(s);
+    const { id } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected })); await s.wait(id, "AWAITING_APPROVAL");
+    const command = await s.command(id);
+    await s.repository.mutate(state => {
+      const run = state.executions[id]!;
+      if (damage === "decision") run.readProgress!.decisions!.gate!.selected = selected ? "else" : "then";
+      if (damage === "pending merge") (run.readProgress!.values!.gate as { status: string }).status = "PENDING"; // Deliberately corrupt stored evidence.
+      if (damage === "missing merge") delete run.readProgress!.values!.gate;
+      if (damage === "forged value") run.valueOutputs!.gate!.value = "Fabricated answer is not report evidence";
+    });
+    const response = await s.request("POST", "/api/executions/" + id + "/approve", command, "reviewer");
+    expect(response.statusCode, response.body).toBe(409);
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(3); expect(s.modelFetch).not.toHaveBeenCalled();
+    expect((await s.repository.snapshot()).executions[id]!.operationSecret!.intents.after).toBeUndefined();
+  });
+
+test.each([true, false].flatMap(selected => ["item count", "output hash", "missing receipt", "sibling receipt", "window", "cursor count", "related keys"].map(damage => [selected, damage] as const)))(
+  "calendar joined selected=%s altered %s is rechecked after approval and before SDK entry", async (selected, damage) => {
+    const related = damage === "related keys", s = await setup(null, true, false, false, related ? "related" : "cursor"); await prepareCalendarJoin(s);
+    const { id, at } = await admitScheduledOccurrence(s, await activateDecisionSchedule(s, { sendReport: selected })); await s.wait(id, "AWAITING_APPROVAL");
+    const command = await s.command(id), own = selected ? "yes_report" : "no_report", other = selected ? "no_report" : "yes_report";
+    await s.repository.mutate(state => {
+      const run = state.executions[id]!, receipt = run.reportCoverages![own]!;
+      if (damage === "item count") receipt.itemCount++;
+      if (damage === "output hash") receipt.outputHash = "sha256:" + "0".repeat(64);
+      if (damage === "missing receipt") delete run.reportCoverages![own];
+      if (damage === "sibling receipt") { run.reportCoverages![other] = { ...receipt, nodeId: other }; delete run.reportCoverages![own]; }
+      if (damage === "window") receipt.startAt = "2026-01-01T00:00:00.000Z";
+      if (damage === "cursor count") receipt.pagination!.pageCount++;
+      if (damage === "related keys") run.reportCoverages![own + "_orders"]!.relatedRecords!.keysHash = "sha256:" + "0".repeat(64);
+    });
+    const response = await s.request("POST", "/api/executions/" + id + "/approve", command, "reviewer");
+    expect(response.statusCode, response.body).toBe(200); await s.wait(id, "FAILED");
+    const failed = (await s.repository.snapshot()).executions[id]!;
+    expect(failed.operationSecret!.intents.after).toBeUndefined(); expect(failed.finalOutput).toBeUndefined();
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(related ? 2 : 3); expect(s.modelFetch).not.toHaveBeenCalled();
+    const events = structuredClone((await s.repository.snapshot()).executionEvents[id]);
+    expect(await workflowScheduleRunner(s.services).runDue(at)).toEqual({ admitted: 0, skipped: 0, blocked: 0 });
+    expect((await s.repository.snapshot()).executionEvents[id]).toEqual(events);
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(related ? 2 : 3);
+  });
+
 test.each([[true, true], [true, false], [false, true]])("nested scheduled decisions outer=%s inner=%s retain branch-local coverage", async (outer, inner) => {
   const s = await setup(); await prepareBranchReports(s);
   await s.repository.mutate(state => {

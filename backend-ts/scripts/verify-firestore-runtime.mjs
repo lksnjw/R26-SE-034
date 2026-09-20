@@ -28,6 +28,7 @@ import { reportWindowFor, workflowScheduleRunner } from "../src/runner/workflow-
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.js";
 import { CALENDAR_RETURN_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { verifyFirestoreCalendarJoins } from "./firestore-calendar-joins.mjs";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -1055,6 +1056,11 @@ try {
     assert.equal(reports.length, readsBefore + 3); assert.equal(operations.length, effectsBefore + (selected ? 1 : 0)); assert.equal(models.length, modelsBefore);
     log(`actual Firestore calendar Return selected=${selected}/lostACK=${loseACK}: complete report, independent effect approval or explicit no-effect answer, saved final value, fresh restart and no occurrence/effect replay`);
   }
+
+  await verifyFirestoreCalendarJoins({ getRepository: () => repository, getPersistence: () => persistence, getServices: () => services,
+    restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, request, waitFor, log,
+    reportTool, relatedInvoiceTool, relatedOrderTool, operationTool, reportWindowBinding,
+    reports, relatedInvoiceReports, relatedOrderReports, operations, models });
 
   const operationsBeforeLostOperation = operations.length;
   const lostOperation = (await request("POST", "/api/workflows/operation/run", { mode: "async-operation", idempotencyKey: "firestore-operation-lost-intent-0001", input: { id: "operation-lost-intent" } }, 202)).data.id;
