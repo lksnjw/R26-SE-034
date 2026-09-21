@@ -37,6 +37,7 @@ import { promptData } from "../prompts/contracts.js";
 import { validateValue } from "../structured-output/validate.js";
 import { runRuntimeAgent, RuntimeAgentKnownFailure } from "./runtime-agent.js";
 import { boundMcpConnection } from "../tools/mcp-dispatch-context.js";
+import type { ReviewedReadBusinessFailure } from "../tools/read-business-error.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -312,12 +313,13 @@ export class OperationJobQueue {
     let knownCoverageFailure: { nodeId: string; intentKey: string; intentId: string; output: Record<string, unknown>; message: string } | undefined;
     let knownAnalysisFailure: { nodeId: string; intentId: string; message: string; inputTokens: number; outputTokens: number } | undefined;
     let knownAgentFailure: { nodeId: string; code: string; message: string } | undefined;
-    let knownReadFailure: { nodeId: string; intentKey: string; intentId: string; argumentHash: string; output: Record<string, unknown> } | undefined;
+    let knownReadFailure: { nodeId: string; intentKey: string; intentId: string; argumentHash: string; output: Record<string, unknown>; businessFailure?: ReviewedReadBusinessFailure } | undefined;
     const captureReadFailure = async (nodeId: string, intentKey: string, intentId: string, args: Record<string, unknown>, tool: ToolDefinition, call: Promise<Record<string, unknown>>) => {
       try { return await call; }
       catch (error) {
         const failure = acknowledgedReadToolFailure(error);
-        if (failure) knownReadFailure = { nodeId, intentKey, intentId, argumentHash: digest(args), output: protectedReportPageOutput(tool, failure.result) };
+        if (failure) knownReadFailure = { nodeId, intentKey, intentId, argumentHash: digest(args), output: protectedReportPageOutput(tool, failure.result),
+          ...(failure.businessFailure ? { businessFailure: failure.businessFailure } : {}) };
         throw error;
       }
     };
@@ -864,12 +866,16 @@ export class OperationJobQueue {
               intent.argumentHash !== failure.argumentHash || intent.state !== "DISPATCH_INTENT")
             throw new Error("Acknowledged read failure no longer owns the current intent");
           const completedAt = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = completedAt; intent.evidenceMeaning = "read-tool-error";
+          if (failure.businessFailure) intent.readBusinessFailure = structuredClone(failure.businessFailure);
           attempt.status = "FAILED"; attempt.completedAt = completedAt;
           const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
           Object.assign(entry, { status: "FAILED", phase: "COMPLETE", outcome: "MCP_READ_TOOL_ERROR", completedAt,
             durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(attempt.startedAt)), output: withoutSecretFields(failure.output) });
-          appendExecutionEvent(state, run, "node.read_tool_failed", { intentId: intent.id, outcome: "MCP_READ_TOOL_ERROR" }, failure.nodeId, attempt.id);
-          run.failure = { failureCategory: "MCP_READ_TOOL_ERROR", failedStepId: failure.nodeId, reason: "The governed ERP read returned an acknowledged tool-error response." };
+          appendExecutionEvent(state, run, "node.read_tool_failed", { intentId: intent.id, outcome: "MCP_READ_TOOL_ERROR",
+            ...(failure.businessFailure ? { businessErrorCode: failure.businessFailure.code } : {}) }, failure.nodeId, attempt.id);
+          run.failure = { failureCategory: "MCP_READ_TOOL_ERROR", failedStepId: failure.nodeId,
+            reason: failure.businessFailure ? "The reviewed ERP read returned a resource-not-found error. This does not prove the record is absent." : "The governed ERP read returned an acknowledged tool-error response.",
+            ...(failure.businessFailure ? { businessErrorCode: failure.businessFailure.code } : {}) };
           // Error receipts are not successful data bindings or complete reports.
           // This is not handler routing, permission to retry, or write evidence.
           finish(state, run, "FAILED", "The ERP read returned a tool error. Its failure receipt is saved; no later node, approval or effect was dispatched.");

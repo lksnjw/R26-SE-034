@@ -58,6 +58,8 @@ const tool = toolSchema.parse({ tool_id: "FIXTURE-READ", name: "read", mcp_tool_
   input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
   bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: ["platform_admin"],
     output_schema: { type: "object", properties: { id: { type: "string" }, token: { type: "string" } }, required: ["id"], additionalProperties: false } } });
+const businessErrorTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-BUSINESS-ERROR-READ", name: "fixture.employee-read", mcp_tool_name: "fixture.employee-read",
+  read_error_contract: { profile: "erpbridge-read-error/v1", remote_type: "not_found", business_error: "ERP_RESOURCE_NOT_FOUND" } });
 const reportTool = toolSchema.parse({ ...tool, tool_id: "FIXTURE-REPORT", name: "fixture.report", mcp_tool_name: "fixture.report",
   input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, cursor: { type: "string" } }, required: ["startAt", "endAt"], additionalProperties: false },
   report_coverage_contract: { profile: "report-coverage/v1", start_parameter: "startAt", end_parameter: "endAt", covered_start_path: ["coveredStartAt"],
@@ -109,7 +111,7 @@ const emailTool = toolSchema.parse({ ...operationTool, tool_id: "FIXTURE-EMAIL",
   operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never",
     confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
   bridge_contract: { ...operationTool.bridge_contract, resource_digest: "d".repeat(64) } });
-const fixtureTools = [tool, reportTool, relatedInvoiceTool, relatedOrderTool, operationTool, readbackTool, emailTool];
+const fixtureTools = [tool, businessErrorTool, reportTool, relatedInvoiceTool, relatedOrderTool, operationTool, readbackTool, emailTool];
 const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions: { tools: "fixture-v1", rules: "fixture-v1" } }), hash: () => resolvedParameterHashBytes(canonicalJSONBytes(fixtureTools)),
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
@@ -157,13 +159,19 @@ async function start(repositoryValue) {
           return { content: [], structuredContent: { coveredStartAt: args.startAt, coveredEndAt: args.endAt, complete: true, hasMore: false,
             items: orderIds.map((orderId, index) => ({ orderId, total: (index + 1) * 10 })), itemCount: orderIds.length, reportId: "related-report-operation" } };
         }
-        assert.equal(name, exactBridgeName(tool)); assert.equal(meta["toolplane.resourceDigest"], "a".repeat(64));
+        assert([exactBridgeName(tool), exactBridgeName(businessErrorTool)].includes(name)); assert.equal(meta["toolplane.resourceDigest"], "a".repeat(64));
         calls.push(args.id); await sdkHook?.(args);
         if (readErrorFixture) {
           if (readErrorFixture === "forged-error") throw new ErpbridgeMcpToolError({ content: [], isError: true });
           if (readErrorFixture === "malformed") return { content: "invalid content array", isError: true };
           if (readErrorFixture === "transport-error") throw new Error("Synthetic connection lost after dispatch");
-          return { content: [{ type: "text", text: '{"error":"record not found","token":"synthetic-error-secret"}' }], isError: true };
+          if (readErrorFixture === "business-protocol-error") throw Object.assign(new Error("Synthetic missing tool revision"), { code: -32602 });
+          return { content: [{ type: "text", text: '{"error":"record not found","token":"synthetic-error-secret"}' }], isError: true,
+            ...(readErrorFixture.startsWith("business-") ? { _meta: { "com.erpbridge/error": {
+              type: readErrorFixture === "business-permission-denied" ? "permission_denied" : "not_found",
+              retryable: readErrorFixture === "business-contradictory",
+              ...(readErrorFixture === "business-malformed-hint" ? { retryAfterMs: -1 } : {}),
+            } } } : {}) };
         }
         return { content: [], structuredContent: { id: args.id.toUpperCase(), token: "synthetic-remote-secret" } };
       } } });
@@ -538,7 +546,7 @@ try {
 
   await verifyFirestoreReadErrors({ request, repository: () => repository, persistence: () => persistence,
     restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, setFixture: value => { readErrorFixture = value; },
-    calls, models, operations, waitFor, log });
+    businessErrorTool, calls, models, operations, waitFor, log });
 
   const modelsBeforeEmail = models.length, operationsBeforeEmail = operations.length, emailChat = await request("POST", "/api/chat/sessions", { title: "Exact email review" }, 201);
   const emailPrepared = (await request("POST", `/api/chat/sessions/${emailChat.data.id}/messages`, { content: "Email manager@example.test" }, 200)).data.assistantMessage.artifacts.emailDraft;

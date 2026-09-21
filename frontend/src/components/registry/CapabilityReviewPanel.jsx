@@ -177,6 +177,9 @@ function CapabilityInspector({ entry, canReview, onDecision }) {
   const reportCoverage = definition?.report_coverage_contract?.profile === "report-coverage/v1" ? definition.report_coverage_contract : null;
   const projectedRelation = reportCoverage?.key_projection;
   const requestedRelation = reportCoverage?.requested_key_coverage;
+  const readError = definition?.read_error_contract;
+  const supportedReadError = !operation && readError?.profile === "erpbridge-read-error/v1" &&
+    readError.remote_type === "not_found" && readError.business_error === "ERP_RESOURCE_NOT_FOUND";
   const complete = fullyVisible(definition);
   const validNote = note.trim().length > 0 && note.length <= 2000;
   return <div className="min-w-0">
@@ -186,6 +189,10 @@ function CapabilityInspector({ entry, canReview, onDecision }) {
       <div><dt className="text-xs text-gray-500">Observation time</dt><dd>{entry.observation?.discoveredAt ?? "No observation"}</dd></div>
       <div><dt className="text-xs text-gray-500">Exact contract hash</dt><dd className="font-mono text-xs">{entry.observation?.contractHash ?? entry.revision?.contractHash}</dd></div>
       <div><dt className="text-xs text-gray-500">Output schema validation</dt><dd>{definition?.bridge_contract?.output_schema ? "Declared schema checked before downstream use" : "No declared output schema; bounded result handling still applies"}</dd></div>
+      <div><dt className="text-xs text-gray-500">Business read-error mapping</dt><dd>{supportedReadError ? <>
+        Proposed contract: an acknowledged ERP resource-not-found response is classified as a resource lookup failure only under this exact saved review.
+        <span className="mt-1 block">This does not prove the record is absent, retry the read or authorize a handler. Permission denials, missing tool revisions, timeouts and uncertain writes are excluded. Adding this mapping requires a new review and explicit republication of affected workflows.</span>
+      </> : readError ? "Unsupported mapping; it cannot authorize business-error handling." : "No mapping declared. Tool errors still stop the run; no business-error category is inferred from error text."}</dd></div>
       {reportCoverage ? <div><dt className="text-xs text-gray-500">Scheduled report coverage</dt><dd>Exact {reportCoverage.start_parameter} → {reportCoverage.end_parameter} interval; connector must attest complete result, no remaining page, returned items and matching count.
         <span className="mt-1 block">Business resource: <strong>{reportCoverage.business_resource ? label(reportCoverage.business_resource) : "Not declared — unavailable for automatic resource matching"}</strong>.</span>
         {projectedRelation ? <span className="mt-1 block">Related-record role: identifies the complete <strong>{projectedRelation.relation_name}</strong> key set from the primary records for a later reviewed report.</span> : null}

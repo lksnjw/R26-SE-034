@@ -14,9 +14,10 @@ import { stringify } from "yaml";
 import { newReadProgress } from "../src/runner/read-checkpoints.js";
 import { admissionAuthorizer, observeCapabilities, reviewCapability, capabilityContractHash } from "../src/registry/capability-admission.js";
 
-async function setup(options: { write?: boolean; schema?: Record<string, unknown>; roles?: string[]; result?: unknown; contract?: ToolDefinition["bridge_contract"]; metadataComplete?: boolean; drift?: boolean; remoteFailure?: boolean } = {}) {
+async function setup(options: { write?: boolean; schema?: Record<string, unknown>; roles?: string[]; result?: unknown; contract?: ToolDefinition["bridge_contract"]; readErrorContract?: ToolDefinition["read_error_contract"]; metadataComplete?: boolean; drift?: boolean; remoteFailure?: boolean } = {}) {
   const tool = toolSchema.parse({ tool_id: "READ-1", name: "finance.read", mcp_tool_name: "finance.read", allowed_roles: options.roles ?? ["Workflow Builder"],
-    is_read_only: !options.write, risk_level: "low", ...(options.contract ? { bridge_contract: options.contract } : {}), input_schema: options.schema ?? { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
+    is_read_only: !options.write, risk_level: "low", ...(options.contract ? { bridge_contract: options.contract } : {}),
+    ...(options.readErrorContract ? { read_error_contract: options.readErrorContract } : {}), input_schema: options.schema ?? { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } });
   const registries = { snapshot: () => ({ tools: [tool], rules: [], versions: { tools: "v1", rules: "v1" } }), hash: () => capabilityContractHash(tool),
     findTool: (name: string) => name === tool.name ? tool : undefined, findRule: () => undefined, enabledRules: () => [] } as unknown as RegistryService;
   const repository = new Repository(null);
@@ -42,7 +43,7 @@ async function setup(options: { write?: boolean; schema?: Record<string, unknown
   }
   const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "test-broker-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }),
     erpbridgeRoleMap: { "Workflow Builder": "workflow_builder" } };
-  return { services: { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator), erpbridgeSession }, callTool, listTools, authorize };
+  return { services: { config, repository, registries, validator, executor: new Executor(new ToolRegistry(), validator), erpbridgeSession }, callTool, listTools, authorize, tool };
 }
 
 test("approved read consumes real capability and injects only backend-mapped role", async () => {
@@ -165,6 +166,58 @@ test("credential fields are removed from structured and JSON-text results before
 });
 
 const contract = { profile: "toolplane-v1" as const, resource_version: "1.2.3", resource_digest: "a".repeat(64), remote_roles: ["workflow_builder"], output_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } };
+const readErrorContract = { profile: "erpbridge-read-error/v1" as const, remote_type: "not_found" as const, business_error: "ERP_RESOURCE_NOT_FOUND" as const };
+const notFound = { content: [{ type: "text", text: "ERP resource not found" }], isError: true, _meta: { "com.erpbridge/error": { type: "not_found", retryable: false } } };
+
+test("only exact reviewed read error mapping creates immutable historical business failure evidence", async () => {
+  const s = await setup({ contract, readErrorContract, metadataComplete: true });
+  s.callTool.mockResolvedValueOnce(notFound);
+  const error = await dispatchReadTool(s.services, "builder", "finance.read", { id: "EMP002" }).catch(error => error);
+  const evidence = acknowledgedReadToolFailure(error)!;
+  expect(evidence.businessFailure).toMatchObject({ profile: "reviewed-read-business-failure/v1", code: "ERP_RESOURCE_NOT_FOUND",
+    toolId: s.tool.tool_id, contractHash: capabilityContractHash(s.tool), admissionPin: { connectionId: "erpbridge-default", admissionVersion: 1 } });
+  evidence.businessFailure!.admissionPin.revisionId = "counterfeit"; error.result._meta = {};
+  expect(acknowledgedReadToolFailure(error)!.businessFailure!.admissionPin.revisionId).not.toBe("counterfeit");
+  expect(s.callTool).toHaveBeenCalledOnce();
+});
+
+test.each(["no-mapping", "contradictory-hint", "malformed-dropped-hint", "extra-hint", "protocol-throw", "forged-constructor"])(
+  "%s does not create reviewed business-error evidence", async scenario => {
+    const s = await setup({ contract, metadataComplete: true, ...(scenario === "no-mapping" ? {} : { readErrorContract }) });
+    if (scenario === "protocol-throw" || scenario === "forged-constructor") s.callTool.mockRejectedValueOnce(scenario === "protocol-throw" ?
+      Object.assign(new Error("Revision not found"), { code: -32602, data: notFound._meta }) : new ErpbridgeMcpToolError(notFound));
+    else s.callTool.mockResolvedValueOnce({ ...notFound, _meta: { "com.erpbridge/error": { ...notFound._meta["com.erpbridge/error"],
+      ...(scenario === "contradictory-hint" ? { retryable: true } : scenario === "malformed-dropped-hint" ? { retryAfterMs: -1 } : scenario === "extra-hint" ? { continue: true } : {}) } } });
+    const error = await dispatchReadTool(s.services, "builder", "finance.read", { id: "EMP002" }).catch(error => error);
+    expect(acknowledgedReadToolFailure(error)?.businessFailure).toBeUndefined();
+    if (!["protocol-throw", "forged-constructor"].includes(scenario)) expect(acknowledgedReadToolFailure(error)).toBeDefined();
+    expect(s.callTool).toHaveBeenCalledOnce();
+  });
+
+test("read error contracts cannot use legacy session fixtures as reviewed authority", async () => {
+  const s = await setup({ contract, readErrorContract });
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "EMP002" })).rejects.toThrow("supported reviewed");
+  expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("adding an error contract after review invalidates the previous admission rather than silently upgrading it", async () => {
+  const s = await setup({ contract, metadataComplete: true }); s.tool.read_error_contract = readErrorContract;
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "EMP002" })).rejects.toThrow("no unique admitted");
+  expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test("an admission change during final verification fences the captured business-error review pin", async () => {
+  const s = await setup({ contract, readErrorContract, metadataComplete: true }), original = s.authorize.getMockImplementation()!;
+  let count = 0;
+  s.authorize.mockImplementation(async (...args) => {
+    await original(...args);
+    if (++count === 2) await s.services.repository.mutate(state => {
+      const admission = Object.values(state.capabilityAdmissions)[0]!; admission.version = Number(admission.version) + 1;
+    });
+  });
+  await expect(dispatchReadTool(s.services, "builder", "finance.read", { id: "EMP002" })).rejects.toThrow("changed");
+  expect(s.callTool).not.toHaveBeenCalled();
+});
 test.each(["actor", "role-map"])("noncollection dispatch also rechecks %s after the final awaited review", async change => {
   const s = await setup({ contract, metadataComplete: true }), original = s.authorize.getMockImplementation()!; let armed = false;
   const evaluate = s.services.validator.evaluateResolvedStep.bind(s.services.validator);

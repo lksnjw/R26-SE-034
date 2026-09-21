@@ -231,6 +231,8 @@ The adapter rejects a request before an SDK or network call when any of these ch
 
 The adapter returns the complete MCP result envelope. An envelope with `isError: true` fails the workflow step. The adapter does not parse arbitrary text content into a business object.
 
+An optional, exact administrator-reviewed `read_error_contract` can classify a genuinely acknowledged non-retryable ERP resource-lookup failure. Its profile is `erpbridge-read-error/v1`, remote type `not_found`, business category `ERP_RESOURCE_NOT_FOUND`. Adding it changes the local capability hash and requires fresh review and explicit workflow republication. It does not prove a record is absent or authorize retry/handler entry. Permission denial, missing tool revision/protocol errors, contradictory/malformed hints, transport uncertainty and unknown writes remain excluded. See [reviewed business read errors](../../docs/REVIEWED_BUSINESS_READ_ERRORS_2026-10-08.md) for invocation proof, private durable receipts and qualification limits.
+
 ## Troubleshooting
 
 | Error or symptom | Cause | Action |

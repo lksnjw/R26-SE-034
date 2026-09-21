@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { jsonObjectSchema, jsonValueSchema } from "../models/schemas.js";
 import { operationReadbackSchema } from "./operation-readback-schema.js";
+import { readErrorContractSchema } from "./read-error-schema.js";
 
 export const toolSchema = z.object({
   tool_id: z.string().default(""),
@@ -24,6 +25,9 @@ export const toolSchema = z.object({
     remote_roles: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)).max(32).refine(roles => new Set(roles).size === roles.length),
     output_schema: jsonObjectSchema.optional(),
   }).strict().optional(),
+  // Additive only: absence preserves historical capability hashes. Adding or
+  // changing this mapping requires a new exact capability observation/review.
+  read_error_contract: readErrorContractSchema.optional(),
   // Explicit local reviewed outcome contract, never inferred from a tool name
   // or MCP annotations. It does not promise upstream idempotency.
   operation_contract: z.object({

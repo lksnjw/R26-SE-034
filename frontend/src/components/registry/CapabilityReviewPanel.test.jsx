@@ -106,6 +106,21 @@ test("a report coverage read explains its exact interval and completeness eviden
   expect(screen.getByText(/does not approve a later effect/i)).toBeTruthy(); expect(document.querySelector("pre")).toBeNull();
 });
 
+test("business read-error mapping explains exact review and safeguard exclusions without enabling a tool or handler", async () => {
+  const value = entry(); value.observation.definition.read_error_contract = { profile: "erpbridge-read-error/v1", remote_type: "not_found", business_error: "ERP_RESOURCE_NOT_FOUND" };
+  catalog.mockResolvedValue(page(value)); mount(); await select();
+  expect(screen.getByText(/Proposed contract: an acknowledged ERP resource-not-found/)).toBeTruthy();
+  expect(screen.getByText(/This does not prove the record is absent/).textContent).toMatch(/Permission denials, missing tool revisions, timeouts and uncertain writes are excluded/);
+  expect(screen.getByText(/This does not prove the record is absent/).textContent).toMatch(/new review and explicit republication/);
+  expect(screen.getByRole("button", { name: "Save explicit read review" }).disabled).toBe(true);
+  expect(review).not.toHaveBeenCalled(); expect(document.querySelector("pre")).toBeNull();
+});
+
+test("a contract without a mapping never implies a catchable error category", async () => {
+  mount(); await select(); expect(screen.getByText(/No mapping declared/)).toBeTruthy();
+  expect(screen.queryByText(/Proposed contract:/)).toBeNull(); expect(review).not.toHaveBeenCalled();
+});
+
 test("lost acknowledgement retains exact decision across remount and duplicate disabled receipt does not display enabled success", async () => {
   const first = mount(); await select(); confirm(); review.mockRejectedValueOnce(new Error("ACK lost"));
   fireEvent.click(screen.getByRole("button", { name: "Save explicit read review" }));

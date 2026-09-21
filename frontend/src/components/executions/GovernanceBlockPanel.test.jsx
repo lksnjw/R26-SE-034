@@ -27,3 +27,25 @@ test("a real tool failure retains its distinct failure explanation", () => {
   expect(screen.getByText(/failed while running demo.lookup/)).toBeTruthy();
   expect(screen.queryByTestId("recovery-required-panel")).toBeNull();
 });
+
+test("reviewed resource lookup failure is not rendered as proof of absence or a handled error", () => {
+  const { container } = render(<GovernanceBlockPanel failure={{ failureCategory: "MCP_READ_TOOL_ERROR", businessErrorCode: "ERP_RESOURCE_NOT_FOUND", failedStepId: "employee" }} />);
+  expect(screen.getByRole("heading", { name: "ERP resource lookup failed" })).toBeTruthy();
+  expect(screen.getByText(/This does not prove the record is absent/)).toBeTruthy();
+  expect(screen.getByText(/no handler, later node or automatic retry was run/)).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "ERP record not found" })).toBeNull();
+  expect(container.querySelector("pre")).toBeNull(); expect(container.querySelector("button")).toBeNull();
+});
+
+test("unclassified acknowledged errors do not infer a business-error category from remote text", () => {
+  render(<GovernanceBlockPanel failure={{ failureCategory: "MCP_READ_TOOL_ERROR", reason: "not_found", failedStepId: "lookup" }} />);
+  expect(screen.getByRole("heading", { name: "ERP read returned an error" })).toBeTruthy();
+  expect(screen.getByText(/not a successful answer/)).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "ERP resource lookup failed" })).toBeNull();
+});
+
+test("a business code alone cannot relabel an uncertain write as a confirmed read failure", () => {
+  render(<GovernanceBlockPanel failure={{ failureCategory: "OPERATION_OUTCOME_UNKNOWN", businessErrorCode: "ERP_RESOURCE_NOT_FOUND", failedStepId: "send" }} />);
+  expect(screen.getByRole("heading", { name: "Outcome unknown" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "ERP resource lookup failed" })).toBeNull();
+});

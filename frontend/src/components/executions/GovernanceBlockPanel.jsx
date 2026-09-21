@@ -44,8 +44,11 @@ function GovernanceBlockPanel({ failure }) {
     const invalidRequest = failure.failureCategory === FAILURE_CATEGORY.INVALID_REQUEST;
     const notFound = failure.failureCategory === FAILURE_CATEGORY.NOT_FOUND;
     const readStopped = failure.failureCategory === "READ_EXECUTION_FAILED";
+    const readToolFailed = failure.failureCategory === "MCP_READ_TOOL_ERROR";
+    const businessReadFailure = readToolFailed && failure.businessErrorCode === "ERP_RESOURCE_NOT_FOUND";
     const title = validation
       ? "Execution stopped before dispatch"
+      : readToolFailed ? businessReadFailure ? "ERP resource lookup failed" : "ERP read returned an error"
       : transient
         ? "Transient ERP failure"
         : authDenied
@@ -69,6 +72,9 @@ function GovernanceBlockPanel({ failure }) {
         <p className="mt-2 text-sm text-red-800 dark:text-red-200/90">
           {validation
             ? "This run stopped before any tool was reached."
+            : readToolFailed ? businessReadFailure
+              ? "The exact reviewed ERP read returned a resource-not-found error. This does not prove the record is absent. The failure was saved; no handler, later node or automatic retry was run."
+              : "The governed read returned an acknowledged error response, not a successful answer. The failure was saved; no business-error category, handler or retry is inferred from its text."
             : readStopped ? `The run stopped at step ${failure.failedStepId || "—"}. Consult the node timeline for whether dispatch was recorded.`
               : `Step ${failure.failedStepId || "—"} failed while running ${failure.failedToolName || "the tool"}.`}
         </p>

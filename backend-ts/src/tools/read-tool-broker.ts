@@ -10,7 +10,7 @@ import type { ValidationToken } from "../validator/registry-validator.js";
 import { hasReservedBridgeRole } from "./erpbridge-contract.js";
 import type { ReadAdmissionPin, CompiledReadPlan } from "../workflows/compiled-read.js";
 import { selectedPrerequisiteYAML } from "../workflows/selected-prerequisite-view.js";
-import { capabilityContractHash } from "../registry/capability-admission.js";
+import { capabilityContractHash, captureReadAdmissionPin } from "../registry/capability-admission.js";
 import { parseReadControlFlow } from "../workflows/read-control-flow.js";
 import { ReadIterationCheckpoints, type ReadSelectedEvidence } from "../runner/read-iteration-checkpoints.js";
 import type { ReadVisit } from "../workflows/read-interpreter.js";
@@ -18,15 +18,16 @@ import { selectedReadEvidenceYAML } from "../workflows/read-completion-evidence.
 import { assertIterationDispatchBinding } from "../workflows/read-iteration-dispatch-binding.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { boundMcpConnection, selectedMcpConnectionId } from "./mcp-dispatch-context.js";
-import { consumeAcknowledgedReadError, ErpbridgeMcpToolError } from "./erpbridge-mcp-client.js";
+import { consumeAcknowledgedReadErrorEvidence, ErpbridgeMcpToolError } from "./erpbridge-mcp-client.js";
+import { assertReadErrorContract, type ReviewedReadBusinessFailure } from "./read-business-error.js";
 
-const acknowledgedFailures = new WeakMap<object, Record<string, unknown>>();
+const acknowledgedFailures = new WeakMap<object, { result: Record<string, unknown>; businessFailure?: ReviewedReadBusinessFailure }>();
 /** Read-only observation for nested server checkpoints. Never accepts a
  * serialized flag, public exception constructor, or the mutable error.result. */
-export function acknowledgedReadToolFailure(error: unknown): { code: "MCP_READ_TOOL_ERROR"; result: Record<string, unknown> } | undefined {
+export function acknowledgedReadToolFailure(error: unknown): { code: "MCP_READ_TOOL_ERROR"; result: Record<string, unknown>; businessFailure?: ReviewedReadBusinessFailure } | undefined {
   if (!(error instanceof Error)) return undefined;
-  const result = acknowledgedFailures.get(error);
-  return result ? { code: "MCP_READ_TOOL_ERROR", result: structuredClone(result) } : undefined;
+  const evidence = acknowledgedFailures.get(error);
+  return evidence ? { code: "MCP_READ_TOOL_ERROR", ...structuredClone(evidence) } : undefined;
 }
 
 export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined;
@@ -78,10 +79,21 @@ export async function dispatchReadTool(
   const tools = await discoverTools(session, services.registries);
   const matches = tools.filter((tool) => tool.name === toolName || tool.mcp_tool_name === toolName);
   if (matches.length !== 1) throw new Error("Tool dispatch denied: tool has no unique admitted live contract");
-  const tool = matches[0]!;
+  const tool = structuredClone(matches[0]!);
+  assertReadErrorContract(tool);
+  // Capture the exact reviewed identity before SDK entry. Later changes cannot
+  // retroactively classify this response under a different review or contract.
+  let errorReviewPin: ReadAdmissionPin | undefined;
+  if (tool.read_error_contract) {
+    if (session.requiresReviewedRevision !== true || !session.admissionBinding || session.dispatchBoundary !== "sdk-entry/v1")
+      throw new Error("Business read-error classification requires a supported reviewed ERPBridge session");
+    errorReviewPin = await services.repository.readAuthoritative(state => captureReadAdmissionPin(state, services.registries, tool,
+      session.admissionBinding!, exactPlan?.admissionPin, connectionId));
+  }
+  const dispatchPin = errorReviewPin ?? exactPlan?.admissionPin;
   const assertContract = () => { if (exactPlan?.contractHash && (exactPlan.toolId !== tool.tool_id || exactPlan.contractHash !== capabilityContractHash(tool))) throw new Error("Compiled tool contract changed; no implicit rebinding is allowed"); };
   assertContract();
-  await session.assertAdmission?.(tool, exactPlan?.admissionPin, context.signal);
+  await session.assertAdmission?.(tool, dispatchPin, context.signal);
   if (!tool.is_read_only) throw new Error("Live ERP writes are blocked until transaction approval, idempotency and recovery are enforced");
   if (!tool.allowed_roles.includes(actor.role)) throw new Error("Tool dispatch denied: current role has no grant for this tool");
   if (hasReservedBridgeRole(tool) && Object.hasOwn(args, "role")) throw new Error("Tool dispatch denied: model-provided role is not allowed");
@@ -174,15 +186,20 @@ export async function dispatchReadTool(
   if (session.dispatchBoundary !== "sdk-entry/v1") await finalDispatch();
   const readErrorBinding = Object.freeze({});
   try {
-    return await session.clientFor(tool, exactPlan?.admissionPin).execute(authored.action!, resolved.capability, parameters, identity, context.signal,
+    return await session.clientFor(tool, dispatchPin).execute(authored.action!, resolved.capability, parameters, identity, context.signal,
       session.dispatchBoundary === "sdk-entry/v1" ? finalDispatch : undefined, assertContext, undefined, readErrorBinding);
   } catch (cause) {
-    const result = consumeAcknowledgedReadError(cause, readErrorBinding);
-    if (result) {
+    const evidence = consumeAcknowledgedReadErrorEvidence(cause, readErrorBinding);
+    if (evidence) {
       // New broker-owned exception: SDK replay of an older broker error cannot
       // inherit evidence belonging to a different invocation.
-      const error = new ErpbridgeMcpToolError(structuredClone(result));
-      acknowledgedFailures.set(error, result);
+      const error = new ErpbridgeMcpToolError(structuredClone(evidence.result));
+      const businessFailure: ReviewedReadBusinessFailure | undefined = errorReviewPin && tool.read_error_contract &&
+        evidence.remoteBusinessError === tool.read_error_contract.remote_type ? {
+          profile: "reviewed-read-business-failure/v1", code: tool.read_error_contract.business_error,
+          toolId: tool.tool_id, contractHash: errorReviewPin.contractHash, admissionPin: structuredClone(errorReviewPin),
+        } : undefined;
+      acknowledgedFailures.set(error, { result: evidence.result, ...(businessFailure ? { businessFailure } : {}) });
       throw error;
     }
     if (acknowledgedReadToolFailure(cause))

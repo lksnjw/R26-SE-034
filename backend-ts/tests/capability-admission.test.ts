@@ -101,6 +101,22 @@ const collectionFlow = () => ({ schemaVersion: "read-control-flow/v3", root: { k
   { kind: "return", id: "answer", output: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["value"] } } },
 ] } });
 
+test("business-error mapping requires exact fresh review and persists its immutable definition without migrating old pins", async () => {
+  const storage = new Persistence(), s = await setup(storage); await s.review();
+  const before = await s.repository.snapshot(), oldPin = captureReadAdmissionPin(before, s.registries, s.tool(), s.session.admissionBinding!);
+  s.changeTool({ read_error_contract: { profile: "erpbridge-read-error/v1", remote_type: "not_found", business_error: "ERP_RESOURCE_NOT_FOUND" } });
+  expect(() => captureReadAdmissionPin(before, s.registries, s.tool(), s.session.admissionBinding!, oldPin)).toThrow();
+  const review = await s.review({ decisionKey: "review-business-error-0002", note: "Reviewed exact ERP 404 meaning; not a proof of absent employee or permission to continue" });
+  const reopened = await Repository.open(storage); sessions.push(reopened);
+  const state = await reopened.snapshot(), pin = captureReadAdmissionPin(state, s.registries, s.tool(), s.session.admissionBinding!);
+  expect(pin.admissionVersion).toBe(oldPin.admissionVersion + 2); // discovery blocks drift, then fresh review admits
+  expect(pin.revisionId).not.toBe(oldPin.revisionId); expect(pin.contractHash).not.toBe(oldPin.contractHash);
+  expect(state.capabilityRevisions[oldPin.revisionId]!.definition).not.toHaveProperty("read_error_contract");
+  expect(review.revision.definition.read_error_contract).toEqual(s.tool().read_error_contract);
+  expect(() => captureReadAdmissionPin(state, s.registries, s.tool(), s.session.admissionBinding!, oldPin)).toThrow();
+  expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
 test.each(["connectionId", "capabilityId", "revisionId", "admissionVersion", "contractHash"] as const)("classification evidence rejects a changed %s pin", async field => {
   const s = await setup(); await s.review();
   const state = await s.repository.snapshot(), pin = captureReadAdmissionPin(state, s.registries, s.tool(), s.session.admissionBinding!);

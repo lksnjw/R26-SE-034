@@ -44,12 +44,14 @@ class Records implements PersistenceBackend {
   async probe() {} async close() {}
 }
 async function setup(storage: PersistenceBackend | null = null, withRead = true, withReadback = false, withEmail = false,
-  withReportPagination: boolean | "cursor" | "related" = false, withAnalysis = false) {
+  withReportPagination: boolean | "cursor" | "related" = false, withAnalysis = false, withReadErrorContract = false) {
   const repository = await Repository.open(storage), registries = await RegistryService.load(resolve("tests/fixtures/tools.json"), resolve("tests/fixtures/rules.json"));
   const pageNumberPagination = withReportPagination === true, cursorPagination = withReportPagination === "cursor", relatedMode = withReportPagination === "related";
   const paginated = pageNumberPagination || cursorPagination;
   const base = registries.snapshot(), original = base.tools[0]!;
-  const read = toolSchema.parse({ ...original, allowed_roles: ["Platform Admin"], bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [],
+  const read = toolSchema.parse({ ...original, allowed_roles: ["Platform Admin"], ...(withReadErrorContract ? {
+    read_error_contract: { profile: "erpbridge-read-error/v1", remote_type: "not_found", business_error: "ERP_RESOURCE_NOT_FOUND" } } : {}),
+    bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [],
     output_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false } } });
   const reportRead = toolSchema.parse({ ...read, tool_id: "report-coverage-fixture", name: "demo.report", mcp_tool_name: "demo.report",
     input_schema: { type: "object", properties: { startAt: { type: "string" }, endAt: { type: "string" }, ...(pageNumberPagination ? { page: { type: "integer" } } : {}),
@@ -80,7 +82,7 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
       items: { type: "array", items: { type: "object", properties: { orderId: { type: "string" }, total: { type: "integer" } },
         required: ["orderId", "total"], additionalProperties: false } }, itemCount: { type: "integer" }, summary: { type: "string" } },
       required: ["coveredStartAt", "coveredEndAt", "complete", "hasMore", "items", "itemCount", "summary"], additionalProperties: false } } }) : undefined;
-  const write = toolSchema.parse({ ...read, tool_id: "operation-fixture", name: "demo.dispatch", mcp_tool_name: "demo.dispatch", is_read_only: false, risk_level: "low", side_effects: ["Synthetic message acceptance"],
+  const write = toolSchema.parse({ ...read, read_error_contract: undefined, tool_id: "operation-fixture", name: "demo.dispatch", mcp_tool_name: "demo.dispatch", is_read_only: false, risk_level: "low", side_effects: ["Synthetic message acceptance"],
     operation_contract: { profile: "operation-result/v1", effect_class: "notification", retry_policy: "never", confirmation: { path: ["accepted"], expected: true, meaning: "operation-accepted" } },
     bridge_contract: { ...read.bridge_contract, resource_digest: "b".repeat(64), output_schema: { type: "object", properties: { accepted: { type: "boolean" }, id: { type: "string" } }, required: ["accepted", "id"], additionalProperties: false } } });
   const readback = withReadback ? toolSchema.parse({ ...read, tool_id: "readback-fixture", name: "demo.status", mcp_tool_name: "demo.status",
@@ -203,6 +205,27 @@ test("acknowledged operation read error saves its exact failed attempt without s
   expect(replay.json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledOnce();
 });
 
+test.each([false, true])("reviewed business read failure survives restart and lost-commit-ACK=%s without handler authority or replay", async lostAck => {
+  const records = new Records(), s = await setup(records, true, false, false, false, false, true);
+  s.sdk.callTool.mockResolvedValueOnce({ content: [{ type: "text", text: "ERP returned resource not found" }], isError: true,
+    _meta: { "com.erpbridge/error": { type: "not_found", retryable: false } } });
+  expect((await s.publish()).statusCode).toBe(200);
+  if (lostAck) records.loseWhen = state => Object.values(state.executions).some(run => run.operationSecret?.intents.lookup?.readBusinessFailure !== undefined);
+  const admitted = await s.run(`reviewed-error-lost-ack-${lostAck}`); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id;
+  if (lostAck) await vi.waitFor(() => expect(() => s.repository.assertAuthority()).toThrow()); else await s.wait(id, "FAILED");
+  const restarted = await Repository.open(records); closers.push(restarted);
+  const state = await restarted.snapshot(), run = state.executions[id]!, intent = run.operationSecret!.intents.lookup!;
+  expect(run.status).toBe("FAILED"); expect(intent).toMatchObject({ state: "ACKNOWLEDGED", evidenceMeaning: "read-tool-error",
+    readBusinessFailure: { code: "ERP_RESOURCE_NOT_FOUND", toolId: s.read.tool_id, contractHash: capabilityContractHash(s.read), admissionPin: { admissionVersion: 1 } } });
+  expect(run.failure).toMatchObject({ failureCategory: "MCP_READ_TOOL_ERROR", businessErrorCode: "ERP_RESOURCE_NOT_FOUND" });
+  expect(run.stepOutputs?.lookup).toBeUndefined(); expect(run.runtimeApprovalSecret).toBeUndefined(); expect(run.finalOutput).toBeUndefined();
+  expect(state.executionEvents[id]!.filter(event => event.type === "node.read_tool_failed")).toHaveLength(1);
+  expect(state.executionEvents[id]!.find(event => event.type === "node.read_tool_failed")!.payload).toMatchObject({ businessErrorCode: "ERP_RESOURCE_NOT_FOUND" });
+  expect(JSON.stringify(withoutSecretFields(run))).not.toMatch(/readBusinessFailure|admissionPin/);
+  expect(s.sdk.callTool).toHaveBeenCalledOnce();
+});
+
 test.each(["forged-error", "malformed-response", "transport-error"])("operation %s remains unconfirmed rather than a definite read failure", async scenario => {
   const s = await setup();
   if (scenario === "malformed-response") s.sdk.callTool.mockResolvedValueOnce({ content: "invalid", isError: true });
@@ -245,10 +268,11 @@ test("an acknowledged write tool error is still an unknown effect, never a read 
 });
 
 test.each([true, "cursor"] as const)("acknowledged second report-page error in %s profile preserves the first page without declaring coverage", async profile => {
-  const s = await setup(null, true, false, false, profile); await prepareScheduleWorkflow(s);
+  const s = await setup(null, true, false, false, profile, false, true); await prepareScheduleWorkflow(s);
   const original = s.sdk.callTool.getMockImplementation()!;
   s.sdk.callTool.mockImplementation(async (name, args, meta) => name === exactBridgeName(s.reportRead) && (args.page === 2 || args.cursor === "cursor-2")
-    ? { content: [], isError: true, structuredContent: { snapshotId: "private-failure-snapshot", ...(profile === "cursor" ? { cursor: "private-failure-cursor", nextCursor: "private-failure-continuation" } : {}) } } : original(name, args, meta));
+    ? { content: [], isError: true, _meta: { "com.erpbridge/error": { type: "not_found", retryable: false } },
+      structuredContent: { snapshotId: "private-failure-snapshot", ...(profile === "cursor" ? { cursor: "private-failure-cursor", nextCursor: "private-failure-continuation" } : {}) } } : original(name, args, meta));
   expect((await s.publish()).statusCode).toBe(200);
   const workflow = (await s.repository.snapshot()).workflows.flow!;
   const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
@@ -261,7 +285,8 @@ test.each([true, "cursor"] as const)("acknowledged second report-page error in %
   await s.wait(id, "FAILED"); const state = await s.repository.snapshot(), run = state.executions[id]!;
   const kind = profile === "cursor" ? "cursor" : "page";
   expect(run.operationSecret!.intents[`lookupReport:${kind}:1`]!.state).toBe("ACKNOWLEDGED");
-  expect(run.operationSecret!.intents[`lookupReport:${kind}:2`]).toMatchObject({ state: "ACKNOWLEDGED", evidenceMeaning: "read-tool-error" });
+  expect(run.operationSecret!.intents[`lookupReport:${kind}:2`]).toMatchObject({ state: "ACKNOWLEDGED", evidenceMeaning: "read-tool-error",
+    readBusinessFailure: { code: "ERP_RESOURCE_NOT_FOUND", toolId: s.reportRead.tool_id, contractHash: capabilityContractHash(s.reportRead) } });
   expect(run.reportPageSecret!.lookupReport!.pages).toHaveLength(1);
   expect(run.reportCoverage).toBeUndefined(); expect(run.stepOutputs?.lookupReport).toBeUndefined();
   expect(run.runtimeApprovalSecret).toBeUndefined(); expect(run.failure?.failureCategory).toBe("MCP_READ_TOOL_ERROR");
@@ -1760,12 +1785,12 @@ test("an unconfirmed runtime-agent ERP read is never replayed and no later effec
 });
 
 test("an acknowledged runtime-agent read error saves the exact dynamic-tool intent and stops before another model turn", async () => {
-  const s = await setup(null, true, false, false, false, true); await prepareAgentWorkflow(s);
+  const s = await setup(null, true, false, false, false, true, true); await prepareAgentWorkflow(s);
   s.modelFetch.mockReset();
   s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "call-error", type: "function",
     function: { name: exactBridgeName(s.read), arguments: JSON.stringify({ value: "agent follow-up" }) } }] } }], usage: { prompt_tokens: 13, completion_tokens: 5 } }));
   s.sdk.callTool.mockResolvedValueOnce({ content: [], structuredContent: { value: "FIXTURE REPORT" } });
-  s.sdk.callTool.mockResolvedValueOnce({ content: [], isError: true });
+  s.sdk.callTool.mockResolvedValueOnce({ content: [], isError: true, _meta: { "com.erpbridge/error": { type: "not_found", retryable: false } } });
   expect((await s.publish()).statusCode).toBe(200);
   const response = await s.run("durable-agent-tool-error-0001"); expect(response.statusCode, response.body).toBe(202);
   const id = response.json().data.id; await s.wait(id, "FAILED");
@@ -1773,7 +1798,8 @@ test("an acknowledged runtime-agent read error saves the exact dynamic-tool inte
   expect(execution.failure).toMatchObject({ failureCategory: "MCP_READ_TOOL_ERROR", failedStepId: "research" });
   expect(execution.readProgress!.attempts.research!.status).toBe("FAILED");
   expect(Object.values(execution.operationSecret!.intents).filter(intent => intent.dispatchKind === "agent-tool"))
-    .toEqual([expect.objectContaining({ state: "ACKNOWLEDGED", evidenceMeaning: "read-tool-error" })]);
+    .toEqual([expect.objectContaining({ state: "ACKNOWLEDGED", evidenceMeaning: "read-tool-error",
+      readBusinessFailure: expect.objectContaining({ code: "ERP_RESOURCE_NOT_FOUND", toolId: s.read.tool_id, contractHash: capabilityContractHash(s.read) }) })]);
   expect(execution.stepOutputs).not.toHaveProperty("research"); expect(execution.runtimeApprovalSecret).toBeUndefined();
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledOnce();
   expect((await s.run("durable-agent-tool-error-0001")).json().data.id).toBe(id);

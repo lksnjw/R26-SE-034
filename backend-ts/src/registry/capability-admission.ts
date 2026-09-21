@@ -15,6 +15,7 @@ import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { assertOperationReadbackSources } from "../tools/operation-readback-contract.js";
 import { assertReportCoverageContract } from "../tools/report-coverage-contract.js";
 import { modelDataClasses, type ModelDataClass } from "../providers/egress-policy.js";
+import { assertReadErrorContract } from "../tools/read-business-error.js";
 
 export const DEFAULT_BRIDGE_CONNECTION = "erpbridge-default";
 export function requireProductionAdmissionProfile(config: Pick<AppConfig, "mcpMode" | "mcpTransport">) {
@@ -55,7 +56,12 @@ function activeBinding(session: ErpbridgeMcpSession | undefined) {
     throw new HandlerFailure(503, "A supported connected modern ERPBridge session is required; health or a URL record is not enough", { code: "ADMISSION_CONNECTION_UNAVAILABLE" });
   return session.admissionBinding!;
 }
+function supportedReadErrorReview(tool: ToolDefinition) {
+  try { assertReadErrorContract(tool); }
+  catch { throw new HandlerFailure(422, "Business error mappings require an explicit low-risk ERP read without effects", { code: "ADMISSION_REVIEW_UNSUPPORTED" }); }
+}
 function supportedRead(tool: ToolDefinition) {
+  supportedReadErrorReview(tool);
   if (!tool.tool_id.trim() || !tool.name.trim() || !tool.bridge_contract || !tool.allowed_roles.length ||
     !tool.is_read_only || tool.risk_level.toLowerCase() !== "low" || tool.side_effects.length || /^system\..*_test$/i.test(tool.name) || /^system\..*_test$/i.test(tool.mcp_tool_name))
     throw new HandlerFailure(422, "This contract requires unsupported effect/risk review; only explicit low-risk reads without side effects can be admitted yet", { code: "ADMISSION_REVIEW_UNSUPPORTED" });
@@ -65,6 +71,7 @@ function supportedRead(tool: ToolDefinition) {
   }
 }
 export function supportedOperation(tool: ToolDefinition): void {
+  supportedReadErrorReview(tool);
   const contract = tool.operation_contract, output = tool.bridge_contract?.output_schema;
   if (!tool.tool_id.trim() || !tool.name.trim() || !tool.bridge_contract || !tool.allowed_roles.length || tool.is_read_only || !tool.side_effects.length ||
       !["low", "medium"].includes(tool.risk_level.toLowerCase()) || !contract || !output || output.type !== "object" ||

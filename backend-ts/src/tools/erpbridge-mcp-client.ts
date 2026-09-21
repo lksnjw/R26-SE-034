@@ -15,6 +15,7 @@ import type { GovernedMCPClient } from "./mcp-client.js";
 import type { McpNotificationState } from "./mcp-notification-stream.js";
 import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
 import { consumeOperationDispatchPermit, type OperationDispatchPermit } from "./operation-dispatch-permit.js";
+import { supportedRemoteReadError } from "./read-business-error.js";
 
 export type ErpbridgeMcpSdkTool = {
   name: string;
@@ -67,13 +68,19 @@ export class ErpbridgeMcpToolError extends Error {
 // Constructor/name/result are public data, not proof of an SDK response. Only
 // this facade can mint evidence, after the bounded governed call returns. The
 // broker supplies a fresh opaque identity for each invocation (including pages).
-const acknowledgedReadErrors = new WeakMap<object, { binding: object; result: Record<string, unknown> }>();
+const acknowledgedReadErrors = new WeakMap<object, { binding: object; result: Record<string, unknown>; remoteBusinessError?: "not_found" }>();
 export function consumeAcknowledgedReadError(error: unknown, binding: object): Record<string, unknown> | undefined {
+  return consumeAcknowledgedReadErrorEvidence(error, binding)?.result;
+}
+/** Same single-use proof as the historical observer, with a privately captured
+ * raw-envelope marker. Serialized metadata cannot mint invocation evidence. */
+export function consumeAcknowledgedReadErrorEvidence(error: unknown, binding: object): { result: Record<string, unknown>; remoteBusinessError?: "not_found" } | undefined {
   if (!(error instanceof Error)) return undefined;
   const evidence = acknowledgedReadErrors.get(error);
   if (!evidence) return undefined;
   acknowledgedReadErrors.delete(error);
-  return evidence.binding === binding ? structuredClone(evidence.result) : undefined;
+  if (evidence.binding !== binding) return undefined;
+  return { result: structuredClone(evidence.result), ...(evidence.remoteBusinessError ? { remoteBusinessError: evidence.remoteBusinessError } : {}) };
 }
 
 /*******************************************************************************
@@ -278,8 +285,11 @@ function createToolClient(
       const envelope = boundResult(result, definition);
       if (envelope.isError === true) {
         const error = new ErpbridgeMcpToolError(envelope);
-        if (isReadOnly && readErrorBinding)
-          acknowledgedReadErrors.set(error, { binding: readErrorBinding, result: structuredClone(envelope) });
+        if (isReadOnly && readErrorBinding) {
+          const remoteBusinessError = supportedRemoteReadError(result);
+          acknowledgedReadErrors.set(error, { binding: readErrorBinding, result: structuredClone(envelope),
+            ...(remoteBusinessError ? { remoteBusinessError } : {}) });
+        }
         throw error;
       }
       return envelope;
