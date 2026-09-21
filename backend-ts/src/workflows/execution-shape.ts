@@ -8,5 +8,8 @@ export function hasWorkflowEffects(source: WorkflowBlueprint, tools: readonly To
     !tool.is_read_only && [tool.name, tool.mcp_tool_name].includes(step.action ?? "")));
 }
 export function usesCheckpointedOperationWorkflow(source: WorkflowBlueprint, tools: readonly ToolDefinition[]): boolean {
-  return source.steps.some(step => ["analysis", "agent"].includes(effectiveStepKind(step))) || hasWorkflowEffects(source, tools);
+  // Reserve v4 for durable handler execution. Never fall through to a legacy
+  // flattened read worker, including malformed or not-yet-runnable v4 drafts.
+  return (source.metadata?.controlFlow as { schemaVersion?: unknown } | undefined)?.schemaVersion === "read-control-flow/v4" ||
+    source.steps.some(step => ["analysis", "agent"].includes(effectiveStepKind(step))) || hasWorkflowEffects(source, tools);
 }

@@ -154,7 +154,7 @@ export class ReadCheckpoints implements ReadExecutionHooks {
       assertSelectedReadNode(flow, nodeId, progress.decisions ?? {});
       if (node.kind === "if" && [...actionOrder(node.then), ...actionOrder(node.else)].some(id => !progress.attempts[id])) throw new Error("Merge lacks branch checkpoints");
       assertReadValueBoundary(flow, nodeId, kind, progress.decisions ?? {}, progress.attempts, progress.values ?? {});
-      if (node.kind === "foreach") throw new Error("Collection values require iteration checkpoints");
+      if (node.kind !== "return" && node.kind !== "if") throw new Error("Value requires its separately qualified checkpoints");
       const schema = node.kind === "return" ? node.output.schema : node.merge!.schema;
       if (valid && validateToolInput(schema, value).length) throw new Error("Typed value does not match its contract");
       let safe = valid ? withoutSecretFields({ value }) as { value: unknown } : undefined;

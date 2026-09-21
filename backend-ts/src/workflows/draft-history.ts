@@ -76,7 +76,7 @@ export function saveDraftRevision(state: RepositoryState, workflow: Workflow, ya
   workflow.pendingGenerationApproval = approvals.length ? { steps: approvals, requestedAt: workflow.updatedAt } : null;
   const version = { id: nextID(state, "ver"), workflowId: workflow.id, version: workflow.draftVersion, artifactState: "DRAFT", yaml, contentHash: workflowContentHash(yaml),
     createdAt: workflow.updatedAt, createdBy: { id: actor.id, name: actor.name }, parentVersionId: before.id, editHistory: nextHistory,
-    change: { type: command.type, ...("nodeId" in command ? { nodeId: command.nodeId } : {}), ...("versionId" in command ? { sourceVersionId: command.versionId } : {}) } };
+    change: { type: command.type, ...("nodeId" in command ? { nodeId: command.nodeId } : command.type === "wrapProtected" ? { nodeId: command.protectedId } : {}), ...("versionId" in command ? { sourceVersionId: command.versionId } : {}) } };
   versions.push(version); state.versions[workflow.id] = versions;
   return version;
 }

@@ -7,7 +7,7 @@ import { exactBridgeName } from "../tools/erpbridge-contract.js";
 import { validateToolInput, validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
-import { parseReadControlFlow, validateReadControlFlow, controlNodes, loopNodes, structuralNodes, type ReadSequence } from "./read-control-flow.js";
+import { parseReadControlFlow, validateReadControlFlow, controlNodes, loopNodes, protectedNodes, lexicalSchemaOverrides, assertNoProtectedScopes, structuralNodes, type ReadSequence } from "./read-control-flow.js";
 import { checkBinding, schemaAt } from "./read-binding-validation.js";
 import { ReadValueBudget } from "./read-value-budget.js";
 import { assertOperationReadbackTarget } from "../tools/operation-readback-contract.js";
@@ -72,16 +72,20 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
     ir.schemaVersion = "workflow-read-ir/v2"; ir.compilerVersion = "read-compiler/v2";
     try {
       const parsed = parseReadControlFlow(blueprint.metadata.controlFlow); ir.flow = parsed.root;
+      if (parsed.schemaVersion === "read-control-flow/v4" && purpose !== "draft-inspection") issues.push("Protected workflow publication requires the separately qualified durable handler profile");
       if (parsed.schemaVersion === "read-control-flow/v2") { ir.schemaVersion = "workflow-read-ir/v3"; ir.compilerVersion = "read-compiler/v3"; }
       if (parsed.schemaVersion === "read-control-flow/v3") { ir.schemaVersion = "workflow-read-ir/v4"; ir.compilerVersion = "read-compiler/v4"; }
       for (const node of controlNodes(ir.flow)) if (node.merge) { mergedIDs.add(node.id); outputs.set(node.id, { type: "object", properties: { value: node.merge.schema }, required: ["value"], additionalProperties: false }); }
       for (const node of loopNodes(ir.flow)) { mergedIDs.add(node.id); outputs.set(node.id, { type: "object", properties: { value: { type: "array", items: node.collect.schema } }, required: ["value"], additionalProperties: false }); }
+      for (const node of protectedNodes(ir.flow)) { mergedIDs.add(node.id); outputs.set(node.id, { type: "object", properties: { value: node.output.schema }, required: ["value"], additionalProperties: false }); }
     } catch { issues.push("Structured control flow is malformed or exceeds supported limits"); }
   }
+  const lexicalSchemas = ir.flow ? lexicalSchemaOverrides(ir.flow) : new Map<string, Map<string, Record<string, unknown>>>();
   if (blueprint.steps.length < 1 || blueprint.steps.length > 200) issues.push("Read workflows require 1–200 steps");
   for (const step of blueprint.steps.slice(0, 200)) {
     let localNodes = 0;
     const kind = effectiveStepKind(step);
+    const sourceSchema = (ref: ReadReference) => ref.source === "workflowInput" ? ir.inputSchema : lexicalSchemas.get(step.id)?.get(ref.nodeId!) ?? outputs.get(ref.nodeId!);
     if (step.connection_id !== undefined && !MCP_CONNECTION_ID_PATTERN.test(step.connection_id)) issues.push(`Step ${step.id} has an unsupported ERPBridge connection ID`);
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(step.id) || step.id === "input" || reserved.has(step.id) || ids.has(step.id)) issues.push("Step IDs must be unique, reference-safe and non-reserved");
     if (kind !== "tool" && !(operations && (kind === "analysis" || kind === "agent")) || Object.keys(step).some(key => !(kind === "analysis" ? analysisSupported : kind === "agent" ? agentSupported : supported).has(key))) issues.push(`Step ${step.id} uses unsupported execution semantics`);
@@ -121,7 +125,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
       }
       for (const ref of refs) {
         if (ref.source !== "nodeOutput") issues.push(`Step ${step.id} ${label} input must come from an acknowledged prior node output`);
-        else if (schemaAt(outputs.get(ref.nodeId!), ref.path) === undefined) issues.push(`Step ${step.id} ${label} input must select a declared prior output`);
+        else if (schemaAt(sourceSchema(ref), ref.path) === undefined) issues.push(`Step ${step.id} ${label} input must select a declared prior output`);
       }
       return true;
     };
@@ -195,7 +199,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
     const inputs = binding(step.parameters ?? {}, 0);
     if (tool) {
       checkBinding(inputs, tool.input_schema, `Step ${step.id}`, issues, ref => {
-        const schema = ref.source === "workflowInput" ? ir.inputSchema : outputs.get(ref.nodeId!);
+        const schema = sourceSchema(ref);
         return schemaAt(schema, ref.path);
       });
       const admission = admissionFor(step.connection_id, tool.tool_id);
@@ -216,7 +220,8 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
       const tool = ir.root.nodes.find(node => node.id === step.id), modelInput = modelBindings.get(step.id);
       return tool ? [{ id: tool.id, inputs: tool.inputs }] : modelInput ? [{ id: step.id, inputs: modelInput }] : [];
     }) : [];
-    const validation = operations ? inspectOperationDecisions(ir.flow, projected, ir.inputSchema, outputs) :
+    const inputSchemas = new Map(ir.root.nodes.map(node => [node.id, tools.find(tool => tool.tool_id === node.capability.toolId)?.input_schema ?? {}]));
+    const validation = operations ? inspectOperationDecisions(ir.flow, projected, ir.inputSchema, outputs, inputSchemas, purpose === "draft-inspection" && protectedNodes(ir.flow).length > 0) :
       validateReadControlFlow(ir.flow, ir, outputs, new Map(ir.root.nodes.map(node => [node.id, tools.find(tool => tool.tool_id === node.capability.toolId)?.input_schema ?? {}])));
     issues.push(...validation.issues); scopeValidation = validation;
   }
@@ -252,6 +257,7 @@ export type ModelFixtureNode = ReadIR["root"]["nodes"][number] | OperationAnalys
 export function compileModelFixtureWorkflow(yaml: string, tools: readonly ToolDefinition[], role: string) {
   if (Buffer.byteLength(yaml) > 200_000) throw new Error("Model simulation source exceeds supported bounds");
   const blueprint = parseWorkflowYAMLStrict(yaml), built = buildActionBindingsIR(blueprint, tools, role, new Map(), true, "draft-inspection");
+  if (built.ir.flow) assertNoProtectedScopes(built.ir.flow);
   const definitions = new Map<string, ModelFixtureNode>([...built.ir.root.nodes, ...built.analysisNodes].map(node => [node.id, node]));
   for (const node of built.agentNodes) {
     const { allowedCapabilities: _privateCapabilities, ...fields } = node;

@@ -18,9 +18,11 @@ export const readBindingSchema: z.ZodType<ReadBinding> = z.lazy(() => z.union([
 ]));
 export type ReadMerge = { schema: Record<string, unknown>; then: ReadBinding; else: ReadBinding };
 export type ReadReturn = { schema: Record<string, unknown>; value: ReadBinding };
+export type ReadProtectedOutput = { schema: Record<string, unknown>; success: ReadBinding; handled: ReadBinding };
 const schema = z.record(z.string(), z.unknown()).refine(value => validateToolSchemaProfile(value).length === 0, "Unsupported value schema");
 export const mergeSchema: z.ZodType<ReadMerge> = z.object({ schema, then: readBindingSchema, else: readBindingSchema }).strict();
 export const returnSchema: z.ZodType<ReadReturn> = z.object({ schema, value: readBindingSchema }).strict();
+export const protectedOutputSchema: z.ZodType<ReadProtectedOutput> = z.object({ schema, success: readBindingSchema, handled: readBindingSchema }).strict();
 export function boundReadValue(raw: unknown): void {
   let count = 0;
   const visit = (value: unknown, depth: number) => {
@@ -37,3 +39,4 @@ function boundedSchema<T>(inner: z.ZodType<T>) {
 }
 export const readMergeSchema = boundedSchema(mergeSchema);
 export const readReturnSchema = boundedSchema(returnSchema);
+export const readProtectedOutputSchema = boundedSchema(protectedOutputSchema);

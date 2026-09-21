@@ -1,5 +1,5 @@
 import { resolveReadBinding, type CompiledReadPlan, type ReadBinding } from "./compiled-read.js";
-import { actionOrder, type ReadSequence, type ReadControlNode, type ReadSkipReason } from "./read-control-flow.js";
+import { actionOrder, assertNoProtectedScopes, type ReadSequence, type ReadControlNode, type ReadSkipReason } from "./read-control-flow.js";
 import { type ReadVisit, type ReadIteration, ReadCollectionFailure } from "./read-interpreter.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { ReadValueBudget } from "./read-value-budget.js";
@@ -28,6 +28,7 @@ export class ReadMachine {
   readonly #actions: Map<string, { node: CompiledReadPlan["ir"]["root"]["nodes"][number]; index: number }>;
   #state: ReadMachineSnapshot;
   constructor(plan: CompiledReadPlan, input: Record<string, unknown>, checkpoint?: ReadMachineSnapshot) {
+    if (plan.ir.flow) assertNoProtectedScopes(plan.ir.flow);
     this.#plan = structuredClone(plan); this.#actions = new Map(this.#plan.ir.root.nodes.map((node, index) => [node.id, { node, index }]));
     const root = this.#plan.ir.flow ?? { kind: "sequence" as const, nodes: this.#plan.ir.root.nodes.map(node => ({ kind: "action" as const, nodeId: node.id })) };
     const register = (block: ReadSequence) => {

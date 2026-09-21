@@ -5,7 +5,7 @@ import { validateToolSchemaProfile } from "../tools/tool-input-schema.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { inspectWorkflowDraft, type ReadReference } from "./compiled-read.js";
-import { controlNodes, structuralNodes, loopNodes, type ReadSequence } from "./read-control-flow.js";
+import { controlNodes, structuralNodes, loopNodes, protectedNodes, protectedFaultSchema, handlerScopeIDs, type ReadSequence } from "./read-control-flow.js";
 import { draftFlow } from "./draft-control-edits.js";
 import { isSecretField } from "../redact/secrets.js";
 import { usesCheckpointedOperationWorkflow } from "./execution-shape.js";
@@ -69,10 +69,13 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     upstream.push(...sources(project(node.merge.schema), { kind: "ref", source: "nodeOutput", nodeId: node.id, path: ["value"] }, `Branch ${node.id}`));
   const iterationScopes = new Map<string, Set<string>>();
   const collections = editableFlow ? loopNodes(editableFlow) : [], collectionIDs = new Set(collections.map(node => node.id));
+  const protectedGroups = editableFlow ? protectedNodes(editableFlow) : [], protectedIDs = new Set(protectedGroups.map(node => node.id));
+  const handlerScopes = editableFlow ? handlerScopeIDs(editableFlow) : new Map<string, string[]>();
   const visitScope = (block: ReadSequence, active: Set<string>) => { for (const node of block.nodes) {
     iterationScopes.set(node.kind === "action" ? node.nodeId : node.id, new Set(active));
     if (node.kind === "if") { visitScope(node.then, active); visitScope(node.else, active); }
     else if (node.kind === "foreach") visitScope(node.body, new Set([...active, node.id]));
+    else if (node.kind === "protect") { visitScope(node.body, active); visitScope(node.handler, active); }
   } };
   if (editableFlow) {
     visitScope(editableFlow, new Set());
@@ -82,7 +85,16 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
       upstream.push(...sources(project({ type: "array", items: node.collect.schema }), { kind: "ref", source: "nodeOutput", nodeId: node.id, path: ["value"] }, `Collection ${node.id} · collected items`));
     }
   }
+  for (const node of protectedGroups) {
+    upstream.push(...sources(project(node.output.schema), { kind: "ref", source: "nodeOutput", nodeId: node.id, path: ["value"] }, `Protected group ${node.id} · declared output`));
+    const errorSchema = (protectedFaultSchema.properties as Record<string, Schema>).error;
+    upstream.push(...sources(project(errorSchema), { kind: "ref", source: "nodeOutput", nodeId: node.id, path: ["error"] }, `Protected group ${node.id} · handler error`));
+  }
   const scopedSource = (source: Source, nodeId: string) => {
+    if (source.binding.source === "nodeOutput" && protectedIDs.has(source.binding.nodeId!)) {
+      const active = handlerScopes.get(nodeId)?.includes(source.binding.nodeId!) ?? false;
+      return source.binding.path[0] === "error" ? active : !active;
+    }
     if (source.binding.source !== "nodeOutput" || !collectionIDs.has(source.binding.nodeId!)) return true;
     const active = iterationScopes.get(nodeId)?.has(source.binding.nodeId!) ?? false;
     return source.binding.path[0] === "value" ? !active : active;
@@ -141,7 +153,7 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   const returns = editableFlow ? structuralNodes(editableFlow).filter(node => node.kind === "return").map(node => ({ nodeId: node.id, dataSources: dataFor(controlScopes?.scopes.get(node.id), node.id) })) : [];
   const collectionGuides = collections.map(node => ({ nodeId: node.id, itemSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.items, node.id),
     collectSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.collect, node.id, true) }));
-  const executionProfile = blueprint.metadata?.controlFlow !== undefined && usesCheckpointedOperationWorkflow(blueprint, tools) ? !editableFlow || compiled?.issues.length ? "unsupported-operation-control-flow" : "decision-operation-v1" : collections.length ? "collection-simulation-only" :
+  const executionProfile = protectedGroups.length || (blueprint.metadata?.controlFlow as { schemaVersion?: unknown } | undefined)?.schemaVersion === "read-control-flow/v4" ? "protected-draft-runtime-pending" : blueprint.metadata?.controlFlow !== undefined && usesCheckpointedOperationWorkflow(blueprint, tools) ? !editableFlow || compiled?.issues.length ? "unsupported-operation-control-flow" : "decision-operation-v1" : collections.length ? "collection-simulation-only" :
     editableFlow && structuralNodes(editableFlow).some(node => node.kind === "return" || node.kind === "if" && node.merge) ? "structured-read-v1" : editableFlow ? "conditional-read-v1" : "sequential-read-v1";
   const connectionChoices = connections.filter(item => /^[a-z][a-z0-9_-]{0,63}$/.test(item.id) && item.dispatchSupported).map(item => ({ id: item.id, primary: item.primary }));
   const modelNodesSupported = prefix && blueprint.steps.length > 0 && (!editableFlow || structuralNodes(editableFlow).every(node => node.kind === "return" || node.kind === "if")) && (!compiled || !compiled.issues.length);

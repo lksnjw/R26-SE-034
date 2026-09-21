@@ -4,6 +4,9 @@ import { Repository, restoreState } from "../src/repository/store.js";
 import { draftHistorySummary, historyPage, resolveDraftCommand, saveDraftRevision } from "../src/workflows/draft-history.js";
 import { workflowContentHash } from "../src/parser/workflow.js";
 import type { Workflow } from "../src/models/schemas.js";
+import { workflowCommandSchema } from "../src/workflows/commands.js";
+import { parseReadControlFlow, protectedNodes } from "../src/workflows/read-control-flow.js";
+import { parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 
 const actor = { id: "owner", name: "Owner" };
 const yaml = stringify({ name: "Saved report", trigger: { type: "manual" }, steps: [{ id: "lookup", action: "read", parameters: { enabled: false } }] });
@@ -28,6 +31,28 @@ test("serialized repository reopen retains exact undo/redo state and append-only
   saveDraftRevision(restored, fresh, resolveDraftCommand(restored, fresh, redo), redo, actor, true);
   expect(fresh.yaml).toBe(next); expect(fresh.draftVersion).toBe(4);
   expect(restored.versions.report!.slice(0, 2)).toEqual(JSON.parse(saved).versions.report);
+});
+
+test("protected body/handler structure survives reopen, undo/redo and exact immutable history without run authority", async () => {
+  const { state, workflow } = await fixture();
+  const wrap = workflowCommandSchema.parse({ type: "wrapProtected", nodeIds: ["lookup"], protectedId: "guard", onError: { code: "ERP_RESOURCE_NOT_FOUND" }, output: {
+    schema: { type: "string" }, success: { kind: "literal", value: "ok" }, handled: { kind: "ref", source: "nodeOutput", nodeId: "guard", path: ["error", "code"] } } });
+  saveDraftRevision(state, workflow, resolveDraftCommand(state, workflow, wrap), wrap, actor, true);
+  const insert = workflowCommandSchema.parse({ type: "addNode", node: { id: "fallback", action: "read", parameters: { id: "{{guard.error.code}}" } }, beforeNodeId: null, destination: { protectedId: "guard", scope: "handler" } });
+  saveDraftRevision(state, workflow, resolveDraftCommand(state, workflow, insert), insert, actor, true);
+  const exact = workflow.yaml, historical = structuredClone(state.versions.report!);
+  expect(historical[1]!.change).toEqual({ type: "wrapProtected", nodeId: "guard" });
+  const reopened = new Repository(null, restoreState(Buffer.from(JSON.stringify(state)))), restored = await reopened.snapshot(), fresh = restored.workflows.report!;
+  expect(fresh.yaml).toBe(exact); expect(fresh.canRun).toBe(false);
+  expect(protectedNodes(parseReadControlFlow(parseWorkflowYAMLStrict(fresh.yaml).metadata!.controlFlow).root)[0]!.handler.nodes).toEqual([{ kind: "action", nodeId: "fallback" }]);
+  const undo = { type: "undoDraft" as const, versionId: draftHistorySummary(restored, fresh).undoTarget! };
+  saveDraftRevision(restored, fresh, resolveDraftCommand(restored, fresh, undo), undo, actor, true);
+  expect(protectedNodes(parseReadControlFlow(parseWorkflowYAMLStrict(fresh.yaml).metadata!.controlFlow).root)[0]!.handler.nodes).toEqual([]);
+  const redo = { type: "redoDraft" as const, versionId: draftHistorySummary(restored, fresh).redoTarget! };
+  saveDraftRevision(restored, fresh, resolveDraftCommand(restored, fresh, redo), redo, actor, true);
+  expect(fresh.yaml).toBe(exact); expect(fresh.draftVersion).toBe(5); expect(fresh.canRun).toBe(false);
+  expect(restored.versions.report!.slice(0, historical.length)).toEqual(historical);
+  expect(restored.executions).toEqual({});
 });
 
 test("quick history is bounded without deleting older immutable revisions or their restore targets", async () => {

@@ -1,6 +1,6 @@
 import { stringify } from "yaml";
 import type { WorkflowBlueprint } from "../models/schemas.js";
-import { parseReadControlFlow, type ReadSequence } from "./read-control-flow.js";
+import { parseReadControlFlow, assertNoProtectedScopes, type ReadSequence } from "./read-control-flow.js";
 
 /** Extra denial-only process/shape view, NEVER a publication source or token.
  * Keep lexical structural ownership while excluding unconfirmed actions from
@@ -11,6 +11,7 @@ export function selectedPrerequisiteYAML(blueprint: WorkflowBlueprint, selectedI
   const metadata = { ...blueprint.metadata };
   if (metadata.controlFlow !== undefined) {
     const flow = parseReadControlFlow(metadata.controlFlow);
+    assertNoProtectedScopes(flow.root);
     const prune = (block: ReadSequence): ReadSequence => ({ kind: "sequence", nodes: block.nodes.flatMap<ReadSequence["nodes"][number]>(node => {
       if (node.kind === "action") return included.has(node.nodeId) ? [node] : [];
       if (node.kind === "if") return [{ ...node, then: prune(node.then), else: prune(node.else) }];

@@ -1,5 +1,5 @@
 import { resolveReadBinding, type CompiledReadPlan, type ReadBinding } from "./compiled-read.js";
-import { actionOrder, type ReadSequence, type ReadSkipReason } from "./read-control-flow.js";
+import { actionOrder, assertNoProtectedScopes, type ReadSequence, type ReadSkipReason } from "./read-control-flow.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { ReadValueBudget } from "./read-value-budget.js";
 
@@ -20,6 +20,7 @@ export type ReadInterpreterDriver = {
 /** Shared deterministic semantics only. Drivers own business dispatch or
  * fixture evaluation; this module has no repository, SDK, provider or network. */
 export async function interpretReadPlan(plan: CompiledReadPlan, state: Record<string, unknown>, driver: ReadInterpreterDriver): Promise<void> {
+  if (plan.ir.flow) assertNoProtectedScopes(plan.ir.flow);
   const definitions = new Map(plan.ir.root.nodes.map((node, index) => [node.id, { node, index }]));
   let cursor = 0, visits = 0;
   let iterations: ReadIteration[] = [];
@@ -79,6 +80,7 @@ export async function interpretReadPlan(plan: CompiledReadPlan, state: Record<st
         if (!output) throw new Error("Collection output was not accepted");
         state[node.id] = output; continue;
       }
+      if (node.kind !== "if") throw new Error("Unsupported read control primitive");
       let predicate: unknown;
       try { predicate = resolveReadBinding(node.predicate, state); } catch { /* Missing is not false. */ }
       if (typeof predicate !== "boolean") {

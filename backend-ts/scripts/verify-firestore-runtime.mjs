@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { verifyFirestoreProtectedDrafts } from "./firestore-protected-drafts.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import jwt from "jsonwebtoken";
@@ -454,6 +455,7 @@ try {
   assert.equal(canvasUndo.version, 7); assert.equal(canvasUndo.yaml, canvasOriginal.yaml);
   assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsAfterAutomation); assert.equal(canvasUndo.publishedVersion, 0);
   log("normal Firestore whole-collection canvas move retained body/configuration and broken references as a blocked saved draft; restart and explicit undo preserved exact original content without publication, SDK or model calls");
+  await verifyFirestoreProtectedDrafts({ request, repository: () => repository, restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, log });
 
   // Server-only synthetic checkpoint producer, NOT a real effect executor.
   // Decision/review/configuration requests use the ordinary authenticated API.

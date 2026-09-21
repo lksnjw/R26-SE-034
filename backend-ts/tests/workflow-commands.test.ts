@@ -45,6 +45,40 @@ async function setup(output: unknown = { parameters: { value: "proposed" } }, to
   return { app, repository, headers, edit, propose, fetchImplementation };
 }
 
+test("protected commands persist exact saved structure, reject stale/unauthorized edits and remain non-runnable", async () => {
+  const s = await setup();
+  const source = stringify({ name: "Protected report", description: "Editable protected group", trigger: { type: "manual" }, steps: ["first", "last"].map(id => ({ id, action: "demo.echo", parameters: { value: id } })), metadata: { ownerNotes: "preserve" } });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.workflows.report!.steps = 2; state.versions.report = [{ version: 1, artifactState: "PUBLISHED", yaml: source }]; });
+  const command = { type: "wrapProtected", nodeIds: ["first"], protectedId: "guard", onError: { code: "ERP_RESOURCE_NOT_FOUND" }, output: { schema: { type: "string" }, success: { kind: "literal", value: "found" }, handled: { kind: "ref", source: "nodeOutput", nodeId: "guard", path: ["error", "code"] } } };
+  expect((await s.edit(command, 1, workflowContentHash(source), "client")).statusCode).toBe(403);
+  const applied = await s.edit(command, 1, workflowContentHash(source));
+  expect(applied.statusCode, applied.body).toBe(200);
+  expect(applied.json().data).toMatchObject({ version: 2, publishedVersion: 1, canRun: false });
+  const currentSource = applied.json().data.yaml;
+  expect(parseWorkflowYAMLStrict(currentSource).steps).toEqual(parseWorkflowYAMLStrict(source).steps);
+  expect((await s.edit(command, 1, workflowContentHash(source))).statusCode).toBe(409);
+  const handler = await s.edit({ type: "addNode", node: { id: "fallback", action: "demo.echo", parameters: { value: "{{guard.error.code}}" } }, beforeNodeId: null, destination: { protectedId: "guard", scope: "handler" } }, 2, workflowContentHash(currentSource));
+  expect(handler.statusCode, handler.body).toBe(200);
+  const saved = handler.json().data, state = await s.repository.snapshot();
+  expect(saved).toMatchObject({ version: 3, canRun: false });
+  expect(state.versions.report![0]!.yaml).toBe(source);
+  expect(state.versions.report!.at(-1)!.artifactState).toBe("DRAFT");
+  expect(state.executions).toEqual({}); expect(s.fetchImplementation).not.toHaveBeenCalled();
+  const readiness = await s.app.inject({ method: "GET", url: "/api/workflows/report/readiness", headers: s.headers() });
+  expect(readiness.statusCode).toBe(200);
+  expect(readiness.json().data.can_attempt_run).toBe(false);
+  expect(readiness.json().data.executionProfile).toBe("protected-draft-runtime-pending");
+  expect(readiness.json().data.operation_job_admission).toBe("unavailable");
+  expect(JSON.stringify(readiness.json().data)).toContain("durable handler execution is not qualified");
+  const publish = await s.app.inject({ method: "POST", url: "/api/workflows/report/publish", headers: s.headers(), payload: { baseVersion: 3, baseHash: workflowContentHash(saved.yaml) } });
+  expect(publish.statusCode).toBeGreaterThanOrEqual(400);
+  const run = await s.app.inject({ method: "POST", url: "/api/workflows/report/run", headers: s.headers(), payload: {} });
+  expect(run.statusCode).toBeGreaterThanOrEqual(400);
+  const proposal = await s.app.inject({ method: "POST", url: "/api/workflows/report/node-proposals", headers: s.headers(), payload: { baseVersion: 3, baseHash: workflowContentHash(saved.yaml), nodeId: "guard", prompt: "Update this handler", sessionId: "chat" } });
+  expect(proposal.statusCode, proposal.body).toBe(422);
+  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
 test("scoped node edit preserves unrelated nodes and control flow and creates a nonrunnable draft", async () => {
   const s = await setup(); const response = await s.edit({ type: "updateNode", nodeId: "first", patch: { parameters: { value: "edited" } } });
   expect(response.statusCode, response.body).toBe(200);

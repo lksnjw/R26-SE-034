@@ -247,6 +247,7 @@ export class ReadIterationCheckpoints {
       } else if (["merge", "return", "collection-item", "collection"].includes(point.kind)) {
         safe = point.valid ? withoutSecretFields({ value: point.value }) as { value: unknown } : undefined;
         const node = this.#valueNodes.get(point.nodeId)!;
+        if (node.kind === "protect") throw new Error("Protected scopes require durable handler checkpoints");
         const schema = node.kind === "return" ? node.output.schema : node.kind === "if" ? node.merge?.schema : point.kind === "collection" ? { type: "array", items: node.collect.schema } : node.collect.schema;
         point.valid = !!safe && !!schema && !validateToolInput(schema, safe.value).length;
         if (safe) point.value = safe.value; else delete point.value;

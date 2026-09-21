@@ -1,5 +1,7 @@
 # ERPBridge MCP integration
 
+Protected workflow draft update (2026-10-09): [v4 grouped body/handler authoring](../../docs/PROTECTED_WORKFLOW_DRAFT_FOUNDATION_2026-10-09.md) preserves exact node ownership and typed lexical bindings through saved edits/restart/undo/redo. It is not an executable handler profile: publication/admission and old read workers refuse it until durable handler selection/output is separately qualified. The existing reviewed resource-lookup error receipt is evidence, not permission to enter a handler or retry an uncertain call. ERPBridge remains run-only and unedited; the current Docker engine check is unavailable. No live compatibility or business effect is claimed by these local draft tests.
+
 This guide explains how to configure, deploy, and check the ERPBridge MCP transport for the TypeScript workflow engine.
 
 ## What this integration does

@@ -2,7 +2,7 @@ import { stringify } from "yaml";
 import type { WorkflowBlueprint } from "../models/schemas.js";
 import type { CompiledReadPlan } from "./compiled-read.js";
 import type { ReadIteration, ReadVisit } from "./read-interpreter.js";
-import type { ReadSequence } from "./read-control-flow.js";
+import { assertNoProtectedScopes, parseReadControlFlow, type ReadSequence } from "./read-control-flow.js";
 import { ReadValueBudget } from "./read-value-budget.js";
 
 export type CompletedRead = { nodeId: string; sourceIndex: number; args: Record<string, unknown>; visit: ReadVisit };
@@ -26,6 +26,7 @@ export class ReadCompletionEvidence {
   readonly #completed = new Map<string, CompletedRead>();
   #arguments = new ReadValueBudget();
   constructor(plan: CompiledReadPlan, snapshot?: ReadCompletionSnapshot) {
+    if (plan.ir.flow) assertNoProtectedScopes(plan.ir.flow);
     this.#plan = structuredClone(plan);
     plan.ir.root.nodes.forEach((node, index) => this.#actions.set(node.id, index));
     const visit = (block: ReadSequence, owners: readonly string[]): void => {
@@ -143,7 +144,9 @@ export function selectedReadEvidenceYAML(blueprint: WorkflowBlueprint, nodeId: s
     try { parameters = budget.clone(record.args, 0) as Record<string, unknown>; } catch { throw new ReadEvidenceLimit(); }
     return { id: record.visit.invocationId, action: step.action, ...(step.kind === undefined ? {} : { kind: step.kind }), parameters };
   });
-  const metadata = { ...blueprint.metadata }; delete metadata.controlFlow;
+  const metadata = { ...blueprint.metadata };
+  if (metadata.controlFlow !== undefined) assertNoProtectedScopes(parseReadControlFlow(metadata.controlFlow).root);
+  delete metadata.controlFlow;
   const yaml = stringify({ ...blueprint, metadata, steps });
   if (Buffer.byteLength(yaml) > 2_000_000) throw new ReadEvidenceLimit();
   return yaml;

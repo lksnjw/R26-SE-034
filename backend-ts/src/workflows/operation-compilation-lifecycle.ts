@@ -11,6 +11,13 @@ import { boundMcpConnection, connectionToolKey, selectedMcpConnectionId, type Bo
 import { usesCheckpointedOperationWorkflow } from "./execution-shape.js";
 import { assertModelDataClassification, ModelDataClassViolation } from "./model-data-classification.js";
 
+/** Draft support is not runtime authority. Deny before discovery/preparation
+ * until a separately versioned durable handler worker is qualified. */
+function assertProtectedRuntimeQualified(source: { metadata?: Record<string, unknown> | undefined }) {
+  if ((source.metadata?.controlFlow as { schemaVersion?: unknown } | undefined)?.schemaVersion === "read-control-flow/v4")
+    throw new HandlerFailure(422, "Protected groups can be saved and edited, but durable handler execution is not qualified yet", { code: "PROTECTED_RUNTIME_PENDING" });
+}
+
 export type StoredOperationCompilation = { plan: CompiledOperationPlan; receipt: OperationCompilationReceipt; verifiedRole: string; compiledAt: string };
 type PreparedConnection = BoundMcpConnection & { generation: number };
 export type PreparedOperationCompilation = { stored: StoredOperationCompilation; connections: PreparedConnection[] };
@@ -35,6 +42,7 @@ function assertConnectionsCurrent(services: HandlerServices, connections: readon
 }
 function compileCurrent(state: Readonly<RepositoryState>, services: HandlerServices, yaml: string, role: string, expected?: CompiledOperationPlan) {
   const source = parseWorkflowYAMLStrict(yaml), tools = services.registries.snapshot().tools, pins = new Map<string, ReadAdmissionPin>();
+  assertProtectedRuntimeQualified(source);
   for (const step of source.steps) {
     if (effectiveStepKind(step) === "analysis") continue;
     const connectionId = stepConnection(services, step), { session } = boundMcpConnection(services, connectionId);
@@ -77,6 +85,7 @@ function compileCurrent(state: Readonly<RepositoryState>, services: HandlerServi
 export async function prepareOperationPublication(services: HandlerServices, yaml: string, user: CurrentUser): Promise<PreparedOperationCompilation | null> {
   const source = parseWorkflowYAMLStrict(yaml), tools = services.registries.snapshot().tools;
   if (!usesCheckpointedOperationWorkflow(source, tools)) return null;
+  assertProtectedRuntimeQualified(source);
   let connections: PreparedConnection[];
   try { connections = preparedConnections(services, source.steps); }
   catch { throw new HandlerFailure(503, "Every operation node requires its selected connected reviewed ERPBridge connection"); }
@@ -105,6 +114,7 @@ export function assertOperationPublicationCurrent(prepared: PreparedOperationCom
   compileCurrent(state, services, yaml, role, prepared.stored.plan);
 }
 export function prepareOperationExecution(state: Readonly<RepositoryState>, services: HandlerServices, publication: StoredRecord, yaml: string, role: string, expected?: OperationCompilationReceipt): StoredOperationCompilation {
+  assertProtectedRuntimeQualified(parseWorkflowYAMLStrict(yaml));
   try {
     const stored = publication.compiledOperation as StoredOperationCompilation | undefined;
     if (!stored || stored.verifiedRole !== role || !Number.isFinite(Date.parse(stored.compiledAt)) || canonicalJSONBytes(stored).length > 1_200_000) throw new Error("Missing operation compilation");

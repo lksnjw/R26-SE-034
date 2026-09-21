@@ -5,7 +5,7 @@ import { HandlerFailure, type CurrentUser } from "../http/handlers/common.js";
 import type { RepositoryState } from "../repository/store.js";
 import { readControlFlowSchema, readPredicateSchema, structuralNodes } from "./read-control-flow.js";
 import { draftFlow, locateFlowNode, insertionScope, moveDraftNode, saveDraftFlow } from "./draft-control-edits.js";
-import { readMergeSchema, readReturnSchema } from "./read-values.js";
+import { readMergeSchema, readReturnSchema, readProtectedOutputSchema } from "./read-values.js";
 import { modelInputSchema } from "../models/model-input.js";
 
 export const nodeIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
@@ -44,7 +44,9 @@ export const conditionPatchSchema = z.object({ predicate: readPredicateSchema })
 export const conditionEditPatchSchema = z.object({ predicate: readPredicateSchema.optional(), merge: readMergeSchema.nullable().optional() }).strict()
   .refine(value => value.predicate !== undefined || value.merge !== undefined, "Condition patch must change a predicate or branch output");
 export const returnPatchSchema = z.object({ output: readReturnSchema }).strict();
-const destinationSchema = z.union([z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict(), z.object({ loopId: nodeIdSchema, scope: z.literal("body") }).strict()]);
+const destinationSchema = z.union([z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict(), z.object({ loopId: nodeIdSchema, scope: z.literal("body") }).strict(), z.object({ protectedId: nodeIdSchema, scope: z.enum(["body", "handler"]) }).strict()]);
+const protectedPolicySchema = z.object({ code: z.literal("ERP_RESOURCE_NOT_FOUND") }).strict();
+export const protectedPatchSchema = z.object({ onError: protectedPolicySchema.optional(), output: readProtectedOutputSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
 const collectionConfig = { items: readReturnSchema.refine(value => value.schema.type === "array", "Collection requires an array schema"), maxItems: z.number().int().min(1).max(100), collect: readReturnSchema };
 export const collectionPatchSchema = z.object(collectionConfig).partial().strict().refine(value => Object.keys(value).length > 0);
 export const workflowRevisionSchema = { baseVersion: z.number().int().min(1), baseHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) };
@@ -70,6 +72,9 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("wrapCollection"), nodeId: nodeIdSchema, loopId: nodeIdSchema, ...collectionConfig }).strict(),
   z.object({ type: z.literal("updateCollection"), nodeId: nodeIdSchema, patch: collectionPatchSchema }).strict(),
   z.object({ type: z.literal("removeCollection"), nodeId: nodeIdSchema }).strict(),
+  z.object({ type: z.literal("wrapProtected"), nodeIds: z.array(nodeIdSchema).min(1).max(200).refine(ids => new Set(ids).size === ids.length, "Selected nodes must be unique"), protectedId: nodeIdSchema, onError: protectedPolicySchema, output: readProtectedOutputSchema }).strict(),
+  z.object({ type: z.literal("updateProtected"), nodeId: nodeIdSchema, patch: protectedPatchSchema }).strict(),
+  z.object({ type: z.literal("unwrapProtected"), nodeId: nodeIdSchema }).strict(),
   z.object({ type: z.literal("restoreDraft"), yaml: z.string().min(1).max(200000) }).strict(),
   z.object({ type: z.literal("undoDraft"), versionId: z.string().min(1).max(128) }).strict(),
   z.object({ type: z.literal("redoDraft"), versionId: z.string().min(1).max(128) }).strict(),
@@ -78,15 +83,17 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
 export function selectedNodePatchSchema(node: { kind?: string | undefined }) {
+  if (node.kind === "protect") throw new HandlerFailure(422, "Protected group chat proposals require their separately versioned proposal contract", { code: "PROTECTED_CHAT_PENDING" });
   return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionEditPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : node.kind === "agent" ? agentNodePatchSchema : nodePatchSchema;
 }
-export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v2" : node.kind === "analysis" ? "prompt/analysis-node-patch/v3" : node.kind === "agent" ? "prompt/agent-node-patch/v3" : "prompt/node-patch/v2"; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { if (node.kind === "protect") selectedNodePatchSchema(node); return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v2" : node.kind === "analysis" ? "prompt/analysis-node-patch/v3" : node.kind === "agent" ? "prompt/agent-node-patch/v3" : "prompt/node-patch/v2"; }
 export function selectedNodePatchPreview(node: { kind?: string | undefined }, patch: Record<string, unknown>) {
   const after: Record<string, unknown> = { ...node, ...patch };
   if (node.kind === "if" && patch.merge === null) delete after.merge;
   return after;
 }
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
+  if (node.kind === "protect") selectedNodePatchSchema(node);
   return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : node.kind === "analysis" ? "updateAnalysis" : node.kind === "agent" ? "updateAgent" : "updateNode", nodeId: node.id, patch });
 }
 export function canViewWorkflow(workflow: Workflow, user: Pick<CurrentUser, "id" | "permissions">): boolean {
@@ -130,6 +137,26 @@ export function applyWorkflowCommand(source: string, change: z.infer<typeof work
   const blueprint = parseWorkflowYAMLStrict(change.type === "restoreDraft" ? change.yaml : source);
   if (change.type === "restoreDraft") return stringifyWorkflowYAML(blueprint);
   if (change.type === "setControlFlow") { blueprint.metadata = { ...blueprint.metadata, controlFlow: change.flow }; return stringifyWorkflowYAML(blueprint); }
+  if (change.type === "wrapProtected" || change.type === "updateProtected" || change.type === "unwrapProtected") {
+    const root = draftFlow(blueprint);
+    if (change.type === "wrapProtected") {
+      if (locateFlowNode(root, change.protectedId)) throw new HandlerFailure(422, "Structural ID already exists");
+      const selected = change.nodeIds.map(id => locateFlowNode(root, id)), first = selected[0];
+      if (!first || selected.some((item, index) => !item || item.block !== first.block || item.index !== first.index + index))
+        throw new HandlerFailure(422, "Select a contiguous ordered group of nodes in one parent scope");
+      const body = first.block.nodes.slice(first.index, first.index + selected.length);
+      first.block.nodes.splice(first.index, selected.length, { kind: "protect", id: change.protectedId, body: { kind: "sequence", nodes: body }, handler: { kind: "sequence", nodes: [] }, onError: change.onError, output: change.output });
+    } else {
+      const found = locateFlowNode(root, change.nodeId);
+      if (!found || found.node.kind !== "protect") throw new HandlerFailure(422, "Selected protected group does not exist");
+      if (change.type === "updateProtected") Object.assign(found.node, change.patch);
+      else {
+        if (found.node.handler.nodes.length) throw new HandlerFailure(422, "Move or remove handler contents before unwrapping; fallback actions must not become unconditional");
+        found.block.nodes.splice(found.index, 1, ...found.node.body.nodes);
+      }
+    }
+    saveDraftFlow(blueprint, root); return stringifyWorkflowYAML(blueprint);
+  }
   if (change.type === "wrapCollection" || change.type === "updateCollection" || change.type === "removeCollection") {
     const root = draftFlow(blueprint), found = locateFlowNode(root, change.nodeId);
     if (change.type === "wrapCollection") {

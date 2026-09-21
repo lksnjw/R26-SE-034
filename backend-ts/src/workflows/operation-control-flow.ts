@@ -1,27 +1,30 @@
 import type { ReadIR, ReadBinding, CompiledOperationPlan } from "./compiled-read.js";
-import { actionOrder, validateReadControlFlow, type ReadSequence } from "./read-control-flow.js";
+import { actionOrder, validateReadControlFlow, lexicalSchemaOverrides, assertNoProtectedScopes, type ReadSequence } from "./read-control-flow.js";
 import { schemaAt } from "./read-binding-validation.js";
 import type { ReadRunProgress } from "../repository/store.js";
 
 /** The authoring tree is shared; operation decisions have a separate versioned
  * compilation and durable worker. No read-interpreter effect authority. */
 export function inspectOperationDecisions(root: ReadSequence, nodes: Array<{ id: string; inputs: ReadBinding }>, inputSchema: Record<string, unknown> | undefined,
-  outputs: ReadonlyMap<string, Record<string, unknown>>) {
+  outputs: ReadonlyMap<string, Record<string, unknown>>, inputs: ReadonlyMap<string, Record<string, unknown>> = new Map(), protectedDraftInspection = false) {
   const issues: string[] = [];
   const projection: ReadIR = { schemaVersion: "workflow-read-ir/v2", compilerVersion: "read-compiler/v2", trigger: { kind: "manual" },
     ...(inputSchema ? { inputSchema } : {}), root: { kind: "sequence", nodes: nodes.map(node => ({ ...node, kind: "action", capability: {
       toolId: "draft-scope-only", action: "draft-scope-only", remoteName: "draft-scope-only", contractHash: "draft-scope-only",
     } })) } };
+  const lexicalSchemas = lexicalSchemaOverrides(root);
   const visit = (block: ReadSequence) => { for (const node of block.nodes) {
     if (node.kind === "action") continue;
     if (node.kind === "return") continue;
+    if (node.kind === "protect") { visit(node.body); visit(node.handler); continue; }
+    if (node.kind === "foreach" && protectedDraftInspection) { visit(node.body); continue; }
     if (node.kind !== "if") { issues.push("Operation decisions do not yet support collections"); continue; }
-    if (node.predicate.kind === "ref" && schemaAt(node.predicate.source === "workflowInput" ? inputSchema : outputs.get(node.predicate.nodeId!), node.predicate.path)?.type !== "boolean")
+    if (node.predicate.kind === "ref" && schemaAt(node.predicate.source === "workflowInput" ? inputSchema : lexicalSchemas.get(node.id)?.get(node.predicate.nodeId!) ?? outputs.get(node.predicate.nodeId!), node.predicate.path)?.type !== "boolean")
       issues.push(`Operation condition ${node.id} requires an exact declared boolean predicate`);
     visit(node.then); visit(node.else);
   } };
   visit(root);
-  const validation = validateReadControlFlow(root, projection, outputs);
+  const validation = validateReadControlFlow(root, projection, outputs, inputs);
   return { ...validation, issues: [...new Set([...issues, ...validation.issues])] };
 }
 
@@ -34,6 +37,7 @@ export type OperationControlTransition = { kind: "action"; nodeId: string; index
 /** Denial-only traversal of exact committed receipts. It never evaluates a
  * predicate, dispatches, grants approval or infers success from a pointer. */
 export function operationControlTransition(root: ReadSequence, progress: Pick<ReadRunProgress, "attempts" | "decisions" | "values" | "nextStepIndex">): OperationControlTransition {
+  assertNoProtectedScopes(root);
   const order = actionOrder(root), positions = new Map(order.map((id, index) => [id, index]));
   const visited = new Set<string>(), returnedValues = new Set<string>(), accounted = new Set<string>();
   let transition: OperationControlTransition | undefined;

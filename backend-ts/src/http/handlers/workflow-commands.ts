@@ -74,7 +74,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         effectProfile = hasWorkflowEffects(blueprint, services.registries.snapshot().tools) ? "contains-effects" : "read-only";
         if (operationProfile) {
           try { const prepared = await prepareOperationPublication(services, current.yaml, user); if (prepared) issues.push(...operationModelReadinessIssues(prepared.stored.plan, services.providerRuntime)); if (!supportsOperationJobs(services)) issues.push("Operation checkpoint persistence is not qualified"); }
-          catch { issues.push("Operation requires a supported reviewed sequential artifact and current connection"); }
+          catch (error) { issues.push(error instanceof HandlerFailure && error.meta !== null && typeof error.meta === "object" && "code" in error.meta && error.meta.code === "PROTECTED_RUNTIME_PENDING" ? error.message : "Operation requires a supported reviewed sequential artifact and current connection"); }
         } else issues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role, supportsCollectionReads(services));
         const connectionIds = [...new Set(blueprint.steps.filter(step => effectiveStepKind(step) !== "analysis").map(step => selectedMcpConnectionId(services, step.connection_id)))];
         if (connectionIds.length) {
@@ -115,12 +115,13 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         return { authoring: readAuthoringContract(blueprint, services.registries.snapshot().tools, user.role, services.registries.hash(), connectionCatalog(services)), editHistory: draftHistorySummary(state, fresh) };
       });
       const { authoring, editHistory } = workspace;
+      const protectedRuntimePending = "executionProfile" in authoring && authoring.executionProfile === "protected-draft-runtime-pending";
       return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation, authoring,
         editHistory, effectProfile,
         can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
-        operation_job_admission: operationProfile && supportsOperationJobs(services) ? "operation-job/v1" : "unavailable",
-        authorization: "rechecked_at_dispatch", executionProfile: operationProfile ? "sequential-operation-v1" : "receipt" in compilation && compilation.receipt?.schemaVersion === "workflow-read-ir/v4" ? "collection-read-v1" : "executionProfile" in authoring ? authoring.executionProfile : "sequential-read-v1" }, "Readiness checked", { traceId }));
+        operation_job_admission: !protectedRuntimePending && operationProfile && supportsOperationJobs(services) ? "operation-job/v1" : "unavailable",
+        authorization: "rechecked_at_dispatch", executionProfile: protectedRuntimePending ? "protected-draft-runtime-pending" : operationProfile ? "sequential-operation-v1" : "receipt" in compilation && compilation.receipt?.schemaVersion === "workflow-read-ir/v4" ? "collection-read-v1" : "executionProfile" in authoring ? authoring.executionProfile : "sequential-read-v1" }, "Readiness checked", { traceId }));
     }
     if (kind === "node-proposals") {
       const parsed = proposalSchema.safeParse(request.body);

@@ -63,7 +63,7 @@ export async function simulateReadWorkflow(yaml: string, input: Record<string, u
     const parts = id.split("/"), owner = owners.get(parts.at(-1)!);
     return !owner || parts.length !== owner.length * 2 + 1 || owner.some((loopId, index) => parts[index * 2] !== loopId || Number(parts[index * 2 + 1]) >= loops.find(loop => loop.id === loopId)!.maxItems);
   })) throw new Error("Fixture names must match declared action IDs and exact iteration scope");
-  const valueSchemas = new Map(plan.ir.flow ? structuralNodes(plan.ir.flow).map(node => [node.id, node.kind === "return" ? node.output.schema : node.kind === "foreach" ? node.collect.schema : node.merge?.schema] as const) : []);
+  const valueSchemas = new Map(plan.ir.flow ? structuralNodes(plan.ir.flow).map(node => [node.id, node.kind === "return" ? node.output.schema : node.kind === "foreach" ? node.collect.schema : node.kind === "if" ? node.merge?.schema : undefined] as const) : []);
   const location = (visit: ReadVisit) => fixtures.profile === "read-fixtures/v2" ? { invocationId: visit.invocationId, iterations: visit.iterations } : {};
   const key = (visit: ReadVisit, id: string) => fixtures.profile === "read-fixtures/v2" ? visit.invocationId : id;
   const fixtureHash = `sha256:${createHash("sha256").update(canonicalJSONBytes({ input, fixtures: fixtures.outputs })).digest("hex")}`;
