@@ -9,6 +9,15 @@ jest.unstable_mockModule("../../utils/workflowCanvas.utils", () => ({ peekWorkfl
 const { default: ChatWindow } = await import("./ChatWindow");
 afterEach(() => { cleanup(); sessionStorage.clear(); });
 
+test("unsupported selected-group chat retains text and cannot become an unscoped request", async () => {
+  const onSend = jest.fn(); render(<ChatWindow messages={[]} onSend={onSend} nodeContext={{ nodeId: "group", version: 1, unavailableReason: "Use protected output settings or select a child node." }} draftStorageKey="scope.protected" />);
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Edit the handler" } });
+  await screen.findByText("Use protected output settings or select a child node.");
+  expect(screen.getByRole("button", { name: "Send message" }).disabled).toBe(true);
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" }); fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  expect(onSend).not.toHaveBeenCalled(); expect(screen.getByRole("textbox").value).toBe("Edit the handler");
+});
+
 test("pending selected-node context retains text and cannot fall through to a general chat request", async () => {
   const onSend = jest.fn(), view = render(<ChatWindow messages={[]} onSend={onSend} nodeContext={{ nodeId: "each", label: "Collection each", version: 4, pending: true }} draftStorageKey="scope.pending" />);
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Edit this collection" } });

@@ -193,7 +193,7 @@ test("protected drafts route to durable operations but cannot compile an executa
   const source = wrapped();
   expect(usesCheckpointedOperationWorkflow(parseWorkflowYAMLStrict(source), [tool])).toBe(true);
   expect(() => compileReadWorkflow(source, [tool], role)).toThrow(/durable handler profile/);
-  expect(() => compileOperationWorkflow(source, [tool], role, new Map())).toThrow(/durable handler profile/);
+  expect(() => compileOperationWorkflow(source, [tool], role, new Map())).toThrow(/reviewed.*pin/i);
   expect(() => compileModelFixtureWorkflow(source, [tool], role)).toThrow(/durable handler profile/);
 });
 
@@ -211,11 +211,23 @@ test("counterfeit read/operation plans are denied before any driver callback or 
   expect(() => selectedPrerequisiteYAML(parseWorkflowYAMLStrict(addHandler()), "before", new Set())).toThrow();
 });
 
-test("publication/execution preparation fail before connection discovery or authorizing stale imports", async () => {
+test("unconfigured protected publication and stale imports cannot acquire execution authority", async () => {
   const snapshot = vi.fn(() => ({ tools: [tool] })), hash = vi.fn(() => "hash"), repository = new Repository(null);
-  // Deliberately omit connection/runtime services: reaching them would be a bug.
+  // Deliberately omit connection/runtime services: publication must refuse.
   const services = { registries: { snapshot, hash }, repository } as unknown as HandlerServices;
-  await expect(prepareOperationPublication(services, wrapped(), { id: "owner", role } as any)).rejects.toMatchObject({ meta: { code: "PROTECTED_RUNTIME_PENDING" } });
+  await expect(prepareOperationPublication(services, wrapped(), { id: "owner", role } as any)).rejects.toMatchObject({ status: 503 });
   expect(hash).not.toHaveBeenCalled();
-  expect(() => prepareOperationExecution({} as any, services, { compiledOperation: {} }, wrapped(), role)).toThrow(/not qualified/);
+  expect(() => prepareOperationExecution({} as any, services, { compiledOperation: {} }, wrapped(), role)).toThrow(/missing, stale/);
+});
+
+test("protected collection publication refuses before discovery and never flattens iterations", async () => {
+  let source = edit(base, { type: "wrapCollection", nodeId: "lookup", loopId: "each", maxItems: 2,
+    items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "array", items: [literal("a")] } },
+    collect: { schema: { type: "string" }, value: ref("lookup", "structuredContent", "id") } });
+  source = edit(source, { ...wrapCommand, nodeIds: ["each"], output: { schema: { type: "string" }, success: literal("ok"), handled: literal("unavailable") } });
+  const snapshot = vi.fn(() => ({ tools: [tool] })), hash = vi.fn(() => "hash");
+  const services = { registries: { snapshot, hash }, repository: new Repository(null) } as unknown as HandlerServices;
+  await expect(prepareOperationPublication(services, source, { id: "owner", role } as any)).rejects.toMatchObject({ meta: { code: "PROTECTED_COLLECTION_RUNTIME_PENDING" } });
+  expect(hash).not.toHaveBeenCalled();
+  expect(() => compileOperationWorkflow(source, [tool], role, new Map())).toThrow(/durable operation iteration/);
 });

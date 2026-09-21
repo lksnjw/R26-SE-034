@@ -18,6 +18,16 @@ test("bounded placement projection identifies exact root, branch, body and empty
   expect(flowPlacementModel(empty, steps).placements.some(item => item.key === "gate:else|$end")).toBe(true);
 });
 
+test("protected placements preserve exact owned body/handler destinations and whole subtrees", () => {
+  const protectedFlow = sequence({ kind: "protect", id: "group", onError: { code: "ERP_RESOURCE_NOT_FOUND" }, body: sequence(action("first")), handler: sequence(), output: { schema: { type: "boolean" }, success: output.value, handled: output.value } }, action("last"));
+  const model = flowPlacementModel(protectedFlow, steps, true);
+  expect(model.valid).toBe(true); expect(model.nodes.get("group").subtreeIds).toEqual(["group", "first"]);
+  expect(insertionPlacementPreview(model, "group:handler|$end")).toEqual({ placement: { beforeNodeId: null, destination: { protectedId: "group", scope: "handler" } }, location: "Main sequence → group · protected handler · end" });
+  expect(movePlacementPreview(model, "last", "group:body|first").command).toEqual({ type: "moveNode", nodeId: "last", beforeNodeId: "first", destination: { protectedId: "group", scope: "body" } });
+  expect(canPlaceNode(model, "group", "group:handler|$end")).toBe(false);
+  expect(movePlacementPreview(model, "group", "root|$end").after.preservedNodes).toEqual(["group", "first"]);
+});
+
 test("whole-subtree preview uses readable exact location and preserves source objects", () => {
   const before = JSON.stringify(flow), model = flowPlacementModel(flow, steps), result = movePlacementPreview(model, "gate", "root|$end");
   expect(result.command).toEqual({ type: "moveNode", nodeId: "gate", beforeNodeId: null });

@@ -9,6 +9,7 @@ import { controlNodes, structuralNodes, loopNodes, protectedNodes, protectedFaul
 import { draftFlow } from "./draft-control-edits.js";
 import { isSecretField } from "../redact/secrets.js";
 import { usesCheckpointedOperationWorkflow } from "./execution-shape.js";
+import { protectedErrorSourceIssues, protectedOperationProfile } from "./protected-operation-profile.js";
 
 type Schema = Record<string, unknown>;
 type Source = { label: string; expression: string; binding: ReadReference; schema: Schema };
@@ -153,13 +154,22 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   const returns = editableFlow ? structuralNodes(editableFlow).filter(node => node.kind === "return").map(node => ({ nodeId: node.id, dataSources: dataFor(controlScopes?.scopes.get(node.id), node.id) })) : [];
   const collectionGuides = collections.map(node => ({ nodeId: node.id, itemSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.items, node.id),
     collectSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.collect, node.id, true) }));
-  const executionProfile = protectedGroups.length || (blueprint.metadata?.controlFlow as { schemaVersion?: unknown } | undefined)?.schemaVersion === "read-control-flow/v4" ? "protected-draft-runtime-pending" : blueprint.metadata?.controlFlow !== undefined && usesCheckpointedOperationWorkflow(blueprint, tools) ? !editableFlow || compiled?.issues.length ? "unsupported-operation-control-flow" : "decision-operation-v1" : collections.length ? "collection-simulation-only" :
+  let protectedProfile: ReturnType<typeof protectedOperationProfile> | undefined;
+  try { protectedProfile = protectedOperationProfile(blueprint); } catch { /* Malformed draft remains unavailable. */ }
+  const protectedIssues = editableFlow ? protectedErrorSourceIssues(editableFlow, blueprint.steps.map(step => {
+    const actions = effectiveStepKind(step) === "agent" ? step.allowed_actions ?? [] : effectiveStepKind(step) === "tool" ? [step.action] : [];
+    return { id: step.id, tools: actions.flatMap(action => {
+      const matches = tools.filter(tool => tool.name === action || tool.mcp_tool_name === action);
+      return matches.length === 1 && matches[0]!.allowed_roles.includes(role) ? matches : [];
+    }) };
+  })) : [];
+  const executionProfile = protectedProfile === "protected" && !!compiled && !compiled.issues.length && !protectedIssues.length ? "protected-operation-v1" : protectedGroups.length || protectedProfile === "protected-collections-pending" || (blueprint.metadata?.controlFlow as { schemaVersion?: unknown } | undefined)?.schemaVersion === "read-control-flow/v4" ? "protected-draft-runtime-pending" : blueprint.metadata?.controlFlow !== undefined && usesCheckpointedOperationWorkflow(blueprint, tools) ? !editableFlow || compiled?.issues.length ? "unsupported-operation-control-flow" : "decision-operation-v1" : collections.length ? "collection-simulation-only" :
     editableFlow && structuralNodes(editableFlow).some(node => node.kind === "return" || node.kind === "if" && node.merge) ? "structured-read-v1" : editableFlow ? "conditional-read-v1" : "sequential-read-v1";
   const connectionChoices = connections.filter(item => /^[a-z][a-z0-9_-]{0,63}$/.test(item.id) && item.dispatchSupported).map(item => ({ id: item.id, primary: item.primary }));
-  const modelNodesSupported = prefix && blueprint.steps.length > 0 && (!editableFlow || structuralNodes(editableFlow).every(node => node.kind === "return" || node.kind === "if")) && (!compiled || !compiled.issues.length);
-  const returnNodesSupported = prefix && blueprint.trigger.type === "manual" && (!compiled || !compiled.issues.length) && (!editableFlow || structuralNodes(editableFlow).every(node => node.kind === "return" || node.kind === "if"));
+  const modelNodesSupported = prefix && blueprint.steps.length > 0 && (!editableFlow || structuralNodes(editableFlow).every(node => node.kind === "return" || node.kind === "if" || node.kind === "protect")) && (!compiled || !compiled.issues.length);
+  const returnNodesSupported = prefix && blueprint.trigger.type === "manual" && (!compiled || !compiled.issues.length) && (!editableFlow || structuralNodes(editableFlow).every(node => node.kind === "return" || node.kind === "if" || node.kind === "protect"));
   const mergeNodesSupported = returnNodesSupported;
-  const value = { profile: "read-authoring/v1", registryHash, executionProfile, modelNodesSupported, returnNodesSupported, mergeNodesSupported, connectionChoices, ...(inputSchema ? { inputSchema } : {}), nodes, ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides } : {}) };
+  const value = { profile: "read-authoring/v1", registryHash, executionProfile, modelNodesSupported, returnNodesSupported, mergeNodesSupported, connectionChoices, ...(inputSchema ? { inputSchema } : {}), nodes, ...(protectedIssues.length ? { protectedIssues } : {}), ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides } : {}) };
   if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, nodes: [], conditions: [], returns: [], collections: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
   return value;
 }

@@ -69,7 +69,7 @@ test("protected commands persist exact saved structure, reject stale/unauthorize
   expect(readiness.json().data.can_attempt_run).toBe(false);
   expect(readiness.json().data.executionProfile).toBe("protected-draft-runtime-pending");
   expect(readiness.json().data.operation_job_admission).toBe("unavailable");
-  expect(JSON.stringify(readiness.json().data)).toContain("durable handler execution is not qualified");
+  expect(readiness.json().data.authoring.protectedIssues).toEqual(["Protected group guard requires an exact reviewed ERP_RESOURCE_NOT_FOUND read-error source in its body"]);
   const publish = await s.app.inject({ method: "POST", url: "/api/workflows/report/publish", headers: s.headers(), payload: { baseVersion: 3, baseHash: workflowContentHash(saved.yaml) } });
   expect(publish.statusCode).toBeGreaterThanOrEqual(400);
   const run = await s.app.inject({ method: "POST", url: "/api/workflows/report/run", headers: s.headers(), payload: {} });

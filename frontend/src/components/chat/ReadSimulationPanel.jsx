@@ -4,6 +4,7 @@ import ValueFields from "./ValueFields";
 import SchemaFields from "./SchemaFields";
 import ReadableValue, { ReadableResult } from "./ReadableValue";
 import { collectionOwners, IterationFixturePicker } from "./CollectionFields";
+import { flowProtectedGroups } from "./protectedFlow";
 
 const button = "rounded-md px-3 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-40 disabled:cursor-not-allowed";
 const outcomes = { SIMULATED: "Supplied response accepted", SIMULATED_DECISION: "Condition evaluated", SIMULATED_VALUE: "Typed value evaluated", NOT_SELECTED: "Other path · not evaluated", AFTER_RETURN: "After return · not evaluated", MISSING_FIXTURE: "No test response supplied", FIXTURE_TOOL_ERROR: "Supplied tool error", FIXTURE_OUTPUT_INVALID: "Invalid test response", ARGUMENTS_INVALID: "Arguments do not match the tool schema", BINDING_UNAVAILABLE_OR_LIMITED: "Required data missing or too large", PREDICATE_INVALID: "Condition requires Yes or No", VALUE_INVALID: "Value does not match its declared type", WORKFLOW_INPUT_INVALID: "Inputs do not match the workflow schema", SELECTED_PATH_RULE_BLOCKED: "Selected path violates a local rule", SIMULATION_OUTPUT_LIMIT: "Simulation display budget exceeded", SIMULATION_EVALUATION_FAILED: "Simulation could not continue" };
@@ -93,5 +94,6 @@ function SimulationWorkspace({ workflowId, record, steps, canControl, disabled }
 // Remount on revision changes: stale results/fixtures never become evidence
 // for a different draft, and test data is not stored in session/local storage.
 export default function ReadSimulationPanel(props) {
+  if (flowProtectedGroups(props.record.authoring?.controlFlow).length || ["protected-operation-v1", "protected-draft-runtime-pending"].includes(props.record.executionProfile)) return <details className="mt-6 border-t border-gray-200 pt-4 text-xs dark:border-gray-700"><summary className="cursor-pointer font-medium">Simulate draft with test data</summary><p className="mt-2 text-gray-500">Protected body/handler simulation is not supported yet. Supplied tool errors cannot select a real handler or establish ERP absence. No simulation, ERP call or model call is sent from this panel.</p></details>;
   return <SimulationWorkspace key={`${props.workflowId}:${props.record.version}:${props.record.contentHash}:${props.record.authoring?.registryHash}:${props.canControl}:${Boolean(props.disabled)}`} {...props} />;
 }

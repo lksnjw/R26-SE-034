@@ -1,5 +1,5 @@
 import type { WorkflowBlueprint } from "../models/schemas.js";
-import { mergeSourceInScope } from "../models/structural-model-sources.js";
+import { mergeSourceInScope, protectedFaultSourceInScope } from "../models/structural-model-sources.js";
 
 type StepStructureResult = {
   schema_ok: boolean;
@@ -15,6 +15,8 @@ function sourceReference(workflow: WorkflowBlueprint, stepIndex: number, input: 
   }
   const expression = (input ?? "").trim(), merged = /^\{\{\s*([A-Za-z][A-Za-z0-9_-]*)\.value(?:\.[A-Za-z0-9_-]+)*\s*\}\}$/.exec(expression)?.[1];
   if (merged) return mergeSourceInScope(workflow, merged, workflow.steps[stepIndex]!.id) ? merged : `!${merged}`;
+  const fault = /^\{\{\s*([A-Za-z][A-Za-z0-9_-]*)\.(error(?:\.[A-Za-z0-9_-]+)*)\s*\}\}$/.exec(expression);
+  if (fault) return protectedFaultSourceInScope(workflow, fault[1]!, workflow.steps[stepIndex]!.id, fault[2]!.split(".")) ? fault[1]! : `!${fault[1]}`;
   const sourceID = priorOutputReference.exec(expression)?.[1];
   if (sourceID === undefined) return null;
   return workflow.steps.slice(0, stepIndex).some((prior) => prior.id === sourceID) ? sourceID : `!${sourceID}`;

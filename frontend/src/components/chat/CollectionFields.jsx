@@ -7,6 +7,7 @@ export function flowLoops(flow) {
     if (++count > 300) return;
     if (node?.kind === "foreach") { result.push(node); visit(node.body, depth + 1); }
     else if (node?.kind === "if") { visit(node.then, depth + 1); visit(node.else, depth + 1); }
+    else if (node?.kind === "protect") { visit(node.body, depth + 1); visit(node.handler, depth + 1); }
   } };
   visit(flow, 0); return result;
 }
@@ -17,6 +18,7 @@ export function collectionOwners(flow) {
     if (node?.kind === "action") result.set(node.nodeId, loops);
     else if (node?.kind === "foreach") visit(node.body, [...loops, { id: node.id, maxItems: node.maxItems }], depth + 1);
     else if (node?.kind === "if") { visit(node.then, loops, depth + 1); visit(node.else, loops, depth + 1); }
+    else if (node?.kind === "protect") { visit(node.body, loops, depth + 1); visit(node.handler, loops, depth + 1); }
   } };
   visit(flow, [], 0); return result;
 }

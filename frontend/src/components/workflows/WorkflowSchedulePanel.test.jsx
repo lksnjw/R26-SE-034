@@ -69,6 +69,13 @@ test("does not offer activation for an unpublished or unsupported workflow", asy
   expect(screen.getByRole("button", { name: "Activate daily schedule" })).toBeDisabled(); expect(workflowScheduleService.save).not.toHaveBeenCalled();
 });
 
+test.each(["protected-operation-v1", "protected-draft-runtime-pending"])("protected %s never treats manual readiness as calendar qualification", async executionProfile => {
+  workflowService.readiness.mockResolvedValue({ ...readiness, executionProfile, operation_job_admission: "operation-job/v1", can_attempt_run: true });
+  render(<WorkflowSchedulePanel workflow={{ id: "flow" }} actorId="owner" />); await screen.findByText(/Protected workflow calendar activation is not qualified yet/);
+  selectWindowBinding(); fireEvent.click(screen.getByRole("button", { name: "Activate daily schedule" }));
+  expect(screen.getByRole("button", { name: "Activate daily schedule" })).toBeDisabled(); expect(workflowScheduleService.save).not.toHaveBeenCalled();
+});
+
 test("a legacy active schedule without a window binding can still be paused", async () => {
   const legacy = { ...saved, reportWindowBinding: null };
   workflowScheduleService.status.mockResolvedValue({ ...empty, schedule: legacy, explanation: "Legacy schedule requires a new revision." });

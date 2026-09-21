@@ -85,7 +85,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
   const [sendError, setSendError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const busy = loading || submitting;
-  const scopePending = Boolean(nodeContext?.pending);
+  const scopePending = Boolean(nodeContext?.pending || nodeContext?.unavailableReason);
   useEffect(() => { writeWorkspaceValue(draftStorageKey, draft); }, [draftStorageKey, draft]);
   const modelStorageKey = draftStorageKey ? `${draftStorageKey}.model` : undefined;
   const [selectedModel, setSelectedModel] = useState(() => readWorkspaceValue(modelStorageKey) || savedModel || "");
@@ -202,7 +202,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
         <button type="button" aria-label="Exit node editing" onClick={onClearNodeContext} disabled={busy} className="rounded p-1 text-gray-500"><Icon icon="lucide:x" /></button>
       </div>}
 
-      {scopePending && <p role="status" className="shrink-0 px-4 py-2 text-xs text-gray-500">Refreshing selected-node context. Your text is kept; reload the workflow if this does not finish. No unscoped request will be sent.</p>}
+      {scopePending && <p role="status" className="shrink-0 px-4 py-2 text-xs text-gray-500">{nodeContext?.unavailableReason || "Refreshing selected-node context. Your text is kept; reload the workflow if this does not finish. No unscoped request will be sent."}</p>}
 
       {/* ── Workflow edit context banner ── */}
       {editContext && !nodeContext && (

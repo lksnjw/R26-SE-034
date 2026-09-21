@@ -10,12 +10,13 @@ import { effectiveStepKind, type WorkflowStepBlueprint } from "../models/schemas
 import { boundMcpConnection, connectionToolKey, selectedMcpConnectionId, type BoundMcpConnection } from "../tools/mcp-dispatch-context.js";
 import { usesCheckpointedOperationWorkflow } from "./execution-shape.js";
 import { assertModelDataClassification, ModelDataClassViolation } from "./model-data-classification.js";
+import { protectedOperationProfile } from "./protected-operation-profile.js";
 
-/** Draft support is not runtime authority. Deny before discovery/preparation
- * until a separately versioned durable handler worker is qualified. */
+/** Never promote collection drafts to once-only action execution. Other
+ * protected trees still require exact v8 compilation and owned dispatch. */
 function assertProtectedRuntimeQualified(source: { metadata?: Record<string, unknown> | undefined }) {
-  if ((source.metadata?.controlFlow as { schemaVersion?: unknown } | undefined)?.schemaVersion === "read-control-flow/v4")
-    throw new HandlerFailure(422, "Protected groups can be saved and edited, but durable handler execution is not qualified yet", { code: "PROTECTED_RUNTIME_PENDING" });
+  if (protectedOperationProfile(source) === "protected-collections-pending")
+    throw new HandlerFailure(422, "Protected collections can be saved and edited, but durable operation iteration is not qualified yet", { code: "PROTECTED_COLLECTION_RUNTIME_PENDING" });
 }
 
 export type StoredOperationCompilation = { plan: CompiledOperationPlan; receipt: OperationCompilationReceipt; verifiedRole: string; compiledAt: string };

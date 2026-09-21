@@ -39,8 +39,9 @@ class Records implements PersistenceBackend {
   readonly executionCheckpointDurability = "encrypted-record-transactions/v1" as const;
   bytes: Buffer | null = null;
   loseWhen: ((state: RepositoryState) => boolean) | undefined;
+  beforeLostAck: (() => Promise<void>) | undefined;
   async load() { return this.bytes; }
-  async save(bytes: Uint8Array) { this.bytes = Buffer.from(bytes); if (this.loseWhen?.(JSON.parse(this.bytes.toString()))) { this.loseWhen = undefined; throw new Error("Fixture post-commit acknowledgement loss"); } }
+  async save(bytes: Uint8Array) { this.bytes = Buffer.from(bytes); if (this.loseWhen?.(JSON.parse(this.bytes.toString()))) { this.loseWhen = undefined; await this.beforeLostAck?.(); throw new Error("Fixture post-commit acknowledgement loss"); } }
   async saveExecutionCheckpoint(checkpoint: ExecutionCheckpoint) { await this.save(Buffer.from(JSON.stringify(applyExecutionCheckpoint(JSON.parse(this.bytes!.toString()), checkpoint)))); }
   async probe() {} async close() {}
 }
@@ -168,6 +169,227 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; },
     setRelatedReadAdmissionHook: (hook: () => Promise<void>) => { relatedReadAdmissionHook = hook; } };
 }
+
+async function prepareProtectedWorkflow(s: Awaited<ReturnType<typeof setup>>, missing = false, effect = false) {
+  const ref = (nodeId: string, ...path: string[]) => ({ kind: "ref", source: "nodeOutput", nodeId, path });
+  await s.repository.mutate(state => {
+    const source = { name: "Protected ERP lookup", description: "Reviewed lookup and exact owned fallback with no arbitrary retry", trigger: { type: "manual" }, steps: [
+      { id: "lookup", action: s.read.name, parameters: { value: missing ? "missing" : "body result" } },
+      { id: "body_tail", action: s.read.name, parameters: { value: "body tail" } },
+      { id: "fallback", action: s.read.name, parameters: { value: "{{group.error.code}}" } },
+      ...(effect ? [{ id: "send", action: s.write.name, parameters: { value: "{{group.value}}" } }] : []),
+    ], metadata: { controlFlow: { schemaVersion: "read-control-flow/v4", root: { kind: "sequence", nodes: [
+      { kind: "protect", id: "group", body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "lookup" }, { kind: "action", nodeId: "body_tail" }] },
+        handler: { kind: "sequence", nodes: [{ kind: "action", nodeId: "fallback" }] }, onError: { code: "ERP_RESOURCE_NOT_FOUND" },
+        output: { schema: { type: "string" }, success: ref("lookup", "structuredContent", "value"), handled: ref("fallback", "structuredContent", "value") } },
+      ...(effect ? [{ kind: "action", nodeId: "send" }] : [{ kind: "return", id: "answer", output: { schema: { type: "string" }, value: ref("group", "value") } }]),
+    ] } } } };
+    state.workflows.flow!.yaml = stringify(source); state.workflows.flow!.steps = source.steps.length;
+  });
+  const original = s.sdk.callTool.getMockImplementation()!;
+  s.sdk.callTool.mockImplementation(async (name, args, meta) => args.value === "missing" ? { content: [], isError: true,
+    _meta: { "com.erpbridge/error": { type: "not_found", retryable: false } } } : original(name, args, meta));
+}
+
+test.each([true, false].flatMap(missing => [true, false].map(effect => [missing, effect] as const)))(
+  "public protected missing=%s effect=%s publishes v8 and follows only the acknowledged selected path", async (missing, effect) => {
+    const s = await setup(null, true, false, false, false, false, true); await prepareProtectedWorkflow(s, missing, effect);
+    const pub = await s.publish(); expect(pub.statusCode, pub.body).toBe(200);
+    const publication = (await s.repository.snapshot()).versions.flow!.find(version => version.artifactState === "PUBLISHED")!;
+    expect((publication.compiledOperation as StoredOperationCompilation).receipt).toMatchObject({ schemaVersion: "workflow-operation-ir/v8", compilerVersion: "operation-compiler/v8" });
+    const admitted = await s.run(`public-protected-${missing}-${effect}-0001`); expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id;
+    await s.wait(id, effect ? "AWAITING_APPROVAL" : "DONE");
+    if (effect) { expect(s.sdk.callTool.mock.calls.every(call => call[0] === exactBridgeName(s.read))).toBe(true);
+      expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE"); }
+    const state = await s.repository.snapshot(), run = state.executions[id]!, value = missing ? "ERP_RESOURCE_NOT_FOUND" : "BODY RESULT";
+    expect(run.valueOutputs!.group).toEqual({ value }); expect(run.operationSecret!.protectedScopes!.group!.completion!.outcome).toBe(missing ? "HANDLED_ERROR" : "SUCCEEDED");
+    expect(run.readProgress!.attempts.lookup!.status).toBe(missing ? "FAILED" : "DONE");
+    expect(run.readProgress!.attempts.body_tail!.status).toBe(missing ? "SKIPPED" : "DONE"); expect(run.readProgress!.attempts.fallback!.status).toBe(missing ? "DONE" : "SKIPPED");
+    if (missing) { expect(run.stepOutputs!.lookup).toBeUndefined(); expect(run.operationSecret!.intents.lookup).toMatchObject({ state: "ACKNOWLEDGED", evidenceMeaning: "read-tool-error" }); }
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(effect ? 3 : 2); expect(s.modelFetch).not.toHaveBeenCalled();
+    if (!effect) expect(run.finalOutput).toBe(value);
+    const readable = await s.request("GET", `/api/executions/${id}`); expect(readable.statusCode).toBe(200); expect(readable.body).not.toMatch(/protectedScopes|operationSecret|readBusinessFailure/);
+    expect((await s.run(`public-protected-${missing}-${effect}-0001`)).json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledTimes(effect ? 3 : 2);
+  });
+
+test.each(["transport", "permission-marker", "forged-error"])("public protected %s failure never selects a business handler", async kind => {
+  const s = await setup(null, true, false, false, false, false, true); await prepareProtectedWorkflow(s, true);
+  if (kind === "transport") s.sdk.callTool.mockRejectedValueOnce(new Error("Fixture lost response"));
+  if (kind === "permission-marker") s.sdk.callTool.mockResolvedValueOnce({ content: [], isError: true, _meta: { "com.erpbridge/error": { type: "permission_denied", retryable: false } } });
+  if (kind === "forged-error") s.sdk.callTool.mockRejectedValueOnce(new ErpbridgeMcpToolError({ content: [], isError: true, _meta: { "com.erpbridge/error": { type: "not_found", retryable: false } } }));
+  expect((await s.publish()).statusCode).toBe(200); const response = await s.run(`public-protected-${kind}-0001`); expect(response.statusCode).toBe(202); const id = response.json().data.id;
+  await s.wait(id, kind === "permission-marker" ? "FAILED" : "RECONCILIATION_REQUIRED");
+  const run = (await s.repository.snapshot()).executions[id]!; expect(run.operationSecret!.protectedScopes!.group!.selection).toBeUndefined(); expect(run.valueOutputs).toBeUndefined();
+  expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test.each([true, false])("public protected authoring mapped=%s never replaces current reviewed publication", async mapped => {
+  const s = await setup(null, true, false, false, false, false, mapped); await prepareProtectedWorkflow(s);
+  const ready = await s.request("GET", "/api/workflows/flow/readiness"); expect(ready.statusCode, ready.body).toBe(200);
+  expect(ready.json().data.authoring.executionProfile).toBe(mapped ? "protected-operation-v1" : "protected-draft-runtime-pending");
+  expect(ready.json().data.can_attempt_run).toBe(false);
+  const publication = await s.publish(); expect(publication.statusCode, publication.body).toBe(mapped ? 200 : 422);
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test.each(["inner-handled", "outer-handled", "own-handler-fails"])("public protected nested %s keeps each failure and selects only the enclosing body", async scenario => {
+  const s = await setup(null, true, false, false, false, false, true); await prepareProtectedWorkflow(s, true);
+  const ref = (nodeId: string, ...path: string[]) => ({ kind: "ref", source: "nodeOutput", nodeId, path });
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml);
+    source.steps = [source.steps[0], { id: "inner_fallback", action: s.read.name, parameters: { value: scenario === "inner-handled" ? "inner recovery" : "missing" } },
+      { id: "outer_fallback", action: s.read.name, parameters: { value: scenario === "own-handler-fails" ? "missing" : "{{outer.error.failedNodeId}}" } }];
+    const inner = { kind: "protect", id: "inner", body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "lookup" }] },
+      handler: { kind: "sequence", nodes: [{ kind: "action", nodeId: "inner_fallback" }] }, onError: { code: "ERP_RESOURCE_NOT_FOUND" },
+      output: { schema: { type: "string" }, success: ref("lookup", "structuredContent", "value"), handled: ref("inner_fallback", "structuredContent", "value") } };
+    source.metadata.controlFlow.root.nodes = [{ kind: "protect", id: "outer", body: { kind: "sequence", nodes: [inner] },
+      handler: { kind: "sequence", nodes: [{ kind: "action", nodeId: "outer_fallback" }] }, onError: { code: "ERP_RESOURCE_NOT_FOUND" },
+      output: { schema: { type: "string" }, success: ref("inner", "value"), handled: ref("outer_fallback", "structuredContent", "value") } },
+      { kind: "return", id: "answer", output: { schema: { type: "string" }, value: ref("outer", "value") } }];
+    state.workflows.flow!.yaml = stringify(source); state.workflows.flow!.steps = source.steps.length;
+  });
+  const publication = await s.publish(); expect(publication.statusCode, publication.body).toBe(200);
+  const response = await s.run(`protected-nested-${scenario}-0001`); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+  await s.wait(id, scenario === "own-handler-fails" ? "FAILED" : "DONE");
+  const state = await s.repository.snapshot(), run = state.executions[id]!, groups = run.operationSecret!.protectedScopes!;
+  expect(groups.inner!.selection!.failedNodeId).toBe("lookup");
+  expect(groups.inner!.completion!.outcome).toBe(scenario === "inner-handled" ? "HANDLED_ERROR" : "FAILED");
+  expect(run.stepOutputs!.lookup).toBeUndefined(); expect(run.readProgress!.attempts.lookup!.status).toBe("FAILED");
+  if (scenario === "inner-handled") { expect(groups.outer!.selection).toBeUndefined(); expect(groups.outer!.completion!.outcome).toBe("SUCCEEDED"); expect(run.finalOutput).toBe("INNER RECOVERY"); }
+  else { expect(groups.outer!.selection!.failedNodeId).toBe("inner_fallback");
+    if (scenario === "outer-handled") { expect(groups.outer!.completion!.outcome).toBe("HANDLED_ERROR"); expect(run.finalOutput).toBe("INNER_FALLBACK"); }
+    else { expect(run.finalOutput).toBeUndefined(); expect(run.valueOutputs?.outer).toBeUndefined(); expect(run.failure!.failedStepId).toBe("outer_fallback"); }
+  }
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(scenario === "inner-handled" ? 2 : 3); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+async function prepareProtectedModel(s: Awaited<ReturnType<typeof setup>>, kind: "analysis" | "agent", handler: boolean) {
+  if (kind === "analysis") await prepareAnalysisWorkflow(s); else await prepareAgentWorkflow(s);
+  const modelId = kind === "analysis" ? "summarize" : "research";
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml), lookup = source.steps[0], model = source.steps[1];
+    lookup.parameters.value = handler ? "missing" : "body result";
+    if (handler) model.input = "{{group.error.code}}";
+    const fallback = { id: "fallback", action: s.read.name, parameters: { value: "{{group.error.code}}" } };
+    source.steps = handler ? [lookup, fallback, model] : [lookup, model, fallback];
+    const ref = (nodeId: string, ...path: string[]) => ({ kind: "ref", source: "nodeOutput", nodeId, path });
+    source.metadata = { controlFlow: { schemaVersion: "read-control-flow/v4", root: { kind: "sequence", nodes: [
+      { kind: "protect", id: "group", body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "lookup" }, ...(handler ? [] : [{ kind: "action", nodeId: modelId }])] },
+        handler: { kind: "sequence", nodes: [{ kind: "action", nodeId: "fallback" }, ...(handler ? [{ kind: "action", nodeId: modelId }] : [])] },
+        onError: { code: "ERP_RESOURCE_NOT_FOUND" }, output: { schema: { type: "string" },
+          success: handler ? ref("lookup", "structuredContent", "value") : ref(modelId, "structuredContent", "summary"),
+          handled: handler ? ref(modelId, "structuredContent", "summary") : ref("fallback", "structuredContent", "value") } },
+      { kind: "return", id: "answer", output: { schema: { type: "string" }, value: ref("group", "value") } },
+    ] } } };
+    state.workflows.flow!.yaml = stringify(source); state.workflows.flow!.steps = source.steps.length;
+  });
+  const original = s.sdk.callTool.getMockImplementation()!;
+  s.sdk.callTool.mockImplementation(async (name, args, meta) => args.value === "missing" ? { content: [], isError: true,
+    _meta: { "com.erpbridge/error": { type: "not_found", retryable: false } } } : original(name, args, meta));
+  s.modelFetch.mockReset().mockImplementation(async () => Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ summary: "REVIEWED ANSWER", ...(kind === "agent" ? { complete: true } : {}) }) } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+  return modelId;
+}
+
+test.each(["analysis", "agent"].flatMap(kind => [true, false].map(handler => [kind as "analysis" | "agent", handler] as const)))(
+  "public protected %s handler=%s retains acknowledged model output and lexical input", async (kind, handler) => {
+    const s = await setup(null, true, false, false, false, true, true), modelId = await prepareProtectedModel(s, kind, handler);
+    const publication = await s.publish(); expect(publication.statusCode, publication.body).toBe(200);
+    const response = await s.run(`protected-model-${kind}-${handler}-0001`); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+    await s.wait(id, "DONE"); const state = await s.repository.snapshot(), run = state.executions[id]!;
+    expect(run.finalOutput).toBe("REVIEWED ANSWER"); expect(run.readProgress!.attempts[modelId]!.status).toBe("DONE");
+    expect(run.operationSecret!.protectedScopes!.group!.completion!.outcome).toBe(handler ? "HANDLED_ERROR" : "SUCCEEDED");
+    expect(run.tokens.total).toBe(18); expect(s.modelFetch).toHaveBeenCalledOnce(); expect(s.sdk.callTool).toHaveBeenCalledTimes(handler ? 2 : 1);
+    const body = JSON.parse(String(s.modelFetch.mock.calls[0]![1]!.body)); expect(body.model).toBe("analysis-model-b");
+    if (handler) { expect(JSON.stringify(body.messages)).toContain("ERP_RESOURCE_NOT_FOUND"); expect(JSON.stringify(body.messages)).not.toContain("readBusinessFailure"); }
+    assertConfirmedOperationResults(state, run, (state.versions.flow!.find(version => version.artifactState === "PUBLISHED")!.compiledOperation as StoredOperationCompilation).plan);
+  });
+
+test("public protected dynamic agent read failure selects the authored handler without another model turn", async () => {
+  const s = await setup(null, true, false, false, false, true, true); await prepareProtectedModel(s, "agent", false);
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "protected-agent-read", type: "function",
+    function: { name: exactBridgeName(s.read), arguments: JSON.stringify({ value: "missing" }) } }] } }], usage: { prompt_tokens: 13, completion_tokens: 5 } }));
+  const publication = await s.publish(); expect(publication.statusCode, publication.body).toBe(200);
+  const response = await s.run("protected-dynamic-agent-error-0001"); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+  await s.wait(id, "DONE"); const run = (await s.repository.snapshot()).executions[id]!;
+  expect(run.finalOutput).toBe("ERP_RESOURCE_NOT_FOUND"); expect(run.readProgress!.attempts.research!.status).toBe("FAILED");
+  expect(run.operationSecret!.protectedScopes!.group!.selection!.failedNodeId).toBe("research"); expect(run.stepOutputs!.research).toBeUndefined();
+  expect(s.modelFetch).toHaveBeenCalledOnce(); expect(s.sdk.callTool).toHaveBeenCalledTimes(3);
+});
+
+test.each(["analysis", "agent"] as const)("public protected %s handler error input retains the body's restricted classification", async kind => {
+  const s = await setup(null, true, false, false, false, true, true); await prepareProtectedModel(s, kind, true);
+  await reviewReadClass(s, s.read.tool_id, "restricted");
+  const response = await s.publish(); expect(response.statusCode, response.body).toBe(422); expect(response.json().meta.code).toBe("MODEL_DATA_CLASS_DOWNGRADE");
+  expect(s.modelFetch).not.toHaveBeenCalled(); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["{{group.error.message}}", "{{group.value}}", "{{lookup.structuredContent.value}}", "{{other.error.code}}"])(
+  "public protected handler model cannot bind unavailable or undeclared %s", async input => {
+    const s = await setup(null, true, false, false, false, true, true); await prepareProtectedModel(s, "analysis", true);
+    await s.repository.mutate(state => { const source = parse(state.workflows.flow!.yaml); source.steps.find((step: any) => step.id === "summarize").input = input; state.workflows.flow!.yaml = stringify(source); });
+    const response = await s.publish(); expect(response.statusCode, response.body).toBe(422);
+    expect(s.modelFetch).not.toHaveBeenCalled(); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  });
+
+test("public protected completed group value can feed a later typed model without exposing either path", async () => {
+  const s = await setup(null, true, false, false, false, true, true); await prepareProtectedModel(s, "analysis", true);
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml), model = source.steps.find((step: any) => step.id === "summarize");
+    source.steps.push({ ...model, id: "followup", input: "{{group.value}}" });
+    source.metadata.controlFlow.root.nodes.splice(1, 0, { kind: "action", nodeId: "followup" });
+    source.metadata.controlFlow.root.nodes.at(-1).output.value = { kind: "ref", source: "nodeOutput", nodeId: "followup", path: ["structuredContent", "summary"] };
+    state.workflows.flow!.yaml = stringify(source); state.workflows.flow!.steps = source.steps.length;
+  });
+  const publication = await s.publish(); expect(publication.statusCode, publication.body).toBe(200);
+  const response = await s.run("protected-group-followup-model-0001"); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+  await s.wait(id, "DONE"); const run = (await s.repository.snapshot()).executions[id]!;
+  expect(run.finalOutput).toBe("REVIEWED ANSWER"); expect(s.modelFetch).toHaveBeenCalledTimes(2); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+  const body = JSON.parse(String(s.modelFetch.mock.calls.at(-1)![1]!.body)); expect(JSON.stringify(body.messages)).toContain("REVIEWED ANSWER");
+  expect(JSON.stringify(body.messages)).not.toContain("ERP_RESOURCE_NOT_FOUND");
+});
+
+test.each([true, false])("public protected selected decision %s saves one typed merge and no unselected read", async choice => {
+  const s = await setup(null, true, false, false, false, false, true); await prepareProtectedWorkflow(s);
+  await s.repository.mutate(state => {
+    const source = parse(state.workflows.flow!.yaml), group = source.metadata.controlFlow.root.nodes[0];
+    source.trigger.config = { inputSchema: { type: "object", properties: { choice: { type: "boolean" } }, required: ["choice"], additionalProperties: false } };
+    group.body.nodes[1] = { kind: "if", id: "gate", predicate: { kind: "ref", source: "workflowInput", path: ["choice"] },
+      then: { kind: "sequence", nodes: [{ kind: "action", nodeId: "body_tail" }] }, else: { kind: "sequence", nodes: [] },
+      merge: { schema: { type: "string" }, then: { kind: "literal", value: "Selected" }, else: { kind: "literal", value: "Not selected" } } };
+    group.output.success = { kind: "ref", source: "nodeOutput", nodeId: "gate", path: ["value"] };
+    state.workflows.flow!.yaml = stringify(source);
+  });
+  const publication = await s.publish(); expect(publication.statusCode, publication.body).toBe(200);
+  const response = await s.run(`protected-decision-${choice}-0001`, { choice }); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+  await s.wait(id, "DONE"); const run = (await s.repository.snapshot()).executions[id]!;
+  expect(run.finalOutput).toBe(choice ? "Selected" : "Not selected"); expect(run.readProgress!.decisions!.gate!.selected).toBe(choice ? "then" : "else");
+  expect(run.readProgress!.attempts.body_tail!.status).toBe(choice ? "DONE" : "SKIPPED"); expect(run.readProgress!.attempts.fallback!.status).toBe("SKIPPED");
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(choice ? 2 : 1); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test.each(["selection", "handler-result", "group-output", "return"].flatMap(checkpoint => [false, true].map(reload => [checkpoint, reload] as const)))("public protected post-commit %s ACK loss reload=%s resumes confirmed evidence without replay", async (checkpoint, reload) => {
+  const records = new Records(), s = await setup(records, true, false, false, false, false, true); await prepareProtectedWorkflow(s, true);
+  let release!: () => void; const heldAck = new Promise<void>(resolve => { release = resolve; });
+  if (reload) records.beforeLostAck = async () => heldAck;
+  expect((await s.publish()).statusCode).toBe(200);
+  records.loseWhen = state => Object.values(state.executions).some(run => checkpoint === "selection" ? !!run.operationSecret?.protectedScopes?.group?.selection :
+    checkpoint === "handler-result" ? run.readProgress?.attempts.fallback?.status === "DONE" : checkpoint === "group-output" ? !!run.valueOutputs?.group : run.readProgress?.values?.answer?.status === "DONE");
+  const response = await s.run(`protected-ack-${checkpoint}-0001`); expect(response.statusCode, response.body).toBe(202); const id = response.json().data.id;
+  await vi.waitFor(() => expect(records.loseWhen).toBeUndefined()); const beforeCalls = s.sdk.callTool.mock.calls.length;
+  if (reload) { const recovered = s.repository.recoverPersistenceState(); release(); await recovered; }
+  await s.app.close(); const repository = await Repository.open(records), validator = new RegistryValidator(s.services.registries, repository);
+  const session = await createErpbridgeMcpSession({ baseURL: "https://synthetic.example.test", token: "synthetic-only", timeoutMs: 1000, validator,
+    sdkClient: s.sdk, admissionAuthorizer: admissionAuthorizer(repository, s.services.registries) });
+  const queue = operationJobQueue({ ...s.services, repository, validator, erpbridgeSession: session, executor: new Executor(new ToolRegistry(), validator) });
+  try {
+    await queue.start(); await vi.waitFor(async () => { const run = (await repository.snapshot()).executions[id]!;
+      expect(run.status, JSON.stringify({ failure: run.failure, summary: run.agentSummary, progress: run.readProgress })).toBe("DONE"); }, { timeout: 4000 });
+    const recovered = (await repository.snapshot()).executions[id]!;
+    expect(recovered.finalOutput).toBe("ERP_RESOURCE_NOT_FOUND"); expect(recovered.readProgress!.attempts.lookup!.status).toBe("FAILED");
+    expect(recovered.operationSecret!.protectedScopes!.group!.completion!.outcome).toBe("HANDLED_ERROR");
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(beforeCalls).toBe(checkpoint === "selection" ? 1 : 2); expect(s.modelFetch).not.toHaveBeenCalled();
+  } finally { release(); await queue.stop(); await session.close(); await repository.close(); }
+});
 
 test.each(["permission", "role", "role-identity", "disabled", "deleted", "archived", "workflow-deleted"])(
   "queued %s revocation terminates once and does not starve another actor", async scenario => {

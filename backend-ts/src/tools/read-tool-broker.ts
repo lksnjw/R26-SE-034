@@ -20,6 +20,7 @@ import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { boundMcpConnection, selectedMcpConnectionId } from "./mcp-dispatch-context.js";
 import { consumeAcknowledgedReadErrorEvidence, ErpbridgeMcpToolError } from "./erpbridge-mcp-client.js";
 import { assertReadErrorContract, type ReviewedReadBusinessFailure } from "./read-business-error.js";
+import { protectedReadPrerequisiteYAML, type ProtectedReadDispatch } from "../runner/protected-read-dispatch.js";
 
 const acknowledgedFailures = new WeakMap<object, { result: Record<string, unknown>; businessFailure?: ReviewedReadBusinessFailure }>();
 /** Read-only observation for nested server checkpoints. Never accepts a
@@ -36,6 +37,8 @@ export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: 
   assertDispatch?: (() => void) | undefined;
   /** Server-owned journal instance, never a model/browser evidence payload. */
   iteration?: { checkpoints: ReadIterationCheckpoints; plan: CompiledReadPlan; visit: ReadVisit; assertBinding?: () => void };
+  /** Server-owned v8 worker identity, never browser/model-supplied receipts. */
+  protectedOperation?: ProtectedReadDispatch;
   plan?: { yaml: string; stepIndex: number; token: ValidationToken; admissionPin?: ReadAdmissionPin; contractHash?: string; toolId?: string };
   /** Exact reviewed dynamic-node allow-list binding. The broker still builds
    * and validates one synthetic single-tool workflow for the concrete call. */
@@ -59,7 +62,7 @@ export async function dispatchReadTool(
       !actor.permissions.some((permission) => ["chat:use", "workflow:write", "workflow:run", "workflow:run_own"].includes(permission)))
     throw new Error("Tool dispatch denied: current actor is not authorized");
   await checkWorkflowScope(services, actor, context.workflowId);
-  if (context.plan && context.dynamicPlan) throw new Error("Tool dispatch cannot combine static and dynamic plan bindings");
+  if (context.plan && context.dynamicPlan || context.protectedOperation && (!context.plan || context.dynamicPlan || context.iteration)) throw new Error("Tool dispatch cannot combine incompatible static, dynamic or iteration bindings");
   const exactPlan = context.plan ?? context.dynamicPlan;
   const connectionId = exactPlan?.admissionPin?.connectionId ?? selectedMcpConnectionId(services);
   const bound = boundMcpConnection(services, connectionId), session = bound.session;
@@ -145,11 +148,13 @@ export async function dispatchReadTool(
       // the exact-source capability below. This extra denial-only check proves
       // process prerequisites on the actual confirmed path, never on a skipped
       // branch that happened to appear earlier in the declaration catalog.
-      const prefix = selectedPrerequisiteYAML(blueprint, authored.id, completed);
+      const prefix = context.protectedOperation ? await services.repository.readAuthoritative(state =>
+        protectedReadPrerequisiteYAML(services, state, context.executionId!, actorId, context.protectedOperation!, yaml, index, context.plan?.admissionPin, parameters)) :
+        selectedPrerequisiteYAML(blueprint, authored.id, completed);
       if (!services.validator.validatePlan("ReadConfirmedPath", prefix, actor.role).passed) throw new Error("Selected read path does not meet confirmed process prerequisites");
     }
   }
-  const { signal, plan, dynamicPlan: _privateDynamicPlan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, ...metadata } = context;
+  const { signal, plan, dynamicPlan: _privateDynamicPlan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, protectedOperation: _privateProtectedOperation, ...metadata } = context;
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
   const identity = createDispatchIdentity(actor, bound.roleMap);
@@ -163,6 +168,9 @@ export async function dispatchReadTool(
   // those waits; a revoked or changed identity cannot use an older capability.
   const finalDispatch = async () => {
     assertContext();
+    if (context.protectedOperation) await services.repository.readAuthoritative(state => {
+      assertContext(); protectedReadPrerequisiteYAML(services, state, context.executionId!, actorId, context.protectedOperation!, yaml, index, context.plan?.admissionPin, parameters);
+    });
     const current = await services.repository.effectiveUser(actorId);
     if (current === null || current.status.toLowerCase() !== "active" || current.role !== actor.role ||
         !current.permissions.some((permission) => ["chat:use", "workflow:write", "workflow:run", "workflow:run_own"].includes(permission)) ||

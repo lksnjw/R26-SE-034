@@ -1,9 +1,11 @@
 import { Icon } from "@iconify/react";
 import SchemaFields from "./SchemaFields";
 import ValueFields from "./ValueFields";
+import { isOperationProfile } from "./protectedFlow";
 
 export default function PublishedWorkflowRunForm({ record, authoring, runInput, onInput, disabled, submitting, unconfirmed, onRun, buttonClass }) {
-  const operation = record.executionProfile === "sequential-operation-v1";
+  const operation = isOperationProfile(record.executionProfile);
+  const protectedFlow = ["protected-operation-v1", "protected-draft-runtime-pending"].includes(record.executionProfile);
   const modelRead = operation && record.effectProfile === "read-only";
   const title = modelRead ? "Run published read-and-model workflow" : operation ? "Run published operation workflow" : "Run published read workflow";
   const explanation = modelRead
@@ -18,6 +20,7 @@ export default function PublishedWorkflowRunForm({ record, authoring, runInput, 
   return <details className="mt-6 border-t border-gray-200 pt-4 text-xs dark:border-gray-700">
     <summary className="cursor-pointer">{title}</summary>
     <p className="mt-2 text-[10px] text-gray-500">{explanation}</p>
+    {protectedFlow && <p className="mt-2 text-[10px] text-gray-500">Protected body and handler paths follow the saved publication. Only the explicitly reviewed ERP error selects a handler; uncertainty is not retried. Draft eligibility does not grant permission to run.</p>}
     <div className="mt-3">{authoring?.inputSchema
       ? <SchemaFields label="Run inputs" schema={authoring.inputSchema} value={runInput} onChange={onInput} allowReferences={false} />
       : <ValueFields label="Run inputs" value={runInput} onChange={onInput} />}</div>

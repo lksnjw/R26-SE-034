@@ -23,8 +23,8 @@ const receiptSchema = z.object({ profile: z.literal("operation-protected/v1"), s
   completion: z.object({ outcome: z.enum(["SUCCEEDED", "HANDLED_ERROR", "RETURNED", "FAILED"]), index, completedAt: time }).strict().optional() }).strict();
 const equal = (left: unknown, right: unknown) => canonicalJSONBytes(left).equals(canonicalJSONBytes(right));
 
-/** Qualifying v8 internals only. The public compiler/publication/admission
- * gates remain closed until complete durable-worker qualification. */
+/** Exact v8 worker ownership. Compilation/publication, current capability
+ * review and broker validation are independent mandatory boundaries. */
 export function assertProtectedCheckpointOwnership(state: RepositoryState, run: Execution, plan: CompiledOperationPlan, owner: ProtectedCheckpointOwner): ReadSequence {
   const job = run.operationSecret, progress = run.readProgress, receipt = run.workflowSnapshot?.operationCompilation;
   if (plan.ir.schemaVersion !== "workflow-operation-ir/v8" || plan.ir.compilerVersion !== "operation-compiler/v8" || !plan.ir.flow ||

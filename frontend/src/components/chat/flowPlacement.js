@@ -18,7 +18,7 @@ export function flowPlacementModel(flow, steps, hasStructuralSource = false) {
       if (!node || typeof node !== "object") throw new Error("Invalid node");
       const id = nodeID(node);
       if (typeof id !== "string" || !idPattern.test(id) || nodes.has(id) || nodes.size >= 300) throw new Error("Invalid identity");
-      const entry = { id, kind: node.kind, label: node.kind === "action" ? definitions.get(id)?.source?.description || id : `${node.kind === "if" ? "Condition" : node.kind === "foreach" ? "Collection" : "Return"} ${id}`, scopeKey, scopeLabel: label, index, subtreeIds: [id] };
+      const entry = { id, kind: node.kind, label: node.kind === "action" ? definitions.get(id)?.source?.description || id : `${node.kind === "if" ? "Condition" : node.kind === "foreach" ? "Collection" : node.kind === "protect" ? "Protected group" : "Return"} ${id}`, scopeKey, scopeLabel: label, index, subtreeIds: [id] };
       nodes.set(id, entry);
       placements.push({ key: `${scopeKey}|${id}`, scopeKey, label: `${label} · before ${entry.label}`, beforeNodeId: id, destination, owners, index });
       if (node.kind === "action") {
@@ -34,6 +34,9 @@ export function flowPlacementModel(flow, steps, hasStructuralSource = false) {
         } else if (node.kind === "foreach") {
           if (!Number.isInteger(node.maxItems) || node.maxItems < 1 || node.maxItems > 100 || node.items?.schema?.type !== "array" || !node.items.value || !node.collect?.schema || !node.collect.value) throw new Error("Invalid collection");
           entry.subtreeIds.push(...visit(node.body, `${id}:body`, `${label} → ${id} · collection body`, { loopId: id, scope: "body" }, nextOwners, depth + 1));
+        } else if (node.kind === "protect") {
+          if (node.onError?.code !== "ERP_RESOURCE_NOT_FOUND" || !node.body?.nodes?.length || !node.output?.schema || !node.output.success || !node.output.handled) throw new Error("Invalid protection");
+          for (const scope of ["body", "handler"]) entry.subtreeIds.push(...visit(node[scope], `${id}:${scope}`, `${label} → ${id} · protected ${scope}`, { protectedId: id, scope }, nextOwners, depth + 1));
         } else if (node.kind !== "return" || !node.output?.schema || !node.output.value) throw new Error("Unsupported node");
       }
       subtree.push(...entry.subtreeIds);

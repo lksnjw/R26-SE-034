@@ -36,6 +36,90 @@ async function open(props = {}) {
 }
 async function selectNode() { fireEvent.click(screen.getByRole("button", { name: /01 first/ })); }
 
+function protectedRecord(profile = "protected-operation-v1") {
+  const flow = { kind: "sequence", nodes: [{ kind: "protect", id: "group", onError: { code: "ERP_RESOURCE_NOT_FOUND" }, body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] }, handler: { kind: "sequence", nodes: [{ kind: "action", nodeId: "last" }] }, output: { schema: { type: "string" }, success: { kind: "literal", value: "found" }, handled: { kind: "literal", value: "fallback" } } }] };
+  return { ...record, yaml: `${yaml}metadata:\n  controlFlow: ${JSON.stringify({ schemaVersion: "read-control-flow/v4", root: flow })}\n`, executionProfile: profile, operation_job_admission: "operation-job/v1", authoring: { profile: "read-authoring/v1", executionProfile: profile, controlFlow: flow, nodes: [] } };
+}
+
+test("protected group output edits are readable revision-bound previews, never implicit publication or execution", async () => {
+  const saved = protectedRecord(), context = jest.fn(); workflowService.readiness.mockResolvedValue(saved); await open({ onNodeContext: context });
+  fireEvent.click(screen.getByRole("button", { name: "Select protected group group" }));
+  expect(screen.getByRole("complementary", { name: "Selected protected group details" })).toBeTruthy();
+  expect(context).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "group", version: 1, unavailableReason: expect.stringContaining("Protected-group") }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Handled error output" }), { target: { value: "No matching department" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview protected output edit" }));
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(within(screen.getByRole("region", { name: "Node change preview" })).queryByText("No matching department")).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Node change preview" }).querySelector("pre")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: saved.contentHash }), { type: "updateProtected", nodeId: "group", patch: { output: { ...saved.authoring.controlFlow.nodes[0].output, handled: { kind: "literal", value: "No matching department" } } } }));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("protected handler children retain exact chat scope and body/handler move destinations", async () => {
+  const saved = protectedRecord(), context = jest.fn(); workflowService.readiness.mockResolvedValue(saved); await open({ onNodeContext: context });
+  fireEvent.click(screen.getByRole("button", { name: /02 last/ }));
+  expect(context).toHaveBeenLastCalledWith(expect.objectContaining({ nodeId: "last", unavailableReason: null }));
+  expect(screen.queryByRole("button", { name: "Wrap node in collection" })).toBeNull();
+  fireEvent.change(screen.getByRole("combobox", { name: "Move node destination" }), { target: { value: "group:body" } });
+  fireEvent.click(screen.getByRole("button", { name: "Move to selected scope end" }));
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), { type: "moveNode", nodeId: "last", beforeNodeId: null, destination: { protectedId: "group", scope: "body" } }));
+  expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("protected Return insertion requires current guidance and routes to the exact handler scope", async () => {
+  const saved = protectedRecord(); saved.authoring.returnNodesSupported = true; workflowService.readiness.mockResolvedValue(saved); await open();
+  fireEvent.click(screen.getByRole("button", { name: "Add return" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New return ID" }), { target: { value: "answer" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "New return destination" }), { target: { value: "group:handler" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Return value" }), { target: { value: "Handled answer" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview new return" })); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.anything(), expect.objectContaining({ type: "addReturn", nodeId: "answer", destination: { protectedId: "group", scope: "handler" } })));
+  expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test.each(["protected-operation-v1", "protected-draft-runtime-pending"])("protected %s does not infer unsupported Return/simulation controls", async profile => {
+  workflowService.readiness.mockResolvedValue(protectedRecord(profile)); await open();
+  expect(screen.getByRole("button", { name: "Add return" }).disabled).toBe(true);
+  expect(screen.getByText(/Protected body\/handler simulation is not supported yet/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Evaluate simulation" })).toBeNull();
+});
+
+test("wrapping a selected node creates an exact protected draft command only after readable Apply", async () => {
+  await open(); await selectNode(); fireEvent.click(screen.getByRole("button", { name: "Protect node with error handler" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New protected group ID" }), { target: { value: "lookupGroup" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Body success output" }), { target: { value: "Found" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Handled error output" }), { target: { value: "Fallback" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview new protected group" })); expect(workflowService.command).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.anything(), { type: "wrapProtected", protectedId: "lookupGroup", nodeIds: ["first"], onError: { code: "ERP_RESOURCE_NOT_FOUND" }, output: { schema: { type: "string" }, success: { kind: "literal", value: "Found" }, handled: { kind: "literal", value: "Fallback" } } }));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("handled protected snapshot shows its saved group value without turning the failed lookup into an answer", async () => {
+  const saved = protectedRecord(), completedAt = "2026-10-09T02:00:00.000Z"; workflowService.readiness.mockResolvedValue(saved);
+  executionService.list.mockResolvedValue([{ id: "protected-run", workflowId: "report", status: "DONE", startedAt: completedAt, workflowSnapshot: { yaml: saved.yaml }, readProgress: { values: { group: { kind: "protect", status: "DONE", completedAt } } }, valueOutputs: { group: { value: "Saved handled answer" } } }]);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "FAILED" }, { nodeId: "last", status: "DONE" }, { id: "protected_group", nodeId: "group", sideEffect: false, status: "DONE", outcome: "HANDLED_ERROR", completedAt }]);
+  await open(); expect(await screen.findByText("Saved handled answer")).toBeTruthy();
+  expect(screen.getByText(/original read remains failed/)).toBeTruthy(); expect(screen.getByText(/A declared handler may continue only after/)).toBeTruthy();
+  expect(screen.queryByText(/Following nodes were not executed/)).toBeNull();
+});
+
+test.each([["BODY_SUCCEEDED", "protected body completed; handler not needed"], ["BODY_ABORTED", "protected body stopped after its recorded failure"]])("protected skipped outcome %s has its own explanation and no answer", async (outcome, explanation) => {
+  const saved = protectedRecord(); workflowService.readiness.mockResolvedValue(saved);
+  executionService.list.mockResolvedValue([{ id: "skipped-run", workflowId: "report", status: "FAILED", startedAt: "2026-10-09T02:00:00.000Z", workflowSnapshot: { yaml: saved.yaml }, stepOutputs: {} }]);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "last", status: "SKIPPED", outcome }]);
+  await open(); expect(await screen.findByText(new RegExp(`${explanation}.*has no answer`))).toBeTruthy();
+  expect(screen.queryByText(/another branch was selected/)).toBeNull(); expect(screen.queryByText(/Node answer/)).toBeNull();
+});
+
+test("another snapshot cannot supply a protected group value to the current draft", async () => {
+  const saved = protectedRecord(), completedAt = "2026-10-09T02:00:00.000Z"; workflowService.readiness.mockResolvedValue(saved);
+  executionService.list.mockResolvedValue([{ id: "old-run", workflowId: "report", status: "DONE", startedAt: completedAt, workflowSnapshot: { yaml }, readProgress: { values: { group: { kind: "protect", status: "DONE", completedAt } } }, valueOutputs: { group: { value: "Stale protected value" } } }]);
+  executionService.getTimeline.mockResolvedValue([{ id: "protected_group", nodeId: "group", sideEffect: false, status: "DONE", outcome: "HANDLED_ERROR", completedAt }]);
+  await open(); expect(screen.queryByText("Stale protected value")).toBeNull(); expect(screen.getByText("No protected completion recorded for this snapshot")).toBeTruthy();
+});
+
 test("reopened workspace undo/redo uses saved server targets instead of remembered client YAML", async () => {
   workflowService.readiness.mockResolvedValue({ ...record, editHistory: { profile: "draft-edit-history/v1", undoTarget: "base-snapshot", redoTarget: "saved-edit" } });
   await open(); fireEvent.click(screen.getByRole("button", { name: "Undo workflow edit" }));

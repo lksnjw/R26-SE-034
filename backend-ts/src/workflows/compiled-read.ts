@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { WorkflowBlueprint } from "../models/schemas.js";
 import { effectiveStepKind } from "../models/schemas.js";
+import { assertProtectedErrorSources, protectedOperationProfile } from "./protected-operation-profile.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
 import { exactBridgeName } from "../tools/erpbridge-contract.js";
@@ -50,7 +51,7 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
 }
 /** Shared bounded binding compiler, not an execution/admission switch. The
  * operation compiler has a different IR/receipt and mandatory reviewed pins. */
-function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>, operations: boolean, purpose: "publication" | "draft-inspection" = "publication"):
+function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>, operations: boolean, purpose: "publication" | "draft-inspection" | "protected-operation" = "publication"):
   { ir: ReadIR; semanticHash: string; issues: string[]; analysisNodes: OperationAnalysisNode[]; agentNodes: OperationAgentNode[]; scopeValidation?: ReturnType<typeof validateReadControlFlow> } {
   const issues: string[] = [], ids = new Set<string>(), outputs = new Map<string, Record<string, unknown>>();
   const analysisNodes: OperationAnalysisNode[] = [];
@@ -72,7 +73,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
     ir.schemaVersion = "workflow-read-ir/v2"; ir.compilerVersion = "read-compiler/v2";
     try {
       const parsed = parseReadControlFlow(blueprint.metadata.controlFlow); ir.flow = parsed.root;
-      if (parsed.schemaVersion === "read-control-flow/v4" && purpose !== "draft-inspection") issues.push("Protected workflow publication requires the separately qualified durable handler profile");
+      if (parsed.schemaVersion === "read-control-flow/v4" && purpose !== "draft-inspection" && purpose !== "protected-operation") issues.push("Protected workflow publication requires the separately qualified durable handler profile");
       if (parsed.schemaVersion === "read-control-flow/v2") { ir.schemaVersion = "workflow-read-ir/v3"; ir.compilerVersion = "read-compiler/v3"; }
       if (parsed.schemaVersion === "read-control-flow/v3") { ir.schemaVersion = "workflow-read-ir/v4"; ir.compilerVersion = "read-compiler/v4"; }
       for (const node of controlNodes(ir.flow)) if (node.merge) { mergedIDs.add(node.id); outputs.set(node.id, { type: "object", properties: { value: node.merge.schema }, required: ["value"], additionalProperties: false }); }
@@ -281,7 +282,9 @@ export type OperationCompilationReceipt = { schemaVersion: OperationIR["schemaVe
   registryHash: string; origin: "PUBLICATION"; admissionMode: "reviewed" };
 export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>): CompiledOperationPlan {
   if (Buffer.byteLength(yaml) > 200_000) throw new Error("Operation source exceeds supported bounds");
-  const blueprint = parseWorkflowYAMLStrict(yaml), built = buildActionBindingsIR(blueprint, tools, role, pins, true);
+  const blueprint = parseWorkflowYAMLStrict(yaml), profile = protectedOperationProfile(blueprint);
+  if (profile === "protected-collections-pending") throw new Error("Protected collections require durable operation iteration qualification; no flattened execution is allowed");
+  const protectedProfile = profile === "protected", built = buildActionBindingsIR(blueprint, tools, role, pins, true, protectedProfile ? "protected-operation" : "publication");
   const toolNodes = new Map(built.ir.root.nodes.map(node => [node.id, node]));
   const analysisNodes = new Map(built.analysisNodes.map(node => [node.id, node]));
   const agentNodes = new Map(built.agentNodes.map(node => [node.id, node]));
@@ -306,18 +309,20 @@ export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefin
     }
     return { ...node, effectClass: tool.is_read_only ? "read" as const : tool.operation_contract?.effect_class ?? "write" as const, ...(readback ? { readback } : {}) };
   }).filter((node): node is OperationNode => node !== null);
-  if (!nodes.some(node => node.kind === "action" && node.effectClass !== "read") && !nodes.some(node => node.kind === "analysis" || node.kind === "agent"))
+  if (!protectedProfile && !nodes.some(node => node.kind === "action" && node.effectClass !== "read") && !nodes.some(node => node.kind === "analysis" || node.kind === "agent"))
     built.issues.push("Deterministic read-only workflows must use the read profile");
   if (built.issues.length) throw new Error(`Operation compilation failed: ${built.issues.join("; ")}`);
   const hasAgent = nodes.some(node => node.kind === "agent"), hasAnalysis = nodes.some(node => node.kind === "analysis");
   const namedInputs = nodes.some(node => node.kind !== "action" && node.input.kind === "object");
   const hasReturn = built.ir.flow && structuralNodes(built.ir.flow).some(node => node.kind === "return");
   const hasMerge = built.ir.flow && controlNodes(built.ir.flow).some(node => node.merge);
-  const ir: OperationIR = { schemaVersion: hasMerge ? "workflow-operation-ir/v7" : hasReturn ? "workflow-operation-ir/v6" : namedInputs ? "workflow-operation-ir/v5" : built.ir.flow ? "workflow-operation-ir/v4" : hasAgent ? "workflow-operation-ir/v3" : hasAnalysis ? "workflow-operation-ir/v2" : "workflow-operation-ir/v1",
-    compilerVersion: hasMerge ? "operation-compiler/v7" : hasReturn ? "operation-compiler/v6" : namedInputs ? "operation-compiler/v5" : built.ir.flow ? "operation-compiler/v4" : hasAgent ? "operation-compiler/v3" : hasAnalysis ? "operation-compiler/v2" : "operation-compiler/v1", trigger: { kind: "manual" },
+  const ir: OperationIR = { schemaVersion: protectedProfile ? "workflow-operation-ir/v8" : hasMerge ? "workflow-operation-ir/v7" : hasReturn ? "workflow-operation-ir/v6" : namedInputs ? "workflow-operation-ir/v5" : built.ir.flow ? "workflow-operation-ir/v4" : hasAgent ? "workflow-operation-ir/v3" : hasAnalysis ? "workflow-operation-ir/v2" : "workflow-operation-ir/v1",
+    compilerVersion: protectedProfile ? "operation-compiler/v8" : hasMerge ? "operation-compiler/v7" : hasReturn ? "operation-compiler/v6" : namedInputs ? "operation-compiler/v5" : built.ir.flow ? "operation-compiler/v4" : hasAgent ? "operation-compiler/v3" : hasAnalysis ? "operation-compiler/v2" : "operation-compiler/v1", trigger: { kind: "manual" },
     ...(built.ir.flow ? { flow: structuredClone(built.ir.flow) } : {}),
     ...(built.ir.inputSchema ? { inputSchema: built.ir.inputSchema } : {}), root: { kind: "sequence", nodes } };
-  return { ir, semanticHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(ir)).digest("hex")}`, sourceHash: workflowContentHash(yaml) };
+  const plan = { ir, semanticHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(ir)).digest("hex")}`, sourceHash: workflowContentHash(yaml) };
+  assertProtectedErrorSources(plan, tools);
+  return plan;
 }
 export function operationCompilationReceipt(plan: CompiledOperationPlan, registryHash: string): OperationCompilationReceipt {
   return { schemaVersion: plan.ir.schemaVersion, compilerVersion: plan.ir.compilerVersion, semanticHash: plan.semanticHash, sourceHash: plan.sourceHash, registryHash, origin: "PUBLICATION", admissionMode: "reviewed" };

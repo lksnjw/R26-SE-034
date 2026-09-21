@@ -34,6 +34,7 @@ import { verifyFirestoreRecurringJoins } from "./firestore-recurring-joins.mjs";
 import { firestoreConditionPatchResponse, verifyFirestoreConditionProposals } from "./firestore-condition-proposals.mjs";
 import { verifyFirestoreReadErrors } from "./firestore-read-errors.mjs";
 import { verifyFirestoreOperationClaims } from "./firestore-operation-claims.mjs";
+import { verifyFirestoreProtectedOperations } from "./firestore-protected-operations.mjs";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -552,6 +553,9 @@ try {
   await verifyFirestoreReadErrors({ request, repository: () => repository, persistence: () => persistence,
     restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, setFixture: value => { readErrorFixture = value; },
     businessErrorTool, calls, models, operations, waitFor, log });
+  await verifyFirestoreProtectedOperations({ request, repository: () => repository, persistence: () => persistence,
+    restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, setReadHook: value => { sdkHook = value; },
+    setFixture: value => { readErrorFixture = value; }, businessErrorTool, operationTool, calls, models, operations, waitFor, log });
 
   const modelsBeforeEmail = models.length, operationsBeforeEmail = operations.length, emailChat = await request("POST", "/api/chat/sessions", { title: "Exact email review" }, 201);
   const emailPrepared = (await request("POST", `/api/chat/sessions/${emailChat.data.id}/messages`, { content: "Email manager@example.test" }, 200)).data.assistantMessage.artifacts.emailDraft;

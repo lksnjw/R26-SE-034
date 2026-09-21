@@ -11,7 +11,8 @@ import { newReadProgress, appendExecutionEvent, assertCurrentRunController } fro
 import { advanceOperationDecisions } from "./operation-control-checkpoints.js";
 import { assertOperationReturnCompletion } from "./operation-return-checkpoints.js";
 import { operationValueState } from "./operation-merge-checkpoints.js";
-import { prepareProtectedSelection, checkpointProtectedSelection, queueProtectedHandler, confirmedProtectedOperationTransition } from "./operation-protected-checkpoints.js";
+import { prepareProtectedSelection, checkpointProtectedSelection, queueProtectedHandler, confirmedProtectedOperationTransition, assertProtectedCheckpointOwnership } from "./operation-protected-checkpoints.js";
+import { assertConfirmedOperationResults } from "./operation-result-evidence.js";
 import { requeueConfirmedProtectedCheckpoint } from "./operation-protected-recovery.js";
 import { operationClaimDenial } from "./operation-claim-checkpoints.js";
 import { operationControlTransition } from "../workflows/operation-control-flow.js";
@@ -180,7 +181,12 @@ export class OperationJobQueue {
         if (control.governanceHash && control.governanceHash !== digest(state.governancePolicy)) throw new Error("Operation governance policy changed");
         const snapshot = run.workflowSnapshot!, publication = state.versions[run.workflowId]?.findLast(item => item.version === snapshot.version && item.artifactState === "PUBLISHED");
         if (!publication || publication.yaml !== snapshot.yaml) throw new Error("Operation publication changed");
-        prepareOperationExecution(state, this.services, publication, snapshot.yaml, job.admittedRole, snapshot.operationCompilation);
+        const compiled = prepareOperationExecution(state, this.services, publication, snapshot.yaml, job.admittedRole, snapshot.operationCompilation);
+        if (compiled.plan.ir.schemaVersion === "workflow-operation-ir/v8") {
+          assertProtectedCheckpointOwnership(state as RepositoryState, run, compiled.plan, { leaseId: control.leaseId, epoch: run.readProgress!.epoch });
+          assertConfirmedOperationResults(state as RepositoryState, run, compiled.plan);
+          confirmedProtectedOperationTransition(state as RepositoryState, run, compiled.plan);
+        }
         const active = run.runtimeApprovalSecret?.records[run.runtimeApprovalSecret.activeId];
         if (active?.state === "CONSUMED" && run.readProgress?.attempts[active.binding.nodeId]?.status === "DISPATCH_INTENT") assertConsumedRuntimeApproval(state as RepositoryState, run.id, active.consumption!.intentId);
         control.valid = true; control.expiresAt = job.lease.expiresAt;
@@ -352,6 +358,8 @@ export class OperationJobQueue {
         return prepareOperationExecution(state, services, publication, snapshot.yaml, actor.role, snapshot.operationCompilation).plan;
       });
       executingPlan = plan; executingEpoch = initial.readProgress!.epoch;
+      const protectedReadContext = plan.ir.schemaVersion === "workflow-operation-ir/v8" ?
+        { protectedOperation: { plan, owner: { leaseId: control.leaseId, epoch: initial.readProgress!.epoch } } } : {};
       const connectionIds = new Set<string>();
       for (const node of plan.ir.root.nodes) {
         if (node.kind === "action" && node.capability.admission) connectionIds.add(node.capability.admission.connectionId);
@@ -635,7 +643,7 @@ export class OperationJobQueue {
               audit(state, run, "operation.report_page_dispatch_intent");
             }); };
             const cursorOutput = await captureReadFailure(node.id, intentKey, cursorIntentId, cursorArgs, tool, dispatchReadTool(services, actor.id, node.capability.action, cursorArgs, { workflowId: initial.workflowId, executionId: id,
-              signal: control.controller.signal, assertDispatch: assertContext, beforeDispatch: persistCursorIntent,
+              signal: control.controller.signal, assertDispatch: assertContext, beforeDispatch: persistCursorIntent, ...protectedReadContext,
               plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } }));
             let confirmed;
             try {
@@ -729,7 +737,7 @@ export class OperationJobQueue {
               appendExecutionEvent(state, run, "node.report_page_dispatch_intent", { intentId: pageIntentId, page }, node.id, attempt.id); audit(state, run, "operation.report_page_dispatch_intent");
             }); };
             const pageOutput = await captureReadFailure(node.id, intentKey, pageIntentId, pageArgs, tool, dispatchReadTool(services, actor.id, node.capability.action, pageArgs, { workflowId: initial.workflowId, executionId: id,
-              signal: control.controller.signal, assertDispatch: assertContext, beforeDispatch: persistPageIntent,
+              signal: control.controller.signal, assertDispatch: assertContext, beforeDispatch: persistPageIntent, ...protectedReadContext,
               plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } }));
             let confirmed;
             try {
@@ -813,7 +821,7 @@ export class OperationJobQueue {
           appendExecutionEvent(state, run, "node.dispatch_intent", { intentId, sideEffect: node.effectClass !== "read" }, node.id, attempt.id); audit(state, run, "operation.dispatch_intent");
         }); };
         if (node.effectClass === "read") output = await captureReadFailure(node.id, node.id, intentId, args, tool, dispatchReadTool(services, actor.id, node.capability.action, args, { workflowId: initial.workflowId, executionId: id, signal: control.controller.signal, assertDispatch: assertContext,
-          beforeDispatch: persistIntent, plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } }));
+          beforeDispatch: persistIntent, ...protectedReadContext, plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } }));
         else {
           const identity = createDispatchIdentity(actor, nodeBinding!.roleMap), resolved = await services.validator.evaluateResolvedStep(id, snapshot.yaml, index, args, gate.token, identity, {
             executionId: id, workflowId: initial.workflowId, traceId: initial.traceId, actor: { id: actor.id, role: actor.role },
@@ -871,6 +879,11 @@ export class OperationJobQueue {
       try { await repository.mutateExecution(id, state => {
         const run = state.executions[id];
         if (!run || run.operationSecret?.lease?.id !== control.leaseId || run.status !== "RUNNING") return;
+        // A fresh authoritative reload can win the mutex before this old
+        // worker's catch. Storage fencing is not a new business/preflight
+        // failure: retain exact confirmed checkpoints or explicit uncertainty.
+        // This queue remains stalled; only a fresh worker can acquire a claim.
+        if (this.#stalled) { recover(state, run, "OPERATION_STORAGE_FENCED"); return; }
         if (knownReadFailure) {
           const failure = knownReadFailure, attempt = run.readProgress!.attempts[failure.nodeId], intent = run.operationSecret.intents[failure.intentKey];
           if (!attempt || attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== failure.intentId || intent.nodeId !== failure.nodeId ||

@@ -10,6 +10,40 @@ const flow = sequence({ kind: "if", id: "gate", predicate: { kind: "ref", source
 const steps = ["yes", "no", "after"].map(id => ({ id }));
 const renderAction = step => <li key={step.id}><button>{step.id}</button></li>;
 
+const protectedFlow = () => sequence({ kind: "protect", id: "lookupGroup", onError: { code: "ERP_RESOURCE_NOT_FOUND" }, body: sequence(action("yes")), handler: sequence(action("no")), output: { schema: { type: "string" }, success: { kind: "literal", value: "found" }, handled: { kind: "literal", value: "handled" } } }, action("after"));
+const completedAt = "2026-10-09T02:00:00.000Z";
+const protectedTimeline = outcome => [{ id: "protected_lookupGroup", nodeId: "lookupGroup", sideEffect: false, status: outcome === "FAILED" ? "FAILED" : "DONE", outcome, completedAt }];
+
+test("protected body and handler stay separate and selectable without claiming execution", () => {
+  const select = jest.fn(); render(<ReadFlowTree flow={protectedFlow()} steps={steps} renderAction={renderAction} onSelectCondition={select} selectedId="lookupGroup" />);
+  expect(within(screen.getByRole("region", { name: "lookupGroup protected body" })).getByRole("button", { name: "yes" })).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "lookupGroup protected handler" })).getByRole("button", { name: "no" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Select protected group lookupGroup" })); expect(select).toHaveBeenCalledWith("lookupGroup");
+  expect(screen.getByText("No protected completion recorded for this snapshot")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull(); expect(document.querySelector("pre")).toBeNull();
+});
+
+test.each(["SUCCEEDED", "HANDLED_ERROR"])("confirmed protected %s exposes only its saved typed value", outcome => {
+  render(<ReadFlowTree flow={protectedFlow()} steps={steps} renderAction={renderAction} timeline={protectedTimeline(outcome)} values={{ lookupGroup: { kind: "protect", status: "DONE", completedAt } }} valueOutputs={{ lookupGroup: { value: "saved answer" } }} />);
+  expect(screen.getByText("saved answer")).toBeTruthy(); expect(screen.getByText(/Saved protected path value.*not an ERP absence proof/)).toBeTruthy();
+  expect(screen.getByText(outcome === "SUCCEEDED" ? "Body completed · handler skipped" : "Handler completed · original read remains failed")).toBeTruthy();
+});
+
+test.each(["RETURNED", "FAILED"])("protected %s never invents a group answer", outcome => {
+  render(<ReadFlowTree flow={protectedFlow()} steps={steps} renderAction={renderAction} timeline={protectedTimeline(outcome)} values={{ lookupGroup: { kind: "protect", status: "DONE", completedAt } }} valueOutputs={{ lookupGroup: { value: "unconfirmed answer" } }} />);
+  expect(screen.queryByText("unconfirmed answer")).toBeNull(); expect(screen.getByText(outcome === "FAILED" ? "Protected group failed · no replacement answer" : "Workflow returned inside this group · no group value")).toBeTruthy();
+});
+
+test.each([undefined, { kind: "merge", status: "DONE", completedAt }, { kind: "protect", status: "FAILED", completedAt }, { kind: "protect", status: "DONE", completedAt: "2026-10-09T01:00:00Z" }])("unconfirmed protected value receipt %j is not shown as an answer", receipt => {
+  render(<ReadFlowTree flow={protectedFlow()} steps={steps} renderAction={renderAction} timeline={protectedTimeline("HANDLED_ERROR")} values={{ lookupGroup: receipt }} valueOutputs={{ lookupGroup: { value: "unconfirmed answer" } }} />);
+  expect(screen.queryByText("unconfirmed answer")).toBeNull();
+});
+
+test.each(["onError", "body", "output"])("malformed protected %s falls back visibly instead of flattening a handler", field => {
+  const saved = protectedFlow(); delete saved.nodes[0][field]; render(<ReadFlowTree flow={saved} steps={steps} renderAction={renderAction} />);
+  expect(screen.getByRole("alert")).toBeTruthy(); expect(screen.queryByRole("region", { name: "Protected group lookupGroup" })).toBeNull();
+});
+
 test("decision nodes have a distinct diamond, literal meaning and keyboard-selectable chat scope", () => {
   const select = jest.fn(), literalFlow = JSON.parse(JSON.stringify(flow));
   literalFlow.nodes[0].predicate = { kind: "literal", value: false };
