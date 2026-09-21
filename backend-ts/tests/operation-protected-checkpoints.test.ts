@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stringify } from "yaml";
 import { expect, test } from "vitest";
 import { Repository, type Execution } from "../src/repository/store.js";
 import { canonicalJSONBytes } from "../src/core/canonical-json.js";
@@ -18,6 +19,8 @@ import { assertOperationReturnCompletion } from "../src/runner/operation-return-
 import { assertModelDataClassification } from "../src/workflows/model-data-classification.js";
 import { splitFirestoreState, assembleFirestoreState } from "../src/storage/firestore-record-layout.js";
 import { publicExecution } from "../src/redact/public-model-usage.js";
+import { workflowContentHash } from "../src/parser/workflow.js";
+import { requeueConfirmedProtectedCheckpoint } from "../src/runner/operation-protected-recovery.js";
 
 const role = "Platform Admin", hash = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJSONBytes(value)).digest("hex")}`;
 const tool = toolSchema.parse({ tool_id: "employee-read", name: "hr.employee.read", mcp_tool_name: "hr.employee.read", is_read_only: true, risk_level: "low", allowed_roles: [role],
@@ -41,9 +44,12 @@ async function fixture(root = flow()) {
   state.users.actor = { id: "actor", name: "Actor", email: "actor@example.test", roleId: "role_admin", permissionOverrides: [], status: "Active", initials: "A", departmentId: null, lastLoginAt: null, createdAt: "now" };
   state.workflows.flow = { id: "flow", name: "Flow", description: "", owner: { id: "actor", name: "Actor" }, assignedUserIds: [], status: "Validated", trigger: { type: "manual" },
     steps: actionOrder(root).length, successRate: 0, lastRunAt: null, publishedVersion: 1, draftVersion: 1, tags: [], domainTags: [], canRun: true, createdAt: "now", updatedAt: "now", yaml: "fixture", archived: false };
+  const yaml = stringify({ name: "Protected fixture", trigger: { type: "manual" }, steps: actionOrder(root).map(id => ({ id, action: tool.name, parameters: { id } })),
+    metadata: { controlFlow: { schemaVersion: "read-control-flow/v4", root } } });
+  state.workflows.flow!.yaml = yaml;
   const plan: CompiledOperationPlan = { ir: { schemaVersion: "workflow-operation-ir/v8", compilerVersion: "operation-compiler/v8", trigger: { kind: "manual" }, flow: root,
     root: { kind: "sequence", nodes: actionOrder(root).map(id => ({ id, kind: "action", effectClass: "read", inputs: { kind: "object", fields: { id: literal(id) } },
-      capability: { toolId: tool.tool_id, action: tool.name, remoteName: tool.mcp_tool_name, contractHash: pin.contractHash, admission: pin } })) } }, semanticHash: "", sourceHash: hash("source") };
+      capability: { toolId: tool.tool_id, action: tool.name, remoteName: tool.mcp_tool_name, contractHash: pin.contractHash, admission: pin } })) } }, semanticHash: "", sourceHash: workflowContentHash(yaml) };
   plan.semanticHash = hash(plan.ir);
   const now = new Date().toISOString();
   state.capabilityRevisions[pin.revisionId] = { id: pin.revisionId, capabilityId: pin.capabilityId, connectionId: pin.connectionId, connectionBinding: "a".repeat(64), toolId: tool.tool_id,
@@ -53,10 +59,12 @@ async function fixture(root = flow()) {
   const run = { id: "run", workflowId: "flow", status: "RUNNING", startedBy: { id: "actor", name: "Actor" },
     operationSecret: { profile: "operation-job/v1", state: "CLAIMED", actorId: "actor", roleId: "role_admin", admittedRole: role,
       idempotencyScope: "scope", requestFingerprint: hash("request"), createdAt: now, intents: {}, lease: { id: owner.leaseId, workerId: "worker", expiresAt: Date.now() + 600_000 } },
-    workflowSnapshot: { input: {}, contentHash: plan.sourceHash, operationCompilation: { schemaVersion: plan.ir.schemaVersion, compilerVersion: plan.ir.compilerVersion,
+    workflowSnapshot: { input: {}, version: 1, yaml, registryHash: hash("registry"), executionProfile: "sequential-operation-v1", contentHash: plan.sourceHash, operationCompilation: { schemaVersion: plan.ir.schemaVersion, compilerVersion: plan.ir.compilerVersion,
       semanticHash: plan.semanticHash, sourceHash: plan.sourceHash, registryHash: hash("registry"), origin: "PUBLICATION", admissionMode: "reviewed" } },
     readProgress: { profile: "read-progress-v1", epoch: 1, persistence: "memory-only", nextStepIndex: 0, lastSequence: 0, attempts: {} }, stepOutputs: {} } as unknown as Execution;
   state.executions.run = run; state.timelines.run = [];
+  state.versions.flow = [{ version: 1, artifactState: "PUBLISHED", yaml, compiledOperation: { plan: structuredClone(plan), receipt: structuredClone(run.workflowSnapshot!.operationCompilation!),
+    verifiedRole: role, compiledAt: now } }];
   return { state, run, plan };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -67,6 +75,16 @@ const select = ({ state, run, plan }: Fixture, id = "lookup", intentKey = id) =>
 function done({ run }: Fixture, id: string) {
   run.readProgress!.attempts[id] = { id: `attempt-${id}`, nodeId: id, stepIndex: run.readProgress!.nextStepIndex++, status: "DONE", startedAt: new Date().toISOString() };
   run.stepOutputs![id] = { structuredContent: { text: id } };
+}
+function acknowledgedDone(f: Fixture, id: string) {
+  done(f, id); const { run, state, plan } = f, attempt = run.readProgress!.attempts[id]!, completedAt = new Date().toISOString();
+  const node = plan.ir.root.nodes[attempt.stepIndex]!; if (node.kind !== "action") throw new Error("Expected read fixture");
+  attempt.completedAt = completedAt;
+  run.operationSecret!.intents[id] = { id: `intent-${id}`, nodeId: id, invocationId: attempt.id, operationKey: `${run.id}:${id}`,
+    argumentHash: hash(resolveReadBinding(node.inputs, protectedOperationValueState(run, plan.ir.flow!, id))), state: "ACKNOWLEDGED", preparedAt: attempt.startedAt, completedAt };
+  state.timelines.run!.push({ id: `timeline-${id}`, nodeId: id, attemptId: attempt.id, status: "DONE", startedAt: attempt.startedAt, completedAt,
+    outcome: "READ_CONFIRMED", output: structuredClone(run.stepOutputs![id]) });
+  appendExecutionEvent(state, run, "node.completed", { intentId: `intent-${id}`, outcome: "READ_CONFIRMED" }, id, attempt.id);
 }
 function failed({ state, run }: Fixture, id = "lookup", intentKey = id) {
   const time = new Date().toISOString(), attemptId = `attempt-${id}`;
@@ -334,3 +352,101 @@ test("changed failed-intent argument hash invalidates the saved selection", asyn
   const f = await fixture(); start(f); failed(f); select(f); f.run.operationSecret!.intents.lookup!.argumentHash = hash("changed");
   expect(() => next(f)).toThrow(); expect(f.run.stepOutputs!.lookup).toBeUndefined();
 });
+
+test("freshly claimed handler can recover at its confirmed boundary without rewriting the failed read", async () => {
+  const f = await fixture(); start(f); failed(f); select(f); skip(f);
+  const originalAttempt = structuredClone(f.run.readProgress!.attempts.lookup), originalIntent = structuredClone(f.run.operationSecret!.intents.lookup),
+    originalSelection = structuredClone(f.run.operationSecret!.protectedScopes!.group!.selection), originalOutput = structuredClone(f.run.stepOutputs);
+  f.run.operationSecret!.lease!.expiresAt = Date.now() - 1000;
+  expect(requeueConfirmedProtectedCheckpoint(f.state, f.run, "WORKER_RESTARTED")).toBe(true);
+  expect(f.run).toMatchObject({ status: "PENDING", operationSecret: { state: "QUEUED" }, readProgress: { epoch: 2, nextStepIndex: 2 } });
+  expect(f.run.operationSecret!.lease).toBeUndefined(); expect(f.run.readProgress!.recoveryReason).toBeUndefined();
+  expect(f.run.readProgress!.attempts.lookup).toEqual(originalAttempt); expect(f.run.operationSecret!.intents.lookup).toEqual(originalIntent);
+  expect(f.run.operationSecret!.protectedScopes!.group!.selection).toEqual(originalSelection); expect(f.run.stepOutputs).toEqual(originalOutput);
+  const reopened = JSON.parse(JSON.stringify(f)) as Fixture, fresh = { leaseId: "restarted", epoch: 2 };
+  reopened.run.status = "RUNNING"; reopened.run.operationSecret!.state = "CLAIMED";
+  reopened.run.operationSecret!.lease = { id: fresh.leaseId, workerId: "fresh-worker", expiresAt: Date.now() + 60_000 };
+  expect(advanceOperationDecisions(reopened.state, reopened.run, reopened.plan, fresh)).toMatchObject({ kind: "action", nodeId: "fallback" });
+  expect(reopened.state.executionEvents.run!.filter(event => event.type === "protected.checkpoint_requeued")).toHaveLength(1);
+});
+
+test("recovery can queue confirmed body entry before any SDK call, without requiring a synthetic error", async () => {
+  const f = await fixture(); start(f);
+  expect(requeueConfirmedProtectedCheckpoint(f.state, f.run, "WORKER_STOPPED")).toBe(true);
+  expect(f.run.readProgress!.attempts).toEqual({}); expect(f.run.operationSecret!.intents).toEqual({});
+  expect(f.run.operationSecret!.protectedScopes!.group!.selection).toBeUndefined();
+});
+
+test("preparing but unentered handler read survives recovery without a new attempt or result", async () => {
+  const f = await fixture(); start(f); failed(f); select(f); skip(f);
+  const timestamp = new Date().toISOString(); f.run.readProgress!.attempts.fallback = { id: "original-preparing", nodeId: "fallback", status: "PREPARING", stepIndex: 2, startedAt: timestamp };
+  f.state.timelines.run!.push({ id: "timeline-fallback", nodeId: "fallback", attemptId: "original-preparing", startedAt: timestamp, status: "RUNNING", phase: "PREPARING" });
+  expect(requeueConfirmedProtectedCheckpoint(f.state, f.run, "WORKER_RESTARTED")).toBe(true);
+  expect(f.run.readProgress!.attempts.fallback).toMatchObject({ id: "original-preparing", status: "PREPARING" });
+  expect(f.run.stepOutputs!.fallback).toBeUndefined(); expect(f.run.operationSecret!.intents.fallback).toBeUndefined();
+});
+
+test.each(["body", "handler"])("confirmed %s completion recovers without replacing its saved group answer", async path => {
+  const f = await fixture(); start(f);
+  if (path === "body") { acknowledgedDone(f, "lookup"); acknowledgedDone(f, "body_tail"); skip(f); }
+  else { failed(f); select(f); skip(f); acknowledgedDone(f, "fallback"); }
+  expect(complete(f)).toBe(true); const outputs = structuredClone(f.run.valueOutputs), attempts = structuredClone(f.run.readProgress!.attempts);
+  expect(requeueConfirmedProtectedCheckpoint(f.state, f.run, "WORKER_RESTARTED")).toBe(true);
+  expect(f.run.valueOutputs).toEqual(outputs); expect(f.run.readProgress!.attempts).toEqual(attempts);
+  expect(next(f)).toMatchObject({ kind: "action", nodeId: "after" });
+});
+
+test.each(["body", "handler"])("confirmed %s Return recovers its exact final answer and non-dispatch skips", async where => {
+  const returned: ReadControlNode = { kind: "return", id: "answer", output: { schema: { type: "string" },
+    value: where === "handler" ? ref("group", "error", "failedNodeId") : literal("Early stop") } };
+  const root = seq(group("group", where === "body" ? seq(returned, action("lookup")) : seq(action("lookup")),
+    where === "handler" ? seq(returned, action("fallback")) : seq(action("fallback"))), action("after")), f = await fixture(root);
+  if (where === "handler") { advanceOperationDecisions(f.state, f.run, f.plan, owner); failed(f); select(f); }
+  expect(advanceOperationDecisions(f.state, f.run, f.plan, owner)).toMatchObject({ kind: "complete" });
+  const answer = f.run.finalOutput, skips = structuredClone(f.run.readProgress!.attempts);
+  expect(requeueConfirmedProtectedCheckpoint(f.state, f.run, "WORKER_RESTARTED")).toBe(true);
+  expect(f.run.finalOutput).toEqual(answer); expect(f.run.readProgress!.attempts).toEqual(skips); expect(f.run.valueOutputs?.group).toBeUndefined();
+});
+
+test.each(["bare-done", "result", "intent", "argument", "timeline", "event", "role-identity"])("restart rejects detached completed %s evidence without changing state", async damage => {
+  const f = await fixture(); start(f); acknowledgedDone(f, "lookup");
+  if (damage === "bare-done") { delete f.run.operationSecret!.intents.lookup; f.state.timelines.run = []; f.state.executionEvents.run = f.state.executionEvents.run!.filter(event => event.type !== "node.completed"); }
+  if (damage === "result") f.run.stepOutputs!.lookup = { structuredContent: { text: "invented" } };
+  if (damage === "intent") f.run.operationSecret!.intents.lookup!.id = "other";
+  if (damage === "argument") f.run.operationSecret!.intents.lookup!.argumentHash = hash("invented");
+  if (damage === "timeline") f.state.timelines.run![0]!.status = "FAILED";
+  if (damage === "event") f.state.executionEvents.run!.find(event => event.type === "node.completed")!.payload.intentId = "other";
+  if (damage === "role-identity") { f.state.roles.same = { ...f.state.roles.role_admin!, id: "same" }; f.state.users.actor!.roleId = "same"; }
+  const before = structuredClone(f.state); expect(requeueConfirmedProtectedCheckpoint(f.state, f.run, "WORKER_RESTARTED")).toBe(false); expect(f.state).toEqual(before);
+});
+
+test.each(["unknown-intent", "dispatch-intent", "unknown-attempt", "dispatch-attempt", "cancelled", "cancel-request", "failure", "recovery-reason", "queued", "no-lease", "bad-lease", "epoch-overflow",
+  "role", "inactive", "archived", "revoked", "publication-yaml", "source-hash", "receipt", "semantic", "duplicate-publication", "missing-entry-event", "selection-hash", "orphan-answer"])(
+  "recovery rejects %s without changing any saved checkpoint", async damage => {
+    const f = await fixture(); start(f); failed(f); select(f);
+    if (damage === "unknown-intent") f.run.operationSecret!.intents.lookup!.state = "UNKNOWN";
+    if (damage === "dispatch-intent") f.run.operationSecret!.intents.extra = { ...f.run.operationSecret!.intents.lookup!, state: "DISPATCH_INTENT" };
+    if (damage === "unknown-attempt") f.run.readProgress!.attempts.lookup!.status = "UNKNOWN";
+    if (damage === "dispatch-attempt") f.run.readProgress!.attempts.extra = { ...f.run.readProgress!.attempts.lookup!, status: "DISPATCH_INTENT" };
+    if (damage === "cancelled") f.run.readProgress!.attempts.lookup!.status = "CANCELLED";
+    if (damage === "cancel-request") f.run.readProgress!.cancellation = { requestedAt: new Date().toISOString(), requestedBy: f.run.startedBy };
+    if (damage === "failure") f.run.failure = { failureCategory: "OPERATION_PROTECTED_OUTPUT_INVALID" };
+    if (damage === "recovery-reason") f.run.readProgress!.recoveryReason = "UNKNOWN_PRIOR_OUTCOME";
+    if (damage === "queued") f.run.operationSecret!.state = "QUEUED";
+    if (damage === "no-lease") delete f.run.operationSecret!.lease;
+    if (damage === "bad-lease") f.run.operationSecret!.lease!.expiresAt = Number.NaN;
+    if (damage === "epoch-overflow") f.run.readProgress!.epoch = Number.MAX_SAFE_INTEGER;
+    if (damage === "role") f.run.operationSecret!.admittedRole = "HR Manager";
+    if (damage === "inactive") f.state.users.actor!.status = "Disabled";
+    if (damage === "archived") f.state.workflows.flow!.archived = true;
+    if (damage === "revoked") f.state.capabilityAdmissions[pin.capabilityId]!.state = "DISABLED";
+    if (damage === "publication-yaml") f.state.versions.flow![0]!.yaml = "changed";
+    if (damage === "source-hash") f.run.workflowSnapshot!.contentHash = hash("different");
+    if (damage === "receipt") f.run.workflowSnapshot!.operationCompilation!.schemaVersion = "workflow-operation-ir/v7";
+    if (damage === "semantic") (f.state.versions.flow![0]!.compiledOperation as any).plan.semanticHash = hash("different");
+    if (damage === "duplicate-publication") f.state.versions.flow!.push(structuredClone(f.state.versions.flow![0]!));
+    if (damage === "missing-entry-event") f.state.executionEvents.run = f.state.executionEvents.run!.filter(event => event.type !== "protected.started");
+    if (damage === "selection-hash") f.run.operationSecret!.protectedScopes!.group!.selection!.argumentHash = hash("different");
+    if (damage === "orphan-answer") f.run.valueOutputs = { group: { value: "invented" } };
+    const before = structuredClone(f.state); expect(requeueConfirmedProtectedCheckpoint(f.state, f.run, "WORKER_RESTARTED")).toBe(false); expect(f.state).toEqual(before);
+  });

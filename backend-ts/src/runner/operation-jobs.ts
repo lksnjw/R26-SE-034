@@ -12,6 +12,8 @@ import { advanceOperationDecisions } from "./operation-control-checkpoints.js";
 import { assertOperationReturnCompletion } from "./operation-return-checkpoints.js";
 import { operationValueState } from "./operation-merge-checkpoints.js";
 import { prepareProtectedSelection, checkpointProtectedSelection, queueProtectedHandler, confirmedProtectedOperationTransition } from "./operation-protected-checkpoints.js";
+import { requeueConfirmedProtectedCheckpoint } from "./operation-protected-recovery.js";
+import { operationClaimDenial } from "./operation-claim-checkpoints.js";
 import { operationControlTransition } from "../workflows/operation-control-flow.js";
 import { scheduledReportPaths } from "./scheduled-report-paths.js";
 import { selectScheduledReportEvidence } from "./scheduled-report-evidence.js";
@@ -70,10 +72,11 @@ function finish(state: RepositoryState, run: Execution, status: string, summary:
 }
 function recover(state: RepositoryState, run: Execution, reason: string) {
   if (run.operationSecret?.state !== "CLAIMED" || run.status !== "RUNNING") return;
+  if (requeueConfirmedProtectedCheckpoint(state, run, reason)) { audit(state, run, "operation.protected_checkpoint_requeued"); return; }
   const progress = run.readProgress!, attempt = Object.values(progress.attempts).findLast(item => ["PREPARING", "DISPATCH_INTENT"].includes(item.status));
   const resumablePages = attempt?.status === "PREPARING" ? run.reportPageSecret?.[attempt.nodeId] : undefined;
   const pageInFlight = attempt && Object.values(run.operationSecret.intents).some(intent => intent.nodeId === attempt.nodeId && intent.state === "DISPATCH_INTENT");
-  if (attempt && resumablePages && !pageInFlight) {
+  if (attempt && resumablePages && !pageInFlight && run.workflowSnapshot?.operationCompilation?.schemaVersion !== "workflow-operation-ir/v8") {
     progress.epoch++; progress.recoveryReason = reason; run.status = "PENDING"; run.agentSummary = "Confirmed report pages were saved. The next bounded page is queued; no uncertain page is replayed.";
     run.operationSecret.state = "QUEUED"; delete run.operationSecret.lease;
     appendExecutionEvent(state, run, "node.report_pages_requeued", { nextPage: resumablePages.profile === "schedule-report-pages/v1" ? resumablePages.nextPage : resumablePages.pages.length + 1,
@@ -329,10 +332,12 @@ export class OperationJobQueue {
       const initial = await repository.mutateExecution(id, state => {
         const run = state.executions[id]!, job = run.operationSecret!;
         if (run.status !== "PENDING" || job.state !== "QUEUED") throw new Error("Operation is not queued");
-        assertCurrentRunController(state, run, job.actorId, job.admittedRole);
+        const denied = operationClaimDenial(state, run);
+        if (denied) { finish(state, run, denied.status, denied.summary); return undefined; }
         run.status = "RUNNING"; job.state = "CLAIMED"; job.lease = { id: control.leaseId, workerId: this.#workerId, expiresAt: Date.now() + services.config.readWorkerLeaseMs };
         appendExecutionEvent(state, run, "run.started", { profile: "operation-job/v1" }); return structuredClone(run);
       });
+      if (!initial) return;
       this.assert(control);
       control.timer = setInterval(() => { void repository.mutateExecution(id, state => {
         this.assert(control); const run = state.executions[id]!; if (run.operationSecret?.lease?.id !== control.leaseId) throw new Error("Operation lease changed");

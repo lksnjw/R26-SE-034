@@ -30,6 +30,7 @@ import { modelDataClasses, type ModelDataClass } from "../src/providers/egress-p
 import { reviewedModelSourceContext } from "../src/synthesis/reviewed-model-sources.js";
 import { SynthesisService, assembleCandidatePrompt } from "../src/synthesis/service.js";
 import { RELATED_KEY_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { assertConfirmedOperationResults } from "../src/runner/operation-result-evidence.js";
 
 const closers: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(closers.splice(0).reverse().map(value => value.close())); });
@@ -167,6 +168,106 @@ async function setup(storage: PersistenceBackend | null = null, withRead = true,
     setDispatchAdmissionHook: (hook: () => Promise<void>) => { dispatchAdmissionHook = hook; },
     setRelatedReadAdmissionHook: (hook: () => Promise<void>) => { relatedReadAdmissionHook = hook; } };
 }
+
+test.each(["permission", "role", "role-identity", "disabled", "deleted", "archived", "workflow-deleted"])(
+  "queued %s revocation terminates once and does not starve another actor", async scenario => {
+    const s = await setup(); s.services.config.readWorkerConcurrency = 1;
+    expect((await s.publish()).statusCode).toBe(200);
+    await operationJobQueue(s.services).stop();
+    const first = await s.run("queued-claim-requester-0001"); expect(first.statusCode, first.body).toBe(202); const id = first.json().data.id;
+    const second = await s.request("POST", "/api/workflows/flow/run", { mode: "async-operation", idempotencyKey: "queued-claim-observer-0001", input: {} }, "observer");
+    expect(second.statusCode, second.body).toBe(202); const otherId = second.json().data.id;
+    await s.repository.mutate(state => {
+      const originalWorkflow = structuredClone(state.workflows.flow!), originalRole = structuredClone(state.roles.role_admin!);
+      state.executions[id]!.operationSecret!.createdAt = "2020-01-01T00:00:00.000Z";
+      if (scenario === "permission") state.roles.role_admin!.permissions = [];
+      if (scenario === "role") state.users.requester!.roleId = "review";
+      if (scenario === "role-identity") { state.roles.same_name = { ...state.roles.role_admin!, id: "same_name" }; state.users.requester!.roleId = "same_name"; }
+      if (scenario === "disabled") state.users.requester!.status = "Disabled";
+      if (scenario === "deleted") delete state.users.requester;
+      if (scenario === "archived") state.workflows.flow!.archived = true;
+      if (scenario === "workflow-deleted") delete state.workflows.flow;
+      // Workflow-wide revocation applies to both actors; give the second run
+      // its own still-valid immutable workflow rather than weakening the gate.
+      if (["permission", "archived", "workflow-deleted"].includes(scenario)) {
+        if (scenario === "permission") { state.roles.observer_admin = { ...originalRole, id: "observer_admin" }; state.users.observer!.roleId = "observer_admin";
+          state.executions[otherId]!.operationSecret!.roleId = "observer_admin"; }
+        state.workflows.other_flow = { ...originalWorkflow, id: "other_flow", archived: false };
+        state.versions.other_flow = structuredClone(state.versions.flow!); state.executions[otherId]!.workflowId = "other_flow";
+      }
+    });
+    const queue = operationJobQueue(s.services); closers.push({ close: () => queue.stop() }); await queue.start();
+    await s.wait(id, "FAILED"); await s.wait(otherId, "AWAITING_APPROVAL");
+    const state = await s.repository.snapshot(), failed = state.executions[id]!;
+    expect(failed.failure?.failureCategory).toBe("OPERATION_CLAIM_AUTHORITY_CHANGED");
+    expect(failed.operationSecret!.state).toBe("FINISHED"); expect(failed.readProgress!.attempts).toEqual({}); expect(failed.operationSecret!.intents).toEqual({});
+    expect(state.executionEvents[id]!.filter(event => event.type === "run.failed")).toHaveLength(1);
+    expect(state.executionEvents[id]!.filter(event => event.type === "run.started")).toHaveLength(0);
+    expect(s.sdk.callTool).toHaveBeenCalledTimes(1); expect(s.modelFetch).not.toHaveBeenCalled();
+    expect(s.sdk.callTool.mock.calls[0]![0]).toBe(exactBridgeName(s.read));
+  });
+
+test.each(["tool", "analysis", "agent-model", "agent-tool"] as const)("queued uncertain %s call remains unknown and is never replayed after permission revocation", async dispatchKind => {
+  const s = await setup(null, false); expect((await s.publish()).statusCode).toBe(200); await operationJobQueue(s.services).stop();
+  const admitted = await s.run("queued-uncertain-call-0001"); expect(admitted.statusCode).toBe(202); const id = admitted.json().data.id;
+  await s.repository.mutate(state => {
+    const run = state.executions[id]!, startedAt = new Date().toISOString(); state.users.requester!.status = "Disabled";
+    run.readProgress!.attempts.send = { id: "old-attempt", nodeId: "send", stepIndex: 0, status: "DISPATCH_INTENT", startedAt };
+    run.operationSecret!.intents.send = { id: "old-intent", nodeId: "send", invocationId: "old-invocation", operationKey: "old-operation", argumentHash: "old-hash", dispatchKind,
+      state: "DISPATCH_INTENT", preparedAt: startedAt };
+    state.timelines[id]!.push({ id: "old-timeline", nodeId: "send", attemptId: "old-attempt", status: "RUNNING", startedAt });
+    run.failure = { failureCategory: "ORIGINAL_UNKNOWN_FAILURE", failedStepId: "send" };
+  });
+  const queue = operationJobQueue(s.services); closers.push({ close: () => queue.stop() }); await queue.start();
+  await s.wait(id, dispatchKind === "tool" ? "RECONCILIATION_REQUIRED" : "RECOVERY_REQUIRED"); const state = await s.repository.snapshot(), run = state.executions[id]!;
+  expect(run.failure?.failureCategory).toBe("ORIGINAL_UNKNOWN_FAILURE"); expect(run.operationSecret!.intents.send!.state).toBe("UNKNOWN");
+  expect(run.readProgress!.attempts.send!.status).toBe("UNKNOWN"); expect(state.timelines[id]![0]!.outcome).toBe("UNKNOWN");
+  expect(run.stepOutputs).toEqual({}); expect(state.executionEvents[id]!.some(event => event.type === "run.started")).toBe(false);
+  expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
+});
+
+test("lost claim-denial acknowledgement reopens as a terminal refusal without SDK entry", async () => {
+  const storage = new Records(), s = await setup(storage, false); expect((await s.publish()).statusCode).toBe(200); await operationJobQueue(s.services).stop();
+  const admitted = await s.run("queued-denial-lost-ack-0001"); expect(admitted.statusCode).toBe(202); const id = admitted.json().data.id;
+  await s.repository.mutate(state => { state.users.requester!.status = "Disabled"; });
+  storage.loseWhen = state => state.executions[id]!.failure?.failureCategory === "OPERATION_CLAIM_AUTHORITY_CHANGED";
+  const queue = operationJobQueue(s.services); closers.push({ close: () => queue.stop() }); await queue.start();
+  await vi.waitFor(() => expect(storage.loseWhen).toBeUndefined()); await queue.stop();
+  const reopened = await Repository.open(storage); closers.push(reopened); const state = await reopened.snapshot();
+  expect(state.executions[id]).toMatchObject({ status: "FAILED", operationSecret: { state: "FINISHED" }, failure: { failureCategory: "OPERATION_CLAIM_AUTHORITY_CHANGED" } });
+  expect(state.executionEvents[id]!.filter(event => event.type === "run.failed")).toHaveLength(1); expect(s.sdk.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["valid", "output", "intent", "argument-hash", "completion-time", "timeline", "event", "approval", "orphan"])(
+  "completed public read/effect %s evidence is checked without another call", async damage => {
+    const s = await setup(), id = await s.admit();
+    expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE");
+    const state = await s.repository.snapshot(), run = state.executions[id]!, plan = (state.versions.flow![0]!.compiledOperation as StoredOperationCompilation).plan;
+    expect(() => assertConfirmedOperationResults(state, run, plan)).not.toThrow();
+    if (damage === "output") run.stepOutputs!.lookup = { structuredContent: { value: "invented" } };
+    if (damage === "intent") run.operationSecret!.intents.lookup!.state = "UNKNOWN";
+    if (damage === "argument-hash") run.operationSecret!.intents.lookup!.argumentHash = "sha256:" + "0".repeat(64);
+    if (damage === "completion-time") run.readProgress!.attempts.lookup!.completedAt = "2000-01-01T00:00:00.000Z";
+    if (damage === "timeline") state.timelines[id] = state.timelines[id]!.filter(entry => entry.nodeId !== "lookup");
+    if (damage === "event") state.executionEvents[id] = state.executionEvents[id]!.filter(event => event.type !== "node.completed" || event.nodeId !== "lookup");
+    if (damage === "approval") run.runtimeApprovalSecret!.records[run.operationSecret!.intents.send!.approvalId!]!.consumption!.intentId = "different";
+    if (damage === "orphan") run.stepOutputs!.orphan = { structuredContent: { value: "invented" } };
+    const before = structuredClone(state);
+    if (damage !== "valid") expect(() => assertConfirmedOperationResults(state, run, plan)).toThrow();
+    else assertConfirmedOperationResults(state, run, plan);
+    expect(state).toEqual(before); expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).not.toHaveBeenCalled();
+  });
+
+test.each(["analysis", "agent"] as const)("completed public %s retains exact acknowledged answer evidence", async kind => {
+  const s = await setup(null, true, false, false, false, true); await prepareModelReadWorkflow(s, kind);
+  if (kind === "agent") s.modelFetch.mockImplementation(async () => Response.json({ choices: [{ message: { content: '{"summary":"FIXTURE REPORT","complete":true}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+  expect((await s.publish()).statusCode).toBe(200); const admitted = await s.run(`completed-${kind}-evidence-0001`); expect(admitted.statusCode).toBe(202);
+  const id = admitted.json().data.id; await s.wait(id, "DONE"); const state = await s.repository.snapshot(), run = state.executions[id]!,
+    plan = (state.versions.flow![0]!.compiledOperation as StoredOperationCompilation).plan;
+  expect(() => assertConfirmedOperationResults(state, run, plan)).not.toThrow();
+  run.operationSecret!.intents[kind === "agent" ? "research:model:0" : "summarize"]!.evidenceMeaning = "read-tool-error";
+  expect(() => assertConfirmedOperationResults(state, run, plan)).toThrow(); expect(s.sdk.callTool).toHaveBeenCalledOnce(); expect(s.modelFetch).toHaveBeenCalledOnce();
+});
 
 test("operation admission receipt survives changed draft and revoked run permission without another dispatch", async () => {
   const s = await setup(); const id = await s.admit();
@@ -479,6 +580,7 @@ test.each(["daily", "weekly", "monthly"].flatMap(cadence => ["analysis", "agent"
       expect((await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer")).statusCode).toBe(200); await s.wait(id, "DONE");
     }
     const state = await s.repository.snapshot(), run = state.executions[id]!, answerId = selected ? "accepted_answer" : "not_requested_answer";
+    assertConfirmedOperationResults(state, run, (state.versions.flow!.find(version => version.version === run.workflowSnapshot!.version && version.artifactState === "PUBLISHED")!.compiledOperation as StoredOperationCompilation).plan);
     expect(run.finalOutput).toEqual({ summary: selected ? kind === "agent" ? "AGENT ANSWER" : "FIXTURE REPORT" : "Explicitly not requested", operationAccepted: selected });
     expect(Object.keys(run.valueOutputs!)).toEqual([answerId]); expect(run.readProgress!.values![answerId]).toMatchObject({ kind: "return", status: "DONE" });
     expect(s.sdk.callTool).toHaveBeenCalledTimes(4); expect(s.modelFetch).toHaveBeenCalledTimes(selected ? 1 : 0);

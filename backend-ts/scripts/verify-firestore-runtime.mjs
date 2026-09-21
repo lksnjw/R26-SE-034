@@ -33,6 +33,7 @@ import { verifyFirestoreCalendarJoins } from "./firestore-calendar-joins.mjs";
 import { verifyFirestoreRecurringJoins } from "./firestore-recurring-joins.mjs";
 import { firestoreConditionPatchResponse, verifyFirestoreConditionProposals } from "./firestore-condition-proposals.mjs";
 import { verifyFirestoreReadErrors } from "./firestore-read-errors.mjs";
+import { verifyFirestoreOperationClaims } from "./firestore-operation-claims.mjs";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -546,6 +547,8 @@ try {
   assert.equal(historicalApproval.id, operationReview.id); assert.equal(historicalApproval.state, "CONSUMED"); assert.equal(historicalApproval.canDecide, false);
   log("actual Firestore normal operation publication/run produced a durable exact approval wait, survived restart without calls, then consumed independent approval and acknowledged one synthetic SDK result; zero model calls and no duplicate after decision replay/restart");
 
+  await verifyFirestoreOperationClaims({ request, repository: () => repository, services: () => services, persistence: () => persistence,
+    restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, operations, waitFor, log });
   await verifyFirestoreReadErrors({ request, repository: () => repository, persistence: () => persistence,
     restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, setFixture: value => { readErrorFixture = value; },
     businessErrorTool, calls, models, operations, waitFor, log });
