@@ -5,7 +5,7 @@ import { QUERY_SYSTEM_PROMPT, promptData } from "../prompts/contracts.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { hasReservedBridgeRole } from "../tools/erpbridge-contract.js";
 import { mcpResultForModel } from "../tools/mcp-result.js";
-import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
+import { acknowledgedReadToolFailure } from "../tools/read-tool-broker.js";
 
 export type VisualisationSpec = {
   type: "bar" | "line" | "table" | "pie";
@@ -183,7 +183,7 @@ export async function runQueryLoop(
         toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: raw, status: "SUCCEEDED" });
         toolResultContent = promptData({ source: "untrusted_tool_result", callId: call.id, toolName: call.name, status: "SUCCEEDED", data: mcpResultForModel(raw) });
       } catch (error) {
-        toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: error instanceof ErpbridgeMcpToolError ? error.result : { error: errorText(error) }, status: "FAILED" });
+        toolSteps.push({ toolName: call.name, arguments: redactCredentials(call.arguments), result: acknowledgedReadToolFailure(error)?.result ?? { error: errorText(error) }, status: "FAILED" });
         // A denial/failure is not permission to try another tool or argument.
         return buildResult("Read preparation stopped after a failed or denied tool request.", toolCallLog, toolSteps, iteration + 1, true, totalTokens, started);
       }

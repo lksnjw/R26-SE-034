@@ -29,6 +29,8 @@ export type GovernedMCPClient = Readonly<{
     beforeDispatch?: () => Promise<void>,
     assertDispatch?: () => void,
     operationPermit?: import("./operation-dispatch-permit.js").OperationDispatchPermit | undefined,
+    /** Opaque server-owned identity for this read invocation, not remote metadata. */
+    readErrorBinding?: object,
   ): Promise<Record<string, unknown>>;
 }>;
 

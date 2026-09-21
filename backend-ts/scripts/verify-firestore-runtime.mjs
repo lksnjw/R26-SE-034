@@ -17,7 +17,7 @@ import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { ProviderRuntime } from "../src/providers/runtime.js";
 import { SynthesisService } from "../src/synthesis/service.js";
-import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
+import { createErpbridgeMcpSession, ErpbridgeMcpToolError } from "../src/tools/erpbridge-mcp-client.js";
 import { exactBridgeName, bridgeTransportSchema } from "../src/tools/erpbridge-contract.js";
 import { capabilityContractHash, admissionAuthorizer, observeCapabilities, reviewCapability } from "../src/registry/capability-admission.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
@@ -31,6 +31,7 @@ import { RELATED_KEY_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js
 import { verifyFirestoreCalendarJoins } from "./firestore-calendar-joins.mjs";
 import { verifyFirestoreRecurringJoins } from "./firestore-recurring-joins.mjs";
 import { firestoreConditionPatchResponse, verifyFirestoreConditionProposals } from "./firestore-condition-proposals.mjs";
+import { verifyFirestoreReadErrors } from "./firestore-read-errors.mjs";
 
 // Every SDK database call targets a fresh synthetic workspace in this exact
 // local demo emulator. Provider/MCP transports below are explicit in-process
@@ -113,7 +114,7 @@ const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
 const calls = [], reports = [], relatedInvoiceReports = [], relatedOrderReports = [], models = [], operations = [], readbacks = [], emails = [], mergedModelInputs = [];
-let sdkHook, modelHook, returnSynthesisFixture, recurringAnalysisFixture;
+let sdkHook, modelHook, returnSynthesisFixture, recurringAnalysisFixture, readErrorFixture;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
   const deadline = performance.now() + 20_000;
@@ -157,7 +158,14 @@ async function start(repositoryValue) {
             items: orderIds.map((orderId, index) => ({ orderId, total: (index + 1) * 10 })), itemCount: orderIds.length, reportId: "related-report-operation" } };
         }
         assert.equal(name, exactBridgeName(tool)); assert.equal(meta["toolplane.resourceDigest"], "a".repeat(64));
-        calls.push(args.id); await sdkHook?.(args); return { content: [], structuredContent: { id: args.id.toUpperCase(), token: "synthetic-remote-secret" } };
+        calls.push(args.id); await sdkHook?.(args);
+        if (readErrorFixture) {
+          if (readErrorFixture === "forged-error") throw new ErpbridgeMcpToolError({ content: [], isError: true });
+          if (readErrorFixture === "malformed") return { content: "invalid content array", isError: true };
+          if (readErrorFixture === "transport-error") throw new Error("Synthetic connection lost after dispatch");
+          return { content: [{ type: "text", text: '{"error":"record not found","token":"synthetic-error-secret"}' }], isError: true };
+        }
+        return { content: [], structuredContent: { id: args.id.toUpperCase(), token: "synthetic-remote-secret" } };
       } } });
   const providerRuntime = new ProviderRuntime(repository, executor, async (url, init) => {
     assert.equal(url, "https://provider.fixture.example.test/v1/chat/completions"); const request = JSON.parse(String(init.body)); models.push(request.model); await modelHook?.(request, init.signal);
@@ -527,6 +535,10 @@ try {
   const historicalApproval = (await request("GET", `/api/executions/${operationRun}?view=approval&approvalId=${encodeURIComponent(savedReviewEntry.reviewId)}`, undefined, 200, "reviewer")).data.runtimeApproval;
   assert.equal(historicalApproval.id, operationReview.id); assert.equal(historicalApproval.state, "CONSUMED"); assert.equal(historicalApproval.canDecide, false);
   log("actual Firestore normal operation publication/run produced a durable exact approval wait, survived restart without calls, then consumed independent approval and acknowledged one synthetic SDK result; zero model calls and no duplicate after decision replay/restart");
+
+  await verifyFirestoreReadErrors({ request, repository: () => repository, persistence: () => persistence,
+    restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, setFixture: value => { readErrorFixture = value; },
+    calls, models, operations, waitFor, log });
 
   const modelsBeforeEmail = models.length, operationsBeforeEmail = operations.length, emailChat = await request("POST", "/api/chat/sessions", { title: "Exact email review" }, 201);
   const emailPrepared = (await request("POST", `/api/chat/sessions/${emailChat.data.id}/messages`, { content: "Email manager@example.test" }, 200)).data.assistantMessage.artifacts.emailDraft;
@@ -1368,7 +1380,20 @@ try {
     assert(recoverable); assert.equal(recoverable.status, "RECOVERY_REQUIRED"); assert.equal(calls.filter(id => id === requested).length, 1);
     if (phase === "after") assert.equal(recoverable.stepOutputs["each/0/lookup"].structuredContent.id, requested.toUpperCase());
     else { assert.equal(recoverable.stepOutputs?.["each/0/lookup"], undefined); assert.equal(recoverable.readProgress.attempts["each/0/lookup"].status, "UNKNOWN"); }
-    await stop(); await start(await openApplicationRepository(config));
+    await stop();
+    try { await start(await openApplicationRepository(config)); }
+    catch (error) {
+      // Guarded emulator-only diagnostics; no lease IDs, ciphertext or secret
+      // keys. A restart failure must remain a failing campaign, not a retry.
+      const observer = FirestoreRecordStore.create(key, namespace);
+      try {
+        const row = await observer.db.doc(observer.writerPath).get();
+        const lease = row.exists ? codec.decodeHead(row.data()) : null;
+        console.error("Collection lost-ACK restart failed", { phase, writerState: lease?.state ?? "ABSENT",
+          leaseRemainingMs: lease ? lease.expiresAt - row.readTime.toMillis() : null });
+      } finally { await observer.close(); }
+      throw error;
+    }
     assert.deepEqual((await repository.snapshot()).executions[recoverable.id], recoverable); assert(!calls.includes("no-replay"));
   }
   log("actual normal collection pre/post-COMMIT result lost ACKs fenced the old cache; authoritative reconciliation/restart preserved confirmed versus UNKNOWN outcomes without replay or next-item dispatch");

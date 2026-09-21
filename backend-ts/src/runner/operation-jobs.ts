@@ -21,7 +21,7 @@ import { modelInputItemCount } from "../workflows/model-input.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { validateToolArguments } from "../agent/workflow-runtime-validator.js";
 import { discoverTools } from "../agent/tool-discovery.js";
-import { dispatchReadTool } from "../tools/read-tool-broker.js";
+import { acknowledgedReadToolFailure, dispatchReadTool } from "../tools/read-tool-broker.js";
 import { createDispatchIdentity } from "../tools/registry.js";
 import { issueOperationDispatchPermit, retireOperationDispatchPermit } from "../tools/operation-dispatch-permit.js";
 import { hasReservedBridgeRole } from "../tools/erpbridge-contract.js";
@@ -312,6 +312,15 @@ export class OperationJobQueue {
     let knownCoverageFailure: { nodeId: string; intentKey: string; intentId: string; output: Record<string, unknown>; message: string } | undefined;
     let knownAnalysisFailure: { nodeId: string; intentId: string; message: string; inputTokens: number; outputTokens: number } | undefined;
     let knownAgentFailure: { nodeId: string; code: string; message: string } | undefined;
+    let knownReadFailure: { nodeId: string; intentKey: string; intentId: string; argumentHash: string; output: Record<string, unknown> } | undefined;
+    const captureReadFailure = async (nodeId: string, intentKey: string, intentId: string, args: Record<string, unknown>, tool: ToolDefinition, call: Promise<Record<string, unknown>>) => {
+      try { return await call; }
+      catch (error) {
+        const failure = acknowledgedReadToolFailure(error);
+        if (failure) knownReadFailure = { nodeId, intentKey, intentId, argumentHash: digest(args), output: protectedReportPageOutput(tool, failure.result) };
+        throw error;
+      }
+    };
     try {
       const initial = await repository.mutateExecution(id, state => {
         const run = state.executions[id]!, job = run.operationSecret!;
@@ -441,9 +450,9 @@ export class OperationJobQueue {
                     appendExecutionEvent(state, run, "node.agent_tool_dispatch_intent", { intentId, round: round + 1, call: callIndex + 1, action: capability.action }, node.id, attempt.id);
                     audit(state, run, "operation.agent_tool_dispatch_intent");
                   });
-                  return dispatchReadTool(services, actor.id, capability.action, call.arguments, { workflowId: initial.workflowId, executionId: id,
+                  return captureReadFailure(node.id, intentKey, intentId, { capability, arguments: call.arguments }, tool, dispatchReadTool(services, actor.id, capability.action, call.arguments, { workflowId: initial.workflowId, executionId: id,
                     signal: agentSignal, assertDispatch: assertContext, beforeDispatch: persistIntent,
-                    dynamicPlan: { admissionPin: capability.admission, contractHash: capability.contractHash, toolId: tool.tool_id } });
+                    dynamicPlan: { admissionPin: capability.admission, contractHash: capability.contractHash, toolId: tool.tool_id } }));
                 },
                 afterTool: async (capability, _call, output, round, callIndex) => {
                   const pending = pendingCalls.get(`${round}:${callIndex}`); if (!pending) throw new Error("Runtime-agent tool result has no private intent");
@@ -615,9 +624,9 @@ export class OperationJobQueue {
               appendExecutionEvent(state, run, "node.report_page_dispatch_intent", { intentId: cursorIntentId, page: ordinal, continuationProfile: pagination.profile }, node.id, attempt.id);
               audit(state, run, "operation.report_page_dispatch_intent");
             }); };
-            const cursorOutput = await dispatchReadTool(services, actor.id, node.capability.action, cursorArgs, { workflowId: initial.workflowId, executionId: id,
+            const cursorOutput = await captureReadFailure(node.id, intentKey, cursorIntentId, cursorArgs, tool, dispatchReadTool(services, actor.id, node.capability.action, cursorArgs, { workflowId: initial.workflowId, executionId: id,
               signal: control.controller.signal, assertDispatch: assertContext, beforeDispatch: persistCursorIntent,
-              plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } });
+              plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } }));
             let confirmed;
             try {
               confirmed = confirmScheduledReportCursor({ tool, args: cursorArgs, output: cursorOutput, startAt: initial.scheduleSource!.reportWindow.startAt,
@@ -709,9 +718,9 @@ export class OperationJobQueue {
               const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!; entry.status = "RUNNING"; entry.phase = `PAGE_${page}_DISPATCH_INTENT`;
               appendExecutionEvent(state, run, "node.report_page_dispatch_intent", { intentId: pageIntentId, page }, node.id, attempt.id); audit(state, run, "operation.report_page_dispatch_intent");
             }); };
-            const pageOutput = await dispatchReadTool(services, actor.id, node.capability.action, pageArgs, { workflowId: initial.workflowId, executionId: id,
+            const pageOutput = await captureReadFailure(node.id, intentKey, pageIntentId, pageArgs, tool, dispatchReadTool(services, actor.id, node.capability.action, pageArgs, { workflowId: initial.workflowId, executionId: id,
               signal: control.controller.signal, assertDispatch: assertContext, beforeDispatch: persistPageIntent,
-              plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } });
+              plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } }));
             let confirmed;
             try {
               confirmed = confirmScheduledReportPage({ tool, args: pageArgs, output: pageOutput, startAt: initial.scheduleSource!.reportWindow.startAt,
@@ -793,8 +802,8 @@ export class OperationJobQueue {
           const entry = state.timelines[id]!.find(entry => entry.attemptId === attempt.id)!; entry.status = "RUNNING"; entry.phase = "DISPATCH_INTENT";
           appendExecutionEvent(state, run, "node.dispatch_intent", { intentId, sideEffect: node.effectClass !== "read" }, node.id, attempt.id); audit(state, run, "operation.dispatch_intent");
         }); };
-        if (node.effectClass === "read") output = await dispatchReadTool(services, actor.id, node.capability.action, args, { workflowId: initial.workflowId, executionId: id, signal: control.controller.signal, assertDispatch: assertContext,
-          beforeDispatch: persistIntent, plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } });
+        if (node.effectClass === "read") output = await captureReadFailure(node.id, node.id, intentId, args, tool, dispatchReadTool(services, actor.id, node.capability.action, args, { workflowId: initial.workflowId, executionId: id, signal: control.controller.signal, assertDispatch: assertContext,
+          beforeDispatch: persistIntent, plan: { yaml: snapshot.yaml, stepIndex: index, token: gate.token, admissionPin: node.capability.admission!, contractHash: node.capability.contractHash, toolId: node.capability.toolId } }));
         else {
           const identity = createDispatchIdentity(actor, nodeBinding!.roleMap), resolved = await services.validator.evaluateResolvedStep(id, snapshot.yaml, index, args, gate.token, identity, {
             executionId: id, workflowId: initial.workflowId, traceId: initial.traceId, actor: { id: actor.id, role: actor.role },
@@ -849,6 +858,23 @@ export class OperationJobQueue {
       try { await repository.mutateExecution(id, state => {
         const run = state.executions[id];
         if (!run || run.operationSecret?.lease?.id !== control.leaseId || run.status !== "RUNNING") return;
+        if (knownReadFailure) {
+          const failure = knownReadFailure, attempt = run.readProgress!.attempts[failure.nodeId], intent = run.operationSecret.intents[failure.intentKey];
+          if (!attempt || attempt.status !== "DISPATCH_INTENT" || !intent || intent.id !== failure.intentId || intent.nodeId !== failure.nodeId ||
+              intent.argumentHash !== failure.argumentHash || intent.state !== "DISPATCH_INTENT")
+            throw new Error("Acknowledged read failure no longer owns the current intent");
+          const completedAt = new Date().toISOString(); intent.state = "ACKNOWLEDGED"; intent.completedAt = completedAt; intent.evidenceMeaning = "read-tool-error";
+          attempt.status = "FAILED"; attempt.completedAt = completedAt;
+          const entry = state.timelines[id]!.find(value => value.attemptId === attempt.id)!;
+          Object.assign(entry, { status: "FAILED", phase: "COMPLETE", outcome: "MCP_READ_TOOL_ERROR", completedAt,
+            durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(attempt.startedAt)), output: withoutSecretFields(failure.output) });
+          appendExecutionEvent(state, run, "node.read_tool_failed", { intentId: intent.id, outcome: "MCP_READ_TOOL_ERROR" }, failure.nodeId, attempt.id);
+          run.failure = { failureCategory: "MCP_READ_TOOL_ERROR", failedStepId: failure.nodeId, reason: "The governed ERP read returned an acknowledged tool-error response." };
+          // Error receipts are not successful data bindings or complete reports.
+          // This is not handler routing, permission to retry, or write evidence.
+          finish(state, run, "FAILED", "The ERP read returned a tool error. Its failure receipt is saved; no later node, approval or effect was dispatched.");
+          audit(state, run, "operation.read_tool_failed"); return;
+        }
         if (knownAgentFailure) {
           const failure = knownAgentFailure, attempt = run.readProgress!.attempts[failure.nodeId];
           if (!attempt || attempt.status !== "PREPARING") throw new Error("Known runtime-agent failure no longer owns the current node");

@@ -5,6 +5,8 @@ import { Repository } from "../src/repository/store.js";
 import type { DispatchIdentity } from "../src/tools/registry.js";
 import {
   createErpbridgeMcpSession,
+  consumeAcknowledgedReadError,
+  ErpbridgeMcpToolError,
   type ErpbridgeMcpSdkClient,
 } from "../src/tools/erpbridge-mcp-client.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
@@ -154,6 +156,28 @@ async function fixture(
 }
 
 afterEach(() => vi.useRealTimers());
+
+test("acknowledged SDK read-error evidence is opaque, single-use and independent of public result mutation", async () => {
+  const f = await fixture(fakeSdk({ content: [], isError: true }));
+  const binding = Object.freeze({});
+  const error = await f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity,
+    undefined, undefined, undefined, undefined, binding).catch(error => error);
+  expect(error).toBeInstanceOf(ErpbridgeMcpToolError); error.result.isError = false;
+  expect(consumeAcknowledgedReadError(error, binding)).toMatchObject({ isError: true });
+  expect(consumeAcknowledgedReadError(error, binding)).toBeUndefined();
+  expect(consumeAcknowledgedReadError(new ErpbridgeMcpToolError({ content: [], isError: true }), binding)).toBeUndefined();
+  await f.session.close();
+});
+
+test("another invocation identity cannot claim an acknowledged read response", async () => {
+  const f = await fixture(fakeSdk({ content: [], isError: true }));
+  const binding = Object.freeze({});
+  const error = await f.session.clientFor(f.definition).execute("demo.echo", f.capability, f.parameters, f.identity,
+    undefined, undefined, undefined, undefined, binding).catch(error => error);
+  expect(consumeAcknowledgedReadError(error, Object.freeze({}))).toBeUndefined();
+  expect(consumeAcknowledgedReadError(error, binding)).toBeUndefined();
+  await f.session.close();
+});
 
 describe("governed ERPBridge MCP adapter", () => {
   test("connects once and calls the reviewed remote MCP name with the mapped role", async () => {

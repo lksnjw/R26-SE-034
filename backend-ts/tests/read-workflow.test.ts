@@ -14,7 +14,7 @@ import { toolSchema, ruleSchema } from "../src/registry/schemas.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
+import { createErpbridgeMcpSession, ErpbridgeMcpToolError } from "../src/tools/erpbridge-mcp-client.js";
 import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../src/parser/workflow.js";
 import { inspectReadWorkflow } from "../src/runner/read-workflow.js";
@@ -601,6 +601,16 @@ test("known bridge failure receipt belongs to its failed attempt, never successf
   expect(execution.status).toBe("FAILED"); expect(execution.stepOutputs?.lookup).toBeUndefined(); expect(execution.finalOutput).toBeUndefined();
   expect(state.timelines[execution.id]?.at(-1)).toMatchObject({ nodeId: "lookup", status: "FAILED", output: { isError: true, _meta: { "com.erpbridge/error": { type: "rate_limit", retryAfterMs: 1000 } } } });
   expect(JSON.stringify(state.timelines)).not.toContain("private-meta"); expect(s.callTool).toHaveBeenCalledOnce();
+});
+
+test("a thrown public MCP error constructor cannot convert an unconfirmed sequential read into a failed receipt", async () => {
+  const s = await setup(); await s.seed();
+  s.callTool.mockRejectedValueOnce(new ErpbridgeMcpToolError({ content: [], isError: true }));
+  expect((await s.run()).statusCode).toBe(422);
+  const state = await s.repository.snapshot(), execution = Object.values(state.executions)[0]!;
+  expect(execution.status).toBe("RECOVERY_REQUIRED"); expect(execution.stepOutputs?.lookup).toBeUndefined();
+  expect(state.timelines[execution.id]?.at(-1)).toMatchObject({ nodeId: "lookup", status: "UNKNOWN" });
+  expect(state.timelines[execution.id]?.at(-1)?.output).toBeUndefined(); expect(s.callTool).toHaveBeenCalledOnce();
 });
 
 test.each(["disabled", "assignment", "registry"])("%s revocation after first node prevents second dispatch", async (scenario) => {

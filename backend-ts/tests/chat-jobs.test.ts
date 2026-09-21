@@ -10,7 +10,7 @@ import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { ProviderRuntime } from "../src/providers/runtime.js";
 import { SynthesisService } from "../src/synthesis/service.js";
-import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
+import { createErpbridgeMcpSession, ErpbridgeMcpToolError } from "../src/tools/erpbridge-mcp-client.js";
 import { chatJobQueue } from "../src/agent/chat-jobs.js";
 import { workflowContentHash } from "../src/parser/workflow.js";
 import { stringify } from "yaml";
@@ -490,6 +490,18 @@ test("known MCP failure and unconfirmed timeout remain distinct", async () => {
     }
     expect(s.callTool).toHaveBeenCalledOnce();
   }
+});
+
+test("saved chat does not trust a thrown public MCP error as an acknowledged answer or failure receipt", async () => {
+  const s = await setup();
+  s.callTool.mockRejectedValueOnce(new ErpbridgeMcpToolError({ content: [], isError: true }));
+  const id = (await s.send()).json().data.operation.id, final = await s.terminal(id);
+  expect(final.status).toBe("RECOVERY_REQUIRED"); expect(final.attempts[0]!.status).toBe("UNKNOWN");
+  expect(final.attempts[0]!.output).toBeUndefined(); expect(s.callTool).toHaveBeenCalledOnce();
+  const stopped = (await s.repository.snapshot()).chats[s.sessionId]!.messages.at(-1)!;
+  expect(stopped.text).toContain("No confirmed ERP data was retrieved.");
+  expect(stopped.text).toContain("No email was sent, schedule activated or ERP change made.");
+  expect(stopped.text).not.toContain("Confirmed fixture read");
 });
 
 test("actor revocation before final narration cannot persist an old-role answer", async () => {

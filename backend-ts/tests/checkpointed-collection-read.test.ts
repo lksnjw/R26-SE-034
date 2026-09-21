@@ -8,7 +8,7 @@ import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { ruleSchema, toolSchema } from "../src/registry/schemas.js";
 import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
+import { createErpbridgeMcpSession, ErpbridgeMcpToolError } from "../src/tools/erpbridge-mcp-client.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import { admissionAuthorizer, observeCapabilities, reviewCapability, captureReadAdmissionPin, capabilityContractHash } from "../src/registry/capability-admission.js";
 import { compileReadWorkflow, readCompilationReceipt } from "../src/workflows/compiled-read.js";
@@ -189,6 +189,14 @@ test.each(["error", "transport", "invalid-output"])("%s stops without replay or 
   }); const result = await s.run(); expect(result.status).toBe(kind === "error" ? "FAILED" : "RECOVERY_REQUIRED"); expect(s.callTool).toHaveBeenCalledOnce();
   expect(result.stepOutputs).toBeUndefined(); expect(result.valueOutputs?.each).toBeUndefined(); expect(JSON.stringify(result)).not.toContain("remote credential");
   if (kind === "error") expect((await s.repository.snapshot()).timelines.run!.find(value => value.nodeId === "lookup")!.output).toMatchObject({ isError: true });
+});
+
+test("a forged public MCP error in a collection remains unknown and supplies no item or aggregate", async () => {
+  const s = await setup(); s.callTool.mockRejectedValueOnce(new ErpbridgeMcpToolError({ content: [], isError: true }));
+  const result = await s.run(); expect(result.status).toBe("RECOVERY_REQUIRED");
+  expect(result.stepOutputs).toBeUndefined(); expect(result.valueOutputs?.each).toBeUndefined();
+  const entry = (await s.repository.snapshot()).timelines.run!.find(value => value.nodeId === "lookup")!;
+  expect(entry.status).toBe("UNKNOWN"); expect(entry.output).toBeUndefined(); expect(s.callTool).toHaveBeenCalledOnce();
 });
 
 test.each(["intent", "completion"])("lost %s acknowledgement never starts another item", async phase => {

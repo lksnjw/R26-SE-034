@@ -7,7 +7,7 @@ import { ACTION_SYSTEM_PROMPT, promptData } from "../prompts/contracts.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { hasReservedBridgeRole } from "../tools/erpbridge-contract.js";
 import { mcpResultForModel } from "../tools/mcp-result.js";
-import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
+import { acknowledgedReadToolFailure } from "../tools/read-tool-broker.js";
 
 export type GovernanceCheck = (
   toolName: string,
@@ -191,7 +191,7 @@ export async function runActionLoop(
           toolName: call.name,
           displayName,
           arguments: redactCredentials(normalizedArguments),
-          result: error instanceof ErpbridgeMcpToolError ? error.result : null,
+          result: acknowledgedReadToolFailure(error)?.result ?? null,
           isReadOnly,
           governanceStatus: isReadOnly ? "skipped" : "allowed",
           error: errMsg,

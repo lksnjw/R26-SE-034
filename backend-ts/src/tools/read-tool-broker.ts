@@ -18,6 +18,16 @@ import { selectedReadEvidenceYAML } from "../workflows/read-completion-evidence.
 import { assertIterationDispatchBinding } from "../workflows/read-iteration-dispatch-binding.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { boundMcpConnection, selectedMcpConnectionId } from "./mcp-dispatch-context.js";
+import { consumeAcknowledgedReadError, ErpbridgeMcpToolError } from "./erpbridge-mcp-client.js";
+
+const acknowledgedFailures = new WeakMap<object, Record<string, unknown>>();
+/** Read-only observation for nested server checkpoints. Never accepts a
+ * serialized flag, public exception constructor, or the mutable error.result. */
+export function acknowledgedReadToolFailure(error: unknown): { code: "MCP_READ_TOOL_ERROR"; result: Record<string, unknown> } | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const result = acknowledgedFailures.get(error);
+  return result ? { code: "MCP_READ_TOOL_ERROR", result: structuredClone(result) } : undefined;
+}
 
 export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: string | undefined; sessionId?: string | undefined; workflowId?: string | undefined; executionId?: string | undefined;
   beforeDispatch?: ((verifiedRole: string) => Promise<void>) | undefined;
@@ -162,9 +172,23 @@ export async function dispatchReadTool(
   // Old injected session fixtures retain their existing hook semantics. A
   // collection cannot use that fallback: its binding requires SDK-entry/v1.
   if (session.dispatchBoundary !== "sdk-entry/v1") await finalDispatch();
-  const envelope = await session.clientFor(tool, exactPlan?.admissionPin).execute(authored.action!, resolved.capability, parameters, identity, context.signal,
-    session.dispatchBoundary === "sdk-entry/v1" ? finalDispatch : undefined, assertContext);
-  return envelope;
+  const readErrorBinding = Object.freeze({});
+  try {
+    return await session.clientFor(tool, exactPlan?.admissionPin).execute(authored.action!, resolved.capability, parameters, identity, context.signal,
+      session.dispatchBoundary === "sdk-entry/v1" ? finalDispatch : undefined, assertContext, undefined, readErrorBinding);
+  } catch (cause) {
+    const result = consumeAcknowledgedReadError(cause, readErrorBinding);
+    if (result) {
+      // New broker-owned exception: SDK replay of an older broker error cannot
+      // inherit evidence belonging to a different invocation.
+      const error = new ErpbridgeMcpToolError(structuredClone(result));
+      acknowledgedFailures.set(error, result);
+      throw error;
+    }
+    if (acknowledgedReadToolFailure(cause))
+      throw new Error("ERPBridge read outcome is unconfirmed for this invocation", { cause });
+    throw cause;
+  }
 }
 
 async function checkWorkflowScope(services: HandlerServices, actor: { id: string; permissions: string[] }, workflowId: string | undefined): Promise<void> {

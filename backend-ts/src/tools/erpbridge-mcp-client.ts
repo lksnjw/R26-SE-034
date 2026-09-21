@@ -64,6 +64,18 @@ export class ErpbridgeMcpToolError extends Error {
   }
 }
 
+// Constructor/name/result are public data, not proof of an SDK response. Only
+// this facade can mint evidence, after the bounded governed call returns. The
+// broker supplies a fresh opaque identity for each invocation (including pages).
+const acknowledgedReadErrors = new WeakMap<object, { binding: object; result: Record<string, unknown> }>();
+export function consumeAcknowledgedReadError(error: unknown, binding: object): Record<string, unknown> | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const evidence = acknowledgedReadErrors.get(error);
+  if (!evidence) return undefined;
+  acknowledgedReadErrors.delete(error);
+  return evidence.binding === binding ? structuredClone(evidence.result) : undefined;
+}
+
 /*******************************************************************************
  * Function: createErpbridgeMcpSession
  *
@@ -226,6 +238,7 @@ function createToolClient(
       beforeDispatch?: () => Promise<void>,
       assertDispatch?: () => void,
       operationPermit?: OperationDispatchPermit,
+      readErrorBinding?: object,
     ): Promise<Record<string, unknown>> {
       if (signal?.aborted)
         throw signal.reason instanceof Error
@@ -234,6 +247,7 @@ function createToolClient(
       // Caller mutation while admission/checkpoint awaits must not change the
       // bytes authorized or the role injected into the eventual SDK call.
       parameters = structuredClone(parameters); identity = structuredClone(identity);
+      const isReadOnly = definition.is_read_only === true;
       const parameterBytes = canonicalJSONBytes(parameters);
       if (isClosed()) throw new Error("ERPBridge MCP session is closed");
       if (definition.bridge_contract && guarded && !definition.bridge_contract.remote_roles.includes(identity.erpbridgeRole ?? ""))
@@ -262,7 +276,12 @@ function createToolClient(
         validator.verifyAndConsumeCapability(capability, action, parameterBytes, identity);
       });
       const envelope = boundResult(result, definition);
-      if (envelope.isError === true) throw new ErpbridgeMcpToolError(envelope);
+      if (envelope.isError === true) {
+        const error = new ErpbridgeMcpToolError(envelope);
+        if (isReadOnly && readErrorBinding)
+          acknowledgedReadErrors.set(error, { binding: readErrorBinding, result: structuredClone(envelope) });
+        throw error;
+      }
       return envelope;
     },
   });

@@ -3,12 +3,11 @@ import type { ToolDefinition } from "../registry/schemas.js";
 import { parseWorkflowYAMLStrict } from "../parser/workflow.js";
 import { buildReadIR, compileReadWorkflow, resolveReadBinding, assertCompiledReadMatches, type CompiledReadPlan } from "../workflows/compiled-read.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
-import { dispatchReadTool, type ReadDispatchContext } from "../tools/read-tool-broker.js";
+import { acknowledgedReadToolFailure, dispatchReadTool, type ReadDispatchContext } from "../tools/read-tool-broker.js";
 import type { HandlerServices } from "../http/handlers/common.js";
 import type { ValidationToken } from "../validator/registry-validator.js";
 import type { RunnerResult } from "./executor.js";
 import { ReadCheckpointFailure, ReadRunCancelled, type ReadExecutionHooks } from "./read-checkpoints.js";
-import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
 import { valueNodes } from "../workflows/read-control-flow.js";
 import { interpretReadPlan } from "../workflows/read-interpreter.js";
 import { ReadWorkerLeaseFailure } from "./read-worker-lease.js";
@@ -62,12 +61,13 @@ export async function executeReadWorkflow(services: HandlerServices, actorId: st
       const completed = new Date();
       // Do not reflect arbitrary remote exception strings/credentials to users.
       const error = new Error(`Read step ${step.id} failed or was blocked; no automatic replay was performed`, { cause });
+      const failure = acknowledgedReadToolFailure(cause);
       // A failure receipt belongs to this attempt, never stepOutputs/finalOutput
       // or a dependent node's successful data bindings.
       const entry = { id: `tl_${index + 1}`, nodeId: step.id, label: step.description ?? step.action!, status: "FAILED" as const, startedAt: started.toISOString(), completedAt: completed.toISOString(), durationMs: completed.getTime() - started.getTime(), sideEffect: false,
-        ...(cause instanceof ErpbridgeMcpToolError ? { output: cause.result } : {}) };
+        ...(failure ? { output: failure.result } : {}) };
       const log = { timestamp: completed.toISOString(), level: "error" as const, nodeId: step.id, message: error.message, metadata: { action: step.action!, sideEffect: false } };
-      await hooks?.failed(index, entry, log, cause instanceof ErpbridgeMcpToolError);
+      await hooks?.failed(index, entry, log, failure !== undefined);
       result.timeline.push(entry); result.logs.push(log);
       Object.defineProperty(error, "runnerResult", { value: result });
       throw error;

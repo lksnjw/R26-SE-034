@@ -9,7 +9,7 @@ import { toolSchema } from "../src/registry/schemas.js";
 import { RegistryValidator } from "../src/validator/registry-validator.js";
 import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry, createDispatchIdentity } from "../src/tools/registry.js";
-import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
+import { createErpbridgeMcpSession, ErpbridgeMcpToolError } from "../src/tools/erpbridge-mcp-client.js";
 import { admissionAuthorizer, observeCapabilities, reviewCapability, capabilityContractHash, captureReadAdmissionPin } from "../src/registry/capability-admission.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import { loadConfig } from "../src/config/config.js";
@@ -181,6 +181,92 @@ test("operation admission receipt survives changed draft and revoked run permiss
   const other = await s.request("GET", path, undefined, "other"); expect(other.statusCode).toBe(200); expect(other.json().data.outcome).toBe("NOT_FOUND");
   expect(s.sdk.callTool).toHaveBeenCalledTimes(calls);
   expect((await s.repository.snapshot()).executionEvents).toEqual(before.executionEvents);
+});
+
+test("acknowledged operation read error saves its exact failed attempt without successful bindings, approval or replay", async () => {
+  const records = new Records(), s = await setup(records);
+  s.sdk.callTool.mockResolvedValueOnce({ content: [{ type: "text", text: '{"error":"not found","token":"private-token"}' }], isError: true });
+  expect((await s.publish()).statusCode).toBe(200);
+  const admitted = await s.run("acknowledged-read-error-0001"); expect(admitted.statusCode, admitted.body).toBe(202);
+  const id = admitted.json().data.id; await s.wait(id, "FAILED");
+  const state = await s.repository.snapshot(), run = state.executions[id]!;
+  expect(run.failure).toMatchObject({ failureCategory: "MCP_READ_TOOL_ERROR", failedStepId: "lookup" });
+  expect(run.operationSecret!.intents.lookup).toMatchObject({ state: "ACKNOWLEDGED", evidenceMeaning: "read-tool-error" });
+  expect(run.readProgress!.attempts.lookup!.status).toBe("FAILED"); expect(run.readProgress!.nextStepIndex).toBe(0);
+  expect(run.stepOutputs?.lookup).toBeUndefined(); expect(run.finalOutput).toBeUndefined(); expect(run.runtimeApprovalSecret).toBeUndefined();
+  expect(state.timelines[id]!.find(item => item.nodeId === "lookup")).toMatchObject({ status: "FAILED", outcome: "MCP_READ_TOOL_ERROR", output: { isError: true } });
+  expect(JSON.stringify(withoutSecretFields(run)) + JSON.stringify(state.timelines[id])).not.toContain("private-token");
+  expect(s.sdk.callTool).toHaveBeenCalledOnce();
+  const restarted = await Repository.open(records); closers.push(restarted);
+  expect((await restarted.snapshot()).executions[id]).toMatchObject({ status: "FAILED", failure: { failureCategory: "MCP_READ_TOOL_ERROR" } });
+  const replay = await s.run("acknowledged-read-error-0001"); expect(replay.statusCode, replay.body).toBe(202);
+  expect(replay.json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledOnce();
+});
+
+test.each(["forged-error", "malformed-response", "transport-error"])("operation %s remains unconfirmed rather than a definite read failure", async scenario => {
+  const s = await setup();
+  if (scenario === "malformed-response") s.sdk.callTool.mockResolvedValueOnce({ content: "invalid", isError: true });
+  else s.sdk.callTool.mockRejectedValueOnce(scenario === "forged-error" ? new ErpbridgeMcpToolError({ content: [], isError: true }) : new Error("Connection closed after dispatch"));
+  expect((await s.publish()).statusCode).toBe(200);
+  const response = await s.run(`unconfirmed-${scenario}-0001`); expect(response.statusCode, response.body).toBe(202);
+  const id = response.json().data.id; await s.wait(id, "RECONCILIATION_REQUIRED");
+  const state = await s.repository.snapshot(), run = state.executions[id]!;
+  expect(run.operationSecret!.intents.lookup!.state).toBe("UNKNOWN");
+  expect(run.stepOutputs?.lookup).toBeUndefined(); expect(run.runtimeApprovalSecret).toBeUndefined();
+  expect(state.timelines[id]!.some(item => item.outcome === "MCP_READ_TOOL_ERROR")).toBe(false);
+  expect(s.sdk.callTool).toHaveBeenCalledOnce();
+});
+
+test("post-COMMIT failure-receipt acknowledgement loss fences the worker and reload preserves the failure without replay", async () => {
+  const records = new Records(), s = await setup(records);
+  s.sdk.callTool.mockResolvedValueOnce({ content: [], isError: true });
+  expect((await s.publish()).statusCode).toBe(200);
+  records.loseWhen = state => Object.values(state.executions).some(run => run.failure?.failureCategory === "MCP_READ_TOOL_ERROR");
+  const response = await s.run("lost-read-failure-ack-0001"); expect(response.statusCode, response.body).toBe(202);
+  const id = response.json().data.id;
+  await vi.waitFor(() => expect(JSON.parse(records.bytes!.toString()).executions[id]?.failure?.failureCategory).toBe("MCP_READ_TOOL_ERROR"));
+  await s.repository.recoverPersistenceState();
+  expect((await s.repository.snapshot()).executions[id]).toMatchObject({ status: "FAILED", operationSecret: { intents: { lookup: { state: "ACKNOWLEDGED" } } } });
+  const replay = await s.run("lost-read-failure-ack-0001"); expect(replay.statusCode, replay.body).toBe(202);
+  expect(s.sdk.callTool).toHaveBeenCalledOnce();
+});
+
+test("an acknowledged write tool error is still an unknown effect, never a read failure or permission to replay", async () => {
+  const s = await setup(), id = await s.admit();
+  s.sdk.callTool.mockResolvedValueOnce({ content: [], isError: true });
+  const response = await s.request("POST", `/api/executions/${id}/approve`, await s.command(id), "reviewer");
+  expect(response.statusCode, response.body).toBe(200); await s.wait(id, "RECONCILIATION_REQUIRED");
+  const state = await s.repository.snapshot(), run = state.executions[id]!;
+  expect(run.operationSecret!.intents.lookup!.state).toBe("ACKNOWLEDGED");
+  expect(run.operationSecret!.intents.send!.state).toBe("UNKNOWN");
+  expect(run.failure?.failureCategory).toBe("OPERATION_OUTCOME_UNKNOWN");
+  expect(state.timelines[id]!.some(item => item.outcome === "MCP_READ_TOOL_ERROR")).toBe(false);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test.each([true, "cursor"] as const)("acknowledged second report-page error in %s profile preserves the first page without declaring coverage", async profile => {
+  const s = await setup(null, true, false, false, profile); await prepareScheduleWorkflow(s);
+  const original = s.sdk.callTool.getMockImplementation()!;
+  s.sdk.callTool.mockImplementation(async (name, args, meta) => name === exactBridgeName(s.reportRead) && (args.page === 2 || args.cursor === "cursor-2")
+    ? { content: [], isError: true, structuredContent: { snapshotId: "private-failure-snapshot", ...(profile === "cursor" ? { cursor: "private-failure-cursor", nextCursor: "private-failure-continuation" } : {}) } } : original(name, args, meta));
+  expect((await s.publish()).statusCode).toBe(200);
+  const workflow = (await s.repository.snapshot()).workflows.flow!;
+  const saved = await s.request("PUT", "/api/workflows/flow/schedule", { profile: "workflow-daily-schedule-command/v1", baseRevision: 0,
+    workflowVersion: workflow.publishedVersion, workflowHash: workflowContentHash(workflow.yaml), enabled: true, timezone: "UTC",
+    localTime: new Date(Date.now() + 120_000).toISOString().slice(11, 16), reportingPeriod: "previous-calendar-day", misfirePolicy: "FIRE_ONCE",
+    misfireGraceSeconds: 300, servicePrincipalId: "requester", input: {}, reportWindowBinding: scheduleReportWindowBinding });
+  expect(saved.statusCode, saved.body).toBe(200);
+  await workflowScheduleRunner(s.services).runDue(Date.parse(saved.json().data.nextRunAt));
+  const id = (await s.request("GET", "/api/workflows/flow/schedule")).json().data.occurrences[0].executionId;
+  await s.wait(id, "FAILED"); const state = await s.repository.snapshot(), run = state.executions[id]!;
+  const kind = profile === "cursor" ? "cursor" : "page";
+  expect(run.operationSecret!.intents[`lookupReport:${kind}:1`]!.state).toBe("ACKNOWLEDGED");
+  expect(run.operationSecret!.intents[`lookupReport:${kind}:2`]).toMatchObject({ state: "ACKNOWLEDGED", evidenceMeaning: "read-tool-error" });
+  expect(run.reportPageSecret!.lookupReport!.pages).toHaveLength(1);
+  expect(run.reportCoverage).toBeUndefined(); expect(run.stepOutputs?.lookupReport).toBeUndefined();
+  expect(run.runtimeApprovalSecret).toBeUndefined(); expect(run.failure?.failureCategory).toBe("MCP_READ_TOOL_ERROR");
+  expect(JSON.stringify(state.timelines[id])).not.toMatch(/private-failure-snapshot|private-failure-cursor|private-failure-continuation/);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
 });
 
 const scheduleReportWindowBinding = { profile: "workflow-report-window-input-binding/v1" as const,
@@ -1671,6 +1757,27 @@ test("an unconfirmed runtime-agent ERP read is never replayed and no later effec
   expect(execution.stepOutputs).not.toHaveProperty("research"); expect(execution.runtimeApprovalSecret).toBeUndefined();
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledTimes(1);
   expect((await s.run("durable-agent-tool-unknown-0001")).json().data.id).toBe(id); expect(s.sdk.callTool).toHaveBeenCalledTimes(2);
+});
+
+test("an acknowledged runtime-agent read error saves the exact dynamic-tool intent and stops before another model turn", async () => {
+  const s = await setup(null, true, false, false, false, true); await prepareAgentWorkflow(s);
+  s.modelFetch.mockReset();
+  s.modelFetch.mockResolvedValueOnce(Response.json({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "call-error", type: "function",
+    function: { name: exactBridgeName(s.read), arguments: JSON.stringify({ value: "agent follow-up" }) } }] } }], usage: { prompt_tokens: 13, completion_tokens: 5 } }));
+  s.sdk.callTool.mockResolvedValueOnce({ content: [], structuredContent: { value: "FIXTURE REPORT" } });
+  s.sdk.callTool.mockResolvedValueOnce({ content: [], isError: true });
+  expect((await s.publish()).statusCode).toBe(200);
+  const response = await s.run("durable-agent-tool-error-0001"); expect(response.statusCode, response.body).toBe(202);
+  const id = response.json().data.id; await s.wait(id, "FAILED");
+  const execution = (await s.repository.snapshot()).executions[id]!;
+  expect(execution.failure).toMatchObject({ failureCategory: "MCP_READ_TOOL_ERROR", failedStepId: "research" });
+  expect(execution.readProgress!.attempts.research!.status).toBe("FAILED");
+  expect(Object.values(execution.operationSecret!.intents).filter(intent => intent.dispatchKind === "agent-tool"))
+    .toEqual([expect.objectContaining({ state: "ACKNOWLEDGED", evidenceMeaning: "read-tool-error" })]);
+  expect(execution.stepOutputs).not.toHaveProperty("research"); expect(execution.runtimeApprovalSecret).toBeUndefined();
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledOnce();
+  expect((await s.run("durable-agent-tool-error-0001")).json().data.id).toBe(id);
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledOnce();
 });
 
 test("an exact chat email draft requests independent approval and dispatches only server-derived fields after approval", async () => {

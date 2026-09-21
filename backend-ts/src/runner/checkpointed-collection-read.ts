@@ -2,8 +2,7 @@ import type { HandlerServices } from "../http/handlers/common.js";
 import type { Execution } from "../repository/store.js";
 import type { ValidationToken } from "../validator/registry-validator.js";
 import type { CompiledReadPlan } from "../workflows/compiled-read.js";
-import { dispatchReadTool } from "../tools/read-tool-broker.js";
-import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
+import { acknowledgedReadToolFailure, dispatchReadTool } from "../tools/read-tool-broker.js";
 import { ReadCheckpointFailure, ReadRunCancelled, reconcileInterruptedExecutions, assertCurrentRunController } from "./read-checkpoints.js";
 import { ReadIterationCheckpoints } from "./read-iteration-checkpoints.js";
 import { assertIterationDispatchBinding } from "../workflows/read-iteration-dispatch-binding.js";
@@ -72,7 +71,8 @@ export async function completeCheckpointedCollectionRead(services: HandlerServic
         await journal.completed(point.visit, output);
       } catch (error) {
         if (error instanceof ReadCheckpointFailure || error instanceof ReadRunCancelled || error instanceof ReadWorkerLeaseFailure) throw error;
-        if (error instanceof ErpbridgeMcpToolError) await journal.completed(point.visit, error.result);
+        const failure = acknowledgedReadToolFailure(error);
+        if (failure) await journal.completed(point.visit, failure.result);
         else await journal.failed(point.visit); // intent => UNKNOWN; pre-intent => not dispatched
         failed = true; break;
       }

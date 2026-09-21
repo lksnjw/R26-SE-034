@@ -6,8 +6,8 @@ import { RegistryService } from "../src/registry/service.js";
 import { toolSchema } from "../src/registry/schemas.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { Executor } from "../src/runner/executor.js";
-import { createErpbridgeMcpSession } from "../src/tools/erpbridge-mcp-client.js";
-import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
+import { createErpbridgeMcpSession, ErpbridgeMcpToolError } from "../src/tools/erpbridge-mcp-client.js";
+import { acknowledgedReadToolFailure, dispatchReadTool } from "../src/tools/read-tool-broker.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import type { ToolDefinition } from "../src/registry/schemas.js";
 import { stringify } from "yaml";
@@ -51,6 +51,39 @@ test("approved read consumes real capability and injects only backend-mapped rol
   await expect(dispatchReadTool(s.services, "builder", "finance.read", args)).resolves.toMatchObject({ structuredContent: { id: "invoice-1" } });
   expect(s.callTool).toHaveBeenCalledExactlyOnceWith("finance.read", { id: "invoice-1", role: "workflow_builder" });
   expect(args).toEqual({ id: "invoice-1" });
+});
+
+test("only the exact governed SDK response supplies an immutable acknowledged read failure", async () => {
+  const s = await setup({ remoteFailure: true });
+  const error = await dispatchReadTool(s.services, "builder", "finance.read", { id: "x" }).catch(error => error);
+  expect(error).toBeInstanceOf(ErpbridgeMcpToolError);
+  expect(acknowledgedReadToolFailure(error)).toMatchObject({ code: "MCP_READ_TOOL_ERROR", result: { isError: true } });
+  error.result.isError = false; error.result.content = [{ type: "text", text: "counterfeit success" }];
+  const observed = acknowledgedReadToolFailure(error)!;
+  observed.result.isError = false;
+  expect(acknowledgedReadToolFailure(error)).toMatchObject({ result: { isError: true, content: [{ text: "Revision withdrawn" }] } });
+  expect(s.callTool).toHaveBeenCalledOnce();
+});
+
+test.each(["constructor", "lookalike", "malformed", "old-broker-error", "direct-error"])("%s cannot establish acknowledged evidence for a new broker invocation", async scenario => {
+  const s = await setup();
+  let injected: unknown;
+  if (scenario === "old-broker-error") {
+    s.callTool.mockResolvedValueOnce({ content: [], isError: true });
+    injected = await dispatchReadTool(s.services, "builder", "finance.read", { id: "first" }).catch(error => error);
+    expect(acknowledgedReadToolFailure(injected)).toBeDefined();
+  } else if (scenario === "direct-error") {
+    s.callTool.mockResolvedValueOnce({ content: [], isError: true });
+    injected = await s.services.erpbridgeSession.callToolDirect("finance.read", { id: "first" }).catch(error => error);
+    expect(acknowledgedReadToolFailure(injected)).toBeUndefined();
+  } else injected = scenario === "constructor" ? new ErpbridgeMcpToolError({ content: [], isError: true }) :
+    Object.assign(new Error("remote supplied a class name"), { name: "ErpbridgeMcpToolError", result: { content: [], isError: true } });
+  if (scenario === "malformed") s.callTool.mockResolvedValueOnce({ isError: true, content: "not an MCP content array" } as never);
+  else s.callTool.mockRejectedValueOnce(injected);
+  const error = await dispatchReadTool(s.services, "builder", "finance.read", { id: "second" }).catch(error => error);
+  expect(error).toBeInstanceOf(Error);
+  expect(acknowledgedReadToolFailure(error)).toBeUndefined();
+  await s.services.erpbridgeSession.close();
 });
 
 test("captures the server-only entry guard before policy awaits instead of accepting a replaced guard", async () => {

@@ -7,7 +7,7 @@ import { assertChatAuthority, requestedModel, selectProvider } from "../http/han
 import { processStoredChat } from "../http/handlers/chat.js";
 import type { RuntimeProviderConfiguration } from "../providers/runtime.js";
 import { ProviderRuntime } from "../providers/runtime.js";
-import { ErpbridgeMcpToolError } from "../tools/erpbridge-mcp-client.js";
+import { acknowledgedReadToolFailure } from "../tools/read-tool-broker.js";
 import type { ChatProcessingHooks, StoredChatInput } from "./chat-context.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { assertNodeContext, assertCurrentWorkflowEditor, nodeContextSchema } from "../workflows/commands.js";
@@ -272,16 +272,17 @@ export class ChatJobQueue {
           });
           return output;
         } catch (error) {
+          const failure = acknowledgedReadToolFailure(error);
           await this.services.repository.mutate(state => {
             const op = state.chatOperations[admitted.id], a = op?.attempts.find(a => a.id === attempt.id);
             if (!op || op.epoch !== admitted.epoch || op.status !== "RUNNING" || !a || !["PREPARING", "DISPATCH_INTENT"].includes(a.status)) throw new Error("Chat attempt is fenced");
-            if (error instanceof ErpbridgeMcpToolError) {
-              const bytes = Buffer.byteLength(JSON.stringify(error.result));
+            if (failure) {
+              const bytes = Buffer.byteLength(JSON.stringify(failure.result));
               const previous = op.attempts.reduce((total, item) => total + (item.output ? Buffer.byteLength(JSON.stringify(item.output)) : 0), 0);
               if (bytes > 512_000 || previous + bytes > 2_000_000) throw new Error("Chat failure receipt budget exceeded");
-              a.output = error.result;
+              a.output = failure.result;
             }
-            a.status = a.status === "DISPATCH_INTENT" && !(error instanceof ErpbridgeMcpToolError) ? "UNKNOWN" : "FAILED"; a.completedAt = now();
+            a.status = a.status === "DISPATCH_INTENT" && !failure ? "UNKNOWN" : "FAILED"; a.completedAt = now();
             op.stage = "READ_STOPPED"; event(state, op, a.status === "UNKNOWN" ? "tool.outcome_unknown" : "tool.failed", a.id);
           });
           throw error;
