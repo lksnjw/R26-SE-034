@@ -15,6 +15,7 @@ import { resolveReadBinding } from "../workflows/compiled-read.js";
 import type { StoredReadCompilation } from "../workflows/read-compilation-lifecycle.js";
 import type { StoredOperationCompilation } from "../workflows/operation-compilation-lifecycle.js";
 import { assertOperationSelectedNode } from "../workflows/operation-control-flow.js";
+import { confirmedProtectedOperationTransition } from "./operation-protected-checkpoints.js";
 
 const id = z.string().min(1).max(256), hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -155,7 +156,11 @@ function assertBinding(state: RepositoryState, execution: Execution, record: Run
   if (!publication || publication.yaml !== snapshot.yaml || compiled?.receipt?.semanticHash !== b.semanticHash || compiled.receipt.sourceHash !== b.sourceHash || step?.id !== b.nodeId) deny("Approval is not bound to an immutable published node");
   const node = compiled.plan?.ir.root.nodes[attempt.stepIndex];
   if (snapshot.executionProfile === "sequential-operation-v1") {
-    try { assertOperationSelectedNode((compiled as StoredOperationCompilation).plan, execution.readProgress!, b.nodeId); }
+    try {
+      const plan = (compiled as StoredOperationCompilation).plan;
+      if (plan.ir.schemaVersion === "workflow-operation-ir/v8") confirmedProtectedOperationTransition(state, execution, plan);
+      assertOperationSelectedNode(plan, execution.readProgress!, b.nodeId, execution.operationSecret?.protectedScopes);
+    }
     catch { deny("Approval node is not on the exact confirmed decision path"); }
   }
   if (!node || node.kind !== "action") deny("Approval is only valid for a compiled tool invocation");

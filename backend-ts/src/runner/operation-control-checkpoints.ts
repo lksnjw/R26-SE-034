@@ -4,29 +4,38 @@ import { operationControlTransition } from "../workflows/operation-control-flow.
 import { appendExecutionEvent, assertCurrentRunController } from "./read-checkpoints.js";
 import { assertOperationReturnEvidence, checkpointOperationReturn } from "./operation-return-checkpoints.js";
 import { assertOperationMergeEvidence, checkpointOperationMerge, operationValueState } from "./operation-merge-checkpoints.js";
+import { assertProtectedCheckpointOwnership, checkpointProtectedStart, checkpointProtectedCompletion, confirmedProtectedOperationTransition, type ProtectedCheckpointOwner } from "./operation-protected-checkpoints.js";
 
 /** Called only inside the current worker's execution transaction. Selection
  * and skip receipts must be acknowledged before any model/SDK entry. */
-export function advanceOperationDecisions(state: RepositoryState, run: Execution, plan: CompiledOperationPlan):
+export function advanceOperationDecisions(state: RepositoryState, run: Execution, plan: CompiledOperationPlan, owner?: ProtectedCheckpointOwner):
   { kind: "action"; index: number; nodeId: string } | { kind: "complete" } | { kind: "failed" } {
   const progress = run.readProgress!;
-  if (!plan.ir.flow || !["workflow-operation-ir/v4", "workflow-operation-ir/v5", "workflow-operation-ir/v6", "workflow-operation-ir/v7"].includes(plan.ir.schemaVersion) || run.status !== "RUNNING" || run.operationSecret?.state !== "CLAIMED" ||
+  const protectedProfile = plan.ir.schemaVersion === "workflow-operation-ir/v8";
+  if (!plan.ir.flow || !["workflow-operation-ir/v4", "workflow-operation-ir/v5", "workflow-operation-ir/v6", "workflow-operation-ir/v7", "workflow-operation-ir/v8"].includes(plan.ir.schemaVersion) || run.status !== "RUNNING" || run.operationSecret?.state !== "CLAIMED" ||
       run.workflowSnapshot?.operationCompilation?.semanticHash !== plan.semanticHash || progress.cancellation) throw new Error("Operation decision checkpoint is not owned");
+  if (protectedProfile && (!owner || owner.leaseId !== run.operationSecret.lease?.id || owner.epoch !== progress.epoch ||
+      run.operationSecret.lease.expiresAt <= Date.now())) throw new Error("Protected advancement requires the current worker lease and epoch");
+  if (protectedProfile) assertProtectedCheckpointOwnership(state, run, plan, owner!);
   assertCurrentRunController(state, run, run.operationSecret.actorId, run.operationSecret.admittedRole);
   for (let count = 0; count < 512; count++) {
     assertOperationMergeEvidence(state, run, plan);
     assertOperationReturnEvidence(state, run, plan);
-    const transition = operationControlTransition(plan.ir.flow, progress);
+    const transition = protectedProfile ? confirmedProtectedOperationTransition(state, run, plan) : operationControlTransition(plan.ir.flow, progress);
     if (transition.kind === "action" || transition.kind === "complete") return transition;
     const timestamp = new Date().toISOString();
-    if (transition.kind === "return") {
-      if (!checkpointOperationReturn(state, run, transition.node, transition.index)) return { kind: "failed" };
+    if (transition.kind === "protected-start") {
+      checkpointProtectedStart(state, run, plan, owner!);
+    } else if (transition.kind === "protected-complete") {
+      if (!checkpointProtectedCompletion(state, run, plan, owner!)) return { kind: "failed" };
+    } else if (transition.kind === "return") {
+      if (!checkpointOperationReturn(state, run, transition.node, transition.index, plan.ir.flow)) return { kind: "failed" };
     } else if (transition.kind === "merge") {
-      if (!checkpointOperationMerge(state, run, transition.node, transition.index)) return { kind: "failed" };
+      if (!checkpointOperationMerge(state, run, transition.node, transition.index, plan.ir.flow)) return { kind: "failed" };
     } else if (transition.kind === "decision") {
       const { node, index } = transition;
       let predicate: unknown;
-      try { predicate = resolveReadBinding(node.predicate, operationValueState(run)); } catch { predicate = undefined; }
+      try { predicate = resolveReadBinding(node.predicate, operationValueState(run, plan.ir.flow, node.id)); } catch { predicate = undefined; }
       const selected = typeof predicate === "boolean" ? predicate ? "then" as const : "else" as const : undefined;
       (progress.decisions ??= {})[node.id] = { status: selected ? "DONE" : "FAILED", ...(selected ? { selected } : {}), evaluatedAt: timestamp, stepIndex: index };
       (state.timelines[run.id] ??= []).push({ id: `control_${node.id}`, nodeId: node.id, label: `If ${node.id}`, status: selected ? "DONE" : "FAILED",
@@ -38,12 +47,14 @@ export function advanceOperationDecisions(state: RepositoryState, run: Execution
         return { kind: "failed" };
       }
     } else {
-      const { nodeId, index, conditionId, selected, returnId } = transition;
-      if (run.operationSecret.intents[nodeId] || run.stepOutputs?.[nodeId]) throw new Error("Unselected node already has a dispatch or result");
+      const { nodeId, index } = transition;
+      if (Object.values(run.operationSecret.intents).some(intent => intent.nodeId === nodeId) || Object.hasOwn(run.stepOutputs ?? {}, nodeId)) throw new Error("Unselected node already has a dispatch or result");
       const attemptId = `${run.id}:${nodeId}`;
       progress.attempts[nodeId] = { id: attemptId, nodeId, stepIndex: index, status: "SKIPPED", startedAt: timestamp, completedAt: timestamp };
       progress.nextStepIndex++;
-      const reason = returnId ? { outcome: "AFTER_RETURN", returnId } : { outcome: "NOT_SELECTED", conditionId, selectedBranch: selected };
+      const source = "reason" in transition ? transition.reason : transition;
+      const reason = "protectedId" in source ? source : "returnId" in source ? { outcome: "AFTER_RETURN", returnId: source.returnId } :
+        { outcome: "NOT_SELECTED", conditionId: source.conditionId, selectedBranch: source.selected };
       (state.timelines[run.id] ??= []).push({ id: `timeline-${nodeId}`, nodeId, attemptId, label: `Skipped ${nodeId}`, status: "SKIPPED",
         ...reason, startedAt: timestamp, completedAt: timestamp, durationMs: 0, sideEffect: false });
       appendExecutionEvent(state, run, "node.skipped", { stepIndex: index, ...reason, outcome: "NOT_DISPATCHED" }, nodeId, attemptId);

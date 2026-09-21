@@ -213,7 +213,7 @@ export function validateReadControlFlow(root: ReadSequence, ir: ReadIR, outputSc
   return { issues: [...new Set(issues)], scopes, branchScopes, collectionScopes, protectedScopes };
 }
 
-export type ReadValueReceipt = { kind: "merge" | "return"; status: "DONE" | "FAILED"; stepIndex: number; completedAt: string };
+export type ReadValueReceipt = { kind: "merge" | "return" | "protect"; status: "DONE" | "FAILED"; stepIndex: number; completedAt: string };
 export type ReadSkipReason = { kind: "branch"; conditionId: string; selected: "then" | "else" } | { kind: "return"; returnId: string } | { kind: "empty-collection"; loopId: string };
 /** A value boundary may not jump over an earlier decision, merge, return or
  * action. This is a denial-only check over committed evidence, not execution. */

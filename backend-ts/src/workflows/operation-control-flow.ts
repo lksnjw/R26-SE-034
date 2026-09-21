@@ -1,5 +1,7 @@
 import type { ReadIR, ReadBinding, CompiledOperationPlan } from "./compiled-read.js";
 import { actionOrder, validateReadControlFlow, lexicalSchemaOverrides, assertNoProtectedScopes, type ReadSequence } from "./read-control-flow.js";
+import { protectedOperationTransition } from "./operation-protected-control.js";
+import type { OperationProtectedReceipt } from "../runner/operation-state.js";
 import { schemaAt } from "./read-binding-validation.js";
 import type { ReadRunProgress } from "../repository/store.js";
 
@@ -94,9 +96,9 @@ export function operationControlTransition(root: ReadSequence, progress: Pick<Re
   return next;
 }
 
-export function assertOperationSelectedNode(plan: CompiledOperationPlan, progress: ReadRunProgress, nodeId: string): void {
+export function assertOperationSelectedNode(plan: CompiledOperationPlan, progress: ReadRunProgress, nodeId: string, scopes?: Readonly<Record<string, OperationProtectedReceipt>>): void {
   if (!plan.ir.flow) return;
-  const next = operationControlTransition(plan.ir.flow, progress);
+  const next = plan.ir.schemaVersion === "workflow-operation-ir/v8" ? protectedOperationTransition(plan.ir.flow, progress, scopes ?? {}) : operationControlTransition(plan.ir.flow, progress);
   if (next.kind !== "action" || next.nodeId !== nodeId) throw new Error("Operation node is not the next confirmed selected action");
 }
 
@@ -108,6 +110,12 @@ export function operationControlDependencies(root: ReadSequence | undefined): Ma
     if (node.kind === "action") dependencies.set(node.nodeId, parents);
     else if (node.kind === "return") continue;
     else if (node.kind === "if") { visit(node.then, [...parents, node.predicate]); visit(node.else, [...parents, node.predicate]); }
+    else if (node.kind === "protect") {
+      visit(node.body, parents);
+      // The presence of a fault is itself sensitive. A literal notification or
+      // fallback model must not declassify the protected body's reviewed data.
+      visit(node.handler, [...parents, { kind: "ref", source: "nodeOutput", nodeId: node.id, path: ["error", "code"] }]);
+    }
     else throw new Error("Unsupported operation control dependency");
   } };
   if (root) visit(root, []);

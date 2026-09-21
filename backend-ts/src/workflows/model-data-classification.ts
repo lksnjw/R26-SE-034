@@ -1,7 +1,7 @@
 import { modelDataClasses, type ModelDataClass } from "../providers/egress-policy.js";
 import type { CompiledOperationPlan, ReadAdmissionPin, ReadBinding } from "./compiled-read.js";
 import { operationControlDependencies } from "./operation-control-flow.js";
-import { controlNodes } from "./read-control-flow.js";
+import { actionOrder, controlNodes, protectedNodes } from "./read-control-flow.js";
 
 export class ModelDataClassViolation extends Error {
   constructor(nodeId: string, declared: ModelDataClass, required: ModelDataClass) {
@@ -19,6 +19,7 @@ export function assertModelDataClassification(plan: CompiledOperationPlan, revie
   const outputs = new Map<string, ModelDataClass>();
   const controlDependencies = operationControlDependencies(plan.ir.flow);
   const merges = new Map(plan.ir.flow ? controlNodes(plan.ir.flow).filter(node => node.merge).map(node => [node.id, node]) : []);
+  const protectedGroups = new Map(plan.ir.flow ? protectedNodes(plan.ir.flow).map(node => [node.id, node]) : []);
   const resolving = new Set<string>();
   const rank = (value: ModelDataClass) => {
     const index = modelDataClasses.indexOf(value);
@@ -33,6 +34,20 @@ export function assertModelDataClassification(plan: CompiledOperationPlan, revie
         if (binding.source === "workflowInput") return "restricted";
         const id = binding.nodeId ?? "";
         let value = outputs.get(id);
+        const group = protectedGroups.get(id);
+        if (group) {
+          // Fault lookup is separate from final-output lookup: the handled
+          // mapping may reference its own fault without forming a value cycle.
+          const sources = actionOrder(group.body).map(nodeId => bindingClass({ kind: "ref", source: "nodeOutput", nodeId, path: [] }));
+          if (binding.path[0] === "error") return highest(...sources);
+          if (resolving.has(id)) throw new Error("Model classification has a cyclic protected source");
+          resolving.add(id);
+          try {
+            value = highest(...sources, ...actionOrder(group.handler).map(nodeId => bindingClass({ kind: "ref", source: "nodeOutput", nodeId, path: [] })),
+              bindingClass(group.output.success), bindingClass(group.output.handled));
+          } finally { resolving.delete(id); }
+          return value;
+        }
         const merge = merges.get(id);
         if (!value && merge?.merge) {
           if (resolving.has(id)) throw new Error("Model classification has a cyclic merge source");

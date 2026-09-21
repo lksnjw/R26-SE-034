@@ -5,8 +5,9 @@ import type { ExecutionCheckpoint } from "../repository/execution-transaction.js
 export type RuntimeRecord = { profile: "runtime-record/v1"; path: string[]; value: unknown };
 export const recordKey = (path: string[]) => JSON.stringify(path);
 const runtimeFields = ["executions", "readJobs", "readContinuations", "timelines", "executionLogs", "executionEvents", "auditLogs"] as const;
-const outputFields = [["attempts", "readProgress", "attempts"], ["receipts", "iterationProgress", "receipts"], ["outputs", null, "stepOutputs"], ["values", null, "valueOutputs"], ["report-coverages", null, "reportCoverages"], ["report-pages", null, "reportPageSecret"], ["runtime-approvals", "runtimeApprovalSecret", "records"], ["operation-intents", "operationSecret", "intents"], ["operation-reconciliations", "operationSecret", "reconciliations"], ["operation-readbacks", "operationSecret", "readbacks"], ["operation-recoveries", "operationSecret", "recoveries"], ["report-page-resolutions", "operationSecret", "reportPageResolutions"]] as const;
+const outputFields = [["attempts", "readProgress", "attempts"], ["receipts", "iterationProgress", "receipts"], ["outputs", null, "stepOutputs"], ["values", null, "valueOutputs"], ["report-coverages", null, "reportCoverages"], ["report-pages", null, "reportPageSecret"], ["runtime-approvals", "runtimeApprovalSecret", "records"], ["operation-intents", "operationSecret", "intents"], ["operation-protected-scopes", "operationSecret", "protectedScopes"], ["operation-reconciliations", "operationSecret", "reconciliations"], ["operation-readbacks", "operationSecret", "readbacks"], ["operation-recoveries", "operationSecret", "recoveries"], ["report-page-resolutions", "operationSecret", "reportPageResolutions"]] as const;
 const arrayFields = [["timelines", "timeline-entry"], ["executionLogs", "log-entry"], ["executionEvents", "event-entry"]] as const;
+const executionSections = new Set<string>([...runtimeFields.filter(field => field !== "auditLogs"), ...outputFields.map(([section]) => section), ...arrayFields.map(([, section]) => section)]);
 const object = (value: unknown): Record<string, unknown> => { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid normalized runtime object"); return value as Record<string, unknown>; };
 const put = (target: Record<string, unknown>, key: string, value: unknown) => Object.defineProperty(target, key, { value, configurable: true, enumerable: true, writable: true });
 const index = (value: string) => { if (!/^(0|[1-9]\d*)$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error("Invalid normalized runtime array position"); return Number(value); };
@@ -104,5 +105,5 @@ export function assembleRuntimeState(records: Iterable<RuntimeRecord>): Reposito
 }
 
 export function executionRecordScope(record: RuntimeRecord): string | null {
-  return record.path[0] === "root" || record.path[0] === "auditLogs" || record.path[0] === "audit-entry" ? null : record.path[1] ?? null;
+  return executionSections.has(record.path[0]!) ? record.path[1] ?? null : null;
 }

@@ -71,6 +71,41 @@ test("normal mutateExecution preserves unrelated domains and retains/removes pri
   expect(await recovered.snapshot()).toEqual(saved); expect(saved.readContinuations).toEqual({}); expect(saved.settings.keep).toBe("unchanged");
 });
 
+test.each(["before-commit", "after-commit"] as const)("protected selection %s ACK loss preserves an all-or-nothing private checkpoint", async fault => {
+  const persistence = await open(), repository = await Repository.open(persistence), id = "protected-run", time = "2026-10-09T00:00:00.000Z";
+  await repository.mutate(state => {
+    const execution = run(id);
+    execution.readProgress = { profile: "read-progress-v1", epoch: 1, persistence: "durable", nextStepIndex: 0, lastSequence: 0, attempts: {} };
+    execution.operationSecret = { profile: "operation-job/v1", actorId: "owner", roleId: "role_admin", admittedRole: "Platform Admin", state: "CLAIMED",
+      createdAt: time, idempotencyScope: "fixture", requestFingerprint: "fixture", intents: {}, protectedScopes: {} };
+    state.executions[id] = execution; state.timelines[id] = []; state.executionEvents[id] = []; state.settings.unrelated = "preserved";
+  });
+  const before = await repository.snapshot(); db.fault = fault;
+  await expect(repository.mutateExecution(id, state => {
+    const execution = state.executions[id]!, progress = execution.readProgress!, job = execution.operationSecret!;
+    progress.attempts.lookup = { id: "attempt", nodeId: "lookup", stepIndex: 0, status: "FAILED", startedAt: time, completedAt: time };
+    progress.nextStepIndex = 1; progress.lastSequence = 1;
+    job.intents.lookup = { id: "intent", nodeId: "lookup", invocationId: "attempt", operationKey: "fixture-key", argumentHash: `sha256:${"a".repeat(64)}`,
+      dispatchKind: "tool", state: "ACKNOWLEDGED", preparedAt: time, completedAt: time, evidenceMeaning: "read-tool-error" };
+    job.protectedScopes!.group = { profile: "operation-protected/v1", startIndex: 0, startedAt: time, selection: { code: "ERP_RESOURCE_NOT_FOUND",
+      failedNodeId: "lookup", failedIndex: 0, intentKey: "lookup", intentId: "intent", argumentHash: job.intents.lookup.argumentHash, selectedAt: time } };
+    state.timelines[id]!.push({ nodeId: "lookup", attemptId: "attempt", status: "FAILED", outcome: "MCP_READ_TOOL_ERROR" });
+    state.executionEvents[id]!.push({ version: 1, executionId: id, workflowId: "flow", sequence: 1, timestamp: time, type: "protected.handler_selected", nodeId: "group",
+      payload: { failedNodeId: "lookup", outcome: "HANDLER_SELECTED_NOT_COMPLETED" } });
+  })).rejects.toThrow();
+  expect(() => repository.assertAuthority()).toThrow(); await repository.recoverPersistenceState(); const saved = await repository.snapshot();
+  expect(saved.settings).toEqual(before.settings);
+  if (fault === "before-commit") expect(saved).toEqual(before);
+  else {
+    expect(saved.executions[id]!.operationSecret!.protectedScopes!.group!.selection!.intentId).toBe("intent");
+    expect(saved.executions[id]!.operationSecret!.intents.lookup!.state).toBe("ACKNOWLEDGED");
+    expect(saved.executions[id]!.readProgress!.attempts.lookup!.status).toBe("FAILED");
+    expect(saved.executionEvents[id]).toHaveLength(1); expect(saved.timelines[id]).toHaveLength(1);
+    expect(saved.executions[id]!.stepOutputs).toEqual({});
+  }
+  await repository.close(); const reopened = await Repository.open(await open()); expect(await reopened.snapshot()).toEqual(saved);
+});
+
 test("a scoped audit mismatch is a known rejection and never changes the saved image", async () => {
   const persistence = await open(), repository = await Repository.open(persistence), before = await repository.snapshot(), writes = db.version;
   await expect(persistence.saveExecutionCheckpoint({ executionId: "x", execution: run("x"), auditStart: 10, auditAppend: [{ id: "bad" }] })).rejects.toThrow("audit append");
