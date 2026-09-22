@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
+import { assertBoundedFiniteJSON } from "../core/bounded-finite-json.js";
 import { resolveReadBinding, type ReadBinding } from "./compiled-read.js";
 import { actionOrder, childSequences, parseReadControlFlow, structuralNodes, type ReadSequence } from "./read-control-flow.js";
 import { readBindingSchema } from "./read-values.js";
@@ -12,27 +13,7 @@ import { protectedMachineSnapshotSchema, type ProtectedMachinePlan, type Protect
 const same = (a: unknown, b: unknown) => canonicalJSONBytes(a).equals(canonicalJSONBytes(b));
 /** Bound before recursive decoding; finite JSON only, never an opaque object
  * or caller-provided function. The final journal will authenticate this DATA. */
-export function boundProtectedMachineJSON(value: unknown): void {
-  let count = 0; const active = new Set<object>();
-  const visit = (item: unknown, depth: number) => {
-    if (++count > 131072 || depth > 64) throw new Error("Protected machine data exceeds structural bounds");
-    if (item === null || typeof item === "string" || typeof item === "boolean" || typeof item === "number" && Number.isFinite(item)) return;
-    if (!item || typeof item !== "object" || active.has(item) || !Array.isArray(item) && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null)
-      throw new Error("Protected machine data must be finite JSON");
-    if (Object.getOwnPropertySymbols(item).length || Array.isArray(item) && Object.keys(item).length !== item.length)
-      throw new Error("Protected machine data cannot contain symbols or sparse arrays");
-    active.add(item);
-    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(item))) {
-      if (Array.isArray(item) && key === "length") continue;
-      if (!descriptor.enumerable || !("value" in descriptor) || key.length > 16384 ||
-          Array.isArray(item) && (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= item.length)) throw new Error("Protected machine data cannot invoke accessors or lose fields");
-      visit(descriptor.value, depth + 1);
-    }
-    active.delete(item);
-  };
-  visit(value, 0);
-  if (canonicalJSONBytes(value).length > 4000000) throw new Error("Protected machine data exceeds byte bounds");
-}
+export function boundProtectedMachineJSON(value: unknown): void { assertBoundedFiniteJSON(value); }
 
 /** Non-authorizing pure semantics plan; never a publication or operation IR.
  * Tool/model schemas, review, classification and dispatch stay with the future

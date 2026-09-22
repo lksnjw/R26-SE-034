@@ -1,5 +1,6 @@
 import { assertReadContinuation, type Execution, type ExecutionEvent, type ReadJob, type ReadContinuation, type RepositoryState, type StoredRecord } from "./store.js";
 import { assertProtectedContinuation, type ProtectedContinuation } from "./protected-continuation-record.js";
+import { assertProtectedInvocationExecution } from "./protected-invocation-records.js";
 
 export type ExecutionCheckpoint = {
   executionId: string; execution?: Execution; job?: ReadJob; continuation?: ReadContinuation;
@@ -72,6 +73,7 @@ export function executionTransaction(state: RepositoryState, executionId: string
   const checkpoint = (): ExecutionCheckpoint => {
     const execution = selected.executions!;
     if (execution.present && (!execution.value || (execution.value as Execution).id !== executionId)) throw new Error("Execution transaction identity changed");
+    if (execution.present) assertProtectedInvocationExecution(execution.value as Execution);
     const job = selected.readJobs!;
     if (job.present && (!job.value || (job.value as ReadJob).executionId !== executionId)) throw new Error("Execution job identity changed");
     const continuation = selected.readContinuations!;

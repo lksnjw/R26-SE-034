@@ -4,6 +4,7 @@ import { executionTransaction, applyExecutionCheckpoint, type ExecutionCheckpoin
 import type { Principal, Workflow } from "../models/schemas.js";
 import type { ReadCompilationReceipt } from "../workflows/compiled-read.js";
 import { assertProtectedContinuation, type ProtectedContinuation } from "./protected-continuation-record.js";
+import { assertProtectedInvocationExecution, type ProtectedInvocationLedgerSnapshot } from "./protected-invocation-records.js";
 
 export type Role = { id: string; name: string; description: string; permissions: string[]; createdAt: string };
 export type User = {
@@ -60,6 +61,9 @@ export type Execution = {
   // projection. Only the minimal, current-authority review endpoint exposes it.
   runtimeApprovalSecret?: import("../runner/runtime-approvals.js").RuntimeApprovalLedger;
   operationSecret?: import("../runner/operation-state.js").OperationJournal;
+  /** Separate invocation-based private DATA, never a v8 node-key journal.
+   * Future collection worker/admission must establish its authority. */
+  protectedInvocationSecret?: ProtectedInvocationLedgerSnapshot;
   recoverySource?: { profile: "operation-recovery-source/v1"; sourceExecutionId: string; artifactId: string; artifactHash: string };
   emailDeliverySource?: { profile: "email-delivery-source/v1"; admissionId: string; sessionId: string; draftId: string; draftVersion: number; draftHash: string };
   scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string;
@@ -563,6 +567,7 @@ export function restoreState(payload: Uint8Array): RepositoryState {
     if (!Object.hasOwn(restored.executions, id)) throw new Error("Orphan private protected continuation");
     if (Object.hasOwn(restored.readContinuations, id)) throw new Error("Conflicting private continuation profiles");
   }
+  for (const run of Object.values(restored.executions)) assertProtectedInvocationExecution(run);
   for (const role of Object.values(defaults.roles)) if (restored.roles[role.id] === undefined) restored.roles[role.id] = role;
   const knownPermissions = new Set(restored.permissions.map((item) => item.key));
   for (const permission of defaults.permissions) if (!knownPermissions.has(permission.key)) restored.permissions.push(permission);

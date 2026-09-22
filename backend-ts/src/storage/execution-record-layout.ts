@@ -2,11 +2,12 @@ import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { assertReadContinuation, type Execution, type RepositoryState } from "../repository/store.js";
 import type { ExecutionCheckpoint } from "../repository/execution-transaction.js";
 import { assertProtectedContinuation } from "../repository/protected-continuation-record.js";
+import { assertProtectedInvocationExecution } from "../repository/protected-invocation-records.js";
 
 export type RuntimeRecord = { profile: "runtime-record/v1"; path: string[]; value: unknown };
 export const recordKey = (path: string[]) => JSON.stringify(path);
 const runtimeFields = ["executions", "readJobs", "readContinuations", "protectedContinuations", "timelines", "executionLogs", "executionEvents", "auditLogs"] as const;
-const outputFields = [["attempts", "readProgress", "attempts"], ["receipts", "iterationProgress", "receipts"], ["outputs", null, "stepOutputs"], ["values", null, "valueOutputs"], ["report-coverages", null, "reportCoverages"], ["report-pages", null, "reportPageSecret"], ["runtime-approvals", "runtimeApprovalSecret", "records"], ["operation-intents", "operationSecret", "intents"], ["operation-protected-scopes", "operationSecret", "protectedScopes"], ["operation-reconciliations", "operationSecret", "reconciliations"], ["operation-readbacks", "operationSecret", "readbacks"], ["operation-recoveries", "operationSecret", "recoveries"], ["report-page-resolutions", "operationSecret", "reportPageResolutions"]] as const;
+const outputFields = [["attempts", "readProgress", "attempts"], ["receipts", "iterationProgress", "receipts"], ["outputs", null, "stepOutputs"], ["values", null, "valueOutputs"], ["report-coverages", null, "reportCoverages"], ["report-pages", null, "reportPageSecret"], ["runtime-approvals", "runtimeApprovalSecret", "records"], ["operation-intents", "operationSecret", "intents"], ["operation-protected-scopes", "operationSecret", "protectedScopes"], ["operation-reconciliations", "operationSecret", "reconciliations"], ["operation-readbacks", "operationSecret", "readbacks"], ["operation-recoveries", "operationSecret", "recoveries"], ["report-page-resolutions", "operationSecret", "reportPageResolutions"], ["protected-invocation-intents", "protectedInvocationSecret", "intents"], ["protected-invocation-receipts", "protectedInvocationSecret", "receipts"]] as const;
 const arrayFields = [["timelines", "timeline-entry"], ["executionLogs", "log-entry"], ["executionEvents", "event-entry"]] as const;
 const executionSections = new Set<string>([...runtimeFields.filter(field => field !== "auditLogs"), ...outputFields.map(([section]) => section), ...arrayFields.map(([, section]) => section)]);
 const object = (value: unknown): Record<string, unknown> => { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid normalized runtime object"); return value as Record<string, unknown>; };
@@ -16,6 +17,7 @@ const length = (value: unknown): number => { if (!Number.isSafeInteger(value) ||
 const cell = (path: string[], value: unknown): RuntimeRecord => ({ profile: "runtime-record/v1", path, value });
 
 function executionCells(id: string, execution: Execution): RuntimeRecord[] {
+  assertProtectedInvocationExecution(execution);
   const meta = JSON.parse(JSON.stringify(execution)) as Execution, result: RuntimeRecord[] = [];
   if (meta.id !== id) throw new Error("Normalized execution identity differs from its key");
   for (const [section, parent, field] of outputFields) {
