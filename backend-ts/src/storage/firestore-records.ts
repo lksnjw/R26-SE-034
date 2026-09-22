@@ -8,7 +8,7 @@ import { checkpointRecords, recordKey, type RuntimeRecord } from "./execution-re
 import { assembleFirestoreState, splitFirestoreState, firestoreExecutionRecordScope } from "./firestore-record-layout.js";
 import { FirestoreRecordStore, type FirestoreRecordSnapshot } from "./firestore-record-store.js";
 import type { FirestoreNamespace } from "./firestore-record-codec.js";
-import { FIRESTORE_WRITER_BOUNDS, type FirestoreWriterClock } from "./firestore-writer-ownership.js";
+import { FIRESTORE_WRITER_BOUNDS, FirestoreOwnershipFailure, type FirestoreWriterClock } from "./firestore-writer-ownership.js";
 import { assertFirestoreLegacyBackupHash, prepareFirestoreLegacyCutover } from "./firestore-legacy-cutover.js";
 
 type Cached = { record: RuntimeRecord; json: string };
@@ -68,9 +68,12 @@ export class FirestoreRecordPersistence implements PersistenceBackend {
       if (adapter.#closed) throw new Error("Firestore writer initialization was cancelled");
       adapter.#unsubscribe = adapter.records.observeWriterUnavailable(() => { adapter.#unavailable = true; adapter.deny(); });
       adapter.records.assertWriterActive(); adapter.scheduleRenewal(); return adapter;
-    } catch {
+    } catch (error) {
       void adapter.close().catch(() => {});
-      throw new Error("Firestore record storage could not establish confirmed exclusive writer authority");
+      // Preserve only our bounded category, never raw SDK/credential errors.
+      throw new Error("Firestore record storage could not establish confirmed exclusive writer authority", {
+        cause: new FirestoreOwnershipFailure(error instanceof FirestoreOwnershipFailure ? error.reason : "UNCONFIRMED"),
+      });
     } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); }
   }
   private deny(): void {

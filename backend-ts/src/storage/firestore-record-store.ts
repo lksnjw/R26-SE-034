@@ -83,6 +83,7 @@ export class FirestoreRecordStore {
     await this.#mutex.runExclusive(async () => { try { await release; } finally { await this.db.terminate(); } });
   }
   get writeUncertain() { return this.#uncertain; }
+  get writerFailureReason() { return this.#writer?.failureReason ?? null; }
   /** Bounded authority/head probe, not a full-image reload or a lease renewal.
    * A probe cannot clear uncertainty or adopt a changed authoritative image. */
   async probeWriter(snapshot: FirestoreRecordSnapshot): Promise<void> {

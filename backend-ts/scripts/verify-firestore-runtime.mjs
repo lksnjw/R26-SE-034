@@ -883,7 +883,15 @@ try {
     log(`actual Firestore v7 ${kind}/selected=${selected}/${loseACK ? "lost-ACK" : "normal"}: exact committed branch handoff, ${loseACK ? "no dependent dispatch after lost acknowledgement" : "exact subsequent model/read/Return"}, fresh restart and original-key replay without repeated work`);
   }
   await verifyFirestoreRecurringJoins({ getRepository: () => repository, getServices: () => services,
-    restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, request, waitFor, log,
+    restart: async () => {
+      const previous = persistence;
+      await stop();
+      try { await start(await openApplicationRepository(config)); }
+      catch (error) {
+        console.error("Recurring join writer restart diagnostic", { previousWriterFailure: previous.records.writerFailureReason });
+        throw error;
+      }
+    }, request, waitFor, log,
     tools: fixtureTools, setSynthesisFixture: source => { returnSynthesisFixture = source; },
     setAnalysisFixture: handler => { recurringAnalysisFixture = handler; }, models, relatedInvoiceReports, relatedOrderReports, emails });
   const modelsAfterDurableAgent = models.length;

@@ -67,6 +67,33 @@ test("explicit close revokes synchronously and retains a released generation for
   const second = owner(); await second.acquire(); expect(lease(second).generation).toBe(2); second.assertActive();
 });
 
+test("a failed release retains a bounded reason and never overwrites its last confirmed lease", async () => {
+  const storage = owner(); await storage.acquire(); const saved = clone(db.documents.get(storage.path));
+  db.serverTime--;
+  await storage.close();
+  expect(storage.failureReason).toBe("SERVER_TIME_REGRESSED");
+  expect(db.documents.get(storage.path)).toEqual(saved);
+  expect(() => storage.assertActive()).toThrow("fenced");
+});
+
+test("unconfirmed SDK acquisition is sanitized and the reason remains latched", async () => {
+  const storage = owner(), sensitive = "synthetic-credential-must-not-appear";
+  storage.db.runTransaction = (async () => { throw new Error(sensitive); }) as any;
+  let failure: unknown;
+  try { await storage.acquire(); } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ reason: "UNCONFIRMED" });
+  expect(String(failure)).not.toContain(sensitive); expect(JSON.stringify(failure)).not.toContain(sensitive);
+  expect(storage.failureReason).toBe("UNCONFIRMED"); await storage.close();
+  expect(storage.failureReason).toBe("UNCONFIRMED");
+});
+
+test("a competing live writer reports held without exposing or changing its identity", async () => {
+  const first = owner(); await first.acquire(); const saved = clone(db.documents.get(first.path)), second = owner();
+  await expect(second.acquire()).rejects.toMatchObject({ reason: "WRITER_HELD" });
+  expect(second.failureReason).toBe("WRITER_HELD"); expect(db.documents.get(first.path)).toEqual(saved);
+  await second.close(); first.assertActive(); await first.close(); expect(first.failureReason).toBeNull();
+});
+
 test.each(["wall-backward", "monotonic-backward", "wall-jump", "nan"])("%s clock uncertainty latches denial without relying on timers", async mode => {
   const storage = owner(); await storage.acquire(); tick(100);
   if (mode === "wall-backward") wall -= 200;

@@ -20,6 +20,15 @@ afterEach(async () => { await Promise.all(adapters.map(value => value.close()));
 async function open(options: Parameters<typeof FirestoreRecordPersistence.open>[2] = {}) {
   const value = await FirestoreRecordPersistence.open(key, namespace, options); adapters.push(value); return value;
 }
+
+test("writer startup preserves a safe diagnostic cause without exposing raw SDK errors", async () => {
+  const first = await open();
+  await expect(open()).rejects.toMatchObject({ message: "Firestore record storage could not establish confirmed exclusive writer authority",
+    cause: { reason: "WRITER_HELD" } });
+  expect(first.records.writerFailureReason).toBeNull(); await first.close();
+  db.fault = "before-commit";
+  await expect(open()).rejects.toMatchObject({ cause: { reason: "UNCONFIRMED" } });
+});
 const run = (id: string): Execution => ({ id, workflowId: "flow", workflowName: "Read", status: "RUNNING", startedAt: "2026-10-06T00:00:00Z", completedAt: null, durationMs: 0,
   tokens: { input: 0, output: 0, total: 0 }, costUsd: 0, startedBy: { id: "owner", name: "Owner" }, stepOutputs: {} });
 
