@@ -3,6 +3,13 @@ import { canonicalJSONBytes } from "./canonical-json.js";
 /** Shared descriptor-safe private JSON bound. Default limits preserve the
  * protected-machine/v1 contract; larger normalized ledgers remain bounded. */
 export function assertBoundedFiniteJSON(value: unknown, bytes = 4_000_000, nodes = 131072): void {
+  boundedFiniteJSONBytes(value, bytes, nodes);
+}
+
+/** Return the same canonical bytes used for the bound, after all descriptor,
+ * finite-value, depth and cardinality checks. Callers can hash/compare these
+ * bytes without sorting the same captured immutable JSON repeatedly. */
+export function boundedFiniteJSONBytes(value: unknown, bytes = 4_000_000, nodes = 131072): Buffer {
   if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > 32_000_000 || !Number.isSafeInteger(nodes) || nodes < 1 || nodes > 2_000_000)
     throw new Error("Invalid finite JSON bounds");
   let count = 0; const active = new Set<object>();
@@ -23,5 +30,7 @@ export function assertBoundedFiniteJSON(value: unknown, bytes = 4_000_000, nodes
     active.delete(item);
   };
   visit(value, 0);
-  if (canonicalJSONBytes(value).length > bytes) throw new Error("Protected machine data exceeds byte bounds");
+  const encoded = canonicalJSONBytes(value);
+  if (encoded.length > bytes) throw new Error("Protected machine data exceeds byte bounds");
+  return encoded;
 }

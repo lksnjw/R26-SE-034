@@ -51,7 +51,7 @@ export function buildReadIR(blueprint: WorkflowBlueprint, tools: readonly ToolDe
 }
 /** Shared bounded binding compiler, not an execution/admission switch. The
  * operation compiler has a different IR/receipt and mandatory reviewed pins. */
-function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>, operations: boolean, purpose: "publication" | "draft-inspection" | "protected-operation" = "publication"):
+function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>, operations: boolean, purpose: "publication" | "draft-inspection" | "protected-operation" | "protected-collection-operation" = "publication"):
   { ir: ReadIR; semanticHash: string; issues: string[]; analysisNodes: OperationAnalysisNode[]; agentNodes: OperationAgentNode[]; scopeValidation?: ReturnType<typeof validateReadControlFlow> } {
   const issues: string[] = [], ids = new Set<string>(), outputs = new Map<string, Record<string, unknown>>();
   const analysisNodes: OperationAnalysisNode[] = [];
@@ -73,7 +73,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
     ir.schemaVersion = "workflow-read-ir/v2"; ir.compilerVersion = "read-compiler/v2";
     try {
       const parsed = parseReadControlFlow(blueprint.metadata.controlFlow); ir.flow = parsed.root;
-      if (parsed.schemaVersion === "read-control-flow/v4" && purpose !== "draft-inspection" && purpose !== "protected-operation") issues.push("Protected workflow publication requires the separately qualified durable handler profile");
+      if (parsed.schemaVersion === "read-control-flow/v4" && purpose !== "draft-inspection" && purpose !== "protected-operation" && purpose !== "protected-collection-operation") issues.push("Protected workflow publication requires the separately qualified durable handler profile");
       if (parsed.schemaVersion === "read-control-flow/v2") { ir.schemaVersion = "workflow-read-ir/v3"; ir.compilerVersion = "read-compiler/v3"; }
       if (parsed.schemaVersion === "read-control-flow/v3") { ir.schemaVersion = "workflow-read-ir/v4"; ir.compilerVersion = "read-compiler/v4"; }
       for (const node of controlNodes(ir.flow)) if (node.merge) { mergedIDs.add(node.id); outputs.set(node.id, { type: "object", properties: { value: node.merge.schema }, required: ["value"], additionalProperties: false }); }
@@ -222,7 +222,7 @@ function buildActionBindingsIR(blueprint: WorkflowBlueprint, tools: readonly Too
       return tool ? [{ id: tool.id, inputs: tool.inputs }] : modelInput ? [{ id: step.id, inputs: modelInput }] : [];
     }) : [];
     const inputSchemas = new Map(ir.root.nodes.map(node => [node.id, tools.find(tool => tool.tool_id === node.capability.toolId)?.input_schema ?? {}]));
-    const validation = operations ? inspectOperationDecisions(ir.flow, projected, ir.inputSchema, outputs, inputSchemas, purpose === "draft-inspection" && protectedNodes(ir.flow).length > 0) :
+    const validation = operations ? inspectOperationDecisions(ir.flow, projected, ir.inputSchema, outputs, inputSchemas, purpose === "protected-collection-operation" || purpose === "draft-inspection" && protectedNodes(ir.flow).length > 0) :
       validateReadControlFlow(ir.flow, ir, outputs, new Map(ir.root.nodes.map(node => [node.id, tools.find(tool => tool.tool_id === node.capability.toolId)?.input_schema ?? {}])));
     issues.push(...validation.issues); scopeValidation = validation;
   }
@@ -301,15 +301,11 @@ export type OperationIR = { schemaVersion: "workflow-operation-ir/v1" | "workflo
 export type CompiledOperationPlan = { ir: OperationIR; semanticHash: string; sourceHash: string };
 export type OperationCompilationReceipt = { schemaVersion: OperationIR["schemaVersion"]; compilerVersion: OperationIR["compilerVersion"]; semanticHash: string; sourceHash: string;
   registryHash: string; origin: "PUBLICATION"; admissionMode: "reviewed" };
-export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>): CompiledOperationPlan {
-  if (Buffer.byteLength(yaml) > 200_000) throw new Error("Operation source exceeds supported bounds");
-  const blueprint = parseWorkflowYAMLStrict(yaml), profile = protectedOperationProfile(blueprint);
-  if (profile === "protected-collections-pending") throw new Error("Protected collections require durable operation iteration qualification; no flattened execution is allowed");
-  const protectedProfile = profile === "protected", built = buildActionBindingsIR(blueprint, tools, role, pins, true, protectedProfile ? "protected-operation" : "publication");
+function projectOperationDefinitions(blueprint: WorkflowBlueprint, built: ReturnType<typeof buildActionBindingsIR>, tools: readonly ToolDefinition[], pins: ReadonlyMap<string, ReadAdmissionPin>): OperationNode[] {
   const toolNodes = new Map(built.ir.root.nodes.map(node => [node.id, node]));
   const analysisNodes = new Map(built.analysisNodes.map(node => [node.id, node]));
   const agentNodes = new Map(built.agentNodes.map(node => [node.id, node]));
-  const nodes = blueprint.steps.map(step => {
+  return blueprint.steps.map(step => {
     const analysis = analysisNodes.get(step.id); if (analysis) return analysis;
     const agent = agentNodes.get(step.id); if (agent) return agent;
     const node = toolNodes.get(step.id); if (!node) { built.issues.push(`Step ${step.id} has no compiled operation node`); return null; }
@@ -330,6 +326,24 @@ export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefin
     }
     return { ...node, effectClass: tool.is_read_only ? "read" as const : tool.operation_contract?.effect_class ?? "write" as const, ...(readback ? { readback } : {}) };
   }).filter((node): node is OperationNode => node !== null);
+}
+
+/** Internal reviewed-definition projection for the separate v9 compiler. It
+ * cannot issue a publication receipt or enable the old node-key worker. */
+export function projectProtectedCollectionDefinitions(blueprint: WorkflowBlueprint, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>) {
+  if (protectedOperationProfile(blueprint) !== "protected-collections-pending") throw new Error("Expected an authored protected collection");
+  const built = buildActionBindingsIR(blueprint, tools, role, pins, true, "protected-collection-operation");
+  const nodes = projectOperationDefinitions(blueprint, built, tools, pins);
+  if (built.issues.length) throw new Error(`Protected collection compilation failed: ${built.issues.join("; ")}`);
+  return { nodes, flow: built.ir.flow!, ...(built.ir.inputSchema ? { inputSchema: built.ir.inputSchema } : {}) };
+}
+
+export function compileOperationWorkflow(yaml: string, tools: readonly ToolDefinition[], role: string, pins: ReadonlyMap<string, ReadAdmissionPin>): CompiledOperationPlan {
+  if (Buffer.byteLength(yaml) > 200_000) throw new Error("Operation source exceeds supported bounds");
+  const blueprint = parseWorkflowYAMLStrict(yaml), profile = protectedOperationProfile(blueprint);
+  if (profile === "protected-collections-pending") throw new Error("Protected collections require durable operation iteration qualification; no flattened execution is allowed");
+  const protectedProfile = profile === "protected", built = buildActionBindingsIR(blueprint, tools, role, pins, true, protectedProfile ? "protected-operation" : "publication");
+  const nodes = projectOperationDefinitions(blueprint, built, tools, pins);
   if (!protectedProfile && !nodes.some(node => node.kind === "action" && node.effectClass !== "read") && !nodes.some(node => node.kind === "analysis" || node.kind === "agent"))
     built.issues.push("Deterministic read-only workflows must use the read profile");
   if (built.issues.length) throw new Error(`Operation compilation failed: ${built.issues.join("; ")}`);
