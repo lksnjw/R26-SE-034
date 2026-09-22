@@ -72,4 +72,42 @@ export async function verifyFirestoreProtectedDrafts({ request, repository: getR
   assert.equal((await getRepository().snapshot()).schedules[`schedule-${workflowId}`], undefined);
   assert.equal(calls.length, callsBefore); assert.equal(models.length, modelsBefore);
   log("actual Firestore protected body/handler wrap, saved edit, restart, undo/redo and post-COMMIT save ACK loss preserved exact ownership and immutable versions; stale replay, publication and run were denied with zero model/SDK/effect calls");
+
+  const collectionId = "protected_collection_preparation", collectionEndpoint = `/api/workflows/${collectionId}`;
+  const ref = (nodeId, ...path) => ({ kind: "ref", source: "nodeOutput", nodeId, path });
+  const seq = (...nodes) => ({ kind: "sequence", nodes });
+  const collectionSource = stringify({ name: "Protected collection readiness", description: "Compile only; never dispatch", trigger: { type: "manual", config: { inputSchema: {
+    type: "object", properties: { rows: { type: "array", items: { type: "string" } } }, required: ["rows"], additionalProperties: false } } },
+    steps: [{ id: "lookup", action: "fixture.employee-read", parameters: { id: "{{each.item}}" } },
+      { id: "fallback", action: "fixture.employee-read", parameters: { id: "{{guard.error.code}}" } }],
+    metadata: { controlFlow: { schemaVersion: "read-control-flow/v4", root: seq({ kind: "foreach", id: "each", maxItems: 3,
+      items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "ref", source: "workflowInput", path: ["rows"] } },
+      body: seq({ kind: "protect", id: "guard", onError: { code: "ERP_RESOURCE_NOT_FOUND" }, body: seq({ kind: "action", nodeId: "lookup" }),
+        handler: seq({ kind: "action", nodeId: "fallback" }), output: { schema: { type: "string" }, success: ref("lookup", "structuredContent", "id"), handled: ref("fallback", "structuredContent", "id") } }),
+      collect: { schema: { type: "string" }, value: ref("guard", "value") } },
+      { kind: "return", id: "answer", output: { schema: { type: "array", items: { type: "string" } }, value: ref("each", "value") } }) } } });
+  await getRepository().mutate(state => {
+    state.workflows[collectionId] = { ...structuredClone(state.workflows[workflowId]), id: collectionId, name: "Protected collection readiness", yaml: collectionSource,
+      draftVersion: 1, publishedVersion: 0, canRun: false, steps: 2 };
+    state.versions[collectionId] = [];
+  });
+  const assertPreparation = ready => {
+    assert.equal(ready.protectedCompilation.state, "COMPILED_RUNTIME_PENDING");
+    assert.equal(ready.protectedCompilation.summary.profile, "protected-operation-preparation/v1");
+    assert.equal(ready.protectedCompilation.summary.runtimeQualified, false);
+    assert.equal(ready.protectedCompilation.summary.originalNodes, 2); assert.equal(ready.protectedCompilation.summary.modelNodes, 0);
+    assert.equal(ready.can_attempt_run, false); assert.equal(ready.operation_job_admission, "unavailable");
+    assert.equal(ready.published, false); assert.equal(ready.compilation.state, "NOT_PUBLISHED");
+    assert(!JSON.stringify(ready.protectedCompilation).match(/apiKey|admissionBinding|allowedCapabilities|inputSchema/));
+    return ready.protectedCompilation.summary;
+  };
+  const firstPreparation = assertPreparation((await request("GET", `${collectionEndpoint}/readiness`, undefined, 200)).data);
+  await restart();
+  const reopenedPreparation = assertPreparation((await request("GET", `${collectionEndpoint}/readiness`, undefined, 200)).data);
+  assert.deepEqual(reopenedPreparation, firstPreparation);
+  await request("POST", `${collectionEndpoint}/publish`, {}, 422);
+  await request("POST", `${collectionEndpoint}/run`, { mode: "async-operation", input: { rows: ["synthetic"] }, idempotencyKey: "protected-preparation-must-not-run-0001" }, 409);
+  assert.deepEqual((await getRepository().snapshot()).versions[collectionId], []);
+  assert.equal(calls.length, callsBefore); assert.equal(models.length, modelsBefore);
+  log("actual Firestore saved protected collection compiled from current reviewed records through authenticated readiness and reopened identically; publication/dispatch remained closed and no SDK/model/effect call occurred");
 }

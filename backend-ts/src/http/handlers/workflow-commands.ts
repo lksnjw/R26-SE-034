@@ -27,6 +27,8 @@ import { hasWorkflowEffects, usesCheckpointedOperationWorkflow } from "../../wor
 import { operationModelReadinessIssues } from "../../workflows/operation-model-readiness.js";
 import { selectedConditionGuidance } from "../../workflows/selected-condition-guidance.js";
 import { selectedProtectedGuidance } from "../../workflows/selected-protected-guidance.js";
+import { protectedOperationProfile } from "../../workflows/protected-operation-profile.js";
+import { prepareProtectedOperationCompilation, assertProtectedOperationPreparationCurrent, type PreparedProtectedOperationCompilation } from "../../workflows/protected-operation-preparation.js";
 import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand, selectedNodePatchPreview,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
@@ -68,12 +70,23 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       if (coverageIssues.length) withWorkspaceCompilationIssues(validation, coverageIssues);
       let issues: string[] = [], bridge = "not_connected";
       let operationProfile = false;
+      let protectedPreparation: PreparedProtectedOperationCompilation | undefined;
+      let protectedCompilation: { state: "COMPILED_RUNTIME_PENDING"; summary: PreparedProtectedOperationCompilation } | { state: "BLOCKED"; reason: string } | undefined;
       let effectProfile: "read-only" | "contains-effects" | "unknown" = "unknown";
       try {
         const blueprint = parseWorkflowYAMLStrict(current.yaml);
         operationProfile = usesCheckpointedOperationWorkflow(blueprint, services.registries.snapshot().tools);
         effectProfile = hasWorkflowEffects(blueprint, services.registries.snapshot().tools) ? "contains-effects" : "read-only";
-        if (operationProfile) {
+        if (protectedOperationProfile(blueprint) === "protected-collections-pending") {
+          issues.push("Protected collection execution requires the qualified durable operation iteration worker");
+          try {
+            protectedPreparation = await prepareProtectedOperationCompilation(services, workflowId, user);
+            protectedCompilation = { state: "COMPILED_RUNTIME_PENDING", summary: protectedPreparation };
+          } catch {
+            const reason = "Protected collection compilation requires current reviewed tools, connections, scoped bindings and any model or approval policies";
+            protectedCompilation = { state: "BLOCKED", reason }; issues.push(reason);
+          }
+        } else if (operationProfile) {
           try { const prepared = await prepareOperationPublication(services, current.yaml, user); if (prepared) issues.push(...operationModelReadinessIssues(prepared.stored.plan, services.providerRuntime)); if (!supportsOperationJobs(services)) issues.push("Operation checkpoint persistence is not qualified"); }
           catch (error) { issues.push(error instanceof HandlerFailure && error.meta !== null && typeof error.meta === "object" && "code" in error.meta && error.meta.code === "PROTECTED_COLLECTION_RUNTIME_PENDING" ? error.message : "Operation requires a supported reviewed artifact and current connection"); }
         } else issues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role, supportsCollectionReads(services));
@@ -110,6 +123,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         if (!fresh || !permitted(fresh, user, false)) throw new HandlerFailure(404, "Workflow not found");
         requireBase(fresh, current.draftVersion, workflowContentHash(current.yaml));
         if (registryHash !== services.registries.hash()) throw new HandlerFailure(409, "Registry changed during readiness. Reload before continuing", { code: "READINESS_CONTEXT_CHANGED" });
+        if (protectedPreparation) assertProtectedOperationPreparationCurrent(protectedPreparation, services, state, user);
         let blueprint;
         try { blueprint = parseWorkflowYAMLStrict(current.yaml); }
         catch { return { authoring: { profile: "read-authoring/v1", registryHash: services.registries.hash(), nodes: [], reason: "Workflow source cannot be parsed; existing values are preserved" }, editHistory: draftHistorySummary(state, fresh) }; }
@@ -119,7 +133,7 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
       if ("protectedIssues" in authoring && Array.isArray(authoring.protectedIssues)) issues.push(...authoring.protectedIssues);
       const protectedRuntimePending = "executionProfile" in authoring && authoring.executionProfile === "protected-draft-runtime-pending";
       return reply.send(ok({ ...record(current), validation, issues: [...new Set(issues)], bridge, published, compilation, authoring,
-        editHistory, effectProfile,
+        editHistory, effectProfile, ...(protectedCompilation ? { protectedCompilation } : {}),
         can_attempt_run: canAttempt && published && compilation.state === "CURRENT" && validation.passed && !issues.length && bridge === "discovery_available" && !current.pendingGenerationApproval?.steps.length,
         read_job_admission: supportsReadJobs(services) ? "read-job-v1" : "unavailable",
         operation_job_admission: !protectedRuntimePending && operationProfile && supportsOperationJobs(services) ? "operation-job/v1" : "unavailable",
