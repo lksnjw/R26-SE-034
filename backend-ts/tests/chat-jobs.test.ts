@@ -12,7 +12,7 @@ import { ProviderRuntime } from "../src/providers/runtime.js";
 import { SynthesisService } from "../src/synthesis/service.js";
 import { createErpbridgeMcpSession, ErpbridgeMcpToolError } from "../src/tools/erpbridge-mcp-client.js";
 import { chatJobQueue } from "../src/agent/chat-jobs.js";
-import { workflowContentHash } from "../src/parser/workflow.js";
+import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/workflow.js";
 import { stringify } from "yaml";
 import type { Workflow } from "../src/models/schemas.js";
 import { AESGCMCodec } from "../src/storage/aes-gcm.js";
@@ -75,6 +75,61 @@ async function nodeSetup(options: Parameters<typeof setup>[0] = {}) {
   s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: '{"description":"Proposed label"}' } }] }));
   return { ...s, nodeContext };
 }
+
+const protectedChatOutput = { schema: { type: "string" }, success: { kind: "ref", source: "nodeOutput", nodeId: "echo", path: ["structuredContent", "value"] }, handled: { kind: "ref", source: "nodeOutput", nodeId: "guard", path: ["error", "code"] } };
+async function protectedChatSetup(output: unknown = { output: protectedChatOutput }, options: Parameters<typeof setup>[0] = {}) {
+  const s = await nodeSetup({ ...options, toolFile: "condition-chat-tools.json" });
+  const source = stringify({ name: "Protected saved chat", description: "Synthetic saved group editing", trigger: { type: "manual" }, steps: [{ id: "echo", action: "demo.echo", parameters: { value: "fixture" } }], metadata: { ownerNotes: "keep", controlFlow: { schemaVersion: "read-control-flow/v4", root: { kind: "sequence", nodes: [
+    { kind: "protect", id: "guard", onError: { code: "ERP_RESOURCE_NOT_FOUND" }, body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "echo" }] }, handler: { kind: "sequence", nodes: [] }, output: { ...protectedChatOutput, handled: { kind: "literal", value: "Old fallback" } } },
+  ] } } } });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
+  s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: JSON.stringify(output) } }] }));
+  return { ...s, source, nodeContext: { ...s.nodeContext, nodeId: "guard", baseHash: workflowContentHash(source) } };
+}
+
+test("saved protected chat reopens/replays exact model-bound proposal and applies one owned draft without ERP dispatch", async () => {
+  const persistence = new Persistence(), s = await protectedChatSetup(undefined, { persistence }), content = "Change this group's output; do not send mail";
+  const receipt = (await s.send(content, { nodeContext: s.nodeContext, model: "model-b" })).json().data;
+  expect(await s.terminal(receipt.operation.id)).toMatchObject({ status: "ANSWERED", attempts: [] });
+  const snapshot = await s.repository.snapshot(), proposal = (snapshot.chats[s.sessionId]!.messages.at(-1)!.artifacts as any).proposal;
+  expect(proposal.validation.passed, JSON.stringify(proposal.validation)).toBe(true);
+  expect(proposal).toMatchObject({ ...s.nodeContext, status: "PROPOSED", command: { type: "updateProtected", nodeId: "guard", patch: { output: protectedChatOutput } }, modelBinding: { model: "model-b" } });
+  for (const field of ["id", "kind", "body", "handler", "onError"]) expect(proposal.after[field]).toEqual(proposal.before[field]);
+  const request = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)), data = JSON.parse(request.messages[1].content);
+  expect(request.model).toBe("model-b"); expect(request.messages[0].content).toContain("prompt/protected-group-patch/v1"); expect(data.tools).toEqual([]);
+  expect(data.allowedProtectedSources.success.some((hint: any) => hint.binding.nodeId === "echo")).toBe(true);
+  expect(data.allowedProtectedSources.handled.some((hint: any) => hint.binding.nodeId === "echo")).toBe(false);
+  expect(snapshot.workflows.report!.yaml).toBe(s.source);
+  await s.app.close(); apps.splice(apps.indexOf(s.app), 1);
+  const reopened = await setup({ persistence, toolFile: "condition-chat-tools.json" });
+  expect((await reopened.repository.snapshot()).chats[s.sessionId]!.messages).toEqual(snapshot.chats[s.sessionId]!.messages);
+  const replay = await reopened.app.inject({ method: "POST", url: `/api/chat/sessions/${s.sessionId}/messages`, headers: reopened.headers(), payload: { content, delivery: "async-chat", idempotencyKey: "chat-job-fixture-00001", nodeContext: s.nodeContext, model: "model-b" } });
+  expect(replay.json().data.operation.id).toBe(receipt.operation.id); expect(reopened.fetchImplementation).not.toHaveBeenCalled();
+  const apply = (actor = "owner") => reopened.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: reopened.headers(actor), payload: { baseVersion: 1, baseHash: s.nodeContext.baseHash, proposalId: proposal.id, command: proposal.command } });
+  expect((await apply("other")).statusCode).toBe(404);
+  const applied = await apply(); expect(applied.statusCode, applied.body).toBe(200);
+  expect(applied.json().data).toMatchObject({ version: 2, publishedVersion: 1, canRun: false });
+  const next = parseWorkflowYAMLStrict(applied.json().data.yaml); expect(next.steps).toEqual(parseWorkflowYAMLStrict(s.source).steps); expect((next.metadata!.controlFlow as any).root.nodes[0]).toEqual(proposal.after);
+  expect((await apply()).statusCode).toBe(409); expect((await reopened.repository.snapshot()).executions).toEqual({});
+  expect(s.callTool).not.toHaveBeenCalled(); expect(reopened.callTool).not.toHaveBeenCalled();
+});
+
+test.each(["edit", "cancel", "revocation"])("protected chat proposal cannot commit after %s during model generation", async kind => {
+  const s = await protectedChatSetup(), entered = barrier(), release = barrier();
+  s.fetchImplementation.mockImplementationOnce(async () => { entered.release(); await release.promise; return Response.json({ choices: [{ message: { content: JSON.stringify({ output: protectedChatOutput }) } }] }); });
+  const id = (await s.send("Edit output", { nodeContext: s.nodeContext })).json().data.operation.id; await entered.promise;
+  if (kind === "edit") await s.repository.mutate(state => { state.workflows.report!.draftVersion++; });
+  else if (kind === "revocation") await s.repository.mutate(state => { state.users.owner!.status = "Inactive"; });
+  else await s.app.inject({ method: "POST", url: `/api/chat/operations/${id}/cancel`, headers: s.headers(), payload: {} });
+  release.release(); expect((await s.terminal(id)).status).toBe(kind === "cancel" ? "CANCELLED" : "FAILED");
+  const state = await s.repository.snapshot(); expect(state.chats[s.sessionId]!.messages).toHaveLength(1); expect(state.workflows.report!.yaml).toBe(s.source); expect(s.callTool).not.toHaveBeenCalled();
+});
+
+test.each([{ parameters: {} }, { output: protectedChatOutput, handler: {} }, { output: protectedChatOutput, onError: { code: "ERP_RESOURCE_NOT_FOUND" } }])("saved protected chat rejects scope enlargement %j without draft changes or SDK dispatch", async patch => {
+  const s = await protectedChatSetup(patch), id = (await s.send("Edit", { nodeContext: s.nodeContext })).json().data.operation.id;
+  expect((await s.terminal(id)).status).toBe("FAILED"); const state = await s.repository.snapshot();
+  expect(state.workflows.report!.yaml).toBe(s.source); expect(state.chats[s.sessionId]!.messages).toHaveLength(1); expect(s.callTool).not.toHaveBeenCalled();
+});
 
 async function savedRevisionSource(s: Awaited<ReturnType<typeof setup>>, sourceMessageId: string) {
   const session = await s.app.inject({ method: "GET", url: `/api/chat/sessions/${s.sessionId}`, headers: s.headers() });

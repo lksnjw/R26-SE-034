@@ -8,6 +8,7 @@ import { Collapsible, Pill, SectionHeader } from "./ChatArtifactPrimitives";
 import { ExampleCard, RuleCard, ToolCard } from "./ChatArtifactRetrieval";
 import { NextActionBanner } from "./ChatArtifactStatus";
 import QueryResultPanel from "./ChatQueryResultPanel";
+import ProtectedPatchPreview from "./ProtectedPatchPreview";
 
 /*******************************************************************************
  * Function: ChatArtifactPanel
@@ -37,7 +38,7 @@ function ChatArtifactPanel({ artifact }) {
   }
 
   if (artifact.intent === "NODE_PATCH_PROPOSAL") {
-    return <section className="space-y-2 text-xs"><h3 className="font-semibold">Node proposal · {artifact.proposal?.nodeId}</h3><p>{artifact.proposal?.status ?? "Unknown status"}</p><p className="text-gray-500">Review this change in the workflow workspace. Applying saves a draft; it does not publish or execute.</p><ReadableValue value={artifact.proposal?.after} /></section>;
+    return <section className="space-y-2 text-xs"><h3 className="font-semibold">Node proposal · {artifact.proposal?.nodeId}</h3><p>{artifact.proposal?.status ?? "Unknown status"}</p><p className="text-gray-500">Review this change in the workflow workspace. Applying saves a draft; it does not publish or execute.</p>{artifact.proposal?.command?.type === "updateProtected" && artifact.proposal.command.patch?.output && !artifact.proposal.command.patch.onError ? <ProtectedPatchPreview proposal={artifact.proposal} /> : <ReadableValue value={artifact.proposal?.after} />}</section>;
   }
 
   const {

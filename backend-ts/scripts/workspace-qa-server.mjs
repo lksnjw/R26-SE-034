@@ -19,10 +19,12 @@ import { compileReadWorkflow, readCompilationReceipt } from "../src/workflows/co
 import { admissionAuthorizer, observeCapabilities, reviewCapability, capabilityContractHash } from "../src/registry/capability-admission.ts";
 import { toolSchema } from "../src/registry/schemas.ts";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.ts";
+import { applyWorkflowCommand, workflowCommandSchema } from "../src/workflows/commands.ts";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.ts";
 
 const fixtureWorker = process.env.WORKSPACE_QA_READ_STATE === "worker";
 const collectionCanvas = process.env.WORKSPACE_QA_CANVAS === "collection";
+const protectedCanvas = process.env.WORKSPACE_QA_CANVAS === "protected";
 const approvalFixture = process.env.WORKSPACE_QA_APPROVAL === "1";
 const operationFixture = process.env.WORKSPACE_QA_OPERATION === "1";
 const unknownOperation = process.env.WORKSPACE_QA_OPERATION_OUTCOME === "unknown";
@@ -33,11 +35,12 @@ if (readbackFixture && (!unknownOperation || !["APPLIED", "ABSENT", "PENDING"].i
 if (unknownOperation && !operationFixture) throw new Error("Unknown-outcome QA requires the isolated normal operation fixture");
 if (operationFixture && (approvalFixture || collectionCanvas || fixtureWorker)) throw new Error("Operation QA is an isolated synthetic normal-worker mode; do not combine fixture modes");
 if (approvalFixture && (collectionCanvas || fixtureWorker)) throw new Error("Approval QA uses only its isolated memory-only checkpoint, without a worker or collection mode");
+if (protectedCanvas && (operationFixture || approvalFixture || fixtureWorker)) throw new Error("Protected canvas QA is draft-only; no execution modes may be combined");
 const config = loadConfig({ APP_ENV: "test", JWT_SECRET: "local-workspace-qa-only-not-production-secret", STORAGE_DRIVER: "memory", MCP_MODE: "mock", CORS_ORIGINS: "http://localhost:5173,http://localhost:5191",
   ...(fixtureWorker ? { MCP_TRANSPORT: "erpbridge-mcp", ERPBRIDGE_BASE_URL: "https://fixture.invalid", ERPBRIDGE_MCP_TOKEN: "fixture-only", ERPBRIDGE_ROLE_MAP: '{"Platform Admin":"admin"}' } : {}) });
 const repository = new Repository(null);
 const createdAt = new Date().toISOString();
-const yaml = stringify({ name: "Daily invoice review", description: "LOCAL fixture only — no real ERP data", trigger: { type: "manual" }, steps: [
+let yaml = stringify({ name: "Daily invoice review", description: "LOCAL fixture only — no real ERP data", trigger: { type: "manual" }, steps: [
   { id: "invoices", action: "demo.echo", description: "Read invoice fixture", parameters: { value: collectionCanvas ? "{{each.item}}" : "local invoices" } },
   { id: "summary", action: operationFixture ? "demo.dispatch" : "demo.echo", description: operationFixture ? "Send synthetic report · independent approval required" : "Prepare report fixture",
     parameters: operationFixture ? { recipient: "manager@example.test", subject: "LOCAL invoice report", body: "{{invoices.structuredContent.value}}" } : { value: collectionCanvas ? "local report" : fixtureWorker ? "{{invoices.structuredContent.value}}" : "{{invoices.structuredContent}}" } },
@@ -46,6 +49,8 @@ const yaml = stringify({ name: "Daily invoice review", description: "LOCAL fixtu
     body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "invoices" }] }, collect: { schema: { type: "string" }, value: { kind: "ref", source: "nodeOutput", nodeId: "each", path: ["item"] } } },
   { kind: "action", nodeId: "summary" },
 ] } } } } : {}) });
+if (protectedCanvas) yaml = applyWorkflowCommand(yaml, workflowCommandSchema.parse({ type: "wrapProtected", nodeIds: ["invoices"], protectedId: "invoiceLookup", onError: { code: "ERP_RESOURCE_NOT_FOUND" },
+  output: { schema: { type: "string" }, success: { kind: "literal", value: "Explicit synthetic body result" }, handled: { kind: "ref", source: "nodeOutput", nodeId: "invoiceLookup", path: ["error", "code"] } } }));
 const passwordHash = await hashPassword("Local-QA-only-2026!");
 await repository.mutate((state) => {
   state.users.qa = { id: "qa", name: "Local QA", email: "qa@example.test", roleId: "role_admin", permissionOverrides: [], status: "Active", initials: "QA", departmentId: null, createdAt, lastLoginAt: null };
@@ -143,9 +148,20 @@ const executor = new Executor(new ToolRegistry(), validator);
 const providerRuntime = new ProviderRuntime(repository, executor, async (_url, init) => {
   const request = JSON.parse(String(init.body));
   const collectionPatch = request.messages[0].content.includes("ONE SELECTED COLLECTION PATCH");
-  return Response.json({ choices: [{ message: { content: JSON.stringify(collectionPatch ? { maxItems: 2 } : { description: "Invoice step reviewed by local fixture agent" }) } }] });
+  const protectedPatch = request.messages[0].content.includes("ONE SELECTED PROTECTED GROUP PATCH");
+  let patch = collectionPatch ? { maxItems: 2 } : { description: "Invoice step reviewed by local fixture agent" };
+  if (protectedPatch) {
+    const data = JSON.parse(request.messages[1].content);
+    if (!protectedCanvas || data.instruction !== "LOCAL: change selected protected output to reviewed fallback" || data.node.id !== "invoiceLookup" || data.tools.length)
+      throw new Error("Only the exact synthetic protected-group request is supported by this local fixture");
+    patch = { output: { ...data.node.output, handled: { kind: "literal", value: "Reviewed synthetic fallback — not absence proof" } } };
+  }
+  return Response.json({ choices: [{ message: { content: JSON.stringify(patch) } }] });
 });
-providerRuntime.activate({ id: "qa-fixture", name: "Local fixture", type: "openai_compatible", baseURL: "https://fixture.invalid/v1", apiKey: "fixture-no-network", model: "fixture-only", temperature: 0, timeoutMs: 1000 });
+providerRuntime.activate({ id: "qa-fixture", name: "Local fixture", type: "openai_compatible", baseURL: "https://fixture.invalid/v1", apiKey: "fixture-no-network", model: "fixture-only", temperature: 0, timeoutMs: 1000,
+  // Explicit synthetic fixture review; production and runtime egress remain denied.
+  egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://fixture.invalid", runtimeAnalysisDataClasses: [], runtimeAgentDataClasses: [], interactiveDataClasses: ["restricted"],
+    reviewedAt: createdAt, reviewedBy: { id: "qa", name: "Local QA fixture only" } } });
 const erpbridgeSession = operationFixture ? await createErpbridgeMcpSession({ baseURL: "https://fixture.invalid", token: "fixture-only", timeoutMs: readbackFixture ? 10000 : 1000, validator, admissionAuthorizer: admissionAuthorizer(repository, registries),
   sdkClient: { metadataComplete: true, connect: async () => {}, close: async () => {}, listTools: async () => operationTools.map(tool => ({ name: exactBridgeName(tool), inputSchema: bridgeTransportSchema(tool), outputSchema: tool.bridge_contract.output_schema,
     _meta: { "toolplane.resourceDigest": tool.bridge_contract.resource_digest, "toolplane.resourceVersion": "1.0.0", "io.erpbridge/allowedRoles": [] } })),

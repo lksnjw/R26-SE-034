@@ -17,4 +17,5 @@ export function isOperationProfile(profile) {
   return ["sequential-operation-v1", "protected-operation-v1", "protected-draft-runtime-pending"].includes(profile);
 }
 
-export const protectedChatUnavailable = "Protected-group chat edits are not available yet. Edit its output mappings in the canvas, or select a child node for chat. Your text is kept; no general request is sent.";
+export const protectedGroupPatchVersion = "prompt/protected-group-patch/v1";
+export const protectedChatUnavailable = "Protected-group chat guidance is unavailable for this draft. Refresh the workspace, edit its output mappings in the canvas, or select a child node. Your text is kept; no general request is sent.";

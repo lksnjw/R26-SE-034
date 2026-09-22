@@ -154,6 +154,15 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   const returns = editableFlow ? structuralNodes(editableFlow).filter(node => node.kind === "return").map(node => ({ nodeId: node.id, dataSources: dataFor(controlScopes?.scopes.get(node.id), node.id) })) : [];
   const collectionGuides = collections.map(node => ({ nodeId: node.id, itemSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.items, node.id),
     collectSources: dataFor(controlScopes?.collectionScopes.get(node.id)?.collect, node.id, true) }));
+  const protectedGuides = protectedGroups.map(node => {
+    const pathSources = (path: "success" | "handled") => upstream.filter(source => {
+      const own = source.binding.source === "nodeOutput" && source.binding.nodeId === node.id;
+      return (own ? path === "handled" && source.binding.path[0] === "error" : scopedSource(source, node.id)) &&
+        (source.binding.source === "workflowInput" || controlScopes?.protectedScopes.get(node.id)?.[path].has(source.binding.nodeId!));
+    }).slice(-32).map(source => structuredClone(source));
+    return { nodeId: node.id, patchVersion: "prompt/protected-group-patch/v1" as const,
+      outputSources: { success: pathSources("success"), handled: pathSources("handled") } };
+  });
   let protectedProfile: ReturnType<typeof protectedOperationProfile> | undefined;
   try { protectedProfile = protectedOperationProfile(blueprint); } catch { /* Malformed draft remains unavailable. */ }
   const protectedIssues = editableFlow ? protectedErrorSourceIssues(editableFlow, blueprint.steps.map(step => {
@@ -169,7 +178,7 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   const modelNodesSupported = prefix && blueprint.steps.length > 0 && (!editableFlow || structuralNodes(editableFlow).every(node => node.kind === "return" || node.kind === "if" || node.kind === "protect")) && (!compiled || !compiled.issues.length);
   const returnNodesSupported = prefix && blueprint.trigger.type === "manual" && (!compiled || !compiled.issues.length) && (!editableFlow || structuralNodes(editableFlow).every(node => node.kind === "return" || node.kind === "if" || node.kind === "protect"));
   const mergeNodesSupported = returnNodesSupported;
-  const value = { profile: "read-authoring/v1", registryHash, executionProfile, modelNodesSupported, returnNodesSupported, mergeNodesSupported, connectionChoices, ...(inputSchema ? { inputSchema } : {}), nodes, ...(protectedIssues.length ? { protectedIssues } : {}), ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides } : {}) };
-  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, nodes: [], conditions: [], returns: [], collections: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
+  const value = { profile: "read-authoring/v1", registryHash, executionProfile, modelNodesSupported, returnNodesSupported, mergeNodesSupported, connectionChoices, ...(inputSchema ? { inputSchema } : {}), nodes, ...(protectedIssues.length ? { protectedIssues } : {}), ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides, protectedGroups: protectedGuides } : {}) };
+  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, nodes: [], conditions: [], returns: [], collections: [], protectedGroups: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
   return value;
 }

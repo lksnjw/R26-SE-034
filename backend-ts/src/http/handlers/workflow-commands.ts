@@ -26,6 +26,7 @@ import { effectiveStepKind } from "../../models/schemas.js";
 import { hasWorkflowEffects, usesCheckpointedOperationWorkflow } from "../../workflows/execution-shape.js";
 import { operationModelReadinessIssues } from "../../workflows/operation-model-readiness.js";
 import { selectedConditionGuidance } from "../../workflows/selected-condition-guidance.js";
+import { selectedProtectedGuidance } from "../../workflows/selected-protected-guidance.js";
 import { nodeIdSchema as id, workflowRevisionSchema as base, workflowCommandSchema as command, assertNodeContext, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand, selectedNodePatchPreview,
   permittedWorkflow as permitted, requireWorkflowBase as requireBase, assertCurrentWorkflowEditor, applyWorkflowCommand as apply } from "../../workflows/commands.js";
 export { assertCurrentWorkflowEditor } from "../../workflows/commands.js";
@@ -137,13 +138,14 @@ export async function handleWorkflowCommand(kind: "commands" | "node-proposals" 
         return assertChatAuthority(state, user, value.sessionId).selectedModel;
       });
       const provider = selectProvider(services, value.model ?? sessionModel)!;
-      const structural = ["if", "return", "foreach"].includes(node.kind ?? "");
+      const structural = ["if", "return", "foreach", "protect"].includes(node.kind ?? "");
       const authoring = structural ? readAuthoringContract(parseWorkflowYAMLStrict(current.yaml), services.registries.snapshot().tools, user.role, services.registries.hash(), connectionCatalog(services)) : undefined;
       const collection = authoring?.collections?.find(value => value.nodeId === node.id);
       const availableTools = services.registries.snapshot().tools.filter((tool) => tool.allowed_roles.includes(user.role));
       const promptTools = node.kind === "agent" ? availableTools.filter(tool => tool.is_read_only && (node.allowed_actions ?? []).some(action => action === tool.name || action === tool.mcp_tool_name)) : availableTools;
       const prompt = promptData({ instruction: value.prompt, node: withoutSecretFields(node),
         ...(node.kind === "if" ? selectedConditionGuidance(node.id, authoring) : {}),
+        ...(node.kind === "protect" ? selectedProtectedGuidance(node.id, authoring) : {}),
         ...(node.kind === "return" ? { allowedDataSources: authoring?.returns?.find(value => value.nodeId === node.id)?.dataSources ?? [] } : {}),
         ...(node.kind === "foreach" ? { allowedItemSources: collection?.itemSources ?? [], allowedCollectSources: collection?.collectSources ?? [] } : {}),
         tools: structural ? [] : promptTools.map((tool) => ({ name: tool.name, inputSchema: tool.input_schema, readOnly: tool.is_read_only })) });

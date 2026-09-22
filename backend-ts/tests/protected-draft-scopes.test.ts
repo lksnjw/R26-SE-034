@@ -184,9 +184,56 @@ test("removing all body content rejects atomically rather than creating an empty
 });
 
 test("old selected-node chat contracts cannot accidentally edit a protected owner as a tool", () => {
-  expect(() => selectedNodePatchSchema({ kind: "protect" })).toThrow(/separately versioned/);
-  expect(() => selectedNodePatchVersion({ kind: "protect" })).toThrow();
+  expect(selectedNodePatchSchema({ kind: "protect" }).safeParse({ parameters: {} }).success).toBe(false);
+  expect(selectedNodePatchVersion({ kind: "protect" })).toBe("prompt/protected-group-patch/v1");
   expect(() => selectedNodePatchCommand({ id: "group", kind: "protect" }, { parameters: {} })).toThrow();
+});
+
+test("protected output guidance separates success/handled, own fault, future and private fields", () => {
+  const guide = readAuthoringContract(parseWorkflowYAMLStrict(addHandler()), [tool], role, "fixture");
+  const group = guide.protectedGroups!.find(value => value.nodeId === "group")!;
+  const expressions = (path: "success" | "handled") => group.outputSources[path].map(source => source.expression);
+  expect(group.patchVersion).toBe("prompt/protected-group-patch/v1");
+  expect(expressions("success")).toContain("{{lookup.structuredContent.id}}");
+  expect(expressions("success")).not.toContain("{{fallback.structuredContent.id}}");
+  expect(expressions("success")).not.toContain("{{group.error.code}}");
+  expect(expressions("handled")).toContain("{{fallback.structuredContent.id}}");
+  expect(expressions("handled")).toContain("{{group.error.code}}");
+  expect(expressions("handled")).toContain("{{group.error.failedNodeId}}");
+  expect(expressions("handled")).not.toContain("{{lookup.structuredContent.id}}");
+  for (const path of ["success", "handled"] as const) {
+    expect(expressions(path)).toContain("{{before.structuredContent.id}}");
+    expect(expressions(path).some(value => value.includes("after.") || value.includes("group.value") || value.includes("error.message"))).toBe(false);
+  }
+  const privateTool = toolSchema.parse({ ...tool, bridge_contract: { ...tool.bridge_contract, output_schema: { type: "object", properties: { id: { type: "string" }, token: { type: "string" } }, required: ["id"], additionalProperties: false } } });
+  const privateGuide = readAuthoringContract(parseWorkflowYAMLStrict(addHandler()), [privateTool], role, "fixture");
+  expect(JSON.stringify(privateGuide.protectedGroups)).not.toContain("token");
+});
+
+test("nested protected output hints retain lexical outer faults but do not expose self output or failed body results", () => {
+  const source = edit(addHandler(), { type: "wrapProtected", nodeIds: ["fallback"], protectedId: "inner", onError: { code: "ERP_RESOURCE_NOT_FOUND" },
+    output: { schema: { type: "string" }, success: ref("fallback", "structuredContent", "id"), handled: ref("inner", "error", "code") } });
+  expect(inspected(source).issues).toEqual([]);
+  const guide = readAuthoringContract(parseWorkflowYAMLStrict(source), [tool], role, "fixture").protectedGroups!.find(node => node.nodeId === "inner")!;
+  for (const path of ["success", "handled"] as const) {
+    const expressions = guide.outputSources[path].map(source => source.expression);
+    expect(expressions).toContain("{{group.error.code}}");
+    expect(expressions.some(value => value.includes("group.value") || value.includes("inner.value") || value.includes("lookup."))).toBe(false);
+    expect(expressions.includes("{{inner.error.code}}")).toBe(path === "handled");
+    expect(expressions.includes("{{fallback.structuredContent.id}}")).toBe(path === "success");
+  }
+});
+
+test("protected group inside draft iteration suggests its lexical item on both paths but never the unfinished collection value", () => {
+  const loop = edit(base, { type: "wrapCollection", nodeId: "lookup", loopId: "each", items: { schema: { type: "array", items: { type: "string" } }, value: { kind: "array", items: [literal("fixture")] } },
+    maxItems: 2, collect: { schema: { type: "string" }, value: ref("group", "value") } });
+  const source = edit(loop, { ...wrapCommand, nodeIds: ["lookup"] });
+  expect(inspected(source).issues).toEqual([]);
+  const guide = readAuthoringContract(parseWorkflowYAMLStrict(source), [tool], role, "fixture").protectedGroups!.find(node => node.nodeId === "group")!;
+  for (const path of ["success", "handled"] as const) {
+    const expressions = guide.outputSources[path].map(source => source.expression);
+    expect(expressions).toContain("{{each.item}}"); expect(expressions).toContain("{{each.index}}"); expect(expressions).not.toContain("{{each.value}}");
+  }
 });
 
 test("protected drafts route to durable operations but cannot compile an executable legacy profile", () => {

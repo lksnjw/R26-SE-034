@@ -47,6 +47,8 @@ export const returnPatchSchema = z.object({ output: readReturnSchema }).strict()
 const destinationSchema = z.union([z.object({ conditionId: nodeIdSchema, branch: z.enum(["then", "else"]) }).strict(), z.object({ loopId: nodeIdSchema, scope: z.literal("body") }).strict(), z.object({ protectedId: nodeIdSchema, scope: z.enum(["body", "handler"]) }).strict()]);
 const protectedPolicySchema = z.object({ code: z.literal("ERP_RESOURCE_NOT_FOUND") }).strict();
 export const protectedPatchSchema = z.object({ onError: protectedPolicySchema.optional(), output: readProtectedOutputSchema.optional() }).strict().refine(value => Object.keys(value).length > 0);
+// A selected-group chat proposal owns only its typed output, never policy or paths.
+export const protectedGroupPatchSchema = z.object({ output: readProtectedOutputSchema }).strict();
 const collectionConfig = { items: readReturnSchema.refine(value => value.schema.type === "array", "Collection requires an array schema"), maxItems: z.number().int().min(1).max(100), collect: readReturnSchema };
 export const collectionPatchSchema = z.object(collectionConfig).partial().strict().refine(value => Object.keys(value).length > 0);
 export const workflowRevisionSchema = { baseVersion: z.number().int().min(1), baseHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) };
@@ -83,18 +85,17 @@ export const workflowCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("discardProposal"), proposalId: z.string().min(1).max(128) }).strict(),
 ]);
 export function selectedNodePatchSchema(node: { kind?: string | undefined }) {
-  if (node.kind === "protect") throw new HandlerFailure(422, "Protected group chat proposals require their separately versioned proposal contract", { code: "PROTECTED_CHAT_PENDING" });
-  return node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionEditPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : node.kind === "agent" ? agentNodePatchSchema : nodePatchSchema;
+  return node.kind === "protect" ? protectedGroupPatchSchema : node.kind === "foreach" ? collectionPatchSchema : node.kind === "return" ? returnPatchSchema : node.kind === "if" ? conditionEditPatchSchema : node.kind === "analysis" ? analysisNodePatchSchema : node.kind === "agent" ? agentNodePatchSchema : nodePatchSchema;
 }
-export function selectedNodePatchVersion(node: { kind?: string | undefined }) { if (node.kind === "protect") selectedNodePatchSchema(node); return node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v2" : node.kind === "analysis" ? "prompt/analysis-node-patch/v3" : node.kind === "agent" ? "prompt/agent-node-patch/v3" : "prompt/node-patch/v2"; }
+export function selectedNodePatchVersion(node: { kind?: string | undefined }) { return node.kind === "protect" ? "prompt/protected-group-patch/v1" : node.kind === "foreach" ? "prompt/collection-patch/v1" : node.kind === "return" ? "prompt/return-patch/v1" : node.kind === "if" ? "prompt/condition-patch/v2" : node.kind === "analysis" ? "prompt/analysis-node-patch/v3" : node.kind === "agent" ? "prompt/agent-node-patch/v3" : "prompt/node-patch/v2"; }
 export function selectedNodePatchPreview(node: { kind?: string | undefined }, patch: Record<string, unknown>) {
   const after: Record<string, unknown> = { ...node, ...patch };
   if (node.kind === "if" && patch.merge === null) delete after.merge;
   return after;
 }
 export function selectedNodePatchCommand(node: { id: string; kind?: string | undefined }, patch: unknown) {
-  if (node.kind === "protect") selectedNodePatchSchema(node);
-  return workflowCommandSchema.parse({ type: node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : node.kind === "analysis" ? "updateAnalysis" : node.kind === "agent" ? "updateAgent" : "updateNode", nodeId: node.id, patch });
+  if (node.kind === "protect") protectedGroupPatchSchema.parse(patch);
+  return workflowCommandSchema.parse({ type: node.kind === "protect" ? "updateProtected" : node.kind === "foreach" ? "updateCollection" : node.kind === "return" ? "updateReturn" : node.kind === "if" ? "updateCondition" : node.kind === "analysis" ? "updateAnalysis" : node.kind === "agent" ? "updateAgent" : "updateNode", nodeId: node.id, patch });
 }
 export function canViewWorkflow(workflow: Workflow, user: Pick<CurrentUser, "id" | "permissions">): boolean {
   if (workflow.emailDeliverySource && workflow.owner.id !== user.id) return false;

@@ -41,6 +41,44 @@ function protectedRecord(profile = "protected-operation-v1") {
   return { ...record, yaml: `${yaml}metadata:\n  controlFlow: ${JSON.stringify({ schemaVersion: "read-control-flow/v4", root: flow })}\n`, executionProfile: profile, operation_job_admission: "operation-job/v1", authoring: { profile: "read-authoring/v1", executionProfile: profile, controlFlow: flow, nodes: [] } };
 }
 
+function protectedChatRecord() {
+  const saved = protectedRecord(); saved.authoring.protectedGroups = [{ nodeId: "group", patchVersion: "prompt/protected-group-patch/v1", outputSources: { success: [], handled: [] } }]; return saved;
+}
+
+test("current protected guidance enables exact group scope in shared chat and mobile focus without duplicate composer", async () => {
+  const saved = protectedChatRecord(), context = jest.fn(), focus = jest.fn(); workflowService.readiness.mockResolvedValue(saved);
+  await open({ onNodeContext: context, onFocusChat: focus }); fireEvent.click(screen.getByRole("button", { name: "Select protected group group" }));
+  expect(context).toHaveBeenLastCalledWith(expect.objectContaining({ workflowId: "report", nodeId: "group", version: 1, contentHash: saved.contentHash, unavailableReason: null, pending: false }));
+  expect(screen.getByText(/This protected group is selected in the main chat/)).toBeTruthy(); expect(screen.queryByRole("textbox", { name: "Selected node prompt" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Edit this group in chat" })); expect(focus).toHaveBeenCalledTimes(1); expect(send).not.toHaveBeenCalled();
+});
+
+test("standalone protected prompt sends only exact node context and waits for explicit proposal Apply", async () => {
+  const saved = protectedChatRecord(); workflowService.readiness.mockResolvedValue(saved); await open();
+  fireEvent.click(screen.getByRole("button", { name: "Select protected group group" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Selected node prompt" }), { target: { value: "Change the handled output" } }); fireEvent.click(screen.getByRole("button", { name: "Propose change" }));
+  await waitFor(() => expect(send).toHaveBeenCalledWith("Change the handled output", undefined, { nodeContext: { workflowId: "report", nodeId: "group", baseVersion: 1, baseHash: saved.contentHash } }));
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test.each([undefined, "prompt/protected-group-patch/v0", "prompt/protected-group-patch/v2"])("missing or unknown protected guidance %s keeps group chat blocked and offers manual output editing", async patchVersion => {
+  const saved = protectedChatRecord(); saved.authoring.protectedGroups[0].patchVersion = patchVersion; workflowService.readiness.mockResolvedValue(saved);
+  const context = jest.fn(); await open({ onNodeContext: context }); fireEvent.click(screen.getByRole("button", { name: "Select protected group group" }));
+  expect(context).toHaveBeenLastCalledWith(expect.objectContaining({ unavailableReason: expect.stringContaining("guidance is unavailable") }));
+  expect(screen.queryByRole("button", { name: "Propose change" })).toBeNull(); expect(screen.getByRole("button", { name: "Preview protected output edit" })).toBeTruthy();
+});
+
+test("saved group proposal restores readable preview and exact revision-bound Apply without body changes or execution", async () => {
+  const saved = protectedChatRecord(), before = saved.authoring.controlFlow.nodes[0], output = { ...before.output, handled: { kind: "literal", value: "Explicit new handler answer" } };
+  const change = { id: "group-proposal", workflowId: "report", nodeId: "group", baseVersion: 1, baseHash: saved.contentHash, status: "PROPOSED", before, after: { ...before, output }, command: { type: "updateProtected", nodeId: "group", patch: { output } } };
+  workflowService.readiness.mockResolvedValue(saved); await open({ onNodeContext: jest.fn(), savedProposals: [change] });
+  const preview = screen.getByRole("region", { name: "Node change preview" });
+  expect(within(preview).getByText("Explicit new handler answer")).toBeTruthy(); expect(within(preview).getByText(/error policy, body and handler stay unchanged/)).toBeTruthy(); expect(preview.querySelector("pre")).toBeNull();
+  expect(workflowService.command).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
+  await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1, contentHash: saved.contentHash, proposalId: change.id }), change.command));
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
 test("protected group output edits are readable revision-bound previews, never implicit publication or execution", async () => {
   const saved = protectedRecord(), context = jest.fn(); workflowService.readiness.mockResolvedValue(saved); await open({ onNodeContext: context });
   fireEvent.click(screen.getByRole("button", { name: "Select protected group group" }));

@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { Icon } from "@iconify/react";
+import ProtectedPatchPreview from "./ProtectedPatchPreview";
 import MessageMarkdown from "./MessageMarkdown";
 import { saveWorkflowForCanvas, peekWorkflowForChatEdit, clearWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
 import { workflowService } from "../../services/workflow.service";
@@ -374,6 +375,7 @@ function ChatMessage({ message, onChatChanged, onRevise, busy, draftStorageKey }
         {intent === "NODE_PATCH_PROPOSAL" && artifacts?.proposal && <p className="mt-2 text-xs text-gray-500">
           {artifacts.proposal.status === "APPLIED" ? `Applied to draft v${artifacts.proposal.appliedVersion} · not published or executed by this decision.` : artifacts.proposal.status === "DISCARDED" ? "Proposal discarded · workflow unchanged by this decision." : `Pending node proposal · ${artifacts.proposal.nodeId}. Review it in the workflow canvas.`}
         </p>}
+        {intent === "NODE_PATCH_PROPOSAL" && artifacts?.proposal?.command?.type === "updateProtected" && artifacts.proposal.command.patch?.output && !artifacts.proposal.command.patch.onError && <details className="mt-3 border-t border-gray-100 pt-3 dark:border-gray-800"><summary className="cursor-pointer text-xs font-medium text-primary">Review protected output mappings</summary><ProtectedPatchPreview proposal={artifacts.proposal} /></details>}
 
         {/* ── Query: inline sources + chart only ── */}
         {isQuery && (

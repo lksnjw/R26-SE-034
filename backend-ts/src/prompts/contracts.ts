@@ -84,6 +84,8 @@ Return exactly one JSON object with only predicate. A predicate is {kind:"litera
 
 import { conditionEditPatchInstructions } from "./condition-edit-patch.js";
 export const CONDITION_EDIT_PATCH_SYSTEM_PROMPT = conditionEditPatchInstructions(SAFETY_CONTRACT);
+import { protectedGroupPatchInstructions } from "./protected-group-patch.js";
+export const PROTECTED_GROUP_PATCH_SYSTEM_PROMPT = protectedGroupPatchInstructions(SAFETY_CONTRACT);
 
 export const COLLECTION_PATCH_SYSTEM_PROMPT = `${SAFETY_CONTRACT}
 
@@ -205,6 +207,7 @@ export function systemInstructionsFor(version?: string): string {
     case "prompt/agent-node-patch/v3": return MERGE_AGENT_PATCH_SYSTEM_PROMPT;
     case "prompt/condition-patch/v1": return CONDITION_PATCH_SYSTEM_PROMPT;
     case "prompt/condition-patch/v2": return CONDITION_EDIT_PATCH_SYSTEM_PROMPT;
+    case "prompt/protected-group-patch/v1": return PROTECTED_GROUP_PATCH_SYSTEM_PROMPT;
     case "prompt/return-patch/v1": return RETURN_PATCH_SYSTEM_PROMPT;
     case "prompt/collection-patch/v1": return COLLECTION_PATCH_SYSTEM_PROMPT;
     case "prompt/workflow-modifier/v2": return MODIFIER_SYSTEM_PROMPT;

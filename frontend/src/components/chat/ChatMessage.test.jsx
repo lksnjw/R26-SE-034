@@ -6,6 +6,16 @@ import { MemoryRouter } from "react-router-dom";
 jest.unstable_mockModule("@xyflow/react", () => ({ MarkerType: { ArrowClosed: "arrow-closed" } }));
 const { default: ChatMessage } = await import("./ChatMessage");
 afterEach(cleanup);
+
+test.each(["PROPOSED", "APPLIED", "DISCARDED"])("protected chat %s exposes readable mappings without claiming they are run answers", status => {
+  const output = { schema: { type: "string" }, success: { kind: "literal", value: "Explicit body mapping" }, handled: { kind: "ref", source: "nodeOutput", nodeId: "guard", path: ["error", "code"] } };
+  const proposal = { nodeId: "guard", status, appliedVersion: 2, before: { output }, after: { output, body: { nodes: [{ nodeId: "unrelated_body" }] } }, command: { type: "updateProtected", nodeId: "guard", patch: { output } } };
+  const view = render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Node change proposed.", artifacts: { intent: "NODE_PATCH_PROPOSAL", proposal } }} /></MemoryRouter>);
+  expect(screen.getByText("Review protected output mappings")).toBeTruthy(); expect(screen.getAllByText("Node guard → error → code")).toHaveLength(2);
+  expect(screen.getByText(/These are mappings, not run answers/)).toBeTruthy(); expect(view.container.querySelector("pre")).toBeNull(); expect(view.container.textContent).not.toContain("unrelated_body");
+  if (status === "APPLIED") expect(screen.getByText(/Applied to draft v2/)).toBeTruthy();
+  if (status === "DISCARDED") expect(screen.getByText(/Proposal discarded/)).toBeTruthy();
+});
 test("chat shows the persisted proposal decision rather than only stale proposed wording", () => {
   render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Node change proposed.", artifacts: { intent: "NODE_PATCH_PROPOSAL", proposal: { nodeId: "invoices", status: "APPLIED", appliedVersion: 2 } } }} /></MemoryRouter>);
   expect(screen.getByText("Applied to draft v2 · not published or executed by this decision.")).toBeTruthy();

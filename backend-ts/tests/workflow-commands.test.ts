@@ -76,7 +76,55 @@ test("protected commands persist exact saved structure, reject stale/unauthorize
   expect(run.statusCode).toBeGreaterThanOrEqual(400);
   const proposal = await s.app.inject({ method: "POST", url: "/api/workflows/report/node-proposals", headers: s.headers(), payload: { baseVersion: 3, baseHash: workflowContentHash(saved.yaml), nodeId: "guard", prompt: "Update this handler", sessionId: "chat" } });
   expect(proposal.statusCode, proposal.body).toBe(422);
-  expect(s.fetchImplementation).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
+  expect(s.fetchImplementation).toHaveBeenCalledOnce(); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+
+const protectedOutput = { schema: { type: "string" }, success: { kind: "ref", source: "nodeOutput", nodeId: "first", path: ["structuredContent", "value"] }, handled: { kind: "ref", source: "nodeOutput", nodeId: "guard", path: ["error", "code"] } };
+async function protectedProposalSetup(patch: unknown = { output: protectedOutput }) {
+  const s = await setup(patch, "condition-chat-tools.json");
+  const source = stringify({ name: "Protected proposal", description: "Synthetic output proposal", trigger: { type: "manual" }, steps: ["first", "last"].map(id => ({ id, action: "demo.echo", parameters: { value: id } })), metadata: { ownerNotes: "preserve", controlFlow: { schemaVersion: "read-control-flow/v4", root: { kind: "sequence", nodes: [
+    { kind: "protect", id: "guard", onError: { code: "ERP_RESOURCE_NOT_FOUND" }, body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] }, handler: { kind: "sequence", nodes: [{ kind: "action", nodeId: "last" }] }, output: { ...protectedOutput, handled: { kind: "literal", value: "Explicit old fallback" } } },
+  ] } } } });
+  await s.repository.mutate(state => { state.workflows.report!.yaml = source; state.versions.report![0]!.yaml = source; });
+  return { ...s, source, hash: workflowContentHash(source) };
+}
+test("direct protected proposal has exact path guidance and Apply preserves immutable contents and unrelated metadata", async () => {
+  const s = await protectedProposalSetup(), response = await s.propose({ nodeId: "guard", baseHash: s.hash });
+  expect(response.statusCode, response.body).toBe(200); const proposal = response.json().data;
+  expect(proposal.validation.passed, JSON.stringify(proposal.validation)).toBe(true);
+  expect(proposal.command).toEqual({ type: "updateProtected", nodeId: "guard", patch: { output: protectedOutput } });
+  for (const field of ["id", "kind", "body", "handler", "onError"]) expect(proposal.after[field]).toEqual(proposal.before[field]);
+  const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)), data = JSON.parse(body.messages[1].content);
+  expect(body.messages[0].content).toContain("prompt/protected-group-patch/v1"); expect(data.tools).toEqual([]);
+  expect(data.allowedProtectedSources.success.some((hint: any) => hint.binding.nodeId === "first")).toBe(true);
+  expect(data.allowedProtectedSources.success.some((hint: any) => hint.binding.nodeId === "last")).toBe(false);
+  expect(data.allowedProtectedSources.handled.some((hint: any) => hint.expression === "{{guard.error.code}}")).toBe(true);
+  expect(data.allowedProtectedSources.handled.some((hint: any) => hint.binding.nodeId === "first")).toBe(false);
+  expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(s.source);
+  const apply = (command = proposal.command, actor = "admin") => s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(actor), payload: { baseVersion: 1, baseHash: s.hash, proposalId: proposal.id, command } });
+  expect((await apply({ ...proposal.command, patch: { output: { ...protectedOutput, handled: { kind: "literal", value: "tampered" } } } })).statusCode).toBe(409);
+  expect((await apply(proposal.command, "client")).statusCode).toBe(403);
+  const applied = await apply(); expect(applied.statusCode, applied.body).toBe(200); expect(applied.json().data).toMatchObject({ version: 2, canRun: false });
+  const next = parseWorkflowYAMLStrict(applied.json().data.yaml), old = parseWorkflowYAMLStrict(s.source);
+  expect(next.steps).toEqual(old.steps); expect(next.metadata!.ownerNotes).toBe("preserve");
+  expect((next.metadata!.controlFlow as any).root.nodes[0]).toEqual(proposal.after);
+  expect((await apply()).statusCode).toBe(409); expect((await s.repository.snapshot()).executions).toEqual({});
+});
+test.each([{ parameters: {} }, { output: protectedOutput, body: {} }, { output: protectedOutput, onError: { code: "ERP_RESOURCE_NOT_FOUND" } }, {}])("protected proposal cannot change path contents or policy %j", async patch => {
+  const s = await protectedProposalSetup(patch), response = await s.propose({ nodeId: "guard", baseHash: s.hash });
+  expect(response.statusCode).toBe(422); const state = await s.repository.snapshot();
+  expect(state.chats.chat!.messages).toHaveLength(0); expect(state.workflows.report!.yaml).toBe(s.source); expect(state.executions).toEqual({});
+});
+test.each([
+  { ...protectedOutput, handled: protectedOutput.success },
+  { ...protectedOutput, success: protectedOutput.handled },
+  { ...protectedOutput, schema: { type: "boolean" } },
+])("invalid protected output scope/type remains a visible blocked proposal, never executable %j", async output => {
+  const s = await protectedProposalSetup({ output }), response = await s.propose({ nodeId: "guard", baseHash: s.hash });
+  expect(response.statusCode, response.body).toBe(200); const proposal = response.json().data; expect(proposal.validation.passed).toBe(false);
+  const applied = await s.app.inject({ method: "POST", url: "/api/workflows/report/commands", headers: s.headers(), payload: { baseVersion: 1, baseHash: s.hash, proposalId: proposal.id, command: proposal.command } });
+  expect(applied.statusCode).toBe(200); expect(applied.json().data).toMatchObject({ canRun: false, validation: { passed: false } });
+  expect((await s.repository.snapshot()).executions).toEqual({});
 });
 
 test("scoped node edit preserves unrelated nodes and control flow and creates a nonrunnable draft", async () => {

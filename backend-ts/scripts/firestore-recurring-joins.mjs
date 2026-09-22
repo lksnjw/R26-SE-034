@@ -15,6 +15,7 @@ export async function verifyFirestoreRecurringJoins(context) {
   cases.push(...[true, false].map(selected => ({ mode: "joined-analysis", selected, loseACK: true })));
   cases.push(...[true, false].flatMap(selected => [false, true].map(loseACK => ({ mode: "reports", crossKeys: true, selected, loseACK }))));
   const restoreProvider = await reviewFixtureAnalysisEgress(context);
+  let primaryFailure;
   try { for (const { mode, crossKeys = false, selected, loseACK } of cases) {
     const caseId = (crossKeys ? "cross-join-keys" : mode) + "-" + selected + "-" + (loseACK ? "lostACK" : "normal");
     const candidate = crossKeys ? recurringCrossJoinWorkflow(tools, "reportId") : recurringJoinWorkflow(tools, mode, "reportId"), text = "Create a workflow to " + candidate.text;
@@ -140,5 +141,15 @@ export async function verifyFirestoreRecurringJoins(context) {
     log("actual Firestore v18 recurring joined chat " + caseId + ": exact inactive draft/restart/chat replay, explicit review/publication/calendar activation, selected-only report/model answers, " +
       (loseACK ? (crossKeys ? "persisted selected key join but fenced related read and delivery after lost ACK, recovery-required restart" :
         "persisted analysis answer but fenced dependent delivery after lost ACK, recovery-required restart") : "separate approval restart, one fixture acceptance/final answer") + " and no replay");
-  } } finally { setAnalysisFixture(undefined); setSynthesisFixture(undefined); await restoreProvider(); }
+  } } catch (error) { primaryFailure = error; throw error; }
+  finally {
+    setAnalysisFixture(undefined); setSynthesisFixture(undefined);
+    try { await restoreProvider(); }
+    catch (cleanupError) {
+      // A failed restart can leave no app for the restoration HTTP request.
+      // Preserve both diagnostics instead of hiding the actual campaign failure.
+      if (primaryFailure) throw new AggregateError([primaryFailure, cleanupError], "Recurring join fixture and provider restoration failed", { cause: primaryFailure });
+      throw cleanupError;
+    }
+  }
 }

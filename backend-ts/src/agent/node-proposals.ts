@@ -3,6 +3,7 @@ import { HandlerFailure, nextID, now, type CurrentUser, type HandlerServices } f
 import { assertChatAuthority } from "../http/handlers/model-selection.js";
 import { assertNodeContext, applyWorkflowCommand, nodeContextSchema, selectedNodePatchSchema, selectedNodePatchVersion, selectedNodePatchCommand, selectedNodePatchPreview } from "../workflows/commands.js";
 import { selectedConditionGuidance } from "../workflows/selected-condition-guidance.js";
+import { selectedProtectedGuidance } from "../workflows/selected-protected-guidance.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { promptData } from "../prompts/contracts.js";
 import type { ChatProcessingHooks } from "./chat-context.js";
@@ -21,13 +22,14 @@ export async function processNodeProposal(input: { context: unknown; content: st
     hooks.assertCurrent(state as import("../repository/store.js").RepositoryState);
     return assertNodeContext(state, context, user);
   });
-  const structural = ["if", "return", "foreach"].includes(scoped.node.kind ?? "");
+  const structural = ["if", "return", "foreach", "protect"].includes(scoped.node.kind ?? "");
   const modelNode = ["analysis", "agent"].includes(scoped.node.kind ?? "");
   const authoring = structural || modelNode ? readAuthoringContract(parseWorkflowYAMLStrict(scoped.workflow.yaml), services.registries.snapshot().tools, user.role, services.registries.hash()) : undefined;
   const collection = authoring?.collections?.find(node => node.nodeId === scoped.node.id);
   const prompt = promptData({ instruction: input.content, node: withoutSecretFields(scoped.node),
     ...(modelNode ? { allowedDataSources: authoring?.nodes.find(node => node.nodeId === scoped.node.id)?.dataSources.filter(source => source.binding.source === "nodeOutput") ?? [] } : {}),
     ...(scoped.node.kind === "if" ? selectedConditionGuidance(scoped.node.id, authoring) : {}),
+    ...(scoped.node.kind === "protect" ? selectedProtectedGuidance(scoped.node.id, authoring) : {}),
     ...(scoped.node.kind === "return" ? { allowedDataSources: authoring?.returns?.find(node => node.nodeId === scoped.node.id)?.dataSources ?? [] } : {}),
     ...(scoped.node.kind === "foreach" ? { allowedItemSources: collection?.itemSources ?? [], allowedCollectSources: collection?.collectSources ?? [] } : {}),
     tools: structural ? [] : services.registries.snapshot().tools.filter(tool => tool.allowed_roles.includes(user.role)).map(tool => ({ name: tool.name, inputSchema: tool.input_schema })) });
