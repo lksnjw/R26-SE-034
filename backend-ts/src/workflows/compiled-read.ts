@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { WorkflowBlueprint } from "../models/schemas.js";
 import { effectiveStepKind } from "../models/schemas.js";
-import { assertProtectedErrorSources, protectedOperationProfile } from "./protected-operation-profile.js";
+import { assertProtectedErrorSources, protectedOperationProfile, protectedErrorSourceIssues } from "./protected-operation-profile.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
 import { exactBridgeName } from "../tools/erpbridge-contract.js";
@@ -272,6 +272,27 @@ export function compileModelFixtureWorkflow(yaml: string, tools: readonly ToolDe
   if (built.issues.length) throw new Error("Model fixture projection is unsupported");
   const projection = { profile: "model-fixture-plan/v1" as const, nodes: nodes as ModelFixtureNode[],
     ...(built.ir.flow ? { flow: structuredClone(built.ir.flow) } : {}), ...(built.ir.inputSchema ? { inputSchema: structuredClone(built.ir.inputSchema) } : {}) };
+  return { ...projection, sourceHash: workflowContentHash(yaml), simulationHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(projection)).digest("hex")}` };
+}
+
+/** Separate, non-authorizing projection for supplied protected-path tests.
+ * Never a read/operation publication, provider binding or admission receipt. */
+export function compileProtectedFixtureWorkflow(yaml: string, tools: readonly ToolDefinition[], role: string) {
+  if (Buffer.byteLength(yaml) > 200_000) throw new Error("Protected simulation source exceeds supported bounds");
+  const blueprint = parseWorkflowYAMLStrict(yaml), built = buildActionBindingsIR(blueprint, tools, role, new Map(), true, "draft-inspection");
+  if (!built.ir.flow || !protectedNodes(built.ir.flow).length) throw new Error("Protected simulation requires explicit protected scopes");
+  const definitions = new Map<string, ModelFixtureNode>([...built.ir.root.nodes, ...built.analysisNodes].map(node => [node.id, node]));
+  for (const node of built.agentNodes) {
+    const { allowedCapabilities: _private, ...fields } = node;
+    definitions.set(node.id, { ...fields, allowedActions: [...(blueprint.steps.find(step => step.id === node.id)!.allowed_actions ?? [])] });
+  }
+  built.issues.push(...protectedErrorSourceIssues(built.ir.flow, built.ir.root.nodes.map(node => ({ id: node.id,
+    tools: tools.filter(tool => tool.tool_id === node.capability.toolId) }))));
+  const nodes = blueprint.steps.map(step => definitions.get(step.id));
+  if (nodes.some(node => !node)) built.issues.push("Protected simulation has an unsupported node");
+  if (built.issues.length) throw new Error("Protected fixture projection is unsupported");
+  const projection = { profile: "protected-fixture-plan/v1" as const, nodes: nodes as ModelFixtureNode[], flow: structuredClone(built.ir.flow),
+    ...(built.ir.inputSchema ? { inputSchema: structuredClone(built.ir.inputSchema) } : {}) };
   return { ...projection, sourceHash: workflowContentHash(yaml), simulationHash: `sha256:${createHash("sha256").update(canonicalJSONBytes(projection)).digest("hex")}` };
 }
 export function isOperationToolNode(node: OperationNode): node is OperationToolNode { return node.kind === "action"; }

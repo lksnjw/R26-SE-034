@@ -6,8 +6,9 @@ import { HandlerFailure, type CurrentUser, type HandlerServices } from "./common
 import { assertActorAuthority } from "./model-selection.js";
 import { requireWorkflowBase } from "../../workflows/commands.js";
 import { boundFixtureData, parseReadFixtures, simulateReadWorkflow } from "../../workflows/read-simulation.js";
-import { selectedReadEvidenceYAML } from "../../workflows/read-completion-evidence.js";
+import { selectedReadEvidenceYAML, selectedProtectedFixtureEvidenceYAML } from "../../workflows/read-completion-evidence.js";
 import { parseModelFixtures, simulateModelWorkflow } from "../../workflows/model-simulation.js";
+import { parseProtectedFixtures, simulateProtectedWorkflow } from "../../workflows/protected-simulation.js";
 
 /** Bound fixture-bearing bodies before the recursively defined request schema.
  * Legacy non-fixture requests retain their existing validation contract. */
@@ -19,7 +20,8 @@ export function boundedReadFixtureRequest(body: unknown): boolean {
 export async function handleReadFixtureSimulation(request: FastifyRequest, reply: FastifyReply, services: HandlerServices, user: CurrentUser, workflow: Workflow, raw: unknown, input: Record<string, unknown>, traceId: string) {
   let fixtures;
   const modelFixtures = raw !== null && typeof raw === "object" && (raw as Record<string, unknown>).profile === "model-fixtures/v1";
-  try { fixtures = modelFixtures ? parseModelFixtures(raw) : parseReadFixtures(raw); boundFixtureData({ input, outputs: fixtures.outputs }); }
+  const protectedFixtures = raw !== null && typeof raw === "object" && (raw as Record<string, unknown>).profile === "protected-fixtures/v1";
+  try { fixtures = protectedFixtures ? parseProtectedFixtures(raw) : modelFixtures ? parseModelFixtures(raw) : parseReadFixtures(raw); boundFixtureData({ input, outputs: fixtures.outputs }); }
   catch { return reply.status(400).send(fail("Invalid or oversized read simulation fixtures", { code: "SIMULATION_FIXTURES_INVALID", traceId })); }
   try {
     requireWorkflowBase(workflow, fixtures.baseVersion, fixtures.baseHash);
@@ -32,15 +34,15 @@ export async function handleReadFixtureSimulation(request: FastifyRequest, reply
       rbac_ok: validation.rbac_ok, policy_ok: validation.policy_ok, process_order_ok: validation.process_order_ok, risk_ok: validation.risk_ok,
       errors: [...new Set(validation.errors.map(error => /^[A-Z][A-Z0-9_-]{0,63}:/.test(error) ? error.split(":")[0]! : "LOCAL_VERIFIER_REJECTED"))].slice(0, 50),
       warningCount: validation.warnings.length, failedRuleCount: validation.failed_rules.length };
-    let result: Awaited<ReturnType<typeof simulateReadWorkflow>> | Awaited<ReturnType<typeof simulateModelWorkflow>>;
+    let result: Awaited<ReturnType<typeof simulateReadWorkflow>> | Awaited<ReturnType<typeof simulateModelWorkflow>> | Awaited<ReturnType<typeof simulateProtectedWorkflow>>;
     if (!validation.passed) result = { outcome: "PLAN_BLOCKED", issues: ["Original local verifier rejected this draft"], trace: [], stepOutputs: {}, valueOutputs: {}, usedFixtureIds: [], unusedFixtureIds: Object.keys(fixtures.outputs) };
     else {
       const blueprint = parseWorkflowYAMLStrict(workflow.yaml);
       const selected: Parameters<typeof simulateReadWorkflow>[5] = (nodeId, args, prior, visit) => {
-        const prefix = selectedReadEvidenceYAML(blueprint, nodeId, args, visit, prior);
+        const prefix = (protectedFixtures ? selectedProtectedFixtureEvidenceYAML : selectedReadEvidenceYAML)(blueprint, nodeId, args, visit, prior);
         return services.validator.validatePlan("ReadFixtureSelectedPath", prefix, user.role).passed;
       };
-      result = fixtures.profile === "model-fixtures/v1" ? await simulateModelWorkflow(workflow.yaml, input, fixtures, tools, user.role, selected) :
+      result = fixtures.profile === "protected-fixtures/v1" ? await simulateProtectedWorkflow(workflow.yaml, input, fixtures, tools, user.role, selected) : fixtures.profile === "model-fixtures/v1" ? await simulateModelWorkflow(workflow.yaml, input, fixtures, tools, user.role, selected) :
         await simulateReadWorkflow(workflow.yaml, input, fixtures, tools, user.role, selected);
     }
     // Local interpretation awaits its driver. Deliver only under the same
@@ -54,8 +56,9 @@ export async function handleReadFixtureSimulation(request: FastifyRequest, reply
       if (error instanceof HandlerFailure) throw error;
       throw new HandlerFailure(503, "Simulation authority could not be confirmed; reload after storage recovery", { code: "SIMULATION_AUTHORITY_UNAVAILABLE" });
     }
-    return reply.send(ok({ dry_run: true, simulation: fixtures.profile === "model-fixtures/v1" ? "fixture-model/v1" : fixtures.profile === "read-fixtures/v2" ? "fixture-read/v2" : "fixture-read/v1", can_execute: false, plan_valid: validation.passed && result.outcome !== "PLAN_BLOCKED", validation: publicValidation, live_readiness: "not_checked", runtime_authorization: "not_checked", capability_admission: "not_checked", erp_calls: 0, model_calls: 0, persisted_run: false,
-      ...(modelFixtures ? { model_behavior: "not_tested", model_usage: "not_measured", agent_tool_calls: "not_simulated", approval: "not_granted" } : {}),
+    return reply.send(ok({ dry_run: true, simulation: protectedFixtures ? "fixture-protected/v1" : fixtures.profile === "model-fixtures/v1" ? "fixture-model/v1" : fixtures.profile === "read-fixtures/v2" ? "fixture-read/v2" : "fixture-read/v1", can_execute: false, plan_valid: validation.passed && result.outcome !== "PLAN_BLOCKED", validation: publicValidation, live_readiness: "not_checked", runtime_authorization: "not_checked", capability_admission: "not_checked", erp_calls: 0, model_calls: 0, persisted_run: false,
+      ...(modelFixtures || protectedFixtures ? { model_behavior: "not_tested", model_usage: "not_measured", agent_tool_calls: "not_simulated", approval: "not_granted" } : {}),
+      ...(protectedFixtures ? { handler_selection: "supplied_test_fault_only", erp_absence: "not_established", effect_behavior: "not_tested" } : {}),
       workflowId: workflow.id, baseVersion: fixtures.baseVersion, baseHash: fixtures.baseHash, registryHash, ...result }, "Fixture simulation only; no live service or execution was performed", { traceId }));
   } catch (error) {
     if (error instanceof HandlerFailure) return reply.status(error.status).send(fail(error.message, error.meta));

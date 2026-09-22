@@ -105,3 +105,45 @@ test("permission revocation discards pending simulation output", async () => {
   view.rerender(<ReadSimulationPanel workflowId="flow" record={record} steps={steps} canControl={false} />); resolve(response());
   await waitFor(() => expect(screen.queryByRole("region", { name: "Simulation results" })).toBeNull());
 });
+
+const protectedRecord = { ...record, executionProfile: "protected-operation-v1", authoring: { ...record.authoring,
+  protectedSimulationProfile: "protected-fixtures/v1", nodes: record.authoring.nodes.map(node => ({ ...node, simulatedBusinessReadErrorCodes: ["ERP_RESOURCE_NOT_FOUND"] })),
+  controlFlow: { kind: "sequence", nodes: [{ kind: "protect", id: "guard", body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "read" }] }, handler: { kind: "sequence", nodes: [] } }] } } };
+const protectedResponse = (extra = {}) => response({ simulation: "fixture-protected/v1", approval: "not_granted", model_behavior: "not_tested", model_usage: "not_measured", agent_tool_calls: "not_simulated",
+  handler_selection: "supplied_test_fault_only", erp_absence: "not_established", effect_behavior: "not_tested",
+  trace: [{ nodeId: "read", invocationId: "read", iterations: [], sourceIndex: 0, kind: "action", outcome: "SUPPLIED_BUSINESS_READ_ERROR" },
+    { nodeId: "guard", invocationId: "guard", iterations: [], sourceIndex: 0, kind: "protect", outcome: "SIMULATED_HANDLED_ERROR", output: "Supplied handled answer" }], ...extra });
+
+test("protected forms keep faults separate from successful outputs and show readable handled results", async () => {
+  workflowService.simulate.mockResolvedValue(protectedResponse()); open({ record: protectedRecord });
+  fireEvent.click(screen.getByLabelText("Supply response for read"));
+  fireEvent.change(screen.getByLabelText("read test response text"), { target: { value: "Retain when toggled" } });
+  fireEvent.change(screen.getByLabelText("read test response type"), { target: { value: "business" } });
+  expect(screen.queryByLabelText("read test response text")).toBeNull(); evaluate();
+  const result = await screen.findByRole("region", { name: "Simulation results" });
+  expect(workflowService.simulate).toHaveBeenCalledWith("flow", protectedRecord, {}, {}, "protected-fixtures/v1", { read: { kind: "business-read-error", code: "ERP_RESOURCE_NOT_FOUND" } });
+  expect(result.textContent).toContain("Test fault handled"); expect(result.textContent).toContain("not ERP evidence"); expect(result.querySelector("pre")).toBeNull();
+  expect(workflowService.run).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("read test response type"), { target: { value: "success" } });
+  expect(screen.getByLabelText("read test response text").value).toBe("Retain when toggled"); expect(screen.queryByRole("region", { name: "Simulation results" })).toBeNull();
+});
+
+test.each([undefined, "protected-fixtures/v2"])("unknown protected guidance %s does not fall through to another simulation", profile => {
+  open({ record: { ...protectedRecord, authoring: { ...protectedRecord.authoring, protectedSimulationProfile: profile } } });
+  expect(screen.queryByRole("button", { name: "Evaluate simulation" })).toBeNull(); expect(screen.getByText(/guidance is unavailable/)).toBeTruthy(); expect(workflowService.simulate).not.toHaveBeenCalled();
+});
+
+test("unmapped reads offer only a successful fixture or generic stop, not business error selection", () => {
+  open({ record: { ...protectedRecord, authoring: { ...protectedRecord.authoring, nodes: record.authoring.nodes } } });
+  fireEvent.click(screen.getByLabelText("Supply response for read")); expect(screen.queryByRole("option", { name: /Business read fault/ })).toBeNull();
+  expect(screen.getByRole("option", { name: /Generic tool error/ })).toBeTruthy();
+});
+
+test.each([{ approval: "granted" }, { erp_absence: "established" }, { handler_selection: "erp_error" }, { effect_behavior: "tested" },
+  { model_calls: 1 }, { simulation: "fixture-model/v1" }, { tokens: 10 },
+  { trace: [{ nodeId: "guard", kind: "protect", outcome: "DONE", invocationId: "guard", iterations: [], sourceIndex: 0 }] },
+  { trace: [{ nodeId: "unknown", kind: "protect", outcome: "SIMULATED_GROUP_SUCCEEDED", invocationId: "unknown", iterations: [], sourceIndex: 0 }] },
+  { trace: [{ nodeId: "read", kind: "action", outcome: "SUPPLIED_READ_OUTPUT", invocationId: "each/0/read", iterations: [], sourceIndex: 0 }] }])("protected result refuses forged authority or trace %j", async extra => {
+  workflowService.simulate.mockResolvedValue(protectedResponse(extra)); open({ record: protectedRecord }); evaluate();
+  await screen.findByRole("alert"); expect(screen.queryByRole("region", { name: "Simulation results" })).toBeNull();
+});

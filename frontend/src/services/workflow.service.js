@@ -29,11 +29,12 @@ export const workflowService = {
   async validateCanvas(payload) {
     return unwrap(await apiClient.post("/canvas/validate-workflow", payload));
   },
-  async simulate(id, revision, input, outputs, profile = "read-fixtures/v1") {
-    if (!["read-fixtures/v1", "read-fixtures/v2", "model-fixtures/v1"].includes(profile)) throw new Error("Unsupported fixture profile");
+  async simulate(id, revision, input, outputs, profile = "read-fixtures/v1", failures = {}) {
+    if (!["read-fixtures/v1", "read-fixtures/v2", "model-fixtures/v1", "protected-fixtures/v1"].includes(profile)) throw new Error("Unsupported fixture profile");
+    if (profile !== "protected-fixtures/v1" && Object.keys(failures).length) throw new Error("Business fault fixtures require the protected fixture profile");
     // Separate from real runs: no mode, approval, retry or idempotency receipt.
     return unwrap(await apiClient.post(`/workflows/${id}/run`, { dryRun: true, input,
-      simulation: { profile, baseVersion: revision.version, baseHash: revision.contentHash, outputs },
+      simulation: { profile, baseVersion: revision.version, baseHash: revision.contentHash, outputs, ...(profile === "protected-fixtures/v1" ? { failures } : {}) },
     }, { timeout: 30000 }));
   },
   async readiness(id) {

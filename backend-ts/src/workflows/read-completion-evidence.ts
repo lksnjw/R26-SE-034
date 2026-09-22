@@ -131,6 +131,18 @@ export class ReadCompletionEvidence {
  * and concrete argument set in observed order, not one Map entry per node.
  * This is NEVER the source used to mint a token or SDK capability. */
 export function selectedReadEvidenceYAML(blueprint: WorkflowBlueprint, nodeId: string, args: Record<string, unknown>, visit: ReadVisit, prior: readonly CompletedRead[]): string {
+  return expandedSelectedEvidenceYAML(blueprint, nodeId, args, visit, prior, false);
+}
+
+/** Fixture-only denial view. It cannot authorize execution or serve as a
+ * publication, receipt or broker input. Historical live-read guard is intact. */
+export function selectedProtectedFixtureEvidenceYAML(blueprint: WorkflowBlueprint, nodeId: string, args: Record<string, unknown>, visit: ReadVisit, prior: readonly CompletedRead[]): string {
+  const flow = parseReadControlFlow(blueprint.metadata?.controlFlow);
+  if (flow.schemaVersion !== "read-control-flow/v4") throw new Error("Protected fixture view requires its explicit draft version");
+  return expandedSelectedEvidenceYAML(blueprint, nodeId, args, visit, prior, true);
+}
+
+function expandedSelectedEvidenceYAML(blueprint: WorkflowBlueprint, nodeId: string, args: Record<string, unknown>, visit: ReadVisit, prior: readonly CompletedRead[], protectedFixtureOnly: boolean): string {
   const index = blueprint.steps.findIndex(step => step.id === nodeId);
   if (index < 0) throw new Error("Selected read evidence has no source action");
   if (prior.length > 5000) throw new ReadEvidenceLimit();
@@ -145,7 +157,7 @@ export function selectedReadEvidenceYAML(blueprint: WorkflowBlueprint, nodeId: s
     return { id: record.visit.invocationId, action: step.action, ...(step.kind === undefined ? {} : { kind: step.kind }), parameters };
   });
   const metadata = { ...blueprint.metadata };
-  if (metadata.controlFlow !== undefined) assertNoProtectedScopes(parseReadControlFlow(metadata.controlFlow).root);
+  if (metadata.controlFlow !== undefined && !protectedFixtureOnly) assertNoProtectedScopes(parseReadControlFlow(metadata.controlFlow).root);
   delete metadata.controlFlow;
   const yaml = stringify({ ...blueprint, metadata, steps });
   if (Buffer.byteLength(yaml) > 2_000_000) throw new ReadEvidenceLimit();

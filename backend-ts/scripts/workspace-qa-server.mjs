@@ -21,10 +21,12 @@ import { toolSchema } from "../src/registry/schemas.ts";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.ts";
 import { applyWorkflowCommand, workflowCommandSchema } from "../src/workflows/commands.ts";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.ts";
+import { protectedSimulationSource, protectedSimulationRead } from "../tests/fixtures/protected-simulation.js";
 
 const fixtureWorker = process.env.WORKSPACE_QA_READ_STATE === "worker";
 const collectionCanvas = process.env.WORKSPACE_QA_CANVAS === "collection";
-const protectedCanvas = process.env.WORKSPACE_QA_CANVAS === "protected";
+const protectedSimulationCanvas = process.env.WORKSPACE_QA_CANVAS === "protected-simulation";
+const protectedCanvas = process.env.WORKSPACE_QA_CANVAS === "protected" || protectedSimulationCanvas;
 const approvalFixture = process.env.WORKSPACE_QA_APPROVAL === "1";
 const operationFixture = process.env.WORKSPACE_QA_OPERATION === "1";
 const unknownOperation = process.env.WORKSPACE_QA_OPERATION_OUTCOME === "unknown";
@@ -51,11 +53,12 @@ let yaml = stringify({ name: "Daily invoice review", description: "LOCAL fixture
 ] } } } } : {}) });
 if (protectedCanvas) yaml = applyWorkflowCommand(yaml, workflowCommandSchema.parse({ type: "wrapProtected", nodeIds: ["invoices"], protectedId: "invoiceLookup", onError: { code: "ERP_RESOURCE_NOT_FOUND" },
   output: { schema: { type: "string" }, success: { kind: "literal", value: "Explicit synthetic body result" }, handled: { kind: "ref", source: "nodeOutput", nodeId: "invoiceLookup", path: ["error", "code"] } } }));
+if (protectedSimulationCanvas) yaml = stringify(protectedSimulationSource());
 const passwordHash = await hashPassword("Local-QA-only-2026!");
 await repository.mutate((state) => {
   state.users.qa = { id: "qa", name: "Local QA", email: "qa@example.test", roleId: "role_admin", permissionOverrides: [], status: "Active", initials: "QA", departmentId: null, createdAt, lastLoginAt: null };
   state.passwordHashes.qa = passwordHash;
-  state.workflows.qa_report = { id: "qa_report", name: "Daily invoice review", description: "Local fixture only", owner: { id: "qa", name: "Local QA" }, assignedUserIds: [], status: "PENDING", trigger: { type: "manual" }, steps: 2, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [], canRun: false, createdAt, updatedAt: createdAt, yaml, archived: false };
+  state.workflows.qa_report = { id: "qa_report", name: "Daily invoice review", description: "Local fixture only", owner: { id: "qa", name: "Local QA" }, assignedUserIds: [], status: "PENDING", trigger: { type: "manual" }, steps: protectedSimulationCanvas ? 4 : 2, successRate: 0, lastRunAt: null, publishedVersion: 0, draftVersion: 1, tags: [], domainTags: [], canRun: false, createdAt, updatedAt: createdAt, yaml, archived: false };
   state.versions.qa_report = [{ version: 1, artifactState: "DRAFT", yaml }];
   // Synthetic historical display evidence only, not a dispatched ERP execution.
   if (!collectionCanvas && !operationFixture) {
@@ -85,6 +88,13 @@ await repository.mutate((state) => {
   ] };
 });
 const registries = await RegistryService.load(resolve("tests/fixtures/chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
+if (protectedSimulationCanvas) {
+  const original = registries.snapshot();
+  registries.snapshot = () => ({ ...original, tools: [protectedSimulationRead], rules: [] });
+  registries.findTool = name => [protectedSimulationRead.tool_id, protectedSimulationRead.name, protectedSimulationRead.mcp_tool_name].includes(name) ? protectedSimulationRead : undefined;
+  registries.enabledRules = () => [];
+  registries.hash = () => resolvedParameterHashBytes(canonicalJSONBytes({ tools: [protectedSimulationRead], rules: [] }));
+}
 let operationTools;
 if (operationFixture) {
   const original = registries.snapshot(), read = toolSchema.parse({ ...original.tools[0], bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [],

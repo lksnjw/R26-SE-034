@@ -119,7 +119,7 @@ test("protected Return insertion requires current guidance and routes to the exa
 test.each(["protected-operation-v1", "protected-draft-runtime-pending"])("protected %s does not infer unsupported Return/simulation controls", async profile => {
   workflowService.readiness.mockResolvedValue(protectedRecord(profile)); await open();
   expect(screen.getByRole("button", { name: "Add return" }).disabled).toBe(true);
-  expect(screen.getByText(/Protected body\/handler simulation is not supported yet/)).toBeTruthy();
+  expect(screen.getByText(/Protected simulation guidance is unavailable/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Evaluate simulation" })).toBeNull();
 });
 

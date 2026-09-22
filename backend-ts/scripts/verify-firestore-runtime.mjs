@@ -1409,6 +1409,7 @@ try {
     assert(recoverable); assert.equal(recoverable.status, "RECOVERY_REQUIRED"); assert.equal(calls.filter(id => id === requested).length, 1);
     if (phase === "after") assert.equal(recoverable.stepOutputs["each/0/lookup"].structuredContent.id, requested.toUpperCase());
     else { assert.equal(recoverable.stepOutputs?.["each/0/lookup"], undefined); assert.equal(recoverable.readProgress.attempts["each/0/lookup"].status, "UNKNOWN"); }
+    const previousWriter = persistence;
     await stop();
     try { await start(await openApplicationRepository(config)); }
     catch (error) {
@@ -1418,7 +1419,7 @@ try {
       try {
         const row = await observer.db.doc(observer.writerPath).get();
         const lease = row.exists ? codec.decodeHead(row.data()) : null;
-        console.error("Collection lost-ACK restart failed", { phase, writerState: lease?.state ?? "ABSENT",
+        console.error("Collection lost-ACK restart failed", { phase, previousWriterFailure: previousWriter.records.writerFailureReason, writerState: lease?.state ?? "ABSENT",
           leaseRemainingMs: lease ? lease.expiresAt - row.readTime.toMillis() : null });
       } finally { await observer.close(); }
       throw error;

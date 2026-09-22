@@ -32,3 +32,11 @@ test("fixture request failure is not retried or converted into real execution", 
   const post = jest.spyOn(apiClient, "post").mockRejectedValue(new Error("timeout"));
   await expect(workflowService.simulate("flow", { version: 1, contentHash: "hash" }, {}, {})).rejects.toThrow("timeout"); expect(post).toHaveBeenCalledTimes(1);
 });
+
+test("protected fixtures carry separate explicit test faults without run admission fields", async () => {
+  const post = jest.spyOn(apiClient, "post").mockResolvedValue({ data: { data: {} } });
+  const failures = { lookup: { kind: "business-read-error", code: "ERP_RESOURCE_NOT_FOUND" } };
+  await workflowService.simulate("flow", { version: 4, contentHash: "hash" }, {}, {}, "protected-fixtures/v1", failures);
+  expect(post).toHaveBeenCalledWith("/workflows/flow/run", { dryRun: true, input: {}, simulation: { profile: "protected-fixtures/v1", baseVersion: 4, baseHash: "hash", outputs: {}, failures } }, { timeout: 30000 });
+  post.mockClear(); await expect(workflowService.simulate("flow", {}, {}, {}, "read-fixtures/v1", failures)).rejects.toThrow(/protected/); expect(post).not.toHaveBeenCalled();
+});

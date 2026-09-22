@@ -67,6 +67,117 @@ test("explicit close revokes synchronously and retains a released generation for
   const second = owner(); await second.acquire(); expect(lease(second).generation).toBe(2); second.assertActive();
 });
 
+test("close drains an acknowledged authority operation without turning its closed final-entry guard into lease uncertainty", async () => {
+  const storage = owner(); await storage.acquire();
+  let enter!: () => void, resume!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const operation = storage.withAuthority(async () => { enter(); await gate; return "acknowledged"; });
+  await entered; const closing = storage.close(); resume();
+  const outcomes = await Promise.allSettled([operation, closing]);
+  expect(outcomes[0]!.status).toBe("rejected"); expect(outcomes[1]!.status).toBe("fulfilled");
+  expect(storage.failureReason).toBeNull(); expect(lease(storage).state).toBe("RELEASED");
+  const successor = owner(); await successor.acquire(); successor.assertActive(); await successor.close();
+});
+
+test("closed transaction entry remains denied but permits exact release of a previously confirmed lease", async () => {
+  const storage = owner(); await storage.acquire();
+  let enter!: () => void, resume!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const operation = storage.withAuthority(async () => { enter(); await gate;
+    await storage.db.runTransaction(async transaction => { await storage.assertTransaction(transaction);
+      transaction.set(storage.db.doc("fixture/never-written"), { payload: Buffer.from("must not write") }); }, { maxAttempts: 1 });
+  });
+  await entered; const closing = storage.close(); resume();
+  const outcomes = await Promise.allSettled([operation, closing]);
+  expect(outcomes[0]!.status).toBe("rejected"); expect(outcomes[1]!.status).toBe("fulfilled");
+  expect(db.documents.has("fixture/never-written")).toBe(false);
+  expect(storage.failureReason).toBeNull(); expect(lease(storage).state).toBe("RELEASED");
+});
+
+test("a renewal queued before shutdown is denied without stranding the confirmed lease", async () => {
+  const storage = owner(); await storage.acquire();
+  let enter!: () => void, resume!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const operation = storage.withAuthority(async () => { enter(); await gate; });
+  await entered; const renewing = storage.renew(), closing = storage.close(); resume();
+  const outcomes = await Promise.allSettled([operation, renewing, closing]);
+  expect(outcomes.map(value => value.status)).toEqual(["rejected", "rejected", "fulfilled"]);
+  expect(storage.failureReason).toBeNull(); expect(lease(storage).state).toBe("RELEASED");
+  const successor = owner(); await successor.acquire(); await successor.close();
+});
+
+test.each(["lease", "anchor"])("shutdown during the awaited transaction %s read rejects writes but releases the confirmed lease", async phase => {
+  const storage = owner(); await storage.acquire();
+  const original = storage.db.runTransaction.bind(storage.db);
+  let enter!: () => void, resume!: () => void, gated = false;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  storage.db.runTransaction = (async (callback: any, options: any) => original(async (transaction: any) => {
+    const get = transaction.get.bind(transaction);
+    transaction.get = async (reference: any) => {
+      const row = await get(reference);
+      if (!gated && reference.path === (phase === "lease" ? storage.path : storage.anchorPath)) { gated = true; enter(); await gate; }
+      return row;
+    };
+    return callback(transaction);
+  }, options)) as any;
+  const operation = storage.withAuthority(() => storage.db.runTransaction(async transaction => {
+    await storage.assertTransaction(transaction);
+    transaction.set(storage.db.doc("fixture/never-written"), { payload: Buffer.from("must not write") });
+  }, { maxAttempts: 1 }));
+  await entered; const closing = storage.close(); resume();
+  const outcomes = await Promise.allSettled([operation, closing]);
+  expect(outcomes.map(value => value.status)).toEqual(["rejected", "fulfilled"]);
+  expect(db.documents.has("fixture/never-written")).toBe(false);
+  expect(storage.failureReason).toBeNull(); expect(lease(storage).state).toBe("RELEASED");
+  const successor = owner(); await successor.acquire(); await successor.close();
+});
+
+test.each(["before-callback", "after-commit"])("close drains an acknowledged in-flight renewal at %s before exact release", async phase => {
+  const storage = owner(); await storage.acquire(); tick(5_000);
+  const original = storage.db.runTransaction.bind(storage.db);
+  let enter!: () => void, resume!: () => void, gated = false;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  storage.db.runTransaction = (async (callback: any, options: any) => {
+    if (gated) return original(callback, options);
+    gated = true;
+    if (phase === "before-callback") { enter(); await gate; }
+    const result = await original(callback, options);
+    if (phase === "after-commit") { enter(); await gate; }
+    return result;
+  }) as any;
+  const renewing = storage.renew(); await entered;
+  const closing = storage.close(); expect(() => storage.assertActive()).toThrow("fenced");
+  resume();
+  const outcomes = await Promise.allSettled([renewing, closing]);
+  expect(outcomes.every(result => result.status === "fulfilled")).toBe(true);
+  expect(storage.failureReason).toBeNull(); expect(lease(storage).state).toBe("RELEASED");
+  const successor = owner(); await successor.acquire(); expect(successor.generation).toBe(2); await successor.close();
+});
+
+test("shutdown during a genuinely unacknowledged renewal never releases or overwrites the uncertain lease", async () => {
+  const storage = owner(); await storage.acquire(); tick(5_000);
+  const original = storage.db.runTransaction.bind(storage.db);
+  let enter!: () => void, resume!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  storage.db.runTransaction = (async (callback: any, options: any) => {
+    const result = await original(callback, options); enter(); await gate;
+    throw new Error(`Synthetic lost ACK ${String(result)}`);
+  }) as any;
+  const renewing = storage.renew(); await entered; const closing = storage.close(); resume();
+  const outcomes = await Promise.allSettled([renewing, closing]);
+  expect(outcomes[0]!.status).toBe("rejected"); expect(outcomes[1]!.status).toBe("fulfilled");
+  expect(storage.failureReason).toBe("UNCONFIRMED"); expect(lease(storage)).toMatchObject({ state: "HELD", sequence: 2 });
+  const saved = clone(db.documents.get(storage.path)), contender = owner();
+  await expect(contender.acquire()).rejects.toMatchObject({ reason: "WRITER_HELD" });
+  expect(db.documents.get(storage.path)).toEqual(saved); await contender.close();
+});
+
 test("a failed release retains a bounded reason and never overwrites its last confirmed lease", async () => {
   const storage = owner(); await storage.acquire(); const saved = clone(db.documents.get(storage.path));
   db.serverTime--;

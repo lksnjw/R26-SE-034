@@ -10,6 +10,8 @@ import { draftFlow } from "./draft-control-edits.js";
 import { isSecretField } from "../redact/secrets.js";
 import { usesCheckpointedOperationWorkflow } from "./execution-shape.js";
 import { protectedErrorSourceIssues, protectedOperationProfile } from "./protected-operation-profile.js";
+import { assertReadErrorContract } from "../tools/read-business-error.js";
+import { readErrorContractSchema } from "../registry/read-error-schema.js";
 
 type Schema = Record<string, unknown>;
 type Source = { label: string; expression: string; binding: ReadReference; schema: Schema };
@@ -135,7 +137,12 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
     const schema = granted ? project(tool.input_schema) : undefined;
     const outputSchema = granted && tool?.bridge_contract?.output_schema ? project(tool.bridge_contract.output_schema) : undefined;
     const validScope = prefix && safeID(step.id) && !seen.has(step.id) && Object.keys(step).every(key => ["id", "kind", "action", "connection_id", "parameters", "description"].includes(key));
+    let simulatedBusinessReadErrorCodes: string[] = [];
+    if (granted && tool && readErrorContractSchema.safeParse(tool.read_error_contract).success) {
+      try { assertReadErrorContract(tool); simulatedBusinessReadErrorCodes = ["ERP_RESOURCE_NOT_FOUND"]; } catch { /* Never offer a safeguard as a business-fault fixture. */ }
+    }
     const result = { nodeId: step.id, sourceAction: step.action ?? "", ...(step.connection_id || connections.length ? { connectionId: step.connection_id ?? connections.find(item => item.primary)?.id ?? connections[0]!.id } : {}), state: schema ? "LOCAL_CONTRACT" : "UNAVAILABLE",
+      simulatedBusinessReadErrorCodes,
       ...(schema && tool ? { inputSchema: schema, ...(outputSchema ? { outputSchema } : {}), contractHash: capabilityContractHash(tool), actions: [tool.name, tool.mcp_tool_name], effectClass: tool.is_read_only ? "read" : tool.operation_contract!.effect_class, requiresIndependentApproval: !tool.is_read_only } : {}),
       dataSources: validScope && (!compiled || scopes) ? upstream.filter(source => scopedSource(source, step.id) && (!scopes || source.binding.source === "workflowInput" || scopes.get(step.id)?.has(source.binding.nodeId!))).slice(-32).map(source => structuredClone(source)) : [],
       reason: schema ? "Local schema guidance only; live admission and runtime checks are separate" : "No supported role-granted local read schema; existing values are preserved" };
@@ -178,7 +185,7 @@ export function readAuthoringContract(blueprint: WorkflowBlueprint, tools: reado
   const modelNodesSupported = prefix && blueprint.steps.length > 0 && (!editableFlow || structuralNodes(editableFlow).every(node => node.kind === "return" || node.kind === "if" || node.kind === "protect")) && (!compiled || !compiled.issues.length);
   const returnNodesSupported = prefix && blueprint.trigger.type === "manual" && (!compiled || !compiled.issues.length) && (!editableFlow || structuralNodes(editableFlow).every(node => node.kind === "return" || node.kind === "if" || node.kind === "protect"));
   const mergeNodesSupported = returnNodesSupported;
-  const value = { profile: "read-authoring/v1", registryHash, executionProfile, modelNodesSupported, returnNodesSupported, mergeNodesSupported, connectionChoices, ...(inputSchema ? { inputSchema } : {}), nodes, ...(protectedIssues.length ? { protectedIssues } : {}), ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides, protectedGroups: protectedGuides } : {}) };
-  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, nodes: [], conditions: [], returns: [], collections: [], protectedGroups: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
+  const value = { profile: "read-authoring/v1", registryHash, executionProfile, protectedSimulationProfile: protectedGroups.length ? "protected-fixtures/v1" : null, modelNodesSupported, returnNodesSupported, mergeNodesSupported, connectionChoices, ...(inputSchema ? { inputSchema } : {}), nodes, ...(protectedIssues.length ? { protectedIssues } : {}), ...(editableFlow ? { controlFlow: editableFlow, conditions, returns, collections: collectionGuides, protectedGroups: protectedGuides } : {}) };
+  if (canonicalJSONBytes(value).length > 1_000_000) return { profile: "read-authoring/v1", registryHash, executionProfile, protectedSimulationProfile: null, nodes: [], conditions: [], returns: [], collections: [], protectedGroups: [], ...(value.controlFlow ? { controlFlow: value.controlFlow } : {}), reason: "Schema guidance exceeds supported size; values remain preserved" };
   return value;
 }

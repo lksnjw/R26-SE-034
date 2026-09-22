@@ -21,6 +21,11 @@ export type FirestoreWriterFailureReason = "UNCONFIRMED" | "CLOCK_INVALID" | "CO
 export class FirestoreOwnershipFailure extends Error {
   constructor(readonly reason: FirestoreWriterFailureReason = "UNCONFIRMED") { super("Confirmed Firestore writer ownership is unavailable, expired or changed; dispatch is fenced"); }
 }
+// Private shutdown signal, never proof of unknown remote ownership. A closed
+// controller remains unusable; only close's exact release transaction may run.
+class FirestoreWriterClosed extends FirestoreOwnershipFailure {
+  constructor() { super("CONTROLLER_UNAVAILABLE"); }
+}
 const ownershipFailure = (error: unknown) => error instanceof FirestoreOwnershipFailure ? error : new FirestoreOwnershipFailure();
 
 /** One trusted server controller per explicit namespace. This is a lease,
@@ -64,11 +69,14 @@ export class FirestoreWriterOwnership {
   private sample(): Sample {
     const current = this.checkedSample(); this.#origin ??= { ...current }; this.#last = { ...current }; return current;
   }
-  private available(): void { if (this.#closed || this.#fenced) throw new FirestoreOwnershipFailure(this.#failureReason ?? "CONTROLLER_UNAVAILABLE"); }
+  private available(): void {
+    if (this.#closed) throw new FirestoreWriterClosed();
+    if (this.#fenced) throw new FirestoreOwnershipFailure(this.#failureReason ?? "CONTROLLER_UNAVAILABLE");
+  }
   /** Synchronous final-entry guard. Only an acknowledged lease can extend
    * this deadline; probes, pending renewal and local wall time cannot do so. */
   assertActive(): void {
-    if (this.#closed) throw new FirestoreOwnershipFailure();
+    if (this.#closed) throw new FirestoreWriterClosed();
     try {
       this.available(); const now = this.sample();
       if (!this.#lease || this.#lease.state !== "HELD" || now.monotonic >= this.#deadline) throw new FirestoreOwnershipFailure("LOCAL_DEADLINE");
@@ -107,7 +115,12 @@ export class FirestoreWriterOwnership {
   async renew(): Promise<void> {
     await this.#mutex.runExclusive(async () => {
       try { this.assertActive(); await this.transition("renew"); }
-      catch (error) { this.deny(error); throw ownershipFailure(error); }
+      catch (error) {
+        // A queued renewal may reach the mutex after close's synchronous
+        // revocation. No transition was entered: this is not an unknown ACK.
+        if (!(error instanceof FirestoreWriterClosed)) this.deny(error);
+        throw ownershipFailure(error);
+      }
     });
   }
   private async transition(kind: "acquire" | "renew" | "release"): Promise<void> {
@@ -143,13 +156,20 @@ export class FirestoreWriterOwnership {
       if (kind !== "release" && (now >= proposed.expiresAt - FIRESTORE_WRITER_BOUNDS.entryMargin || this.checkedSample().monotonic >= deadline)) throw new FirestoreOwnershipFailure("TRANSITION_DEADLINE");
       if (kind !== "acquire" && now >= before!.expiresAt) throw new FirestoreOwnershipFailure("OWNER_CHANGED_OR_EXPIRED");
       if (kind === "acquire" && actual?.state === "HELD" && now < actual.expiresAt) throw new FirestoreOwnershipFailure("WRITER_HELD");
-      if (kind !== "release" && this.#closed) throw new FirestoreOwnershipFailure("CONTROLLER_UNAVAILABLE");
+      // Shutdown denies all new dispatch synchronously, but drains an already
+      // entered renewal. Aborting that known-owner transition solely because
+      // close began would strand the last lease and prevent clean handoff.
+      // Acquisition must still never publish authority after cancellation.
+      if (kind === "acquire" && this.#closed) throw new FirestoreOwnershipFailure("CONTROLLER_UNAVAILABLE");
       transaction.set(reference, document);
       if (kind === "acquire") transaction.set(anchorRef, anchorDocument);
     }, { maxAttempts: 5 });
     if (kind === "release") { this.#lease = null; this.#deadline = 0; return; }
-    this.available(); const acknowledgedAt = this.sample();
+    if (this.#fenced || kind === "acquire" && this.#closed) throw new FirestoreOwnershipFailure(this.#failureReason ?? "CONTROLLER_UNAVAILABLE");
+    const acknowledgedAt = this.sample();
     if (acknowledgedAt.monotonic >= deadline) throw new FirestoreOwnershipFailure("ACK_DEADLINE");
+    // A closed controller records the exact ACK solely so close can release
+    // it under the mutex. assertActive continues to reject while closed.
     this.#lease = proposed; this.#deadline = deadline;
   }
   /** Record activation and the ownership check use the same transaction.
@@ -162,8 +182,11 @@ export class FirestoreWriterOwnership {
       const anchor = await transaction.get(this.db.doc(this.anchorPath));
       if (!anchor.exists || !same(this.anchor(anchor.data()), this.anchorValue(lease))) throw new FirestoreOwnershipFailure();
       const local = this.checkedSample();
-      if (local.monotonic >= this.#deadline || this.#closed || this.#fenced) throw new FirestoreOwnershipFailure();
-    } catch { throw new FirestoreOwnershipFailure(); }
+      if (local.monotonic >= this.#deadline || this.#fenced) throw new FirestoreOwnershipFailure();
+      // Close may begin during either awaited read. The exact remote owner,
+      // anchor and clock checks above still win over a shutdown-only denial.
+      if (this.#closed) throw new FirestoreWriterClosed();
+    } catch (error) { if (error instanceof FirestoreWriterClosed) throw error; throw new FirestoreOwnershipFailure(); }
   }
   /** Pure recheck after awaited body reads, immediately before metadata writes.
    * Denial observers run outside retryable callbacks, not in this method. */
@@ -174,8 +197,13 @@ export class FirestoreWriterOwnership {
   async withAuthority<T>(operation: () => Promise<T>): Promise<T> {
     return this.#mutex.runExclusive(async () => {
       this.assertActive();
-      try { const result = await operation(); this.assertActive(); return result; }
-      catch (error) { if (error instanceof FirestoreOwnershipFailure) this.deny(error); throw error; }
+      let result: T;
+      try { result = await operation(); }
+      catch (error) { if (error instanceof FirestoreOwnershipFailure && !(error instanceof FirestoreWriterClosed)) this.deny(error); throw error; }
+      // The final guard already latches genuine deadline/clock denial. Normal
+      // close must reject delivery without reclassifying an acknowledged
+      // operation as unknown ownership and preventing exact lease release.
+      this.assertActive(); return result;
     });
   }
   async close(): Promise<void> {
