@@ -1,7 +1,9 @@
 import { assertReadContinuation, type Execution, type ExecutionEvent, type ReadJob, type ReadContinuation, type RepositoryState, type StoredRecord } from "./store.js";
+import { assertProtectedContinuation, type ProtectedContinuation } from "./protected-continuation-record.js";
 
 export type ExecutionCheckpoint = {
   executionId: string; execution?: Execution; job?: ReadJob; continuation?: ReadContinuation;
+  protectedContinuation?: ProtectedContinuation;
   timeline?: StoredRecord[]; logs?: StoredRecord[]; events?: ExecutionEvent[];
   auditStart: number; auditAppend: Record<string, unknown>[];
 };
@@ -28,7 +30,7 @@ export function executionTransaction(state: RepositoryState, executionId: string
     views.set(value, view); return view;
   };
   const selected: Record<string, { present: boolean; value: unknown }> = {};
-  const scopedMap = (field: "executions" | "readJobs" | "readContinuations" | "timelines" | "executionLogs" | "executionEvents") => {
+  const scopedMap = (field: "executions" | "readJobs" | "readContinuations" | "protectedContinuations" | "timelines" | "executionLogs" | "executionEvents") => {
     const source = state[field], present = Object.hasOwn(source, executionId), cell = selected[field] = { present, value: present ? structuredClone(source[executionId]) : undefined };
     return new Proxy(Object.create(null) as Record<string, unknown>, {
       get: (_, key) => key === executionId ? cell.value : readonly(Reflect.get(source, key)),
@@ -60,7 +62,7 @@ export function executionTransaction(state: RepositoryState, executionId: string
     },
     deleteProperty: deny, defineProperty: deny, setPrototypeOf: deny, preventExtensions: deny,
   });
-  const writable = { executions: scopedMap("executions"), readJobs: scopedMap("readJobs"), readContinuations: scopedMap("readContinuations"), timelines: scopedMap("timelines"), executionLogs: scopedMap("executionLogs"), executionEvents: scopedMap("executionEvents"), auditLogs: audits };
+  const writable = { executions: scopedMap("executions"), readJobs: scopedMap("readJobs"), readContinuations: scopedMap("readContinuations"), protectedContinuations: scopedMap("protectedContinuations"), timelines: scopedMap("timelines"), executionLogs: scopedMap("executionLogs"), executionEvents: scopedMap("executionEvents"), auditLogs: audits };
   const view = new Proxy(Object.create(null) as RepositoryState, {
     get: (_, key) => Object.hasOwn(writable, key) ? Reflect.get(writable, key) : readonly(Reflect.get(state, key)),
     has: (_, key) => Reflect.has(state, key), ownKeys: () => Reflect.ownKeys(state),
@@ -74,8 +76,15 @@ export function executionTransaction(state: RepositoryState, executionId: string
     if (job.present && (!job.value || (job.value as ReadJob).executionId !== executionId)) throw new Error("Execution job identity changed");
     const continuation = selected.readContinuations!;
     if (continuation.present) { assertReadContinuation(continuation.value, executionId); if (!execution.present) throw new Error("Orphan private read continuation"); }
+    const protectedContinuation = selected.protectedContinuations!;
+    if (protectedContinuation.present) {
+      assertProtectedContinuation(protectedContinuation.value, executionId);
+      if (!execution.present) throw new Error("Orphan private protected continuation");
+      if (continuation.present) throw new Error("Conflicting private continuation profiles");
+    }
     for (const field of ["timelines", "executionLogs", "executionEvents"]) if (selected[field]!.present && !Array.isArray(selected[field]!.value)) throw new Error("Execution evidence must remain an array");
     return structuredClone({ executionId, ...(execution.present ? { execution: execution.value as Execution } : {}), ...(job.present ? { job: job.value as ReadJob } : {}), ...(continuation.present ? { continuation: continuation.value as ReadContinuation } : {}),
+      ...(protectedContinuation.present ? { protectedContinuation: protectedContinuation.value as ProtectedContinuation } : {}),
       ...(selected.timelines!.present ? { timeline: selected.timelines!.value as StoredRecord[] } : {}), ...(selected.executionLogs!.present ? { logs: selected.executionLogs!.value as StoredRecord[] } : {}),
       ...(selected.executionEvents!.present ? { events: selected.executionEvents!.value as ExecutionEvent[] } : {}), auditStart, auditAppend });
   };
@@ -84,7 +93,7 @@ export function executionTransaction(state: RepositoryState, executionId: string
 
 export function applyExecutionCheckpoint(state: RepositoryState, checkpoint: ExecutionCheckpoint): RepositoryState {
   const updated = { ...state };
-  const fields = [["executions", "execution"], ["readJobs", "job"], ["readContinuations", "continuation"], ["timelines", "timeline"], ["executionLogs", "logs"], ["executionEvents", "events"]] as const;
+  const fields = [["executions", "execution"], ["readJobs", "job"], ["readContinuations", "continuation"], ["protectedContinuations", "protectedContinuation"], ["timelines", "timeline"], ["executionLogs", "logs"], ["executionEvents", "events"]] as const;
   for (const [field, key] of fields) {
     const records = { ...state[field] };
     if (Object.hasOwn(checkpoint, key)) Object.defineProperty(records, checkpoint.executionId, { value: checkpoint[key], configurable: true, enumerable: true, writable: true });

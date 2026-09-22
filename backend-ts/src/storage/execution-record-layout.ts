@@ -1,10 +1,11 @@
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { assertReadContinuation, type Execution, type RepositoryState } from "../repository/store.js";
 import type { ExecutionCheckpoint } from "../repository/execution-transaction.js";
+import { assertProtectedContinuation } from "../repository/protected-continuation-record.js";
 
 export type RuntimeRecord = { profile: "runtime-record/v1"; path: string[]; value: unknown };
 export const recordKey = (path: string[]) => JSON.stringify(path);
-const runtimeFields = ["executions", "readJobs", "readContinuations", "timelines", "executionLogs", "executionEvents", "auditLogs"] as const;
+const runtimeFields = ["executions", "readJobs", "readContinuations", "protectedContinuations", "timelines", "executionLogs", "executionEvents", "auditLogs"] as const;
 const outputFields = [["attempts", "readProgress", "attempts"], ["receipts", "iterationProgress", "receipts"], ["outputs", null, "stepOutputs"], ["values", null, "valueOutputs"], ["report-coverages", null, "reportCoverages"], ["report-pages", null, "reportPageSecret"], ["runtime-approvals", "runtimeApprovalSecret", "records"], ["operation-intents", "operationSecret", "intents"], ["operation-protected-scopes", "operationSecret", "protectedScopes"], ["operation-reconciliations", "operationSecret", "reconciliations"], ["operation-readbacks", "operationSecret", "readbacks"], ["operation-recoveries", "operationSecret", "recoveries"], ["report-page-resolutions", "operationSecret", "reportPageResolutions"]] as const;
 const arrayFields = [["timelines", "timeline-entry"], ["executionLogs", "log-entry"], ["executionEvents", "event-entry"]] as const;
 const executionSections = new Set<string>([...runtimeFields.filter(field => field !== "auditLogs"), ...outputFields.map(([section]) => section), ...arrayFields.map(([, section]) => section)]);
@@ -34,6 +35,12 @@ export function checkpointRecords(checkpoint: ExecutionCheckpoint): RuntimeRecor
   const id = checkpoint.executionId, result = checkpoint.execution ? executionCells(id, checkpoint.execution) : [];
   if (checkpoint.job) { if (checkpoint.job.executionId !== id) throw new Error("Normalized job identity differs from its key"); result.push(cell(["readJobs", id], checkpoint.job)); }
   if (checkpoint.continuation) { assertReadContinuation(checkpoint.continuation, id); if (!checkpoint.execution) throw new Error("Orphan private read continuation"); result.push(cell(["readContinuations", id], checkpoint.continuation)); }
+  if (checkpoint.protectedContinuation) {
+    assertProtectedContinuation(checkpoint.protectedContinuation, id);
+    if (!checkpoint.execution) throw new Error("Orphan private protected continuation");
+    if (checkpoint.continuation) throw new Error("Conflicting private continuation profiles");
+    result.push(cell(["protectedContinuations", id], checkpoint.protectedContinuation));
+  }
   for (const [field, entries, property] of [["timelines", "timeline-entry", "timeline"], ["executionLogs", "log-entry", "logs"], ["executionEvents", "event-entry", "events"]] as const)
     if (Object.hasOwn(checkpoint, property)) result.push(...arrayCells(field, entries, id, checkpoint[property]!));
   if (checkpoint.auditAppend.length) {
@@ -49,6 +56,12 @@ export function splitRuntimeState(state: RepositoryState): RuntimeRecord[] {
   for (const [id, execution] of Object.entries(object(state.executions))) result.push(...executionCells(id, execution as Execution));
   for (const [id, job] of Object.entries(object(state.readJobs))) { if (object(job).executionId !== id) throw new Error("Normalized job identity differs from its key"); result.push(cell(["readJobs", id], job)); }
   for (const [id, record] of Object.entries(object(state.readContinuations))) { assertReadContinuation(record, id); if (!Object.hasOwn(state.executions, id)) throw new Error("Orphan private read continuation"); result.push(cell(["readContinuations", id], record)); }
+  for (const [id, record] of Object.entries(object(state.protectedContinuations))) {
+    assertProtectedContinuation(record, id);
+    if (!Object.hasOwn(state.executions, id)) throw new Error("Orphan private protected continuation");
+    if (Object.hasOwn(state.readContinuations, id)) throw new Error("Conflicting private continuation profiles");
+    result.push(cell(["protectedContinuations", id], record));
+  }
   for (const [field, entries] of arrayFields) for (const [id, values] of Object.entries(object(state[field]))) result.push(...arrayCells(field, entries, id, values as unknown[]));
   state.auditLogs.forEach((value, at) => result.push(cell(["audit-entry", String(at)], value))); return result;
 }
@@ -64,7 +77,7 @@ export function assembleRuntimeState(records: Iterable<RuntimeRecord>): Reposito
   const rootCell = cells.get(recordKey(["root"])); if (!rootCell) throw new Error("Normalized runtime root is missing");
   const state = { ...object(rootCell.value) } as unknown as RepositoryState;
   if (state.version !== 1 || runtimeFields.some(field => Object.hasOwn(state, field))) throw new Error("Invalid normalized runtime root");
-  state.executions = {}; state.readJobs = {}; state.readContinuations = {}; state.timelines = {}; state.executionLogs = {}; state.executionEvents = {}; state.auditLogs = [];
+  state.executions = {}; state.readJobs = {}; state.readContinuations = {}; state.protectedContinuations = {}; state.timelines = {}; state.executionLogs = {}; state.executionEvents = {}; state.auditLogs = [];
   const arrays = new Map<string, { values: unknown[]; expected: number; written: Set<number> }>();
   const addArray = (path: string[], target: Record<string, unknown> | null, id?: string) => {
     const expected = length(cells.get(recordKey(path))!.value), values: unknown[] = [];
@@ -76,11 +89,12 @@ export function assembleRuntimeState(records: Iterable<RuntimeRecord>): Reposito
     if (path[0] === "executions" && path.length === 2) { if (object(value).id !== path[1]) throw new Error("Normalized execution identity changed"); put(state.executions, path[1]!, structuredClone(value)); }
     if (path[0] === "readJobs" && path.length === 2) { if (object(value).executionId !== path[1]) throw new Error("Normalized job identity changed"); put(state.readJobs, path[1]!, value); }
     if (path[0] === "readContinuations" && path.length === 2) { assertReadContinuation(value, path[1]!); put(state.readContinuations, path[1]!, value); }
+    if (path[0] === "protectedContinuations" && path.length === 2) { assertProtectedContinuation(value, path[1]!); put(state.protectedContinuations, path[1]!, value); }
     for (const [field] of arrayFields) if (path[0] === field && path.length === 2) addArray(path, state[field], path[1]);
   }
   for (const { path, value } of cells.values()) {
     const [section, id, key] = path;
-    if ((section === "root" || section === "auditLogs") && path.length === 1 || ["executions", "readJobs", "readContinuations", ...arrayFields.map(([field]) => field)].includes(section!) && path.length === 2) continue;
+    if ((section === "root" || section === "auditLogs") && path.length === 1 || ["executions", "readJobs", "readContinuations", "protectedContinuations", ...arrayFields.map(([field]) => field)].includes(section!) && path.length === 2) continue;
     const output = outputFields.find(([field]) => field === section);
     if (output && path.length === 3) {
       const execution = state.executions[id!]; if (!execution) throw new Error("Orphan normalized output");

@@ -3,6 +3,7 @@ import { AsyncMutex } from "./async-mutex.js";
 import { executionTransaction, applyExecutionCheckpoint, type ExecutionCheckpoint } from "./execution-transaction.js";
 import type { Principal, Workflow } from "../models/schemas.js";
 import type { ReadCompilationReceipt } from "../workflows/compiled-read.js";
+import { assertProtectedContinuation, type ProtectedContinuation } from "./protected-continuation-record.js";
 
 export type Role = { id: string; name: string; description: string; permissions: string[]; createdAt: string };
 export type User = {
@@ -247,6 +248,8 @@ export type RepositoryState = {
   executionEvents: Record<string, ExecutionEvent[]>;
   readJobs: Record<string, ReadJob>;
   readContinuations: Record<string, ReadContinuation>;
+  /** Separate private profile; never an execution answer or a legacy cursor. */
+  protectedContinuations: Record<string, ProtectedContinuation>;
   chatOperations: Record<string, ChatOperation>;
   chatOperationEvents: Record<string, ChatOperationEvent[]>;
   schedules: Record<string, WorkflowSchedule>;
@@ -554,6 +557,12 @@ export function restoreState(payload: Uint8Array): RepositoryState {
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) throw new Error(`Invalid stored ${key}; admission recovery requires repair`);
   if (!restored.readContinuations || typeof restored.readContinuations !== "object" || Array.isArray(restored.readContinuations)) throw new Error("Invalid private read continuation map");
   for (const [id, record] of Object.entries(restored.readContinuations)) { assertReadContinuation(record, id); if (!Object.hasOwn(restored.executions, id)) throw new Error("Orphan private read continuation"); }
+  if (!restored.protectedContinuations || typeof restored.protectedContinuations !== "object" || Array.isArray(restored.protectedContinuations)) throw new Error("Invalid private protected continuation map");
+  for (const [id, record] of Object.entries(restored.protectedContinuations)) {
+    assertProtectedContinuation(record, id);
+    if (!Object.hasOwn(restored.executions, id)) throw new Error("Orphan private protected continuation");
+    if (Object.hasOwn(restored.readContinuations, id)) throw new Error("Conflicting private continuation profiles");
+  }
   for (const role of Object.values(defaults.roles)) if (restored.roles[role.id] === undefined) restored.roles[role.id] = role;
   const knownPermissions = new Set(restored.permissions.map((item) => item.key));
   for (const permission of defaults.permissions) if (!knownPermissions.has(permission.key)) restored.permissions.push(permission);
@@ -584,6 +593,7 @@ export function initialState(): RepositoryState {
     executionEvents: {},
     readJobs: {},
     readContinuations: {},
+    protectedContinuations: {},
     chatOperations: {},
     chatOperationEvents: {},
     schedules: {},

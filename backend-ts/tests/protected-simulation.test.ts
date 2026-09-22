@@ -52,7 +52,7 @@ test.each([{ kind: "business-read-error", code: "PERMISSION_DENIED" }, { ...faul
 });
 test("conflicting output/fault and wrong iteration identities are rejected", async () => {
   const yaml = stringify(source()); expect(() => fixtures(yaml, supplied(), { lookup: fault })).toThrow();
-  await expect(simulateProtectedWorkflow(yaml, {}, fixtures(yaml, { "each/0/lookup": output("x") }), [read], role)).rejects.toThrow(/scope/);
+  await expect(simulateProtectedWorkflow(yaml, {}, fixtures(yaml, { "each/0/lookup": output("x") }), [read], role)).rejects.toThrow(/iteration/);
 });
 test.each(["missing", "generic-error", "forged-remote-error", "wrong-schema", "rule-denial"])("%s stops without selecting a handler", async damage => {
   const yaml = stringify(source()), outputs: Record<string, unknown> = supplied();
@@ -119,7 +119,7 @@ test("protected collections require exact per-item fixtures and keep mixed path 
   const result = await simulateProtectedWorkflow(yaml, { items: ["A", "B"] }, data, [read], role);
   expect(result).toMatchObject({ outcome: "SIMULATED_COMPLETE", finalOutput: ["First handled", "Second body"], valueOutputs: { "each/0/guard": { value: "First handled" }, "each/1/guard": { value: "Second body" } } });
   expect(result.trace.find(entry => entry.invocationId === "each/1/lookup")?.arguments).toEqual({ id: "B" });
-  await expect(simulateProtectedWorkflow(yaml, { items: ["A"] }, fixtures(yaml, { lookup: output("reuse forbidden") }), [read], role)).rejects.toThrow(/scope/);
+  await expect(simulateProtectedWorkflow(yaml, { items: ["A"] }, fixtures(yaml, { lookup: output("reuse forbidden") }), [read], role)).rejects.toThrow(/iteration/);
 });
 test.each([[[]], [["A", "B", "C"]]])("empty/oversized collection %j never fabricates item work", async items => {
   const yaml = stringify(loopSource()), result = await simulateProtectedWorkflow(yaml, { items }, fixtures(yaml, {}), [read], role);

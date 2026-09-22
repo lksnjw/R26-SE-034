@@ -1,4 +1,4 @@
-const secretFragments = ["password", "token", "api_key", "apikey", "secret", "authorization", "auth_header", "private_key"] as const;
+const secretFragments = ["password", "token", "api_key", "apikey", "secret", "authorization", "auth_header", "private_key", "readcontinuations", "protectedcontinuations", "ciphertext"] as const;
 
 /*******************************************************************************
  * Function: isSecretField
