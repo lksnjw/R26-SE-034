@@ -2,6 +2,7 @@ import { apiClient } from "../config/axios";
 import { formatDuration, formatTokens, unwrap } from "./api";
 import { recordedModelUsage } from "../utils/recordedModelUsage";
 import { runAdmissionService } from "./run-admission.service";
+import { validProtectedApprovalReview } from "./protected-approval-review";
 
 const reconciliationId = value => typeof value === "string" && value.length > 0 && value.length <= 256;
 const reconciliationDate = value => typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -77,7 +78,9 @@ export const executionService = {
   },
   async getApproval(id, approvalId) {
     const value = unwrap(await apiClient.get(`/executions/${encodeURIComponent(id)}`, { params: { view: "approval", ...(approvalId ? { approvalId } : {}) } }));
-    if (value?.id !== id || value?.runtimeApproval?.profile !== "runtime-approval/v1" || !["PENDING", "APPROVED", "REJECTED", "CONSUMED"].includes(value.runtimeApproval.state) ||
+    const protectedReview = value?.runtimeApproval?.profile === "protected-approval/v1";
+    if (value?.id !== id || (protectedReview ? !validProtectedApprovalReview(value.runtimeApproval, value.status)
+      : value?.runtimeApproval?.profile !== "runtime-approval/v1" || !["PENDING", "APPROVED", "REJECTED", "CONSUMED"].includes(value.runtimeApproval.state)) ||
         !Number.isSafeInteger(value.runtimeApproval.version) || value.runtimeApproval.version < 1 || !/^sha256:[a-f0-9]{64}$/.test(value.runtimeApproval.reviewHash) ||
         typeof value.runtimeApproval.canDecide !== "boolean" || value.runtimeApproval.canResume !== false || approvalId && value.runtimeApproval.id !== approvalId || !value.runtimeApproval.arguments || typeof value.runtimeApproval.arguments !== "object" || Array.isArray(value.runtimeApproval.arguments))
       throw new Error("Exact transaction review is unavailable. Reload before deciding.");

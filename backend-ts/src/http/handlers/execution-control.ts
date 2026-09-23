@@ -10,6 +10,8 @@ import { admitOperationRecovery, createOperationRecoveryArtifact, operationRecov
 import { requestTraceId } from "../../trace/request-trace.js";
 import { reportPageResolutionView, resolveReportPage } from "../../runner/report-page-resolution.js";
 import { handleExecutionEvents } from "./execution-events.js";
+import { settleProtectedApprovalWait } from "../../runner/protected-approval-wait.js";
+import { restoreProtectedJob, sealProtectedCursor } from "../../runner/protected-job-state.js";
 
 export const EXECUTION_CONTROL_UNHANDLED = Symbol("execution-control-unhandled");
 
@@ -88,14 +90,27 @@ export async function handleExecutionControlRoute(route: RouteDefinition, reques
     catch { throw new HandlerFailure(404, "Execution not controllable by the current user"); }
     if (execution.status === "CANCELLED") return structuredClone(execution);
     const operation = execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" && execution.operationSecret?.profile === "operation-job/v1";
-    if (!["RUNNING", "PENDING", ...(operation ? ["AWAITING_APPROVAL"] : [])].includes(execution.status)) throw new HandlerFailure(409, "Execution is not running; cancellation cannot change a terminal outcome");
+    const protectedJob = execution.protectedJobSecret;
+    if (!["RUNNING", "PENDING", ...(operation ? ["AWAITING_APPROVAL"] : []), ...(protectedJob?.state === "WAITING" ? ["AWAITING_APPROVAL", "BLOCKED"] : [])].includes(execution.status)) throw new HandlerFailure(409, "Execution is not running; cancellation cannot change a terminal outcome");
     if (execution.readProgress?.profile !== "read-progress-v1") throw new HandlerFailure(501, "This legacy execution has no safe cancellation boundary");
     if (!execution.readProgress.cancellation) {
       execution.readProgress.cancellation = { requestedAt: new Date().toISOString(), requestedBy: actor };
       appendExecutionEvent(state, execution, "run.cancel_requested", { requestedBy: actor.id });
       appendAudit(state, { ...user, ...actor }, "execution.cancel_requested", "execution", execution.id, null, { status: "CANCELLATION_REQUESTED", transportInterrupted: false }, request);
     }
-    if (operation && ["PENDING", "AWAITING_APPROVAL"].includes(execution.status)) {
+    if (protectedJob?.state === "WAITING") {
+      settleProtectedApprovalWait(state, services, execution.id);
+    } else if (protectedJob?.state === "QUEUED") {
+      const saved = restoreProtectedJob(state, services, execution.id), pending = Object.values(saved.ledger.snapshot().intents)
+        .filter(intent => intent.sequence === saved.machine.snapshot().sequence), entered = pending.some(intent => ["DISPATCH_INTENT", "UNKNOWN"].includes(intent.state));
+      for (const intent of pending) if (intent.state === "DISPATCH_INTENT") saved.ledger.unknown(saved.machine, intent.key, intent.epoch);
+      execution.protectedInvocationSecret = saved.ledger.snapshot(); protectedJob.state = entered ? "RECOVERY_REQUIRED" : "FINISHED"; delete protectedJob.lease;
+      execution.status = entered ? "RECOVERY_REQUIRED" : "CANCELLED"; execution.completedAt = new Date().toISOString();
+      execution.durationMs = Math.max(0, Date.parse(execution.completedAt) - Date.parse(execution.startedAt));
+      execution.agentSummary = entered ? "Cancellation preserved an unconfirmed invocation. It was not replayed; reconciliation is required." : "Protected queued run cancelled before further dispatch. Earlier confirmed results remain saved.";
+      sealProtectedCursor(services, state, execution, saved.machine);
+      appendExecutionEvent(state, execution, entered ? "run.recovery_required" : "run.completed", { status: execution.status });
+    } else if (operation && ["PENDING", "AWAITING_APPROVAL"].includes(execution.status)) {
       if (!["QUEUED", "WAITING"].includes(execution.operationSecret!.state)) throw new HandlerFailure(409, "Operation has no cancellable queue or approval wait");
       execution.operationSecret!.state = "FINISHED"; delete execution.operationSecret!.lease;
       execution.status = "CANCELLED"; execution.completedAt = new Date().toISOString(); execution.durationMs = Math.max(0, Date.parse(execution.completedAt) - Date.parse(execution.startedAt));

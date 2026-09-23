@@ -13,6 +13,7 @@ import { canReadExecution } from "../execution-scope.js";
 import { requestTraceId } from "../../trace/request-trace.js";
 import { runWorkflowFor, resumeWorkflowApproval } from "./workflow-runtime.js";
 import { decideRuntimeApproval } from "../../runner/runtime-approvals.js";
+import { decideOwnedProtectedApproval } from "../../runner/protected-approval-review.js";
 import { assertCurrentRunController } from "../../runner/read-checkpoints.js";
 import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 import { assertActorAuthority } from "./model-selection.js";
@@ -355,6 +356,7 @@ async function retryExecution(
   );
   if (["PENDING", "RUNNING", "AWAITING_APPROVAL", "RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED"].includes(prior.status)) throw new HandlerFailure(409, "A queued, running, waiting or uncertain execution cannot be replayed through Retry; inspect its recorded outcomes first");
   if (prior.operationSecret && Object.keys(prior.operationSecret.intents).length) throw new HandlerFailure(409, "Retry cannot repeat recorded ERP operation intents, including operator-reconciled outcomes. Use a separately reviewed operation or qualified recovery artifact.");
+  if (prior.protectedJobSecret || prior.protectedInvocationSecret) throw new HandlerFailure(409, "Retry cannot replay an invocation-owned run or its approvals. Inspect exact item outcomes and use a separately qualified recovery path.");
   const workflow = await services.repository.read(
     (state) => state.workflows[prior.workflowId] ?? null,
   );
@@ -397,6 +399,10 @@ async function approveExecution(
   user: CurrentUser,
   services: HandlerServices,
 ): Promise<unknown> {
+  if (await services.repository.readAuthoritative(state => Boolean(state.executions[requestParam(request, "id")]?.protectedJobSecret || state.executions[requestParam(request, "id")]?.protectedApprovalSecret))) {
+    const decision = await decideOwnedProtectedApproval(services, requestParam(request, "id"), user, request.body, "APPROVED");
+    return reply.send(ok(decision, "Exact item approval recorded, not execution. The protected effect driver remains unqualified; no operation or email was dispatched.", null));
+  }
   if (await services.repository.read(state => Boolean(state.executions[requestParam(request, "id")]?.runtimeApprovalSecret))) {
     const decision = await decideRuntimeApproval(services.repository, requestParam(request, "id"), user, request.body, "APPROVED");
     return reply.send(ok(decision, decision.operationManaged ? "Exact approval recorded. The operation worker must recheck authority before dispatch; this receipt is not execution or delivery confirmation." : "Exact approval recorded, not execution. Safe effect resume/outbox dispatch remains unavailable.", null));
@@ -419,6 +425,10 @@ async function rejectExecution(
   user: CurrentUser,
   services: HandlerServices,
 ): Promise<unknown> {
+  if (await services.repository.readAuthoritative(state => Boolean(state.executions[requestParam(request, "id")]?.protectedJobSecret || state.executions[requestParam(request, "id")]?.protectedApprovalSecret))) {
+    const decision = await decideOwnedProtectedApproval(services, requestParam(request, "id"), user, request.body, "REJECTED");
+    return reply.send(ok(decision, "Exact item action rejected; this approval checkpoint did not dispatch", null));
+  }
   if (await services.repository.read(state => Boolean(state.executions[requestParam(request, "id")]?.runtimeApprovalSecret))) {
     const decision = await decideRuntimeApproval(services.repository, requestParam(request, "id"), user, request.body, "REJECTED");
     return reply.send(ok(decision, "Exact transaction rejected; its approval checkpoint did not dispatch", null));

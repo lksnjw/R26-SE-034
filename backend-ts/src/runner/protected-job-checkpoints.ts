@@ -23,6 +23,7 @@ import { promptData } from "../prompts/contracts.js";
 import { validateValue } from "../structured-output/validate.js";
 import { executeProtectedAgent, type ProtectedAgentCandidate } from "./protected-job-agent.js";
 import { nextProtectedAgent } from "./protected-agent-protocol.js";
+import { createOwnedProtectedApprovalWait, settleProtectedApprovalWait } from "./protected-approval-wait.js";
 
 const same = (left: unknown, right: unknown) => canonicalJSONBytes(left).equals(canonicalJSONBytes(right));
 type ReadNode = Extract<OperationNode, { kind: "action" }>;
@@ -67,6 +68,7 @@ export class ProtectedJobCheckpoints {
     const claimed = await services.repository.mutateExecution(executionId, state => {
       const saved = restoreProtectedJob(state, services, executionId), { run, ledger, machine } = saved, job = run.protectedJobSecret!;
       if (["FINISHED", "RECOVERY_REQUIRED"].includes(job.state)) return undefined;
+      if (job.state === "WAITING") { settleProtectedApprovalWait(state, services, executionId); return undefined; }
       if (job.state === "CLAIMED" && job.lease!.expiresAt > Date.now()) throw new Error("Protected run already has a current worker");
       const pending = Object.values(ledger.snapshot().intents).filter(value => value.sequence === machine.snapshot().sequence);
       // A durable entered intent is uncertain after takeover, never replayable.
@@ -133,7 +135,7 @@ export class ProtectedJobCheckpoints {
   }
   async next(): Promise<ProtectedMachinePoint | undefined> {
     return this.repository.readAuthoritative(state => {
-      if (state.executions[this.executionId]?.protectedJobSecret?.state === "FINISHED") return undefined;
+      if (["FINISHED", "WAITING"].includes(state.executions[this.executionId]?.protectedJobSecret?.state ?? "")) return undefined;
       this.assertDispatch(); return this.current(state).machine.peek() ?? undefined;
     });
   }
@@ -198,6 +200,17 @@ export class ProtectedJobCheckpoints {
       return saved.plan.ir.root.nodes.find(node => node.id === point?.nodeId)?.kind;
     });
     if (kind === "analysis") await this.executeAnalysis(); else if (kind === "agent") await this.executeAgentBoundary(false); else await this.executeRead();
+  }
+  /** Capture only this controller's exact current owned effect invocation.
+   * A wait releases the lease and closes renewal/dispatch observers. This does
+   * not qualify effect admission, SDK entry or public advanced Run. */
+  async requestApproval(): Promise<string> {
+    if (this.#read || this.#analysis || !this.#token) throw new Error("Protected approval cannot interrupt an active or uninitialized call");
+    const id = await this.repository.mutateExecution(this.executionId, state => {
+      this.assertDispatch(); this.current(state);
+      return createOwnedProtectedApprovalWait(state, this.services, this.executionId, this.#owner);
+    });
+    this.close(); return id;
   }
   /** One genuine confirmed agent sub-call may be yielded/reopened. No supplied
    * turn, answer or serialized flag can invoke this owned driver. */

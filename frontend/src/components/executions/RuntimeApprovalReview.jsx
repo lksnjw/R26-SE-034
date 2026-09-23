@@ -1,6 +1,7 @@
 import { useState } from "react";
 import ReadableValue from "../chat/ReadableValue";
 import { executionService } from "../../services/execution.service";
+import { validProtectedApprovalReview } from "../../services/protected-approval-review";
 
 // An incomplete display never gets an enabled decision button. Backend
 // identity/hash/policy checks remain independently mandatory.
@@ -17,10 +18,16 @@ export function completeApprovalDisplay(value) {
 }
 export default function RuntimeApprovalReview({ execution, onReload }) {
   const review = execution.runtimeApproval;
+  const protectedItem = review.profile === "protected-approval/v1";
+  const scopeComplete = !protectedItem || validProtectedApprovalReview(review, execution.status);
+  const selectedItem = protectedItem && scopeComplete ? review.iterations.map(frame => `${frame.loopId} · item ${frame.index + 1}`).join(" → ") : null;
+  const stateLabel = review.state === "CLOSED" ? "Closed — not dispatched" : review.state === "EXPIRED" ? "Expired — not dispatched"
+    : protectedItem && review.state === "APPROVED" ? "Approved — not dispatched" : review.state;
   const [note, setNote] = useState(""), [busy, setBusy] = useState(false), [uncertain, setUncertain] = useState(false), [notice, setNotice] = useState("");
   const [receipt, setReceipt] = useState(null), [confirmed, setConfirmed] = useState(false), [showReject, setShowReject] = useState(false);
   const operationVisible = typeof review.toolName === "string" && review.toolName.trim().length > 0 && typeof review.remoteToolName === "string" && review.remoteToolName.trim().length > 0;
-  const complete = operationVisible && completeApprovalDisplay(review.arguments);
+  const payloadComplete = completeApprovalDisplay(review.arguments);
+  const complete = operationVisible && payloadComplete && scopeComplete;
   const available = review.canDecide === true && complete && !busy && !uncertain && !receipt;
   const reload = async () => {
     setBusy(true);
@@ -47,18 +54,23 @@ export default function RuntimeApprovalReview({ execution, onReload }) {
   return <section className="min-w-0 space-y-5 text-gray-900 dark:text-gray-100" aria-label="Exact transaction review">
     <div><h1 className="page-heading text-gray-950 dark:text-white">Review transaction</h1><p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{execution.workflowName} · {review.nodeId}</p></div>
     <div className="border-y border-gray-200 py-4 dark:border-gray-700">
-      <p className="text-sm font-semibold">{receipt?.state || review.state} · revision {receipt?.version || review.version}</p>
+      <p className="text-sm font-semibold">{receipt?.state || stateLabel} · revision {receipt?.version || review.version}</p>
       <p className="mt-2 text-sm">{review.reason}</p><p className="mt-2 text-xs text-gray-600 dark:text-gray-300">{review.resumeReason}</p>
     </div>
+    {protectedItem && <div className="space-y-1 text-sm"><h2 className="font-semibold">Selected workflow item</h2>
+      <p>{scopeComplete ? selectedItem || "Outside a collection" : "Item details unavailable"}</p><p className="text-xs text-gray-500 dark:text-gray-400">This decision applies only to this exact invocation and its displayed arguments, not other items.</p></div>}
     <dl className="grid gap-4 text-xs sm:grid-cols-2">
       {Object.entries({ Tool: review.toolName || "Unavailable", "Exact remote tool": review.remoteToolName || "Unavailable", Requester: review.requesterId, Connection: review.connectionId, Invocation: review.invocationId, "Capability revision": review.capabilityRevision,
         "Review expires": review.expiresAt, "Approver role": review.approverRole }).map(([label, value]) => <div key={label}><dt className="text-gray-500 dark:text-gray-400">{label}</dt><dd className="mt-1 break-words [overflow-wrap:anywhere]">{value}</dd></div>)}
     </dl>
     <div><h2 className="mb-3 text-sm font-semibold">Exact business arguments</h2><ReadableValue value={review.arguments} /></div>
     {!operationVisible && <p className="text-sm text-amber-700 dark:text-amber-300">The exact tool identity is unavailable. Decisions are disabled; a node label alone does not identify an operation.</p>}
-    {operationVisible && !complete && <p className="text-sm text-amber-700 dark:text-amber-300">This payload exceeds the complete display limits. Decisions are disabled; a shortened preview is not a full transaction review.</p>}
+    {operationVisible && !payloadComplete && <p className="text-sm text-amber-700 dark:text-amber-300">This payload exceeds the complete display limits. Decisions are disabled; a shortened preview is not a full transaction review.</p>}
+    {!scopeComplete && <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">The exact workflow item or review lifecycle is incomplete. Decisions are disabled; reload the authoritative review.</p>}
     {review.unavailable && <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">{review.unavailable}</p>}
     {review.decision && <p className="text-sm">{review.decision.outcome} by {review.decision.actorId} · {review.decision.decidedAt}</p>}
+    {review.closure && <p className="text-sm">{review.closure.status === "CANCELLED" ? "Cancelled before dispatch" : "Authorization or workflow changed before dispatch"} · {review.closure.closedAt}</p>}
+    {review.expiredAt && <p className="text-sm">Original review deadline expired before dispatch · {review.expiredAt}</p>}
     {notice && <p role="status" className="text-sm text-gray-600 dark:text-gray-300">{notice}</p>}
     {review.state === "PENDING" && <div className="space-y-3">
       <label className="block text-xs text-gray-500 dark:text-gray-400">Decision note<textarea aria-label="Decision note" value={note} maxLength={2000} onChange={event => setNote(event.target.value)} disabled={!available}

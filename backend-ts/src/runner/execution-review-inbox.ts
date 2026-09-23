@@ -1,11 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonical-json.js";
-import { HandlerFailure, type CurrentUser } from "../http/handlers/common.js";
+import { HandlerFailure, type CurrentUser, type HandlerServices } from "../http/handlers/common.js";
 import type { RepositoryState } from "../repository/store.js";
 import { runtimeApprovalInboxAuthority, runtimeApprovalView } from "./runtime-approvals.js";
 import { hasOperationReconciliation, operationReconciliationView } from "./operation-reconciliation.js";
 import { hasReportPageResolution, reportPageResolutionView } from "./report-page-resolution.js";
+import { protectedApprovalView } from "./protected-approval-review.js";
 
 const kindSchema = z.enum(["approval", "reconciliation"]);
 const querySchema = z.object({ kind: kindSchema.or(z.literal("all")).default("all"), state: z.enum(["open", "closed"]).default("open"),
@@ -13,7 +14,7 @@ const querySchema = z.object({ kind: kindSchema.or(z.literal("all")).default("al
 const keySchema = z.object({ executionId: z.string().min(1).max(256), reviewId: z.string().min(1).max(256), kind: kindSchema, requestedAt: z.string().datetime() }).strict();
 const cursorSchema = z.object({ profile: z.literal("execution-review-cursor/v1"), scope: z.string().regex(/^sha256:[a-f0-9]{64}$/), after: keySchema }).strict();
 type Key = z.infer<typeof keySchema>;
-type Candidate = Key & { state: "open" | "closed"; reviewView: "approval" | "reconciliation" | "report-page" };
+type Candidate = Key & { state: "open" | "closed"; reviewView: "approval" | "protected-approval" | "reconciliation" | "report-page" };
 const compare = (a: Key, b: Key) => a.requestedAt !== b.requestedAt ? (a.requestedAt > b.requestedAt ? -1 : 1)
   : a.executionId !== b.executionId ? (a.executionId > b.executionId ? -1 : 1) : a.kind !== b.kind ? a.kind.localeCompare(b.kind)
     : a.reviewId === b.reviewId ? 0 : a.reviewId > b.reviewId ? -1 : 1;
@@ -37,7 +38,7 @@ function decode(raw: string, scope: string, secret: string): Key {
  * Exact business arguments are only loaded by the existing minimum review API.
  * Proof checks are limited to the requested page; every page rechecks authority.
  * Keyset pagination reflects current state, not a frozen inbox snapshot. */
-export function executionReviewInbox(state: Readonly<RepositoryState>, user: CurrentUser, rawQuery: unknown, secret: string) {
+export function executionReviewInbox(state: Readonly<RepositoryState>, user: CurrentUser, rawQuery: unknown, secret: string, services?: HandlerServices) {
   const parsed = querySchema.safeParse(rawQuery); if (!parsed.success) deny("Unsupported review inbox query");
   const query = parsed.data, actor = state.users[user.id], role = actor && state.roles[actor.roleId];
   const permissions = actor ? [...(role?.permissions ?? []), ...actor.permissionOverrides] : [];
@@ -53,6 +54,16 @@ export function executionReviewInbox(state: Readonly<RepositoryState>, user: Cur
     // cannot discover its own operation as an independently actionable task.
     if (execution.startedBy.id === user.id) continue;
     const fallback = date(execution.startedAt, new Date(0).toISOString());
+    if (scopes.approval && query.kind !== "reconciliation" && execution.protectedApprovalSecret) {
+      const journal = execution.protectedApprovalSecret, entries = Object.entries(journal.records ?? {});
+      if (entries.length > 5000 || entries.length !== journal.count || !entries.length) deny("The protected approval index requires exact evidence repair", 409);
+      for (const [reviewId, record] of entries) {
+        if (!keySchema.shape.reviewId.safeParse(reviewId).success) deny("The protected review identity is invalid", 409);
+        candidates.push({ executionId: execution.id, reviewId, kind: "approval", reviewView: "protected-approval", requestedAt: date(record?.requestedAt, fallback),
+          state: reviewId === journal.activeId && record?.state === "PENDING" && execution.status === "AWAITING_APPROVAL" &&
+            execution.protectedJobSecret?.state === "WAITING" && execution.completedAt === null ? "open" : "closed" });
+      }
+    }
     if (scopes.approval && query.kind !== "reconciliation" && execution.runtimeApprovalSecret) {
       const ledger = execution.runtimeApprovalSecret, entries = Object.entries(ledger.records ?? {});
       if (entries.length > 1000 || entries.length === 0) deny("The review index contains an unsupported approval journal; exact records need repair", 409);
@@ -91,12 +102,16 @@ export function executionReviewInbox(state: Readonly<RepositoryState>, user: Cur
       executionStatus: execution.status, canResume: false as const, noReplay: true as const };
     try {
       if (candidate.kind === "approval") {
-        const review = runtimeApprovalView(state as RepositoryState, execution.id, user.id, candidate.reviewId).runtimeApproval;
+        if (candidate.reviewView === "protected-approval" && !services) deny("Protected approval review requires its current workspace services", 409);
+        const review = candidate.reviewView === "protected-approval" ? protectedApprovalView(state, services!, execution.id, user, candidate.reviewId).runtimeApproval
+          : runtimeApprovalView(state as RepositoryState, execution.id, user.id, candidate.reviewId).runtimeApproval;
         return { ...common, nodeId: review.nodeId, toolName: text(review.toolName, "Exact tool review"), expiresAt: review.expiresAt,
           statusLabel: review.state === "PENDING" ? review.canDecide ? "Awaiting decision" : "Approval unavailable"
-            : review.state === "REJECTED" ? "Rejected" : "Approved — not delivery confirmation",
+            : review.state === "REJECTED" ? "Rejected" : review.state === "EXPIRED" ? "Expired — not dispatched"
+              : review.state === "CLOSED" ? "Closed — not dispatched" : "Approved — not delivery confirmation",
           reviewAvailable: true, actionable: review.canDecide, detail: review.unavailable ? "Exact authorization or evidence changed. Open the current case before any decision." : (review.state === "PENDING"
-            ? "Open the exact action and arguments before deciding." : "Approval is a decision, not proof that the tool succeeded or the recipient received it.") };
+            ? "Open the exact action and arguments before deciding." : ["CLOSED", "EXPIRED", "REJECTED"].includes(review.state)
+              ? "This exact approval checkpoint closed without dispatching its action." : "Approval is a decision, not proof that the tool succeeded or the recipient received it.") };
       }
       if (candidate.reviewView === "report-page") {
         const review = reportPageResolutionView(state, execution.id, user.id, candidate.state === "closed" ? candidate.reviewId : undefined).reportPageResolution;

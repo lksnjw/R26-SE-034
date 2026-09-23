@@ -46,7 +46,8 @@ export type Execution = {
   agentSummary?: string;
   // Set while status is AWAITING_APPROVAL — the human-in-the-loop checkpoint
   // execution is currently paused at.
-  pendingApproval?: { stepId: string; description: string; requestedAt: string };
+  pendingApproval?: { stepId: string; description: string; requestedAt: string; invocationId?: string;
+    iterations?: Array<{ loopId: string; index: number }> };
   // Every approval granted so far on this execution, oldest first — so a
   // resumed run (and the agent) knows what's already been authorized.
   approvals?: Array<{ stepId: string; approvedBy: { id: string; name: string }; approvedAt: string; note?: string }>;

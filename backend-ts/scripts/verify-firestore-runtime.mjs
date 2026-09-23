@@ -3,6 +3,7 @@ import { verifyFirestoreProtectedDrafts } from "./firestore-protected-drafts.mjs
 import { verifyFirestoreProtectedWorker } from "./firestore-protected-worker.mjs";
 import { verifyFirestoreProtectedAnalysis } from "./firestore-protected-analysis.mjs";
 import { verifyFirestoreProtectedAgent } from "./firestore-protected-agent.mjs";
+import { verifyFirestoreProtectedApprovalWait } from "./firestore-protected-approval-wait.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import jwt from "jsonwebtoken";
@@ -297,7 +298,11 @@ try {
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
     observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: [operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
     ...([operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? { requireIndependentApproval: true } : {}) } });
-  if (process.argv.includes("--protected-publication-only") || process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only") || protectedAgentMode) {
+  if (process.argv.includes("--protected-approval-wait-only")) {
+    await verifyFirestoreProtectedApprovalWait({ repository: () => repository, services: () => services, request,
+      restart: async () => { await stop(); await start(await openApplicationRepository(config)); },
+      tool: operationTool, calls, models, operations, emails, log });
+  } else if (process.argv.includes("--protected-publication-only") || process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only") || protectedAgentMode) {
     // Reuse real startup, current reviews and the same HTTP/storage campaign.
     // This focused mode never claims the full existing-profile regression.
     await verifyFirestoreProtectedDrafts({ request, repository: () => repository, services: () => services,

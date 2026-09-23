@@ -20,11 +20,13 @@ export const protectedApprovalCommandSchema = z.object({ approvalId: id, baseVer
   decisionKey: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/), note: z.string().max(2000).default("") }).strict();
 export type ProtectedApprovalCommand = z.infer<typeof protectedApprovalCommandSchema>;
 export const protectedApprovalRecordSchema = z.object({ profile: z.literal("protected-approval/v1"), id, version: z.number().int().positive(),
-  state: z.enum(["PENDING", "APPROVED", "REJECTED", "CONSUMED", "EXPIRED"]), binding,
+  state: z.enum(["PENDING", "APPROVED", "REJECTED", "CONSUMED", "EXPIRED", "CLOSED"]), binding,
   arguments: z.record(z.string(), z.unknown()), policy: protectedApprovalPolicySchema, reason: z.string().trim().min(1).max(2000), requestedAt: date, expiresAt: date, reviewHash: sha,
   decision: z.object({ actorId: id, roleId: id, decisionKey: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/), fingerprint: sha,
     outcome: z.enum(["APPROVED", "REJECTED"]), note: z.string().max(2000), decidedAt: date }).strict().optional(),
-  consumption: z.object({ intentId: id, epoch, consumedAt: date }).strict().optional(), expiredAt: date.optional()
+  consumption: z.object({ intentId: id, epoch, consumedAt: date }).strict().optional(), expiredAt: date.optional(),
+  closure: z.object({ reason: z.enum(["PROTECTED_APPROVAL_CANCELLED", "PROTECTED_APPROVAL_CONTEXT_CHANGED"]),
+    status: z.enum(["CANCELLED", "FAILED"]), closedAt: date }).strict().optional()
 }).strict();
 export type ProtectedApprovalRecord = z.infer<typeof protectedApprovalRecordSchema>;
 const schema = z.object({ profile: z.literal("protected-approvals/v1"), count: z.number().int().min(0).max(5000),
@@ -71,17 +73,21 @@ function assertRecord(value: unknown, ledger: ProtectedInvocationLedgerSnapshot)
         intent.boundary.nodeId !== b.nodeId || intent.boundary.invocationId !== b.invocationId || hash(intent.boundary.iterations) !== hash(b.iterations) ||
         record.reviewHash !== protectedApprovalReviewHash(record) || hash(record.policy) !== b.policyHash || expiry - requested !== record.policy.ttlSeconds * 1000)
       throw new Error("Protected approval differs from its exact original effect invocation or review");
-    const decision = record.decision, consumed = record.consumption;
-    const version = 1 + Number(!!decision) + Number(!!consumed || !!record.expiredAt);
+    const decision = record.decision, consumed = record.consumption, closure = record.closure;
+    const version = 1 + Number(!!decision) + Number(!!consumed || !!record.expiredAt || !!closure);
     if (record.version !== version || (record.state === "CONSUMED") !== !!consumed || (record.state === "EXPIRED") !== !!record.expiredAt ||
+        (record.state === "CLOSED") !== !!closure || [consumed, record.expiredAt, closure].filter(Boolean).length > 1 ||
         ["APPROVED", "CONSUMED"].includes(record.state) && decision?.outcome !== "APPROVED" || record.state === "REJECTED" && decision?.outcome !== "REJECTED" ||
-        record.state === "PENDING" && !!decision || record.state === "EXPIRED" && decision?.outcome === "REJECTED")
+        record.state === "PENDING" && !!decision || ["EXPIRED", "CLOSED"].includes(record.state) && decision?.outcome === "REJECTED")
       throw new Error("Protected approval decision lifecycle changed");
     if (decision && (decision.actorId === b.requesterId || !record.policy.approverRoleIds.includes(decision.roleId) || Date.parse(decision.decidedAt) < requested || Date.parse(decision.decidedAt) >= expiry ||
         decision.fingerprint !== protectedApprovalDecisionFingerprint({ approvalId: record.id, baseVersion: 1, reviewHash: record.reviewHash,
           decisionKey: decision.decisionKey, note: decision.note }, decision.actorId, decision.roleId, decision.outcome)))
       throw new Error("Protected approval has a foreign, self or expired decision");
     if (record.expiredAt && Date.parse(record.expiredAt) < expiry) throw new Error("Protected approval expired before its original deadline");
+    if (closure && (closure.status !== (closure.reason === "PROTECTED_APPROVAL_CANCELLED" ? "CANCELLED" : "FAILED") ||
+        Date.parse(closure.closedAt) < requested || decision && Date.parse(closure.closedAt) < Date.parse(decision.decidedAt)))
+      throw new Error("Protected approval closure differs from its original lifecycle");
     if (consumed ? !["DISPATCH_INTENT", "ACKNOWLEDGED", "UNKNOWN"].includes(intent.state) || consumed.intentId !== intent.id || consumed.epoch !== intent.epoch ||
         Date.parse(consumed.consumedAt) < Date.parse(decision!.decidedAt) || Date.parse(consumed.consumedAt) >= expiry : intent.state !== "PREPARING" || b.sequence < ledger.nextSequence)
       throw new Error("Protected approval consumption differs from its exact effect intent");

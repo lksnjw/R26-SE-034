@@ -84,3 +84,40 @@ test("managed operation consent authorizes queued execution but its receipt neve
   expect(screen.getByRole("status").textContent).toMatch(/does not confirm delivery/); expect(save).toHaveBeenCalledTimes(1);
   expect(screen.getByRole("button", { name: "Record approval" }).disabled).toBe(true);
 });
+
+const protectedView = () => ({ ...view, runtimeApproval: { ...view.runtimeApproval, profile: "protected-approval/v1", invocationId: "each/1/nested/0/send",
+  iterations: [{ loopId: "each", index: 1 }, { loopId: "nested", index: 0 }], sourceHash: `sha256:${"b".repeat(64)}`, semanticHash: `sha256:${"c".repeat(64)}`,
+  requestedAt: "2026-10-06T14:59:00.000Z", unavailable: null, protectedInvocationManaged: true, operationManaged: false, resumeQueued: false,
+  decision: null, closure: null, expiredAt: null } });
+
+test("protected review displays the nested selected item and formatted arguments; consent records no effect resumption", async () => {
+  const item = protectedView(), save = jest.spyOn(executionService, "approve").mockResolvedValue({ ...receipt, protectedInvocationManaged: true,
+    operationManaged: false, executionStatus: "BLOCKED", resumeQueued: false });
+  render(<RuntimeApprovalReview execution={item} onReload={jest.fn().mockResolvedValue(item)} />);
+  expect(screen.getByRole("heading", { name: "Selected workflow item" })).toBeTruthy();
+  expect(screen.getByText("each · item 2 → nested · item 1")).toBeTruthy();
+  expect(screen.getByText(/not other items/)).toBeTruthy(); expect(screen.queryByText(/\{"recipient"/)).toBeNull();
+  acknowledge(); fireEvent.click(screen.getByRole("button", { name: "Record approval" }));
+  await screen.findByText(/Exact approval saved/); expect(save).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("status").textContent).toMatch(/not resumed, sent or completed/);
+});
+
+test.each(["APPROVED", "EXPIRED", "CLOSED"])("protected %s history never offers a decision or claims delivery", state => {
+  const item = protectedView(), review = item.runtimeApproval;
+  Object.assign(review, { state, version: 2, canDecide: false });
+  if (state === "APPROVED") { item.status = "BLOCKED"; review.decision = { outcome: "APPROVED", actorId: "reviewer", decidedAt: "2026-10-06T14:59:10.000Z" }; }
+  if (state === "EXPIRED") { item.status = "FAILED"; review.expiredAt = review.expiresAt; }
+  if (state === "CLOSED") { item.status = "CANCELLED"; review.closure = { reason: "PROTECTED_APPROVAL_CANCELLED", status: "CANCELLED", closedAt: "2026-10-06T14:59:20.000Z" }; }
+  render(<RuntimeApprovalReview execution={item} />);
+  expect(screen.getByText(new RegExp(`${state === "APPROVED" ? "Approved" : state === "EXPIRED" ? "Expired" : "Closed"} — not dispatched`))).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Record approval" })).toBeNull();
+  expect(screen.queryByRole("checkbox")).toBeNull();
+});
+
+test("a mismatched protected item tuple disables consent even if canDecide was supplied", () => {
+  const item = protectedView(); item.runtimeApproval.invocationId = "each/0/nested/0/send";
+  render(<RuntimeApprovalReview execution={item} />);
+  expect(screen.getByRole("alert").textContent).toMatch(/workflow item or review lifecycle is incomplete/);
+  expect(screen.getByRole("button", { name: "Record approval" }).disabled).toBe(true);
+  expect(screen.getByRole("checkbox").disabled).toBe(true);
+});

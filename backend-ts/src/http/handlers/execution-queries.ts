@@ -7,6 +7,7 @@ import { executionReviewInbox } from "../../runner/execution-review-inbox.js";
 import { operationReconciliationView, hasOperationReconciliation } from "../../runner/operation-reconciliation.js";
 import { hasReportPageResolution } from "../../runner/report-page-resolution.js";
 import { runtimeApprovalAdministration, runtimeApprovalView } from "../../runner/runtime-approvals.js";
+import { protectedApprovalView } from "../../runner/protected-approval-review.js";
 import { buildTraceChain } from "../trace-chain.js";
 import { canReadExecution, visibleExecutions } from "../execution-scope.js";
 import type { RouteDefinition } from "../generated-routes.js";
@@ -51,7 +52,7 @@ async function listExecutions(request: FastifyRequest, reply: FastifyReply, user
 
 async function reviewInbox(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
   let page;
-  try { page = await services.repository.readAuthoritative((state) => executionReviewInbox(state, user, request.query, services.config.jwtSecret)); }
+  try { page = await services.repository.readAuthoritative((state) => executionReviewInbox(state, user, request.query, services.config.jwtSecret, services)); }
   catch (error) {
     try { services.repository.assertAuthority(); }
     catch { throw new HandlerFailure(503, "The review inbox is unavailable until authoritative storage is recovered. No tasks or actions are confirmed."); }
@@ -84,7 +85,9 @@ async function getExecution(request: FastifyRequest, reply: FastifyReply, user: 
     if (Object.keys(query).some((key) => !["view", "approvalId"].includes(key)) ||
         query.approvalId !== undefined && !z.string().min(1).max(256).safeParse(query.approvalId).success)
       throw new HandlerFailure(400, "Unsupported approval review query");
-    const review = await services.repository.readAuthoritative((state) => runtimeApprovalView(state, id, user.id, query.approvalId as string | undefined));
+    const review = await services.repository.readAuthoritative((state) => state.executions[id]?.protectedJobSecret || state.executions[id]?.protectedApprovalSecret
+      ? protectedApprovalView(state, services, id, user, query.approvalId as string | undefined)
+      : runtimeApprovalView(state, id, user.id, query.approvalId as string | undefined));
     return reply.send(ok(review, "Exact transaction review only; approval does not execute", null));
   }
   if (!user.permissions.some((key) => ["workflow:read", "execution:read_own"].includes(key)))
@@ -93,7 +96,7 @@ async function getExecution(request: FastifyRequest, reply: FastifyReply, user: 
   if (item === null || !canReadExecution(user, item))
     return reply.status(404).send(fail("Execution not found", null));
   return reply.send(ok(publicExecution({ ...item,
-    ...(item.runtimeApprovalSecret ? { hasRuntimeApproval: true } : {}),
+    ...(item.runtimeApprovalSecret || item.protectedApprovalSecret ? { hasRuntimeApproval: true } : {}),
     ...(hasOperationReconciliation(item) ? { hasOperationReconciliation: true } : {}),
     ...(hasReportPageResolution(item) ? { hasReportPageResolution: true } : {}),
   }), "OK", null));

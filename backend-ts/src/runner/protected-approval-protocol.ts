@@ -34,7 +34,7 @@ function current(context: ProtectedApprovalContext, value: ProtectedApprovalReco
   assertProtectedApprovalRecord(value, context.ledger);
   const record = protectedApprovalRecordSchema.parse(value), expected = facts(context); time(now);
   const binding = { ...expected.binding, requestEpoch: record.binding.requestEpoch };
-  if (hash(binding) !== hash(record.binding) || expected.intent.epoch < record.binding.requestEpoch || record.reviewHash !== protectedApprovalReviewHash(record) ||
+  if (!["PENDING", "APPROVED"].includes(record.state) || hash(binding) !== hash(record.binding) || expected.intent.epoch < record.binding.requestEpoch || record.reviewHash !== protectedApprovalReviewHash(record) ||
       hash(record.arguments) !== hash(context.point.arguments) || now < Date.parse(record.requestedAt) || now >= Date.parse(record.expiresAt) ||
       expected.intent.state !== "PREPARING") throw new Error("Protected approval facts, policy, generation or original deadline changed");
   return { record, intent: expected.intent };
@@ -42,6 +42,11 @@ function current(context: ProtectedApprovalContext, value: ProtectedApprovalReco
 function independent(context: ProtectedApprovalContext, actor: ProtectedApproverData, requesterId: string) {
   if (!actor.active || actor.id === requesterId || !actor.id || !actor.roleId || !actor.permissions.includes("execution:approve") ||
       !context.policy.approverRoleIds.includes(actor.roleId)) throw new Error("Protected approval requires a current independent approver");
+}
+/** Denial-only DATA consistency check. Authoritative adapters must separately
+ * establish the current actor, publication, session, storage and owned wait. */
+export function assertProtectedApprovalContext(context: ProtectedApprovalContext, value: ProtectedApprovalRecord, now: number): void {
+  current(context, value, now);
 }
 
 /** Pure DATA constructors/transitions only. Callers cannot mint a confirmed
@@ -90,4 +95,17 @@ export function expireProtectedApprovalRecord(value: ProtectedApprovalRecord, le
   assertProtectedApprovalRecord(value, ledger); time(now);
   if (!["PENDING", "APPROVED"].includes(value.state) || now < Date.parse(value.expiresAt)) throw new Error("Protected approval cannot expire before its original deadline or after consumption");
   return protectedApprovalRecordSchema.parse({ ...value, version: value.version + 1, state: "EXPIRED", expiredAt: time(now) });
+}
+
+/** A closed never-entered approval is durable private history. Public job
+ * lifecycle changes cannot restore its authority or renew the review. */
+export function closeProtectedApprovalRecord(value: ProtectedApprovalRecord, ledger: ProtectedInvocationLedgerSnapshot,
+  reason: NonNullable<ProtectedApprovalRecord["closure"]>["reason"], now: number): ProtectedApprovalRecord {
+  assertProtectedApprovalRecord(value, ledger); time(now);
+  if (!["PENDING", "APPROVED"].includes(value.state) || now < Date.parse(value.requestedAt) ||
+      value.decision && now < Date.parse(value.decision.decidedAt))
+    throw new Error("Protected approval cannot close an already terminal or future review");
+  const record = protectedApprovalRecordSchema.parse({ ...value, version: value.version + 1, state: "CLOSED",
+    closure: { reason, status: reason === "PROTECTED_APPROVAL_CANCELLED" ? "CANCELLED" : "FAILED", closedAt: time(now) } });
+  assertProtectedApprovalRecord(record, ledger); return record;
 }

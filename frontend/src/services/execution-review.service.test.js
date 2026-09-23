@@ -23,6 +23,14 @@ test("two historical decisions from the same run remain distinct, and their exac
   get.mockResolvedValue({ data: { success: true, data: { ...value, runtimeApproval: { ...value.runtimeApproval, id: "different-review" } } } });
   await expect(executionService.getApproval("run/one", "earlier-review")).rejects.toThrow(/Exact transaction review/);
 });
+
+test.each(["open", "closed"])("protected exact-item %s inbox rows retain approval routing without becoming dispatch authority", state => {
+  const data = page(); data.state = state;
+  Object.assign(data.items[0], { reviewView: "protected-approval", state, actionable: state === "open" });
+  expect(validateReviewInbox(data, { state }).items[0].reviewView).toBe("protected-approval");
+  data.items[0].kind = "reconciliation"; data.scopes.reconciliation = true;
+  expect(() => validateReviewInbox(data, { state })).toThrow(/inbox/i);
+});
 test.each(["profile", "scope", "filter", "date", "duplicate", "cursor", "resume", "action", "size"])("inbox rejects inconsistent %s responses instead of claiming an empty list or an actionable task", scenario => {
   const data = page();
   if (scenario === "profile") data.profile = "wrong";

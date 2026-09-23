@@ -37,6 +37,15 @@ test("filters reset pages, preserve URL/deep link and distinguish decision histo
   expect(screen.getByText("/executions/reviews?kind=all&state=closed")).toBeTruthy(); fireEvent.click(screen.getByRole("button", { name: "Browser back" })); await screen.findByText("Awaiting decision");
   expect(getReviewInbox.mock.calls.some(([params]) => params.state === "closed" && !params.cursor)).toBe(true);
 });
+
+test.each(["open", "closed"])("protected %s item review links to the exact approval case, not an unsupported view", async state => {
+  getReviewInbox.mockImplementation(async params => data(params, [{ ...item, reviewView: "protected-approval", state,
+    actionable: state === "open", statusLabel: state === "open" ? "Awaiting decision" : "Closed — not dispatched" }]));
+  show(`/executions/reviews?kind=approval&state=${state}`); await screen.findByRole("list", { name: "Review tasks" });
+  expect(screen.getByText("Action approval")).toBeTruthy();
+  expect(screen.getByRole("link").getAttribute("href")).toBe("/executions/run%2Fone?view=approval&approvalId=review-one");
+  expect(screen.queryByRole("button", { name: /approve|reject|resume|resend/i })).toBeNull();
+});
 test("paged tasks can go forward/back and a rejected cursor hides old tasks until an explicit first-page refresh", async () => {
   getReviewInbox.mockImplementation(async params => params.cursor ? data(params, [{ ...item, workflowName: "Second report", executionId: "two" }]) : data(params, [item], { nextCursor: "signed-one", hasMore: true }));
   show(); await screen.findByText("Daily manager report"); fireEvent.click(screen.getByRole("button", { name: "Next page" })); await screen.findByText("Second report");
