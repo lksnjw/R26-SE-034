@@ -30,3 +30,7 @@ qa-*.png
 
 RECONSTRUCTED_PLAN.md
 /backend-ts/graphify-out
+/backend-ts/.functions/
+/ERPBridge
+/docs
+/DATA_TRANSFORM

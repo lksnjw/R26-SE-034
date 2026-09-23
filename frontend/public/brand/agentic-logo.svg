@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="72" viewBox="0 0 300 72" fill="none">
+  <title>Agentic Workflow Engine</title>
+  <g transform="translate(0 4)">
+    <path d="M13 49 28.5 15.5a4 4 0 0 1 7 0L51 49M22 34h20" stroke="#84006A" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="13" cy="49" r="6" fill="#84006A"/><circle cx="51" cy="49" r="6" fill="#84006A"/>
+    <circle cx="32" cy="14" r="6" fill="#84006A"/><circle cx="32" cy="34" r="4" fill="#FFF"/>
+  </g>
+  <text x="80" y="40" font-family="Arial, Helvetica, sans-serif" font-size="38" font-weight="700" letter-spacing="-1.6" fill="#222126">agentic</text>
+  <text x="82" y="60" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="600" letter-spacing="2.2" fill="#706B75">WORKFLOW ENGINE</text>
+</svg>
