@@ -29,6 +29,7 @@ export class ProviderRuntime {
   #rawClient: OpenAICompatibleClient | null = null;
   #configuration: RuntimeProviderConfiguration | null = null;
   #revision = "";
+  readonly #configurationObservers = new Set<() => void>();
 
   /*******************************************************************************
    * Function: constructor
@@ -62,6 +63,13 @@ export class ProviderRuntime {
 
   catalog(): { configured: boolean; binding: ProviderRuntime["binding"]; models: string[] } {
     return { configured: this.configured, binding: this.binding, models: this.#configuration === null ? [] : configuredModels(this.#configuration) };
+  }
+
+  /** Server-owned denial notifications, not configuration or execution grants.
+   * Identical reactivation still invalidates workers bound to the old revision. */
+  observeConfigurationChanges(listener: () => void): () => void {
+    this.#configurationObservers.add(listener);
+    return () => { this.#configurationObservers.delete(listener); };
   }
 
   /** Capture clients, credentials, configuration and model once. Never installs
@@ -108,6 +116,9 @@ export class ProviderRuntime {
     this.#configuration = normalized;
     this.#revision = revision;
     this.executor.setAnalysisProvider(provider, configuration.model);
+    for (const listener of [...this.#configurationObservers]) {
+      try { listener(); } catch { /* A broken observer cannot undo activation or suppress other fences. */ }
+    }
   }
 
   /*******************************************************************************
@@ -115,13 +126,13 @@ export class ProviderRuntime {
    *
    * Activates a stored provider or falls back to static configuration.
    ******************************************************************************/
-  async activateStoredOrStatic(staticConfiguration: RuntimeProviderConfiguration | null): Promise<void> {
+  async activateStoredOrStatic(staticConfiguration: RuntimeProviderConfiguration | null, storedTimeoutMs = 30_000): Promise<void> {
     const stored = await this.repository.read((state) => {
       const active = Object.values(state.providers).filter((item) => item.active === true);
       if (active.length > 1) throw new Error("Multiple active provider records require configuration repair");
       return active[0] ?? null;
     });
-    if (stored !== null) this.activate(providerConfigurationFromRecord(stored));
+    if (stored !== null) this.activate(providerConfigurationFromRecord(stored, storedTimeoutMs));
     else if (staticConfiguration !== null) this.activate(staticConfiguration);
   }
 
@@ -308,7 +319,7 @@ export class ProvenanceAnalysisProvider implements AnalysisProvider {
  *
  * Converts a stored provider record into runtime configuration.
  ******************************************************************************/
-export function providerConfigurationFromRecord(record: StoredRecord, timeoutMs = 60_000): RuntimeProviderConfiguration {
+export function providerConfigurationFromRecord(record: StoredRecord, timeoutMs = 30_000): RuntimeProviderConfiguration {
   return {
     id: stringValue(record.id),
     name: stringValue(record.name),

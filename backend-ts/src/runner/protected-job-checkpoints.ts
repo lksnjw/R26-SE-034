@@ -16,28 +16,43 @@ import { assertProtectedDriversAvailable } from "./protected-job-admission.js";
 import { protectedOperationConnections, assertProtectedConnectionsCurrent, discoverProtectedOperationConnections, assertProtectedCapabilitiesDiscovered, type ProtectedConnectionObservation } from "../workflows/protected-operation-bindings.js";
 import { assertProtectedJobCurrent, restoreProtectedJob, sealProtectedCursor, protectedHash as hash, type ProtectedJobOwner } from "./protected-job-state.js";
 import type { ValidationToken } from "../validator/registry-validator.js";
+import { ProviderRuntime, ANALYSIS_PROMPT_VERSION } from "../providers/runtime.js";
+import { assertRuntimeAnalysisEgress } from "../providers/egress-policy.js";
+import { modelInputItemCount } from "../workflows/model-input.js";
+import { promptData } from "../prompts/contracts.js";
+import { validateValue } from "../structured-output/validate.js";
 
 const same = (left: unknown, right: unknown) => canonicalJSONBytes(left).equals(canonicalJSONBytes(right));
 type ReadNode = Extract<OperationNode, { kind: "action" }>;
 type ActiveRead = { point: ProtectedMachinePoint; node: ReadNode; index: number; key: string; args: Record<string, unknown> };
 
 /** Owned invocation worker checkpoint controller, not a deserializable permit.
- * All result/failure methods stay inside executeRead's genuine broker path.
+ * Result/failure methods stay inside the genuine broker/provider drivers.
  * A caller can neither supply an answer nor turn a public error into a handler. */
 export class ProtectedJobCheckpoints {
   readonly controller = new AbortController();
   readonly #connections: ProtectedConnectionObservation[];
   readonly #unsubscribe: () => void;
+  readonly #unsubscribeProvider: (() => void) | undefined;
   readonly #owner: ProtectedJobOwner;
   readonly #governanceHash: string;
   readonly #validator: HandlerServices["validator"];
   readonly #validationGate: HandlerServices["validationGate"];
+  readonly #provider: ProviderRuntime | undefined;
+  readonly #providerRevision: string | undefined;
   #expiresAt = 0; #valid = true; #closed = false; #timer: NodeJS.Timeout | undefined; #token: ValidationToken | undefined;
   #read: ActiveRead | undefined;
+  #analysis = false;
   private constructor(readonly services: HandlerServices, readonly executionId: string, owner: ProtectedJobOwner, run: Execution, governanceHash: string) {
     this.#owner = owner; this.#governanceHash = governanceHash; this.#expiresAt = run.protectedJobSecret!.lease!.expiresAt;
     this.#validator = services.validator; this.#validationGate = services.validationGate;
     this.#connections = protectedOperationConnections(services, parseWorkflowYAMLStrict(run.workflowSnapshot!.yaml));
+    if (parseWorkflowYAMLStrict(run.workflowSnapshot!.yaml).steps.some(step => step.kind === "analysis" || step.kind === "agent")) {
+      this.#provider = services.providerRuntime; this.#providerRevision = this.#provider?.binding?.configurationRevision;
+    }
+    this.#unsubscribeProvider = this.#provider?.observeConfigurationChanges(() => {
+      this.#valid = false; this.controller.abort(new Error("Protected provider revision changed"));
+    });
     this.#unsubscribe = services.repository.observeCommits({ committed: state => {
       try {
         const current = this.current(state); this.#expiresAt = current.run.protectedJobSecret!.lease!.expiresAt;
@@ -80,6 +95,8 @@ export class ProtectedJobCheckpoints {
   }
   get repository() { return this.services.repository; }
   private current(state: Readonly<RepositoryState>) {
+    if (this.#provider && (this.services.providerRuntime !== this.#provider || this.#provider.binding?.configurationRevision !== this.#providerRevision))
+      throw new Error("Protected provider instance or revision changed");
     const saved = assertProtectedJobCurrent(state, this.services, this.executionId, this.#owner);
     if (hash(state.governancePolicy) !== this.#governanceHash) throw new Error("Protected governance changed");
     assertProtectedConnectionsCurrent(this.services, parseWorkflowYAMLStrict(saved.run.workflowSnapshot!.yaml), this.#connections);
@@ -88,6 +105,8 @@ export class ProtectedJobCheckpoints {
   assertDispatch(): void {
     this.repository.assertAuthority();
     if (this.services.validator !== this.#validator || this.services.validationGate !== this.#validationGate) throw new Error("Protected validation services changed");
+    if (this.#provider && (this.services.providerRuntime !== this.#provider || this.#provider.binding?.configurationRevision !== this.#providerRevision))
+      throw new Error("Protected provider instance or revision changed");
     if (this.#closed || !this.#valid || this.controller.signal.aborted || this.#expiresAt <= Date.now()) throw new Error("Protected worker is fenced");
     const source = this.#source; if (source) assertProtectedConnectionsCurrent(this.services, source, this.#connections);
   }
@@ -168,10 +187,79 @@ export class ProtectedJobCheckpoints {
       appendExecutionEvent(state, saved.run, "node.protected_dispatch_intent", { invocationId: active.point.invocationId }, active.point.nodeId, active.point.invocationId);
     });
   }
-  /** The only action completion path: real governed broker return or its
+  /** Original compiled definition selects the driver, never caller flags. */
+  async executeAction(): Promise<void> {
+    if (this.#read || this.#analysis) throw new Error("Protected invocation is already active");
+    const kind = await this.repository.readAuthoritative(state => {
+      this.assertDispatch(); const saved = this.current(state), point = saved.machine.peek();
+      return saved.plan.ir.root.nodes.find(node => node.id === point?.nodeId)?.kind;
+    });
+    if (kind === "analysis") await this.executeAnalysis(); else await this.executeRead();
+  }
+  /** Only a captured genuine provider response can acknowledge analysis. A
+   * public error/result, model tool request or malformed output is never an ERP
+   * business fault and cannot select a handler. No model fallback/replay. */
+  private async executeAnalysis(): Promise<void> {
+    if (this.#read || this.#analysis || !this.#token || !this.#provider || !this.#providerRevision) throw new Error("Protected analysis driver is unavailable or active");
+    this.#analysis = true;
+    try {
+      const prepared = await this.repository.mutateExecution(this.executionId, state => {
+        this.assertDispatch(); const saved = this.current(state), point = saved.machine.peek();
+        const node = saved.plan.ir.root.nodes.find(value => value.id === point?.nodeId);
+        if (!point?.valid || point.kind !== "action" || node?.kind !== "analysis") throw new Error("Protected analysis has no exact original invocation");
+        const input = point.arguments, json = JSON.stringify(input);
+        if (modelInputItemCount(node.input, input) > node.maxInputItems || [...json].length > node.maxInputChars) throw new Error("Protected analysis input exceeds its reviewed bounds");
+        const configuration = this.#provider!.configuration!;
+        assertRuntimeAnalysisEgress(configuration.egressPolicy!, configuration.baseURL, node.dataClass);
+        const model = node.model || configuration.model;
+        if (!this.#provider!.catalog().models.includes(model)) throw new Error("Protected analysis model is not configured");
+        const old = Object.values(saved.ledger.snapshot().intents).find(item => item.sequence === point.sequence);
+        if (old && (old.state !== "PREPARING" || old.purpose !== "analysis" || old.epoch !== this.#owner.epoch)) throw new Error("Protected analysis cannot replay an entered invocation");
+        const key = old?.key ?? saved.ledger.prepare(saved.machine, "analysis", { kind: "node" }, input, this.#owner.epoch);
+        saved.run.protectedInvocationSecret = saved.ledger.snapshot(); sealProtectedCursor(this.services, state, saved.run, saved.machine);
+        appendExecutionEvent(state, saved.run, "node.analysis_preparing", { invocationId: point.invocationId, model, dataClass: node.dataClass }, point.nodeId, point.invocationId);
+        return { point, node, input, key, model, configuration, actorId: saved.run.startedBy.id, role: saved.run.protectedJobSecret!.admittedRole, workflowId: saved.run.workflowId };
+      });
+      const send = this.#provider.fetchImplementation ?? fetch;
+      const guarded = new ProviderRuntime(this.repository, this.services.executor, (url, init) => {
+        // Synchronous final boundary after all provenance/policy awaits.
+        this.assertDispatch(); return send(url, init);
+      }).restoreCaptured(prepared.configuration, this.#providerRevision).snapshot(prepared.model);
+      await this.repository.mutateExecution(this.executionId, state => {
+        this.assertDispatch(); const saved = this.current(state);
+        if (!same(saved.machine.peek(), prepared.point)) throw new Error("Protected analysis pointer or arguments changed");
+        saved.ledger.dispatchIntent(saved.machine, prepared.key, prepared.input, this.#owner.epoch);
+        saved.run.protectedInvocationSecret = saved.ledger.snapshot(); sealProtectedCursor(this.services, state, saved.run, saved.machine);
+        appendExecutionEvent(state, saved.run, "node.analysis_dispatch_intent", { invocationId: prepared.point.invocationId, model: prepared.model }, prepared.point.nodeId, prepared.point.invocationId);
+      });
+      this.assertDispatch();
+      const response = await guarded.generate(promptData({ INSTRUCTION: prepared.node.instruction, OUTPUT_SCHEMA: prepared.node.outputSchema, INPUT: prepared.input }),
+        ANALYSIS_PROMPT_VERSION, this.controller.signal, prepared.model, { workflowId: prepared.workflowId, executionId: this.executionId,
+          actor: { id: prepared.actorId, role: prepared.role }, maxOutputTokens: prepared.node.maxOutputTokens, egress: { purpose: "runtime_analysis", dataClass: prepared.node.dataClass } });
+      const decoded: unknown = JSON.parse(response.text), safe = withoutSecretFields(decoded);
+      if (!safe || typeof safe !== "object" || Array.isArray(safe) || canonicalJSONBytes(safe).length > 1_000_000 || validateValue(prepared.node.outputSchema, safe).length)
+        throw new Error("Protected analysis output violates its immutable schema");
+      const output = { structuredContent: safe };
+      await this.repository.mutateExecution(this.executionId, state => {
+        this.assertDispatch(); const saved = this.current(state);
+        const inputTokens = response.measured ? response.inputTokens : 0, outputTokens = response.measured ? response.outputTokens : 0;
+        const nextInput = saved.run.tokens.input + inputTokens, nextOutput = saved.run.tokens.output + outputTokens;
+        if (![inputTokens, outputTokens, nextInput, nextOutput, nextInput + nextOutput].every(value => Number.isSafeInteger(value) && value >= 0) ||
+            response.measured && outputTokens > prepared.node.maxOutputTokens) throw new Error("Protected analysis usage is unsafe or exceeds its output token budget");
+        saved.ledger.acknowledgeOutput(saved.machine, prepared.key, output, this.#owner.epoch);
+        saved.run.protectedInvocationSecret = saved.ledger.snapshot(); sealProtectedCursor(this.services, state, saved.run, saved.machine);
+        saved.run.tokens.input = nextInput; saved.run.tokens.output = nextOutput;
+        saved.run.tokens.total = saved.run.tokens.input + saved.run.tokens.output;
+        appendExecutionEvent(state, saved.run, "node.analysis_completed", { invocationId: prepared.point.invocationId, model: prepared.model, outcome: "ANALYSIS_STRUCTURED_OUTPUT",
+          measured: response.measured, ...(response.measured ? { inputTokens, outputTokens } : {}) }, prepared.point.nodeId, prepared.point.invocationId);
+        this.advance(state, { kind: "accept", output }, prepared.point);
+      });
+    } finally { this.#analysis = false; }
+  }
+  /** Read completion requires a real governed broker return or its
    * privately minted acknowledged business-error evidence, never caller data. */
   async executeRead(): Promise<void> {
-    if (this.#read || !this.#token) throw new Error("Protected read is already active or worker is unverified");
+    if (this.#read || this.#analysis || !this.#token) throw new Error("Protected read is already active or worker is unverified");
     const prepared = await this.repository.mutateExecution(this.executionId, state => {
       this.assertDispatch(); const saved = this.current(state), point = saved.machine.peek();
       if (!point?.valid || point.kind !== "action") throw new Error("Protected read has no exact action");
@@ -236,5 +324,5 @@ export class ProtectedJobCheckpoints {
     });
     this.close();
   }
-  close(): void { if (this.#closed) return; this.#closed = true; if (this.#timer) clearInterval(this.#timer); this.#unsubscribe(); this.controller.abort(); }
+  close(): void { if (this.#closed) return; this.#closed = true; if (this.#timer) clearInterval(this.#timer); this.#unsubscribe(); this.#unsubscribeProvider?.(); this.controller.abort(); }
 }

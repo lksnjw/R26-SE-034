@@ -23,8 +23,8 @@ const yaml = 'name: Report\ndescription: Read report\ntrigger:\n  type: manual\n
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
-async function setup() {
-  const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "model-selection-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }), erpbridgeRoleMap: { "Platform Admin": "admin" } };
+async function setup(timeoutMs = 30_000) {
+  const config = { ...loadConfig({ APP_ENV: "test", JWT_SECRET: "model-selection-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "mock" }), generationTimeoutMs: timeoutMs, erpbridgeRoleMap: { "Platform Admin": "admin" } };
   const repository = new Repository(), timestamp = new Date().toISOString();
   await repository.mutate((state) => {
     for (const [id, roleId] of [["admin", "role_admin"], ["client", "role_client"]]) state.users[id!] = {
@@ -176,6 +176,25 @@ test("stored active config wins at restart, and snapshot does not mutate executo
   const spy = vi.spyOn(s.runtime.executor, "setAnalysisProvider");
   const scoped = s.runtime.snapshot("saved-extra");
   expect(scoped.binding?.model).toBe("saved-extra"); expect(s.runtime.binding?.model).toBe("saved-model"); expect(spy).not.toHaveBeenCalled();
+});
+
+test.each([30_000, 7123])("stored provider activation/restart preserve the exact configured %i ms timeout", async timeoutMs => {
+  const s = await setup(timeoutMs);
+  const created = await s.app.inject({ method: "POST", url: "/api/providers", headers: s.headers(), payload: {
+    name: "Restart consistency", type: "openai_compatible", baseUrl: configuration.baseURL, apiKey: "synthetic-restart-key",
+    model: "saved-model", additionalModels: ["saved-extra"], temperature: 0 } });
+  expect(created.statusCode).toBe(201);
+  const activated = await s.app.inject({ method: "POST", url: `/api/providers/${created.json().data.id}/activate`, headers: s.headers(), payload: {} });
+  expect(activated.statusCode).toBe(200);
+  const captured = s.runtime.configuration!, revision = s.runtime.binding!.configurationRevision;
+  expect(captured.timeoutMs).toBe(timeoutMs);
+  for (const fallback of [null, configuration]) {
+    const restarted = new ProviderRuntime(s.repository, s.runtime.executor, s.fetchImplementation);
+    await restarted.activateStoredOrStatic(fallback, timeoutMs);
+    expect(restarted.configuration).toEqual(captured);
+    expect(restarted.binding!.configurationRevision).not.toBe(revision);
+  }
+  expect(s.fetchImplementation).not.toHaveBeenCalled();
 });
 
 test("provider fallback and additional choices survive edit without exposing credentials", async () => {

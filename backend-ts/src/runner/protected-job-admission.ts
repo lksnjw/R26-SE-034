@@ -18,10 +18,10 @@ import { supportsOperationJobs } from "./operation-jobs.js";
 
 /** Qualification of currently implemented invocation drivers, not the final
  * product scope. Refuse the WHOLE run before any prefix executes if a required
- * model/effect/agent/report driver has not yet been integrated and qualified. */
+ * effect/agent/report driver has not yet been integrated and qualified. */
 export function assertProtectedDriversAvailable(plan: CompiledProtectedOperationPlan): void {
-  if (plan.ir.root.nodes.some(node => node.kind !== "action" || node.effectClass !== "read" || plan.ir.contracts[node.capability.toolId]?.reportCoverageContract))
-    throw new HandlerFailure(422, "This protected collection requires model, approval/effect, agent or report drivers that are still being integrated; no run was admitted", { code: "PROTECTED_INVOCATION_DRIVERS_PENDING" });
+  if (plan.ir.root.nodes.some(node => node.kind !== "analysis" && (node.kind !== "action" || node.effectClass !== "read" || plan.ir.contracts[node.capability.toolId]?.reportCoverageContract)))
+    throw new HandlerFailure(422, "This protected collection requires approval/effect, agent or report drivers that are still being integrated; no run was admitted", { code: "PROTECTED_INVOCATION_DRIVERS_PENDING" });
 }
 
 /** Internal, authenticated durable admission. No normal HTTP route is enabled.

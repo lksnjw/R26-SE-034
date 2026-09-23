@@ -85,7 +85,7 @@ test("original request replay returns same run without dispatch; changed input c
   await expect(admitProtectedOperation(s.services, "flow", s.actor, { items: ["different"] }, key)).rejects.toThrow(/different inputs/);
 });
 
-test.each(["analysis", "agent", "effect"] as const)("unintegrated %s driver rejects whole admission before a read prefix", async kind => {
+test.each(["agent", "effect"] as const)("unintegrated %s driver rejects whole admission before a read prefix", async kind => {
   const s = await setup(kind); await expect(admit(s)).rejects.toThrow(/drivers/);
   expect((await s.repository.snapshot()).executions).toEqual({}); expect(s.sdk.callTool).not.toHaveBeenCalled(); expect(s.modelFetch).not.toHaveBeenCalled();
 });

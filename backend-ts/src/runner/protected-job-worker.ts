@@ -12,7 +12,7 @@ export async function runProtectedOperation(services: HandlerServices, execution
       for (;;) {
         const point = await checkpoints.next(); if (!point) break;
         if (!point.valid) throw new Error("Protected execution reached an invalid structural boundary");
-        if (point.kind === "action") await checkpoints.executeRead(); else await checkpoints.advanceControl(point);
+        if (point.kind === "action") await checkpoints.executeAction(); else await checkpoints.advanceControl(point);
       }
     } catch (error) {
       // If persistence itself is unavailable, stop must fail too: do not report

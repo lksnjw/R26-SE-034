@@ -26,6 +26,15 @@ const configuration: RuntimeProviderConfiguration = {
 };
 const interactive = { egress: { purpose: "interactive" as const, dataClass: "restricted" as const } };
 
+test("provider revision observers fence synchronously, isolate failures and can unsubscribe", async () => {
+  const { runtime } = providerRuntime(vi.fn<typeof fetch>()), seen = vi.fn();
+  const broken = runtime.observeConfigurationChanges(() => { throw new Error("Synthetic listener failure"); });
+  const unsubscribe = runtime.observeConfigurationChanges(seen), oldRevision = runtime.binding!.configurationRevision;
+  runtime.activate(runtime.configuration!);
+  expect(runtime.binding!.configurationRevision).not.toBe(oldRevision); expect(seen).toHaveBeenCalledOnce();
+  unsubscribe(); broken(); runtime.activate(runtime.configuration!); expect(seen).toHaveBeenCalledOnce();
+});
+
 test.each(["query", "generate", "candidate", "captured"])("provider %s checks captured repository authority immediately before external fetch", async path => {
   const send = vi.fn<typeof fetch>().mockResolvedValue(providerResponse("fixture")), { runtime, repository } = providerRuntime(send);
   const captured = runtime.restoreCaptured(runtime.configuration!, runtime.binding!.configurationRevision);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { verifyFirestoreProtectedDrafts } from "./firestore-protected-drafts.mjs";
 import { verifyFirestoreProtectedWorker } from "./firestore-protected-worker.mjs";
+import { verifyFirestoreProtectedAnalysis } from "./firestore-protected-analysis.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import jwt from "jsonwebtoken";
@@ -51,7 +52,7 @@ const config = loadConfig({ APP_ENV: "test", STORAGE_DRIVER: "firestore-records"
   ERPBRIDGE_BASE_URL: "https://isolated.fixture.example.test", ERPBRIDGE_MCP_TOKEN: "fixture-only-not-a-real-token", ERPBRIDGE_ROLE_MAP: JSON.stringify({ "Platform Admin": "platform_admin" }), JWT_SECRET: "isolated-firestore-runtime-fixture-secret-32-bytes" });
 // Only this guarded, explicitly selected worker campaign uses the supported
 // five-second lease to qualify natural expiry without long production waits.
-if (process.argv.includes("--protected-worker-only")) config.readWorkerLeaseMs = 5000;
+if (process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only")) config.readWorkerLeaseMs = 5000;
 const codec = new FirestoreRecordCodec(key, namespace), log = value => console.log(`PASS: ${value}`);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const ownedBarriers = [];
@@ -124,7 +125,7 @@ const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
 const calls = [], reports = [], relatedInvoiceReports = [], relatedOrderReports = [], models = [], operations = [], readbacks = [], emails = [], mergedModelInputs = [];
-let sdkHook, modelHook, returnSynthesisFixture, recurringAnalysisFixture, readErrorFixture;
+let sdkHook, modelHook, returnSynthesisFixture, recurringAnalysisFixture, readErrorFixture, protectedAnalysisFixture;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
   const deadline = performance.now() + 20_000;
@@ -238,6 +239,11 @@ async function start(repositoryValue) {
       const output = await recurringAnalysisFixture(JSON.parse(request.messages[1].content));
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify(output) } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
     }
+    if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS") && protectedAnalysisFixture) {
+      const input = JSON.parse(request.messages[1].content).INPUT;
+      return Response.json({ choices: [{ finish_reason: "stop", message: { content: protectedAnalysisFixture === "invalid-json" ? "invalid JSON" : JSON.stringify({ id: `ANALYSED-${input}` }) } }],
+        ...(protectedAnalysisFixture === "unmeasured" ? {} : { usage: { prompt_tokens: protectedAnalysisFixture === "unsafe-usage" ? Number.MAX_SAFE_INTEGER + 1 : 11, completion_tokens: 7 } }) });
+    }
     if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS"))
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"id":"ANALYSIS-FIXTURE-ONE"}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
     if (agent) return Response.json({ choices: [{ finish_reason: answered ? "stop" : "tool_calls", message: answered
@@ -250,7 +256,7 @@ async function start(repositoryValue) {
   });
   await providerRuntime.activateStoredOrStatic({ id: "fixture-provider", name: "Fixture provider", type: "openai_compatible", baseURL: "https://provider.fixture.example.test/v1", apiKey: "synthetic-provider-secret", model: "fixture-model-a", additionalModels: ["fixture-model-b"], temperature: 0, timeoutMs: 10_000,
     egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://provider.fixture.example.test", runtimeAnalysisDataClasses: ["internal"], runtimeAgentDataClasses: ["internal"], interactiveDataClasses: ["restricted"],
-      reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "owner", name: "owner" } } });
+      reviewedAt: "2026-10-07T00:00:00.000Z", reviewedBy: { id: "owner", name: "owner" } } }, config.generationTimeoutMs ?? 30_000);
   services = { config, repository, registries, validator, executor, providerRuntime, synthesis: new SynthesisService(providerRuntime, registries, validator), erpbridgeSession: session };
   app = await buildApp(services); await app.ready();
 }
@@ -288,16 +294,22 @@ try {
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
     observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: [operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
     ...([operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? { requireIndependentApproval: true } : {}) } });
-  if (process.argv.includes("--protected-publication-only") || process.argv.includes("--protected-worker-only")) {
+  if (process.argv.includes("--protected-publication-only") || process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only")) {
     // Reuse real startup, current reviews and the same HTTP/storage campaign.
     // This focused mode never claims the full existing-profile regression.
     await verifyFirestoreProtectedDrafts({ request, repository: () => repository, services: () => services,
       restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, log });
-    if (process.argv.includes("--protected-worker-only")) {
+    if (process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only")) {
       await verifyFirestoreProtectedWorker({ repository: () => repository, services: () => services, request,
         restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models,
         setReadHook: value => { sdkHook = value; }, setFixture: value => { readErrorFixture = value; }, waitFor, log });
       console.log("Focused internal protected read-worker qualification complete. Actual local Firestore with governed SDK fixtures; normal v9 HTTP, model/effect/page drivers and production acceptance remain pending.");
+      if (process.argv.includes("--protected-analysis-only")) {
+        await verifyFirestoreProtectedAnalysis({ repository: () => repository, services: () => services, request,
+          restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models,
+          setFixture: value => { protectedAnalysisFixture = value; }, setModelHook: value => { modelHook = value; }, waitFor, log });
+        console.log("Focused internal protected analysis qualification complete. Actual Firestore and injected model HTTP; normal v9 lifecycle, agent/effect/report drivers, live models and production acceptance remain pending.");
+      }
     } else console.log("Focused protected publication qualification complete. Actual local Firestore, no protected-loop worker, live ERP/model/email or production qualification.");
   } else {
   for (const id of ["single", "collection"]) await request("POST", `/api/workflows/${id}/publish`, {}, 200);

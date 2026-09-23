@@ -98,7 +98,7 @@ const executorTools = createExecutorToolBoundary({ transport: config.mcpTranspor
 const executor = new Executor(executorTools.registry, validator);
 const providerRuntime = new ProviderRuntime(repository, executor);
 const generationConfiguration = staticProviderConfiguration();
-await providerRuntime.activateStoredOrStatic(generationConfiguration);
+await providerRuntime.activateStoredOrStatic(generationConfiguration, config.generationTimeoutMs ?? 30_000);
 const governancePrimary =
   (config.governanceURL ?? "") === ""
     ? null
