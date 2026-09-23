@@ -66,12 +66,18 @@ export async function dispatchReadTool(
     throw new Error("Tool dispatch denied: current actor is not authorized");
   await checkWorkflowScope(services, actor, context.workflowId);
   if (context.plan && context.dynamicPlan || context.protectedOperation && (!context.plan || context.dynamicPlan || context.iteration || context.protectedInvocation) ||
-      context.protectedInvocation && (!context.plan || context.dynamicPlan || context.iteration || context.protectedOperation)) throw new Error("Tool dispatch cannot combine incompatible static, dynamic or iteration bindings");
+      context.protectedInvocation && (!context.plan && !context.dynamicPlan || context.iteration || context.protectedOperation)) throw new Error("Tool dispatch cannot combine incompatible static, dynamic or iteration bindings");
   const protectedJournal = context.protectedInvocation?.checkpoints;
   if (context.protectedInvocation && (!(protectedJournal instanceof ProtectedJobCheckpoints) || protectedJournal.services !== services ||
       protectedJournal.repository !== services.repository || protectedJournal.executionId !== context.executionId))
     throw new Error("Protected dispatch requires its owned checkpoint controller");
   const exactPlan = context.plan ?? context.dynamicPlan;
+  const assertAgentPath = async () => {
+    if (!protectedJournal || !context.dynamicPlan) return;
+    const prefix = await services.repository.readAuthoritative(state => protectedJournal.agentReadPrerequisiteYAML(state, actorId, toolName, args, context.dynamicPlan!));
+    if (!services.validator.validatePlan("ReadConfirmedAgentInvocation", prefix, actor.role).passed) throw new Error("Owned agent read lacks confirmed process prerequisites");
+  };
+  await assertAgentPath();
   const connectionId = exactPlan?.admissionPin?.connectionId ?? selectedMcpConnectionId(services);
   const bound = boundMcpConnection(services, connectionId), session = bound.session;
   const registryHash = services.registries.hash(), generation = session.discoveryGeneration ?? 0;
@@ -166,7 +172,7 @@ export async function dispatchReadTool(
       if (!services.validator.validatePlan("ReadConfirmedPath", prefix, actor.role).passed) throw new Error("Selected read path does not meet confirmed process prerequisites");
     }
   }
-  if (protectedJournal && blueprint.metadata?.controlFlow === undefined) throw new Error("Protected invocation requires its original structural source");
+  if (protectedJournal && !context.dynamicPlan && blueprint.metadata?.controlFlow === undefined) throw new Error("Protected invocation requires its original structural source");
   const { signal, plan, dynamicPlan: _privateDynamicPlan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, protectedOperation: _privateProtectedOperation, protectedInvocation: _privateProtectedInvocation, ...metadata } = context;
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
@@ -181,7 +187,8 @@ export async function dispatchReadTool(
   // those waits; a revoked or changed identity cannot use an older capability.
   const finalDispatch = async () => {
     assertContext();
-    if (protectedJournal) await services.repository.readAuthoritative(state => {
+    await assertAgentPath();
+    if (protectedJournal && context.plan) await services.repository.readAuthoritative(state => {
       assertContext(); protectedJournal.prerequisiteYAML(state, yaml, index, context.plan?.admissionPin, parameters);
     });
     if (context.protectedOperation) await services.repository.readAuthoritative(state => {

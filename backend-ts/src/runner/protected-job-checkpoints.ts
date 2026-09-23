@@ -21,6 +21,8 @@ import { assertRuntimeAnalysisEgress } from "../providers/egress-policy.js";
 import { modelInputItemCount } from "../workflows/model-input.js";
 import { promptData } from "../prompts/contracts.js";
 import { validateValue } from "../structured-output/validate.js";
+import { executeProtectedAgent, type ProtectedAgentCandidate } from "./protected-job-agent.js";
+import { nextProtectedAgent } from "./protected-agent-protocol.js";
 
 const same = (left: unknown, right: unknown) => canonicalJSONBytes(left).equals(canonicalJSONBytes(right));
 type ReadNode = Extract<OperationNode, { kind: "action" }>;
@@ -43,6 +45,7 @@ export class ProtectedJobCheckpoints {
   #expiresAt = 0; #valid = true; #closed = false; #timer: NodeJS.Timeout | undefined; #token: ValidationToken | undefined;
   #read: ActiveRead | undefined;
   #analysis = false;
+  #agentRead: ProtectedAgentCandidate | undefined;
   private constructor(readonly services: HandlerServices, readonly executionId: string, owner: ProtectedJobOwner, run: Execution, governanceHash: string) {
     this.#owner = owner; this.#governanceHash = governanceHash; this.#expiresAt = run.protectedJobSecret!.lease!.expiresAt;
     this.#validator = services.validator; this.#validationGate = services.validationGate;
@@ -194,7 +197,75 @@ export class ProtectedJobCheckpoints {
       this.assertDispatch(); const saved = this.current(state), point = saved.machine.peek();
       return saved.plan.ir.root.nodes.find(node => node.id === point?.nodeId)?.kind;
     });
-    if (kind === "analysis") await this.executeAnalysis(); else await this.executeRead();
+    if (kind === "analysis") await this.executeAnalysis(); else if (kind === "agent") await this.executeAgentBoundary(false); else await this.executeRead();
+  }
+  /** One genuine confirmed agent sub-call may be yielded/reopened. No supplied
+   * turn, answer or serialized flag can invoke this owned driver. */
+  async executeAgentBoundary(oneBoundary = true): Promise<void> {
+    if (this.#read || this.#analysis || !this.#token || !this.#provider || !this.#providerRevision) throw new Error("Protected agent driver is unavailable or active");
+    this.#analysis = true;
+    try {
+      await executeProtectedAgent(this.services, this.executionId, {
+        mutate: fn => this.repository.mutateExecution(this.executionId, state => { this.assertDispatch(); return fn(this.current(state), state); }),
+        seal: (saved, state) => { saved.run.protectedInvocationSecret = saved.ledger.snapshot(); sealProtectedCursor(this.services, state, saved.run, saved.machine); },
+        advance: (saved, state, result, point) => {
+          saved.run.protectedInvocationSecret = saved.ledger.snapshot(); sealProtectedCursor(this.services, state, saved.run, saved.machine); this.advance(state, result, point);
+        },
+        guard: () => this.assertDispatch(), provider: this.#provider, providerRevision: this.#providerRevision, epoch: this.#owner.epoch, signal: this.controller.signal,
+        callRead: async (candidate, actorId, workflowId, signal) => {
+          this.#agentRead = candidate;
+          try {
+            return await dispatchReadTool(this.services, actorId, candidate.capability.action, candidate.arguments, { workflowId, executionId: this.executionId,
+              signal, protectedInvocation: { checkpoints: this }, dynamicPlan: { admissionPin: candidate.capability.admission,
+                contractHash: candidate.capability.contractHash, toolId: candidate.capability.toolId }, assertDispatch: () => this.assertDispatch(),
+              beforeDispatch: role => this.repository.mutateExecution(this.executionId, state => {
+                this.agentReadPrerequisiteYAML(state, actorId, candidate.capability.action, candidate.arguments, candidate.capability);
+                const saved = this.current(state);
+                if (role !== saved.run.protectedJobSecret!.admittedRole) throw new Error("Owned agent read actor changed");
+                saved.ledger.dispatchIntent(saved.machine, candidate.key, candidate.arguments, this.#owner.epoch);
+                saved.run.protectedInvocationSecret = saved.ledger.snapshot(); sealProtectedCursor(this.services, state, saved.run, saved.machine);
+                appendExecutionEvent(state, saved.run, "node.agent_tool_dispatch_intent", { invocationId: saved.machine.peek()!.invocationId,
+                  component: candidate.component }, saved.machine.peek()!.nodeId, saved.machine.peek()!.invocationId);
+              }) });
+          } finally { this.#agentRead = undefined; }
+        },
+      }, oneBoundary);
+    } finally { this.#analysis = false; }
+  }
+  /** Private active candidate plus authenticated dialogue/whole-source token.
+   * This denial-only prefix does not turn a dynamic one-read gate into the
+   * authority for an agent node, prior item, skipped branch or model output. */
+  agentReadPrerequisiteYAML(state: Readonly<RepositoryState>, actorId: string, action: string, args: Record<string, unknown>, binding: { admissionPin?: ReadAdmissionPin; admission?: ReadAdmissionPin; toolId: string; contractHash: string }): string {
+    this.assertDispatch(); const saved = this.current(state), active = this.#agentRead, point = saved.machine.peek();
+    const node = saved.plan.ir.root.nodes.find(item => item.id === point?.nodeId), records = saved.run.protectedAgentSecret;
+    const progress = point && records?.invocations[point.invocationId];
+    if (!active || !point || node?.kind !== "agent" || !records || progress?.profile !== "protected-agent-invocation/v2" ||
+        actorId !== saved.run.startedBy.id || action !== active.capability.action || !same(args, active.arguments) || binding.toolId !== active.capability.toolId ||
+        binding.contractHash !== active.capability.contractHash || !same(binding.admissionPin ?? binding.admission, active.capability.admission) ||
+        !this.#token || !this.services.validator.verifyToken(this.#token) || this.#token.workflow_content_hash !== saved.plan.sourceHash ||
+        this.#token.registry_hash !== saved.run.workflowSnapshot!.registryHash) throw new Error("Owned agent read lacks its original private invocation binding");
+    const ledger = saved.ledger.snapshot(), intent = ledger.intents[active.key];
+    if (!intent || !["PREPARING", "DISPATCH_INTENT"].includes(intent.state) || intent.epoch !== this.#owner.epoch) throw new Error("Owned agent read has no exact current prepared intent");
+    // Reconstruct the candidate as a DENIAL-ONLY view. The authentic entered
+    // state remains unchanged and is never made replayable or re-persisted.
+    intent.state = "PREPARING";
+    const candidate = nextProtectedAgent({ node, point, model: progress.model, tools: progress.offers }, records, ledger, Date.now());
+    if (candidate.kind !== "TOOL" || !same(candidate, active)) throw new Error("Owned agent read differs from its confirmed model dialogue");
+    const values = saved.machine.snapshot().values;
+    const completed = new Set(Object.values(ledger.receipts).filter(row => row.boundary.kind === "action" && row.result.kind === "accept" &&
+      Object.hasOwn(values, row.boundary.nodeId) && same(values[row.boundary.nodeId], row.result.output) &&
+      row.boundary.iterations.every((frame, at) => at < point.iterations.length && same(frame, point.iterations[at]))).map(row => row.boundary.nodeId));
+    const blueprint = parseWorkflowYAMLStrict(saved.run.workflowSnapshot!.yaml), metadata = { ...blueprint.metadata }; delete metadata.controlFlow;
+    const steps = blueprint.steps.filter(step => completed.has(step.id) && saved.plan.ir.root.nodes.some(item => item.id === step.id && item.kind === "action" && item.effectClass === "read"));
+    const used = new Set(blueprint.steps.map(step => step.id));
+    const id = (round: number, call: number) => { let result = `agentRead${round}_${call}`; while (used.has(result)) result += "x"; used.add(result); return result; };
+    for (const row of Object.values(records.results).filter(row => row.invocationId === point.invocationId && row.result.kind === "OUTPUT").sort((a, b) => a.round - b.round || a.callIndex - b.callIndex)) {
+      const turn = Object.values(records.turns).find(turn => turn.invocationId === point.invocationId && turn.round === row.round)!, call = turn.turn.toolCalls[row.callIndex]!;
+      const capability = node.allowedCapabilities.find(item => item.remoteName === call.name)!;
+      steps.push({ id: id(row.round, row.callIndex), action: capability.action, parameters: call.arguments });
+    }
+    steps.push({ id: id(active.component.round, active.component.callIndex), action, parameters: args });
+    return stringify({ ...blueprint, metadata, steps });
   }
   /** Only a captured genuine provider response can acknowledge analysis. A
    * public error/result, model tool request or malformed output is never an ERP
@@ -318,7 +389,15 @@ export class ProtectedJobCheckpoints {
   async yield(): Promise<void> {
     await this.repository.mutateExecution(this.executionId, state => {
       this.assertDispatch(); const saved = this.current(state);
-      if (Object.values(saved.ledger.snapshot().intents).some(item => item.sequence === saved.machine.snapshot().sequence)) throw new Error("Protected worker cannot yield with a pending call");
+      const pending = Object.values(saved.ledger.snapshot().intents).filter(item => item.sequence === saved.machine.snapshot().sequence);
+      if (this.#read || this.#analysis || pending.some(item => item.state !== "ACKNOWLEDGED")) throw new Error("Protected worker cannot yield with a pending call");
+      if (pending.length) {
+        const point = saved.machine.peek()!, node = saved.plan.ir.root.nodes.find(item => item.id === point.nodeId), records = saved.run.protectedAgentSecret,
+          progress = records?.invocations[point.invocationId];
+        if (node?.kind !== "agent" || !records || progress?.profile !== "protected-agent-invocation/v2") throw new Error("Protected yield lacks complete agent dialogue");
+        const next = nextProtectedAgent({ node, point, model: progress.model, tools: progress.offers }, records, saved.ledger.snapshot(), Date.now());
+        if (!["MODEL", "TOOL"].includes(next.kind)) throw new Error("Protected agent must confirm its terminal boundary before yield");
+      }
       saved.run.status = "PENDING"; saved.run.protectedJobSecret!.state = "QUEUED"; delete saved.run.protectedJobSecret!.lease;
       appendExecutionEvent(state, saved.run, "run.checkpoint_yielded", {});
     });

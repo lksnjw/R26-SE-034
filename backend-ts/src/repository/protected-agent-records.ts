@@ -3,6 +3,7 @@ import { assertBoundedFiniteJSON } from "../core/bounded-finite-json.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonical-json.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import type { ProtectedInvocationLedgerSnapshot } from "./protected-invocation-records.js";
+import { toolSchema } from "../registry/schemas.js";
 
 const hash = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
 const sha = z.string().regex(/^sha256:[a-f0-9]{64}$/), address = z.string().min(1).max(1100);
@@ -12,6 +13,7 @@ const progress = z.object({ profile: z.literal("protected-agent-invocation/v1"),
   sequence: z.number().int().min(0).max(4999), pointHash: sha, inputHash: sha, nodeHash: sha,
   model: z.string().min(1).max(256), startedAt: integer, deadline: integer,
   turnCount: z.number().int().min(0).max(8), resultCount: z.number().int().min(0).max(16) }).strict();
+const ownedProgress = progress.extend({ profile: z.literal("protected-agent-invocation/v2"), offers: z.array(toolSchema).min(1).max(8) }).strict();
 const turn = z.object({ text: z.string(), toolCalls: z.array(z.object({ id: z.string().min(1).max(256), name: z.string().min(1).max(256),
   arguments: z.record(z.string(), z.unknown()) }).strict()).max(16), stopReason: z.string().min(1).max(64),
   inputTokens: integer, outputTokens: integer, measured: z.literal(true), model: z.string().min(1).max(256).optional(),
@@ -26,24 +28,27 @@ const toolRecord = z.object({ profile: z.literal("protected-agent-result/v1"), i
   ]) }).strict();
 const schema = z.object({ profile: z.literal("protected-agent-records/v1"), invocations: z.record(address, progress),
   turns: z.record(sha, modelRecord), results: z.record(sha, toolRecord) }).strict();
-export type ProtectedAgentRecords = z.infer<typeof schema>;
-export type ProtectedAgentProgress = z.infer<typeof progress>;
+const ownedSchema = schema.extend({ profile: z.literal("protected-agent-records/v2"), invocations: z.record(address, ownedProgress) }).strict();
+const profiles = z.union([schema, ownedSchema]);
+export type ProtectedAgentRecords = z.infer<typeof profiles>;
+export type ProtectedAgentProgress = z.infer<typeof progress> | z.infer<typeof ownedProgress>;
 export type ProtectedAgentTurn = z.infer<typeof modelRecord>;
 export type ProtectedAgentResult = z.infer<typeof toolRecord>;
 
-export const emptyProtectedAgentRecords = (): ProtectedAgentRecords => ({ profile: "protected-agent-records/v1", invocations: {}, turns: {}, results: {} });
+export const emptyProtectedAgentRecords = (): z.infer<typeof ownedSchema> => ({ profile: "protected-agent-records/v2", invocations: {}, turns: {}, results: {} });
 
 /** Strict normalized private DATA. It is neither a confirmed storage commit
  * nor a provider/tool permit. The owned worker must authenticate it, replay the
  * original dialogue and prove current authority before any external entry. */
 export function assertProtectedAgentRecords(value: unknown, ledger: ProtectedInvocationLedgerSnapshot): asserts value is ProtectedAgentRecords {
   assertBoundedFiniteJSON(value, 32_000_000, 2_000_000);
-  const data = schema.parse(value), sequences = new Set<number>();
+  const data = profiles.parse(value), sequences = new Set<number>();
   if (Object.keys(data.invocations).length > 5000 || Object.keys(data.turns).length + Object.keys(data.results).length > 20000)
     throw new Error("Protected agent records exceed invocation bounds");
   const keyFor = (invocationId: string, component: unknown) => hash({ domain: "lcwe/protected-invocation-operation/v1", identity: ledger.identity, invocationId, component });
   const counts = new Map<string, { turns: number; results: number }>();
   for (const [id, item] of Object.entries(data.invocations)) {
+    assertBoundedFiniteJSON(item, 1_000_000);
     if (id !== item.invocationId || item.sequence > ledger.nextSequence || sequences.has(item.sequence) || item.deadline <= item.startedAt || item.deadline - item.startedAt > 120000)
       throw new Error("Protected agent invocation address, sequence or deadline changed");
     sequences.add(item.sequence); counts.set(id, { turns: 0, results: 0 });

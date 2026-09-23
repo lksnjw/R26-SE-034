@@ -16,6 +16,9 @@ import { modelInputItemCount } from "../workflows/model-input.js";
 import type { OperationAgentNode } from "../workflows/compiled-read.js";
 import type { ProtectedMachinePoint } from "../workflows/protected-machine-state.js";
 import { RUNTIME_AGENT_PROMPT_VERSION, RuntimeAgentKnownFailure } from "./runtime-agent.js";
+import type { Execution } from "../repository/store.js";
+import type { CompiledProtectedOperationPlan } from "../workflows/protected-operation-compiler.js";
+import { ProtectedMachine } from "../workflows/protected-machine.js";
 
 type Context = { node: OperationAgentNode; point: ProtectedMachinePoint; model: string; tools: readonly ToolDefinition[] };
 const denied = (message: string): never => { throw new RuntimeAgentKnownFailure("AGENT_TOOL_DENIED", message); };
@@ -25,15 +28,16 @@ const exhausted = (): never => { throw new RuntimeAgentKnownFailure("AGENT_BUDGE
 // Historical runtime-agent/v1 orchestration remains untouched.
 const dataMessage = (value: unknown) => promptData(JSON.parse(canonicalJSONBytes(value).toString("utf8")));
 
-export function protectedAgentProgress(context: Context, startedAt: number): ProtectedAgentProgress {
+export function protectedAgentProgress(context: Context, startedAt: number): Extract<ProtectedAgentProgress, { profile: "protected-agent-invocation/v2" }> {
   const { node, point, model } = context;
   assertBoundedFiniteJSON({ node, point });
   if (point.kind !== "action" || !point.valid || point.scope !== "invocation" || point.nodeId !== node.id || !Object.hasOwn(point, "arguments") ||
       !model || node.model && model !== node.model || !Number.isSafeInteger(startedAt) || startedAt < 0 || !Number.isSafeInteger(startedAt + node.maxWallTimeMs))
     throw new Error("Protected agent requires its original exact action, model and start time");
   if (modelInputItemCount(node.input, point.arguments) > node.maxInputItems || [...JSON.stringify(point.arguments)].length > node.maxInputChars) exhausted();
-  return { profile: "protected-agent-invocation/v1", invocationId: point.invocationId, nodeId: point.nodeId, sequence: point.sequence,
-    pointHash: hash(point), inputHash: hash(point.arguments), nodeHash: hash(node), model, startedAt, deadline: startedAt + node.maxWallTimeMs, turnCount: 0, resultCount: 0 };
+  return { profile: "protected-agent-invocation/v2", invocationId: point.invocationId, nodeId: point.nodeId, sequence: point.sequence,
+    pointHash: hash(point), inputHash: hash(point.arguments), nodeHash: hash(node), model, startedAt, deadline: startedAt + node.maxWallTimeMs, turnCount: 0, resultCount: 0,
+    offers: offered(context).map(item => structuredClone(item.tool)) };
 }
 
 function offered(context: Context) {
@@ -86,7 +90,10 @@ export function nextProtectedAgent(context: Context, records: ProtectedAgentReco
   const initial = protectedAgentProgress(context, saved.startedAt);
   const { turnCount: _turns, resultCount: _results, ...expected } = initial;
   const { turnCount: _savedTurns, resultCount: _savedResults, ...actual } = saved;
-  if (hash(expected) !== hash(actual) || !Number.isSafeInteger(now) || now < saved.startedAt) throw new Error("Protected agent original input, node, point, model or time binding changed");
+  const original = saved.profile === "protected-agent-invocation/v1" ? (() => {
+    const { offers: _offers, ...v1 } = expected; return { ...v1, profile: "protected-agent-invocation/v1" };
+  })() : expected;
+  if (hash(original) !== hash(actual) || !Number.isSafeInteger(now) || now < saved.startedAt) throw new Error("Protected agent original input, node, point, model or time binding changed");
   const capabilities = offered(context), definitions: QueryToolDefinition[] = capabilities.map(({ capability, tool }) => ({ type: "function", function: {
     name: capability.remoteName, description: tool.description, parameters: structuredClone(tool.input_schema) } }));
   const messages: QueryMessage[] = [{ role: "system", content: RUNTIME_AGENT_SYSTEM_PROMPT }, { role: "user", content: dataMessage({
@@ -126,17 +133,23 @@ export function nextProtectedAgent(context: Context, records: ProtectedAgentReco
     if (ledger.intents[key]?.result?.hash !== hash(output)) throw new Error("Protected agent turn differs from acknowledged model output");
     inputTokens += row.turn.inputTokens; outputTokens += row.turn.outputTokens;
     if (!row.turn.toolCalls.length) return finish({ kind: "COMPLETE" as const, output, inputTokens, outputTokens, toolCalls, rounds: round + 1 });
-    if (toolCalls + row.turn.toolCalls.length > context.node.maxToolCalls) exhausted();
+    if (toolCalls + row.turn.toolCalls.length > context.node.maxToolCalls || round + 1 >= context.node.maxRounds) exhausted();
+    // Validate the entire offered batch before any member may enter the SDK.
+    // A bad later proposal must not poison a confirmed history after a valid
+    // earlier read, or allow a partial batch to masquerade as resumable work.
+    const validated = row.turn.toolCalls.map(call => {
+      const matches = capabilities.filter(item => item.capability.remoteName === call.name);
+      if (matches.length !== 1 || !call.id || seenIds.has(call.id)) denied("Protected agent proposed an unavailable tool or reused call identifier");
+      const match = matches[0]!, callHash = hash({ toolId: match.capability.toolId, arguments: call.arguments });
+      const validation = validateToolArguments(match.capability.action, call.arguments, match.tool);
+      if (seenCalls.has(callHash) || validateToolInput(match.tool.input_schema, call.arguments).length || validation.missing.length || validation.invalid.length ||
+          hasReservedBridgeRole(match.tool) && Object.hasOwn(call.arguments, "role")) denied("Protected agent repeated a call or proposed invalid/reserved arguments");
+      seenCalls.add(callHash); seenIds.add(call.id); return match;
+    });
     messages.push({ role: "assistant", content: row.turn.text || null, tool_calls: row.turn.toolCalls.map(call => ({ id: call.id, type: "function", function: {
       name: call.name, arguments: canonicalJSONBytes(call.arguments).toString("utf8") } })) });
     for (const [callIndex, call] of row.turn.toolCalls.entries()) {
-      const matches = capabilities.filter(item => item.capability.remoteName === call.name);
-      if (matches.length !== 1 || !call.id || seenIds.has(call.id)) denied("Protected agent proposed an unavailable tool or reused call identifier");
-      const { capability, tool } = matches[0]!, callHash = hash({ toolId: capability.toolId, arguments: call.arguments });
-      const validation = validateToolArguments(capability.action, call.arguments, tool);
-      if (seenCalls.has(callHash) || validateToolInput(tool.input_schema, call.arguments).length || validation.missing.length || validation.invalid.length ||
-          hasReservedBridgeRole(tool) && Object.hasOwn(call.arguments, "role")) denied("Protected agent repeated a call or proposed invalid/reserved arguments");
-      seenCalls.add(callHash); seenIds.add(call.id);
+      const { capability, tool } = validated[callIndex]!;
       const toolComponent = { kind: "agent-tool" as const, round, callIndex }, toolKey = keyFor(toolComponent), result = records.results[toolKey];
       if (!result) {
         const recovery = pending(toolKey, call.arguments); if (recovery) return recovery;
@@ -148,6 +161,12 @@ export function nextProtectedAgent(context: Context, records: ProtectedAgentReco
         throw new Error("Protected agent tool answer belongs to different ordered arguments");
       if (result.result.kind === "READ_ERROR") return finish({ kind: "READ_ERROR" as const, key: toolKey, fault: structuredClone(result.result.fault) });
       const safe = safeMcpResult(result.result.output, tool.bridge_contract?.output_schema);
+      const metadata = result.result.output._meta as Record<string, unknown> | undefined, dispatch = metadata?.["io.workflow-engine/dispatch"];
+      if (dispatch !== undefined) {
+        const expected = { remoteName: exactBridgeName(tool), resourceVersion: tool.bridge_contract!.resource_version, resourceDigest: tool.bridge_contract!.resource_digest };
+        if (hash(dispatch) !== hash(expected)) invalid("Protected agent local request provenance differs from its original tool");
+        safe._meta = { ...(safe._meta as Record<string, unknown> | undefined), "io.workflow-engine/dispatch": expected };
+      }
       if (safe.isError || hash(safe) !== hash(result.result.output)) invalid("Protected agent tool answer is not a confirmed sanitized success");
       toolCalls++;
       messages.push({ role: "tool", tool_call_id: call.id, content: dataMessage({ source: "untrusted_tool_result", callId: call.id,
@@ -155,4 +174,37 @@ export function nextProtectedAgent(context: Context, records: ProtectedAgentReco
     }
   }
   return exhausted();
+}
+
+/** Historical replay uses captured original offers, not currently granted
+ * tools. Revocation must still allow an authentic old worker to stop safely;
+ * current dispatch authority is established separately by its controller. */
+export function assertProtectedAgentHistory(plan: CompiledProtectedOperationPlan, run: Execution): void {
+  const records = run.protectedAgentSecret, ledger = run.protectedInvocationSecret!;
+  if (!records) {
+    if (Object.values(ledger.intents).some(item => item.purpose === "agent-model" || item.purpose === "agent-tool")) throw new Error("Owned agent run lacks saved dialogue");
+    return;
+  }
+  if (records.profile !== "protected-agent-records/v2") throw new Error("Owned agent execution requires captured-offer dialogue v2");
+  const bySequence = new Map(Object.values(records.invocations).map(item => [item.sequence, item]));
+  const replay = new ProtectedMachine(plan.machine, run.workflowSnapshot!.input); replay.peek();
+  for (let at = 0; at <= ledger.nextSequence; at++) {
+    const saved = bySequence.get(at), point = replay.peek();
+    if (saved) {
+      const node = plan.ir.root.nodes.find(item => item.id === saved.nodeId);
+      if (!point || node?.kind !== "agent") throw new Error("Saved agent dialogue belongs to a non-agent authored boundary");
+      const next = nextProtectedAgent({ node, point, model: saved.model, tools: saved.offers }, records, ledger, saved.startedAt);
+      if (at < ledger.nextSequence) {
+        const receipt = ledger.receipts[String(at)]!;
+        if (next.kind === "COMPLETE" ? receipt.result.kind !== "accept" || hash(receipt.result.output) !== hash(next.output) :
+            next.kind === "READ_ERROR" ? receipt.result.kind !== "business-read-failure" || receipt.result.intentKey !== next.key || hash(receipt.result.fault) !== hash(next.fault) : true)
+          throw new Error("Consumed agent boundary differs from its complete saved dialogue");
+      }
+    }
+    if (at < ledger.nextSequence) {
+      const result = ledger.receipts[String(at)]!.result;
+      if (result.kind === "accept") replay.accept(result.output); else replay.fail(result.fault);
+      replay.peek();
+    }
+  }
 }

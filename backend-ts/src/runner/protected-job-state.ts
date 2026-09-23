@@ -11,6 +11,7 @@ import { ProtectedInvocationLedger } from "./protected-invocation-ledger.js";
 import { assertProtectedInvocationLedger } from "../repository/protected-invocation-records.js";
 import { assertProtectedJobShape } from "../repository/protected-job-record.js";
 import { assertProtectedAgentRecords } from "../repository/protected-agent-records.js";
+import { assertProtectedAgentHistory } from "./protected-agent-protocol.js";
 
 export const protectedHash = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
 export type ProtectedJobOwner = { leaseId: string; workerId: string; epoch: number };
@@ -69,6 +70,7 @@ export function restoreProtectedJob(state: Readonly<RepositoryState>, services: 
   if (!record) throw new Error("Protected run lacks its authenticated continuation");
   const snapshot = codec.decode(record, identity, codec.evidenceBinding(identity, protectedEvidence(run)));
   const machine = new ProtectedMachine(historical.plan.machine, {}, snapshot), ledger = new ProtectedInvocationLedger(run.protectedInvocationSecret!.identity, historical.plan.machine, machine, run.protectedInvocationSecret);
+  assertProtectedAgentHistory(historical.plan, run);
   // Continue the fully checked semantic replay, not canonical JSON's property
   // insertion order. Existing v1 scope arrays/receipt identities stay unchanged.
   return { run, plan: historical.plan, machine: ledger.replayedMachine(), ledger };

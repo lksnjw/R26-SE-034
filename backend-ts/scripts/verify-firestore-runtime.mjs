@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { verifyFirestoreProtectedDrafts } from "./firestore-protected-drafts.mjs";
 import { verifyFirestoreProtectedWorker } from "./firestore-protected-worker.mjs";
 import { verifyFirestoreProtectedAnalysis } from "./firestore-protected-analysis.mjs";
+import { verifyFirestoreProtectedAgent } from "./firestore-protected-agent.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import jwt from "jsonwebtoken";
@@ -52,7 +53,8 @@ const config = loadConfig({ APP_ENV: "test", STORAGE_DRIVER: "firestore-records"
   ERPBRIDGE_BASE_URL: "https://isolated.fixture.example.test", ERPBRIDGE_MCP_TOKEN: "fixture-only-not-a-real-token", ERPBRIDGE_ROLE_MAP: JSON.stringify({ "Platform Admin": "platform_admin" }), JWT_SECRET: "isolated-firestore-runtime-fixture-secret-32-bytes" });
 // Only this guarded, explicitly selected worker campaign uses the supported
 // five-second lease to qualify natural expiry without long production waits.
-if (process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only")) config.readWorkerLeaseMs = 5000;
+const protectedAgentMode = process.argv.includes("--protected-agent-only") || process.argv.includes("--protected-agent-driver-only");
+if (process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only") || protectedAgentMode) config.readWorkerLeaseMs = 5000;
 const codec = new FirestoreRecordCodec(key, namespace), log = value => console.log(`PASS: ${value}`);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const ownedBarriers = [];
@@ -125,7 +127,7 @@ const registries = { snapshot: () => ({ tools: fixtureTools, rules: [], versions
   findTool: name => fixtureTools.find(value => [value.name, value.mcp_tool_name].includes(name)), enabledRules: () => [], findRule: () => undefined };
 let repository, app, session, services, persistence;
 const calls = [], reports = [], relatedInvoiceReports = [], relatedOrderReports = [], models = [], operations = [], readbacks = [], emails = [], mergedModelInputs = [];
-let sdkHook, modelHook, returnSynthesisFixture, recurringAnalysisFixture, readErrorFixture, protectedAnalysisFixture;
+let sdkHook, modelHook, returnSynthesisFixture, recurringAnalysisFixture, readErrorFixture, protectedAnalysisFixture, protectedAgentFixture;
 const headers = (actor = "owner") => ({ authorization: `Bearer ${jwt.sign({}, config.jwtSecret, { subject: actor, expiresIn: 3600 })}` });
 async function waitFor(reader, label) {
   const deadline = performance.now() + 20_000;
@@ -246,6 +248,7 @@ async function start(repositoryValue) {
     }
     if (request.messages[0]?.content.includes("TASK: BOUNDED DATA ANALYSIS"))
       return Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"id":"ANALYSIS-FIXTURE-ONE"}' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
+    if (agent && protectedAgentFixture) return protectedAgentFixture(request, init.signal);
     if (agent) return Response.json({ choices: [{ finish_reason: answered ? "stop" : "tool_calls", message: answered
       ? { content: '{"id":"AGENT-FOLLOW-UP","complete":true}' }
       : { content: null, tool_calls: [{ id: "firestore-agent-read", type: "function", function: { name: exactBridgeName(tool), arguments: '{"id":"agent-follow-up"}' } }] } }],
@@ -294,21 +297,30 @@ try {
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
     observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: [operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
     ...([operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? { requireIndependentApproval: true } : {}) } });
-  if (process.argv.includes("--protected-publication-only") || process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only")) {
+  if (process.argv.includes("--protected-publication-only") || process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only") || protectedAgentMode) {
     // Reuse real startup, current reviews and the same HTTP/storage campaign.
     // This focused mode never claims the full existing-profile regression.
     await verifyFirestoreProtectedDrafts({ request, repository: () => repository, services: () => services,
       restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, log });
-    if (process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only")) {
+    if (process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only") || protectedAgentMode) {
+      if (!process.argv.includes("--protected-agent-driver-only")) {
       await verifyFirestoreProtectedWorker({ repository: () => repository, services: () => services, request,
         restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models,
         setReadHook: value => { sdkHook = value; }, setFixture: value => { readErrorFixture = value; }, waitFor, log });
       console.log("Focused internal protected read-worker qualification complete. Actual local Firestore with governed SDK fixtures; normal v9 HTTP, model/effect/page drivers and production acceptance remain pending.");
+      }
       if (process.argv.includes("--protected-analysis-only")) {
         await verifyFirestoreProtectedAnalysis({ repository: () => repository, services: () => services, request,
           restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models,
           setFixture: value => { protectedAnalysisFixture = value; }, setModelHook: value => { modelHook = value; }, waitFor, log });
         console.log("Focused internal protected analysis qualification complete. Actual Firestore and injected model HTTP; normal v9 lifecycle, agent/effect/report drivers, live models and production acceptance remain pending.");
+      }
+      if (protectedAgentMode) {
+        await verifyFirestoreProtectedAgent({ repository: () => repository, services: () => services, request,
+          restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, tool: businessErrorTool,
+          setFixture: value => { protectedAgentFixture = value; }, setReadFixture: value => { readErrorFixture = value; },
+          setReadHook: value => { sdkHook = value; }, setModelHook: value => { modelHook = value; }, waitFor, log });
+        console.log("Focused internal protected agent qualification complete. Actual Firestore and injected SDK/model I/O; normal v9 lifecycle, independent effects/report/schedule, browser and production acceptance remain pending.");
       }
     } else console.log("Focused protected publication qualification complete. Actual local Firestore, no protected-loop worker, live ERP/model/email or production qualification.");
   } else {
