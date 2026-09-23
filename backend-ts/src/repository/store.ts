@@ -66,6 +66,8 @@ export type Execution = {
    * Future collection worker/admission must establish its authority. */
   protectedInvocationSecret?: ProtectedInvocationLedgerSnapshot;
   protectedJobSecret?: import("./protected-job-record.js").ProtectedOperationJob;
+  /** Versioned private agent dialogue DATA; never a broker or model permit. */
+  protectedAgentSecret?: import("./protected-agent-records.js").ProtectedAgentRecords;
   recoverySource?: { profile: "operation-recovery-source/v1"; sourceExecutionId: string; artifactId: string; artifactHash: string };
   emailDeliverySource?: { profile: "email-delivery-source/v1"; admissionId: string; sessionId: string; draftId: string; draftVersion: number; draftHash: string };
   scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string;

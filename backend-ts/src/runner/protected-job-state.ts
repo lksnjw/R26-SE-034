@@ -10,6 +10,7 @@ import { ProtectedMachine } from "../workflows/protected-machine.js";
 import { ProtectedInvocationLedger } from "./protected-invocation-ledger.js";
 import { assertProtectedInvocationLedger } from "../repository/protected-invocation-records.js";
 import { assertProtectedJobShape } from "../repository/protected-job-record.js";
+import { assertProtectedAgentRecords } from "../repository/protected-agent-records.js";
 
 export const protectedHash = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
 export type ProtectedJobOwner = { leaseId: string; workerId: string; epoch: number };
@@ -48,8 +49,10 @@ export function protectedCursorIdentity(services: HandlerServices, run: Executio
 }
 export function protectedEvidence(run: Execution) {
   assertProtectedInvocationLedger(run.protectedInvocationSecret, run.id);
+  if (Object.hasOwn(run, "protectedAgentSecret")) assertProtectedAgentRecords(run.protectedAgentSecret, run.protectedInvocationSecret!);
   return { profile: "owned-protected-job-evidence/v1", admissionSeal: run.protectedJobSecret!.admissionSeal,
-    ledgerHash: protectedHash(run.protectedInvocationSecret) };
+    ledgerHash: protectedHash(run.protectedInvocationSecret),
+    ...(Object.hasOwn(run, "protectedAgentSecret") ? { agentHash: protectedHash(run.protectedAgentSecret) } : {}) };
 }
 export function sealProtectedCursor(services: HandlerServices, state: RepositoryState, run: Execution, machine: ProtectedMachine): void {
   const codec = protectedCodec(services), identity = protectedCursorIdentity(services, run);

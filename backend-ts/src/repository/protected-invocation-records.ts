@@ -3,6 +3,7 @@ import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonica
 import { assertBoundedFiniteJSON } from "../core/bounded-finite-json.js";
 import type { Execution } from "./store.js";
 import { assertProtectedJobShape } from "./protected-job-record.js";
+import { assertProtectedAgentRecords } from "./protected-agent-records.js";
 
 export const protectedJournalHash = (value: unknown): string => resolvedParameterHashBytes(canonicalJSONBytes(value));
 const sha = z.string().regex(/^sha256:[a-f0-9]{64}$/), id = z.string().min(1).max(256);
@@ -115,11 +116,15 @@ export function assertProtectedInvocationLedger(value: unknown, executionId: str
 
 export function assertProtectedInvocationExecution(run: Execution): void {
   assertProtectedJobShape(run);
-  if (!Object.hasOwn(run, "protectedInvocationSecret")) return;
+  if (!Object.hasOwn(run, "protectedInvocationSecret")) {
+    if (Object.hasOwn(run, "protectedAgentSecret")) throw new Error("Orphan private protected agent dialogue");
+    return;
+  }
   assertProtectedInvocationLedger(run.protectedInvocationSecret, run.id);
   const identity = run.protectedInvocationSecret!.identity;
   if (identity.workflowId !== run.workflowId || identity.actorId !== run.startedBy.id ||
       run.workflowSnapshot && (identity.sourceHash !== run.workflowSnapshot.contentHash || identity.inputHash !== protectedJournalHash(run.workflowSnapshot.input) ||
         run.workflowSnapshot.operationCompilation && identity.operationHash !== run.workflowSnapshot.operationCompilation.semanticHash) || Object.hasOwn(run, "operationSecret"))
     throw new Error("Protected invocation journal has foreign execution/source or legacy operation ownership");
+  if (Object.hasOwn(run, "protectedAgentSecret")) assertProtectedAgentRecords(run.protectedAgentSecret, run.protectedInvocationSecret!);
 }
