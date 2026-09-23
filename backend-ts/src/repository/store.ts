@@ -61,6 +61,7 @@ export type Execution = {
   // Protected transaction payload/journal, excluded by every common secret
   // projection. Only the minimal, current-authority review endpoint exposes it.
   runtimeApprovalSecret?: import("../runner/runtime-approvals.js").RuntimeApprovalLedger;
+  protectedApprovalSecret?: import("./protected-approval-records.js").ProtectedApprovalRecords;
   operationSecret?: import("../runner/operation-state.js").OperationJournal;
   /** Separate invocation-based private DATA, never a v8 node-key journal.
    * Future collection worker/admission must establish its authority. */

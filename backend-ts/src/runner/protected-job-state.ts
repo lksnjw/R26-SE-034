@@ -12,6 +12,8 @@ import { assertProtectedInvocationLedger } from "../repository/protected-invocat
 import { assertProtectedJobShape } from "../repository/protected-job-record.js";
 import { assertProtectedAgentRecords } from "../repository/protected-agent-records.js";
 import { assertProtectedAgentHistory } from "./protected-agent-protocol.js";
+import { assertProtectedApprovalRecords } from "../repository/protected-approval-records.js";
+import { assertProtectedApprovalHistory } from "./protected-approval-history.js";
 
 export const protectedHash = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
 export type ProtectedJobOwner = { leaseId: string; workerId: string; epoch: number };
@@ -51,9 +53,11 @@ export function protectedCursorIdentity(services: HandlerServices, run: Executio
 export function protectedEvidence(run: Execution) {
   assertProtectedInvocationLedger(run.protectedInvocationSecret, run.id);
   if (Object.hasOwn(run, "protectedAgentSecret")) assertProtectedAgentRecords(run.protectedAgentSecret, run.protectedInvocationSecret!);
+  if (Object.hasOwn(run, "protectedApprovalSecret")) assertProtectedApprovalRecords(run.protectedApprovalSecret, run.protectedInvocationSecret!);
   return { profile: "owned-protected-job-evidence/v1", admissionSeal: run.protectedJobSecret!.admissionSeal,
     ledgerHash: protectedHash(run.protectedInvocationSecret),
-    ...(Object.hasOwn(run, "protectedAgentSecret") ? { agentHash: protectedHash(run.protectedAgentSecret) } : {}) };
+    ...(Object.hasOwn(run, "protectedAgentSecret") ? { agentHash: protectedHash(run.protectedAgentSecret) } : {}),
+    ...(Object.hasOwn(run, "protectedApprovalSecret") ? { approvalHash: protectedHash(run.protectedApprovalSecret) } : {}) };
 }
 export function sealProtectedCursor(services: HandlerServices, state: RepositoryState, run: Execution, machine: ProtectedMachine): void {
   const codec = protectedCodec(services), identity = protectedCursorIdentity(services, run);
@@ -71,6 +75,7 @@ export function restoreProtectedJob(state: Readonly<RepositoryState>, services: 
   const snapshot = codec.decode(record, identity, codec.evidenceBinding(identity, protectedEvidence(run)));
   const machine = new ProtectedMachine(historical.plan.machine, {}, snapshot), ledger = new ProtectedInvocationLedger(run.protectedInvocationSecret!.identity, historical.plan.machine, machine, run.protectedInvocationSecret);
   assertProtectedAgentHistory(historical.plan, run);
+  assertProtectedApprovalHistory(historical.plan, run);
   // Continue the fully checked semantic replay, not canonical JSON's property
   // insertion order. Existing v1 scope arrays/receipt identities stay unchanged.
   return { run, plan: historical.plan, machine: ledger.replayedMachine(), ledger };

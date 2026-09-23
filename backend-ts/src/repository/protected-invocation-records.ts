@@ -4,6 +4,7 @@ import { assertBoundedFiniteJSON } from "../core/bounded-finite-json.js";
 import type { Execution } from "./store.js";
 import { assertProtectedJobShape } from "./protected-job-record.js";
 import { assertProtectedAgentRecords } from "./protected-agent-records.js";
+import { assertProtectedApprovalRecords } from "./protected-approval-records.js";
 
 export const protectedJournalHash = (value: unknown): string => resolvedParameterHashBytes(canonicalJSONBytes(value));
 const sha = z.string().regex(/^sha256:[a-f0-9]{64}$/), id = z.string().min(1).max(256);
@@ -118,6 +119,7 @@ export function assertProtectedInvocationExecution(run: Execution): void {
   assertProtectedJobShape(run);
   if (!Object.hasOwn(run, "protectedInvocationSecret")) {
     if (Object.hasOwn(run, "protectedAgentSecret")) throw new Error("Orphan private protected agent dialogue");
+    if (Object.hasOwn(run, "protectedApprovalSecret")) throw new Error("Orphan private protected approval records");
     return;
   }
   assertProtectedInvocationLedger(run.protectedInvocationSecret, run.id);
@@ -127,4 +129,8 @@ export function assertProtectedInvocationExecution(run: Execution): void {
         run.workflowSnapshot.operationCompilation && identity.operationHash !== run.workflowSnapshot.operationCompilation.semanticHash) || Object.hasOwn(run, "operationSecret"))
     throw new Error("Protected invocation journal has foreign execution/source or legacy operation ownership");
   if (Object.hasOwn(run, "protectedAgentSecret")) assertProtectedAgentRecords(run.protectedAgentSecret, run.protectedInvocationSecret!);
+  if (Object.hasOwn(run, "protectedApprovalSecret")) {
+    if (Object.hasOwn(run, "runtimeApprovalSecret")) throw new Error("Conflicting protected and legacy approval ownership");
+    assertProtectedApprovalRecords(run.protectedApprovalSecret, run.protectedInvocationSecret!);
+  }
 }
