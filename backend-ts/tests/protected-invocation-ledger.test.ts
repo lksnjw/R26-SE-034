@@ -4,6 +4,7 @@ import { ProtectedInvocationLedger } from "../src/runner/protected-invocation-le
 import { assertProtectedInvocationLedger, protectedJournalHash as hash, protectedInvocationOperationKey } from "../src/repository/protected-invocation-records.js";
 import type { ProtectedMachinePoint } from "../src/workflows/protected-machine-state.js";
 import { fixtureOutput as output } from "./fixtures/protected-simulation.js";
+import { canonicalJSONBytes } from "../src/core/canonical-json.js";
 import { protectedInvocationFixture as ledgerFixture, protectedInvocationFixtureFailure as privateFailure } from "./fixtures/protected-invocation.js";
 const typed = (point: ProtectedMachinePoint) => ["merge", "return", "collection-item"].includes(point.kind) ||
   point.kind === "collection-complete" && point.outcome === "SUCCEEDED" || point.kind === "protected-complete" && ["SUCCEEDED", "HANDLED_ERROR"].includes(point.outcome!);
@@ -52,6 +53,26 @@ test.each([false, true])("all boundaries restore distinct item intents/receipts,
 test("empty loop retains skipped templates and a typed empty aggregate, not fictitious invocations", () => {
   const f = completedLedger(false, []); expect(f.saved.intents).toEqual({}); expect(f.machine.snapshot().result).toEqual({ value: [] });
   expect(Object.values(f.saved.receipts).some(row => row.boundary.scope === "unentered-template")).toBe(true);
+});
+test("canonical saved-object key order does not change the verified v1 machine replay", () => {
+  const f = actionFixture(), before = f.machine.snapshot();
+  const stored = JSON.parse(canonicalJSONBytes(before).toString("utf8"));
+  expect(Object.keys(stored.values)).not.toEqual(Object.keys(before.values));
+  const decoded = new ProtectedMachine(f.plan, {}, stored), ledger = new ProtectedInvocationLedger(f.identity, f.plan, decoded, f.ledger.snapshot());
+  const replayed = ledger.replayedMachine().snapshot();
+  expect(replayed).toEqual(before); expect(Object.keys(replayed.values)).toEqual(Object.keys(before.values));
+  replayed.values.input = { items: ["forged"] }; expect(ledger.replayedMachine().snapshot()).toEqual(before);
+});
+test.each([0, 1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER])("never-entered transfer refuses invalid/nonadvancing epoch %s", epoch => {
+  const f = actionFixture(), point = f.machine.peek()!, key = f.ledger.prepare(f.machine, "read", { kind: "node" }, point.arguments, 1), before = f.ledger.snapshot();
+  expect(() => f.ledger.transferPrepared(f.machine, key, epoch)).toThrow(); expect(f.ledger.snapshot()).toEqual(before);
+});
+test("never-entered transfer preserves logical key and refuses entered or acknowledged calls", () => {
+  const f = actionFixture(), point = f.machine.peek()!, key = f.ledger.prepare(f.machine, "read", { kind: "node" }, point.arguments, 1);
+  f.ledger.transferPrepared(f.machine, key, 2); expect(f.ledger.snapshot().intents[key]).toMatchObject({ key, epoch: 2, state: "PREPARING" });
+  expect(() => f.ledger.dispatchIntent(f.machine, key, point.arguments, 1)).toThrow(); f.ledger.dispatchIntent(f.machine, key, point.arguments, 2);
+  expect(() => f.ledger.transferPrepared(f.machine, key, 3)).toThrow(); f.ledger.acknowledgeOutput(f.machine, key, output("real supplied DATA"), 2);
+  expect(() => f.ledger.transferPrepared(f.machine, key, 3)).toThrow();
 });
 test("logical keys do not change with attempt nonce or worker epoch, and reject epoch/lease identity fields", () => {
   const a = actionFixture(), b = actionFixture(), point = a.machine.peek()!;

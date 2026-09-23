@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { verifyFirestoreProtectedDrafts } from "./firestore-protected-drafts.mjs";
+import { verifyFirestoreProtectedWorker } from "./firestore-protected-worker.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import jwt from "jsonwebtoken";
@@ -48,6 +49,9 @@ const key = randomBytes(32).toString("base64"), namespace = { projectId, databas
 const config = loadConfig({ APP_ENV: "test", STORAGE_DRIVER: "firestore-records", FIRESTORE_PROJECT_ID: projectId, FIRESTORE_DATABASE_ID: namespace.databaseId,
   FIRESTORE_WORKSPACE_ID: namespace.workspaceId, STORAGE_ENCRYPTION_KEY: key, MCP_MODE: "mock", MCP_TRANSPORT: "erpbridge-mcp", MCP_TIMEOUT_MS: "10000",
   ERPBRIDGE_BASE_URL: "https://isolated.fixture.example.test", ERPBRIDGE_MCP_TOKEN: "fixture-only-not-a-real-token", ERPBRIDGE_ROLE_MAP: JSON.stringify({ "Platform Admin": "platform_admin" }), JWT_SECRET: "isolated-firestore-runtime-fixture-secret-32-bytes" });
+// Only this guarded, explicitly selected worker campaign uses the supported
+// five-second lease to qualify natural expiry without long production waits.
+if (process.argv.includes("--protected-worker-only")) config.readWorkerLeaseMs = 5000;
 const codec = new FirestoreRecordCodec(key, namespace), log = value => console.log(`PASS: ${value}`);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const ownedBarriers = [];
@@ -284,12 +288,17 @@ try {
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
     observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: [operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
     ...([operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? { requireIndependentApproval: true } : {}) } });
-  if (process.argv.includes("--protected-publication-only")) {
+  if (process.argv.includes("--protected-publication-only") || process.argv.includes("--protected-worker-only")) {
     // Reuse real startup, current reviews and the same HTTP/storage campaign.
     // This focused mode never claims the full existing-profile regression.
     await verifyFirestoreProtectedDrafts({ request, repository: () => repository, services: () => services,
       restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, log });
-    console.log("Focused protected publication qualification complete. Actual local Firestore, no protected-loop worker, live ERP/model/email or production qualification.");
+    if (process.argv.includes("--protected-worker-only")) {
+      await verifyFirestoreProtectedWorker({ repository: () => repository, services: () => services, request,
+        restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models,
+        setReadHook: value => { sdkHook = value; }, setFixture: value => { readErrorFixture = value; }, waitFor, log });
+      console.log("Focused internal protected read-worker qualification complete. Actual local Firestore with governed SDK fixtures; normal v9 HTTP, model/effect/page drivers and production acceptance remain pending.");
+    } else console.log("Focused protected publication qualification complete. Actual local Firestore, no protected-loop worker, live ERP/model/email or production qualification.");
   } else {
   for (const id of ["single", "collection"]) await request("POST", `/api/workflows/${id}/publish`, {}, 200);
   const ready = await request("GET", "/api/workflows/collection/readiness", undefined, 200); assert.equal(ready.data.can_attempt_run, true);

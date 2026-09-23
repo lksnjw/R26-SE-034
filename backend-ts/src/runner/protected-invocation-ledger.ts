@@ -22,6 +22,7 @@ export class ProtectedInvocationLedger {
   readonly #identity: ProtectedLedgerIdentity;
   readonly #ownership: ScopedInvocationIndex;
   #state: ProtectedInvocationLedgerSnapshot;
+  #semanticReplay: ProtectedMachine | undefined;
   constructor(identity: ProtectedLedgerIdentity, plan: ProtectedMachinePlan, machine: ProtectedMachine, saved?: ProtectedInvocationLedgerSnapshot) {
     assertBoundedFiniteJSON(identity); assertBoundedFiniteJSON(plan);
     this.#identity = protectedLedgerIdentitySchema.parse(identity); this.#ownership = new ScopedInvocationIndex(plan.flow);
@@ -34,7 +35,7 @@ export class ProtectedInvocationLedger {
       if (!same(saved.identity, this.#identity) || saved.machineHash !== hash(snapshot) || saved.nextSequence !== snapshot.sequence)
         throw new Error("Protected ledger differs from exact saved machine or immutable identity");
       this.#state = structuredClone(saved);
-      this.verifySemanticHistory(plan, snapshot);
+      this.#semanticReplay = this.verifySemanticHistory(plan, snapshot);
     } else {
       if (snapshot.sequence !== 0 || snapshot.status !== "RUNNING") throw new Error("Protected ledger must start before any acknowledged boundary");
       const initial = hash(snapshot);
@@ -64,6 +65,17 @@ export class ProtectedInvocationLedger {
           item.component.kind === "node" && item.argumentHash !== hash(point.arguments))
         throw new Error("Protected pending intent differs from exact authored item boundary or arguments");
     }
+    return replay;
+  }
+  /** Pure DATA reconstruction after complete semantic-history verification.
+   * Canonical storage sorts object keys, but future scope outer-key arrays must
+   * retain the original machine insertion order. Use the replayed machine,
+   * never reinterpret historic v1 receipts or trust a caller's reconstructed
+   * key order. No admission/SDK/handler authority is granted by this method. */
+  replayedMachine(): ProtectedMachine {
+    if (!this.#semanticReplay || hash(this.#semanticReplay.snapshot()) !== this.#state.machineHash)
+      throw new Error("Protected ledger has no exact saved semantic replay");
+    return this.#semanticReplay.fork();
   }
   private validateOwnership() {
     for (const row of [...Object.values(this.#state.intents), ...Object.values(this.#state.receipts)]) {
@@ -116,6 +128,15 @@ export class ProtectedInvocationLedger {
     if (!item || item.state !== "PREPARING" || item.epoch !== epoch || item.sequence !== point.sequence || !same(item.boundary, boundary(point)) || item.argumentHash !== hash(args))
       throw new Error("Protected dispatch intent differs from prepared exact invocation/generation/arguments");
     item.state = "DISPATCH_INTENT";
+  }
+  /** Owned recovery may transfer ONLY a never-entered prepared invocation.
+   * Logical key/arguments remain original; entered/unknown/ACKed calls cannot
+   * become runnable through an epoch change. Caller must prove claim authority. */
+  transferPrepared(machine: ProtectedMachine, key: string, epoch: number): void {
+    const point = this.pending(machine), item = this.#state.intents[key];
+    if (!item || item.state !== "PREPARING" || item.sequence !== point.sequence || !same(item.boundary, boundary(point)) ||
+        !Number.isSafeInteger(epoch) || epoch <= item.epoch || epoch >= Number.MAX_SAFE_INTEGER) throw new Error("Only an exact never-entered preparation can transfer generation");
+    item.epoch = epoch;
   }
   acknowledgeOutput(machine: ProtectedMachine, key: string, output: unknown, epoch: number): void {
     assertBoundedFiniteJSON(output); this.acknowledge(machine, key, { kind: "OUTPUT", hash: hash(output) }, epoch);

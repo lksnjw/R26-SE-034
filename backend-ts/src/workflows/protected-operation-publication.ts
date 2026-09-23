@@ -47,6 +47,7 @@ function scope(services: HandlerServices) {
     ...(config.storageDriver.startsWith("postgres") ? { databaseBinding: mac(services, "protected-publication-database/v1", config.databaseURL) } : {}) };
 }
 function seal(services: HandlerServices, body: PublicationBody) { return mac(services, "protected-publication-seal/v1", { scope: scope(services), body }); }
+export function protectedPublicationWorkspaceBinding(services: HandlerServices): string { return mac(services, "protected-publication-workspace/v1", scope(services)); }
 function providerBinding(services: HandlerServices, hasModels: boolean): string | undefined {
   if (!hasModels) return undefined;
   const config = services.providerRuntime?.configuration;
@@ -62,7 +63,11 @@ function bindings(services: HandlerServices, state: Readonly<RepositoryState>, c
 }
 function authenticate(services: HandlerServices, version: StoredRecord): PublicationBody {
   boundedFiniteJSONBytes(version.protectedCompilationSecret, 7_000_000, 262144);
-  const parsed = secretSchema.parse(version.protectedCompilationSecret), body = parsed.body as PublicationBody;
+  const parsed = secretSchema.parse(version.protectedCompilationSecret);
+  // The authenticated plan is finite JSON, including when read through an
+  // execution transaction's read-only proxies. Keep downstream compilation
+  // isolated from those proxies without weakening MAC or exact-version checks.
+  const body = JSON.parse(canonicalJSONBytes(parsed.body).toString("utf8")) as PublicationBody;
   const expected = seal(services, body);
   if (!timingSafeEqual(Buffer.from(parsed.seal, "hex"), Buffer.from(expected, "hex")) ||
       !canonicalJSONBytes(version.protectedCompilation).equals(canonicalJSONBytes(body.receipt)) ||
@@ -75,6 +80,17 @@ function authenticate(services: HandlerServices, version: StoredRecord): Publica
       body.publisherContext.registryHash !== body.receipt.registryHash || body.publisherContext.role !== body.receipt.verifiedRole ||
       body.publisherContext.actorId !== body.createdBy.id || body.publisherContext.baseVersion > body.receipt.version) deny();
   return body;
+}
+
+/** Historical sealed definitions only. Allows truthful stop/recovery when
+ * current actor/review/provider authority was revoked; NEVER execution grant. */
+export function authenticatedProtectedOperationPublication(state: Readonly<RepositoryState>, services: HandlerServices, workflowId: string, versionId: string) {
+  try {
+    const matches = (state.versions[workflowId] ?? []).filter(value => value.id === versionId);
+    if (matches.length !== 1) deny();
+    const body = authenticate(services, matches[0]!);
+    return structuredClone({ plan: body.plan, receipt: body.receipt });
+  } catch { deny(); }
 }
 
 /** Authoritative internal publication lifecycle for the future qualified v9

@@ -52,8 +52,9 @@ export type Execution = {
   approvals?: Array<{ stepId: string; approvedBy: { id: string; name: string }; approvedAt: string; note?: string }>;
   chatSessionId?: string;
   traceId?: string;
-  workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1" | "conditional-read-v1" | "structured-read-v1" | "collection-read-v1" | "sequential-operation-v1"; compilation?: ReadCompilationReceipt;
-    operationCompilation?: import("../workflows/compiled-read.js").OperationCompilationReceipt };
+  workflowSnapshot?: { version: number; contentHash: string; registryHash: string; yaml: string; input: Record<string, unknown>; executionProfile: "sequential-read-v1" | "conditional-read-v1" | "structured-read-v1" | "collection-read-v1" | "sequential-operation-v1" | "protected-operation-v1"; compilation?: ReadCompilationReceipt;
+    operationCompilation?: import("../workflows/compiled-read.js").OperationCompilationReceipt;
+    protectedCompilation?: import("../workflows/protected-operation-publication.js").ProtectedOperationPublicationReceipt };
   valueOutputs?: Record<string, { value: unknown }>;
   readProgress?: ReadRunProgress;
   iterationProgress?: import("../runner/read-iteration-checkpoints.js").ReadIterationLedger;
@@ -64,6 +65,7 @@ export type Execution = {
   /** Separate invocation-based private DATA, never a v8 node-key journal.
    * Future collection worker/admission must establish its authority. */
   protectedInvocationSecret?: ProtectedInvocationLedgerSnapshot;
+  protectedJobSecret?: import("./protected-job-record.js").ProtectedOperationJob;
   recoverySource?: { profile: "operation-recovery-source/v1"; sourceExecutionId: string; artifactId: string; artifactHash: string };
   emailDeliverySource?: { profile: "email-delivery-source/v1"; admissionId: string; sessionId: string; draftId: string; draftVersion: number; draftHash: string };
   scheduleSource?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string;

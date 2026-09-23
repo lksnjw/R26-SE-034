@@ -21,6 +21,7 @@ import { boundMcpConnection, selectedMcpConnectionId } from "./mcp-dispatch-cont
 import { consumeAcknowledgedReadErrorEvidence, ErpbridgeMcpToolError } from "./erpbridge-mcp-client.js";
 import { assertReadErrorContract, type ReviewedReadBusinessFailure } from "./read-business-error.js";
 import { protectedReadPrerequisiteYAML, type ProtectedReadDispatch } from "../runner/protected-read-dispatch.js";
+import { ProtectedJobCheckpoints } from "../runner/protected-job-checkpoints.js";
 
 const acknowledgedFailures = new WeakMap<object, { result: Record<string, unknown>; businessFailure?: ReviewedReadBusinessFailure }>();
 /** Read-only observation for nested server checkpoints. Never accepts a
@@ -39,6 +40,8 @@ export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: 
   iteration?: { checkpoints: ReadIterationCheckpoints; plan: CompiledReadPlan; visit: ReadVisit; assertBinding?: () => void };
   /** Server-owned v8 worker identity, never browser/model-supplied receipts. */
   protectedOperation?: ProtectedReadDispatch;
+  /** Owned v9 controller; no serialized continuation or caller receipt. */
+  protectedInvocation?: { checkpoints: ProtectedJobCheckpoints };
   plan?: { yaml: string; stepIndex: number; token: ValidationToken; admissionPin?: ReadAdmissionPin; contractHash?: string; toolId?: string };
   /** Exact reviewed dynamic-node allow-list binding. The broker still builds
    * and validates one synthetic single-tool workflow for the concrete call. */
@@ -62,7 +65,12 @@ export async function dispatchReadTool(
       !actor.permissions.some((permission) => ["chat:use", "workflow:write", "workflow:run", "workflow:run_own"].includes(permission)))
     throw new Error("Tool dispatch denied: current actor is not authorized");
   await checkWorkflowScope(services, actor, context.workflowId);
-  if (context.plan && context.dynamicPlan || context.protectedOperation && (!context.plan || context.dynamicPlan || context.iteration)) throw new Error("Tool dispatch cannot combine incompatible static, dynamic or iteration bindings");
+  if (context.plan && context.dynamicPlan || context.protectedOperation && (!context.plan || context.dynamicPlan || context.iteration || context.protectedInvocation) ||
+      context.protectedInvocation && (!context.plan || context.dynamicPlan || context.iteration || context.protectedOperation)) throw new Error("Tool dispatch cannot combine incompatible static, dynamic or iteration bindings");
+  const protectedJournal = context.protectedInvocation?.checkpoints;
+  if (context.protectedInvocation && (!(protectedJournal instanceof ProtectedJobCheckpoints) || protectedJournal.services !== services ||
+      protectedJournal.repository !== services.repository || protectedJournal.executionId !== context.executionId))
+    throw new Error("Protected dispatch requires its owned checkpoint controller");
   const exactPlan = context.plan ?? context.dynamicPlan;
   const connectionId = exactPlan?.admissionPin?.connectionId ?? selectedMcpConnectionId(services);
   const bound = boundMcpConnection(services, connectionId), session = bound.session;
@@ -134,10 +142,14 @@ export async function dispatchReadTool(
   }
   if (blueprint.metadata?.controlFlow !== undefined) {
     const collectionSource = parseReadControlFlow(blueprint.metadata.controlFlow).schemaVersion === "read-control-flow/v3";
-    if (collectionSource && !iteration)
+    if (collectionSource && !iteration && !protectedJournal)
       throw new Error("Collection reads require governed iteration dispatch; flat completed-node evidence is not accepted");
     if (iteration && !collectionSource) throw new Error("Iteration journal requires the collection source profile");
-    if (!iteration) {
+    if (protectedJournal) {
+      const prefix = await services.repository.readAuthoritative(state => protectedJournal.prerequisiteYAML(state, yaml, index, context.plan?.admissionPin, parameters));
+      if (!services.validator.validatePlan("ReadConfirmedProtectedInvocation", prefix, actor.role).passed)
+        throw new Error("Selected protected invocation does not meet confirmed process prerequisites");
+    } else if (!iteration) {
       if (!context.executionId) throw new Error("Conditional reads require a checkpointed execution identity");
       const completed = await services.repository.readAuthoritative(state => {
         const execution = state.executions[context.executionId!];
@@ -154,7 +166,8 @@ export async function dispatchReadTool(
       if (!services.validator.validatePlan("ReadConfirmedPath", prefix, actor.role).passed) throw new Error("Selected read path does not meet confirmed process prerequisites");
     }
   }
-  const { signal, plan, dynamicPlan: _privateDynamicPlan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, protectedOperation: _privateProtectedOperation, ...metadata } = context;
+  if (protectedJournal && blueprint.metadata?.controlFlow === undefined) throw new Error("Protected invocation requires its original structural source");
+  const { signal, plan, dynamicPlan: _privateDynamicPlan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, protectedOperation: _privateProtectedOperation, protectedInvocation: _privateProtectedInvocation, ...metadata } = context;
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
   const identity = createDispatchIdentity(actor, bound.roleMap);
@@ -168,6 +181,9 @@ export async function dispatchReadTool(
   // those waits; a revoked or changed identity cannot use an older capability.
   const finalDispatch = async () => {
     assertContext();
+    if (protectedJournal) await services.repository.readAuthoritative(state => {
+      assertContext(); protectedJournal.prerequisiteYAML(state, yaml, index, context.plan?.admissionPin, parameters);
+    });
     if (context.protectedOperation) await services.repository.readAuthoritative(state => {
       assertContext(); protectedReadPrerequisiteYAML(services, state, context.executionId!, actorId, context.protectedOperation!, yaml, index, context.plan?.admissionPin, parameters);
     });

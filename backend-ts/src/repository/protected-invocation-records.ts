@@ -2,6 +2,7 @@ import { z } from "zod";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonical-json.js";
 import { assertBoundedFiniteJSON } from "../core/bounded-finite-json.js";
 import type { Execution } from "./store.js";
+import { assertProtectedJobShape } from "./protected-job-record.js";
 
 export const protectedJournalHash = (value: unknown): string => resolvedParameterHashBytes(canonicalJSONBytes(value));
 const sha = z.string().regex(/^sha256:[a-f0-9]{64}$/), id = z.string().min(1).max(256);
@@ -113,6 +114,7 @@ export function assertProtectedInvocationLedger(value: unknown, executionId: str
 }
 
 export function assertProtectedInvocationExecution(run: Execution): void {
+  assertProtectedJobShape(run);
   if (!Object.hasOwn(run, "protectedInvocationSecret")) return;
   assertProtectedInvocationLedger(run.protectedInvocationSecret, run.id);
   const identity = run.protectedInvocationSecret!.identity;
