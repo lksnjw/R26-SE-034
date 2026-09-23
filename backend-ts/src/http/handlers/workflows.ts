@@ -17,6 +17,7 @@ import { historyPage, historyVersion, saveDraftRevision, savedDraftHistory } fro
 import { validateWorkspaceDraft } from "../../workflows/draft-validation.js";
 import { assertActorAuthority } from "./model-selection.js";
 import { savedGeneratedReturnCoverageIssues } from "../../synthesis/return-coverage.js";
+import { publicWorkflowVersion } from "../../workflows/public-workflow-version.js";
 
 export const WORKFLOW_UNHANDLED = Symbol("workflow-unhandled");
 
@@ -278,9 +279,7 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
     appendAudit(state, publisher, "workflow.published", "workflow", id, null, { version: item.publishedVersion, contentHash: expectedHash, semanticHash: compilation?.stored.receipt.semanticHash ?? operationCompilation?.stored.receipt.semanticHash ?? null }, request);
     return value;
   });
-  const publicCompilation = version.compiledRead as { receipt?: unknown } | undefined;
-  const publicOperationCompilation = version.compiledOperation as { receipt?: unknown } | undefined;
-  return reply.send(ok({ ...version, ...(publicCompilation ? { compiledRead: publicCompilation.receipt } : {}), ...(publicOperationCompilation ? { compiledOperation: publicOperationCompilation.receipt } : {}) }, "Workflow published", null));
+  return reply.send(ok(publicWorkflowVersion(version), "Workflow published", null));
 }
 
 /*******************************************************************************
@@ -540,7 +539,7 @@ async function workflowVersions(request: FastifyRequest, reply: FastifyReply, us
   }
   const id = requestParam(request, "id"); if (await visibleWorkflow(id, user, services) === null) throw new HandlerFailure(404, "Workflow not found");
   const versions = await services.repository.read((state) => state.versions[id] ?? []);
-  return reply.send(ok(versions.map(version => { const compiled = version.compiledRead as { receipt?: unknown } | undefined; const operation = version.compiledOperation as { receipt?: unknown } | undefined; return { ...version, ...(compiled ? { compiledRead: compiled.receipt } : {}), ...(operation ? { compiledOperation: operation.receipt } : {}) }; }), "OK", null));
+  return reply.send(ok(versions.map(publicWorkflowVersion), "OK", null));
 }
 
 /*******************************************************************************

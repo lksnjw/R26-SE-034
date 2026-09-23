@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { stringify } from "yaml";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../src/parser/workflow.js";
 import { parseReadControlFlow, protectedNodes } from "../src/workflows/read-control-flow.js";
+import { verifyFirestoreProtectedPublication } from "./firestore-protected-publication.mjs";
 
 // Real emulator persistence/normal authenticated API qualification only.
 // No model fixture, handler execution, effect or production grant is created.
-export async function verifyFirestoreProtectedDrafts({ request, repository: getRepository, restart, calls, models, log }) {
+export async function verifyFirestoreProtectedDrafts({ request, repository: getRepository, services, restart, calls, models, log }) {
   const workflowId = "protected_draft_edit", endpoint = `/api/workflows/${workflowId}`;
   const source = stringify({ name: "Protected saved draft", description: "Grouped employee/document fixture reads", trigger: { type: "manual" },
     steps: ["employee", "documents", "after"].map(id => ({ id, action: "read", parameters: { id } })), metadata: { ownerNotes: "preserve exact definitions" } });
@@ -110,4 +111,5 @@ export async function verifyFirestoreProtectedDrafts({ request, repository: getR
   assert.deepEqual((await getRepository().snapshot()).versions[collectionId], []);
   assert.equal(calls.length, callsBefore); assert.equal(models.length, modelsBefore);
   log("actual Firestore saved protected collection compiled from current reviewed records through authenticated readiness and reopened identically; publication/dispatch remained closed and no SDK/model/effect call occurred");
+  await verifyFirestoreProtectedPublication({ repository: getRepository, services, request, restart, sourceId: collectionId, calls, models, log });
 }

@@ -20,8 +20,8 @@ import { protectedSimulationRead, protectedSimulationSource, fixtureSequence as 
 
 /** Real session/review/compiler and HTTP wiring with synthetic SDK/model I/O.
  * No durable-worker, live network or business-operation qualification. */
-export async function protectedPreparationFixture(kind?: "analysis" | "agent" | "effect", withReadback = false) {
-  const repository = await Repository.open(null), registries = await RegistryService.load(resolve("tests/fixtures/tools.json"), resolve("tests/fixtures/rules.json"));
+export async function protectedPreparationFixture(kind?: "analysis" | "agent" | "effect", withReadback = false, suppliedRepository?: Repository) {
+  const repository = suppliedRepository ?? await Repository.open(null), registries = await RegistryService.load(resolve("tests/fixtures/tools.json"), resolve("tests/fixtures/rules.json"));
   const tools = [structuredClone(protectedSimulationRead)], base = registries.snapshot();
   const { read_error_contract: _readError, ...effectBase } = tools[0]!;
   if (kind === "effect") tools.push(toolSchema.parse({ ...effectBase, tool_id: "protected-effect", name: "hr.notify", mcp_tool_name: "hr.notify", is_read_only: false,

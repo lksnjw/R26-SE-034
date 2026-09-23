@@ -14,7 +14,7 @@ import { protectedOperationConnections, assertProtectedConnectionsCurrent, disco
   captureProtectedOperationPlan, assertProtectedCapabilitiesDiscovered, type ProtectedConnectionObservation } from "./protected-operation-bindings.js";
 
 type Purpose = "inspect" | "publication";
-type Context = { workflowId: string; baseVersion: number; sourceHash: string; actorId: string; roleId: string; role: string; permissionHash: string; aclHash: string; registryHash: string };
+type Context = { workflowId: string; baseVersion: number; sourceHash: string; actorId: string; roleId: string; role: string; departmentId: string | null; permissionHash: string; aclHash: string; registryHash: string };
 type ModelBinding = { nodeId: string; kind: "analysis" | "agent"; providerId: string; configurationRevision: string; model: string };
 export type PreparedProtectedOperationCompilation = Readonly<{ profile: "protected-operation-preparation/v1"; workflowId: string; baseVersion: number;
   sourceHash: string; semanticHash: string; machineHash: string; registryHash: string; originalNodes: number; capabilities: number; modelNodes: number; runtimeQualified: false }>;
@@ -29,7 +29,7 @@ function savedContext(state: Readonly<RepositoryState>, services: HandlerService
   const account = state.users[user.id], role = account && state.roles[account.roleId];
   const permissions = [...new Set([...(role?.permissions ?? []), ...(account?.permissionOverrides ?? [])].filter(Boolean))].sort();
   if (!account || account.id !== user.id || account.status.toLowerCase() !== "active" || !role || role.id !== account.roleId || account.roleId !== user.roleId || role.name !== user.role ||
-      !same(permissions, [...new Set(user.permissions)].sort())) deny("Workflow authority changed; reload before continuing", 403);
+      account.departmentId !== user.departmentId || !same(permissions, [...new Set(user.permissions)].sort())) deny("Workflow authority changed; reload before continuing", 403);
   const workflow = state.workflows[workflowId];
   if (!workflow || workflow.id !== workflowId || !permittedWorkflow(workflow, user, purpose === "publication")) deny("Workflow not found or not accessible", 404);
   if (purpose === "publication") assertCurrentWorkflowEditor(state, workflow, user);
@@ -37,7 +37,7 @@ function savedContext(state: Readonly<RepositoryState>, services: HandlerService
   const source = parseWorkflowYAMLStrict(workflow.yaml);
   if (protectedOperationProfile(source) !== "protected-collections-pending") deny("Expected an authored protected collection", 422);
   return { workflow, source, context: { workflowId, baseVersion: workflow.draftVersion, sourceHash: workflowContentHash(workflow.yaml), actorId: account.id,
-    roleId: account.roleId, role: role.name, permissionHash: hash(permissions), registryHash: services.registries.hash(),
+    roleId: account.roleId, role: role.name, departmentId: account.departmentId, permissionHash: hash(permissions), registryHash: services.registries.hash(),
     aclHash: hash({ ownerId: workflow.owner.id, assignedUserIds: [...new Set(workflow.assignedUserIds ?? [])].sort(), archived: workflow.archived,
       emailDeliverySource: Boolean(workflow.emailDeliverySource), recoverySource: Boolean(workflow.recoverySource) }) } satisfies Context };
 }
@@ -120,4 +120,25 @@ export function assertProtectedOperationPreparationCurrent(prepared: PreparedPro
     if (error instanceof HandlerFailure) throw error;
     deny("Protected compilation reviews or connection context changed; inspect again");
   }
+}
+
+/** Server-only publication material, extracted only from an owned publication
+ * mint and freshly rechecked in the committing transaction. Durable bindings
+ * omit socket identity/generation and process-local provider revisions: neither
+ * a restart nor this record grants future run or SDK authority. */
+export function protectedOperationPublicationCandidate(prepared: PreparedProtectedOperationCompilation, services: HandlerServices, state: Readonly<RepositoryState>, user: CurrentUser) {
+  const plan = assertProtectedOperationPreparationCurrent(prepared, services, state, user, "publication"), owned = preparations.get(prepared)!;
+  return { plan, publisherContext: structuredClone(owned.context),
+    connections: owned.connections.map(value => ({ id: value.id, admissionBinding: value.admissionBinding, roleMapHash: hash(value.roleMap) })),
+    models: owned.models.map(({ configurationRevision: _revision, ...value }) => value),
+    ...(owned.approvalPolicy ? { approvalPolicy: owned.approvalPolicy } : {}) };
+}
+
+/** Current configuration eligibility, not an actor, discovery or dispatch grant.
+ * Logical model selection is durable; process revisions are checked separately
+ * by preparation and must be captured anew by future owned run admission. */
+export function protectedOperationRuntimeBindings(state: Readonly<RepositoryState>, services: HandlerServices, plan: CompiledProtectedOperationPlan) {
+  const models = modelBindings(plan, services.providerRuntime).map(({ configurationRevision: _revision, ...value }) => value);
+  const policy = approvalPolicy(state, plan);
+  return { models, ...(policy ? { approvalPolicy: policy } : {}) };
 }

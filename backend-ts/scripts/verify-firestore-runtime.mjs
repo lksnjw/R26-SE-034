@@ -284,6 +284,13 @@ try {
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
     observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: [operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
     ...([operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? { requireIndependentApproval: true } : {}) } });
+  if (process.argv.includes("--protected-publication-only")) {
+    // Reuse real startup, current reviews and the same HTTP/storage campaign.
+    // This focused mode never claims the full existing-profile regression.
+    await verifyFirestoreProtectedDrafts({ request, repository: () => repository, services: () => services,
+      restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, log });
+    console.log("Focused protected publication qualification complete. Actual local Firestore, no protected-loop worker, live ERP/model/email or production qualification.");
+  } else {
   for (const id of ["single", "collection"]) await request("POST", `/api/workflows/${id}/publish`, {}, 200);
   const ready = await request("GET", "/api/workflows/collection/readiness", undefined, 200); assert.equal(ready.data.can_attempt_run, true);
   const read = await request("POST", "/api/workflows/single/run", { input: { id: "single" } }, 200); assert.equal(read.data.status, "DONE"); assert.deepEqual(calls, ["single"]);
@@ -461,7 +468,7 @@ try {
   assert.equal(canvasUndo.version, 7); assert.equal(canvasUndo.yaml, canvasOriginal.yaml);
   assert.equal(calls.length, callsBeforeNode); assert.equal(models.length, modelsAfterAutomation); assert.equal(canvasUndo.publishedVersion, 0);
   log("normal Firestore whole-collection canvas move retained body/configuration and broken references as a blocked saved draft; restart and explicit undo preserved exact original content without publication, SDK or model calls");
-  await verifyFirestoreProtectedDrafts({ request, repository: () => repository, restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, log });
+  await verifyFirestoreProtectedDrafts({ request, repository: () => repository, services: () => services, restart: async () => { await stop(); await start(await openApplicationRepository(config)); }, calls, models, log });
 
   // Server-only synthetic checkpoint producer, NOT a real effect executor.
   // Decision/review/configuration requests use the ordinary authenticated API.
@@ -1464,4 +1471,5 @@ try {
   } finally { await observer.close(); }
   log("actual writer-renewal lost ACK synchronously denied repository observers, pending read/chat waits, broker MCP, provider fetch and normal HTTP execution; late SDK/model answers were not saved and no next item or queued chat started");
   console.log("Firestore runtime qualification complete. Synthetic actual database + in-process HTTP/MCP/model fixtures only; no cloud project, live ERP/model/email, migration, browser/load or production latency certification.");
+  }
 } finally { for (const gate of ownedBarriers) gate.release(); sdkHook = modelHook = undefined; await stop(); }
