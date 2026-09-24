@@ -10,6 +10,7 @@ import type { ToolDefinition } from "../registry/schemas.js";
 import type { EmailDeliveryAdmission, Execution, RepositoryState } from "../repository/store.js";
 import { appendExecutionEvent, assertCurrentRunController, newReadProgress } from "../runner/read-checkpoints.js";
 import { operationJobQueue } from "../runner/operation-jobs.js";
+import { requireResidentExecution } from "../runner/execution-host.js";
 import { runtimeApprovalPolicyHash } from "../runner/runtime-approvals.js";
 import { resolveReadBinding } from "../workflows/compiled-read.js";
 import { assertOperationPublicationCurrent, prepareOperationPublication } from "../workflows/operation-compilation-lifecycle.js";
@@ -117,6 +118,7 @@ function publicReceipt(admission: EmailDeliveryAdmission, execution: Execution, 
 /** Admit exactly one immutable draft as a one-node governed notification. No
  * model, browser-selected tool/arguments or SDK call is reachable here. */
 export async function admitEmailDelivery(services: HandlerServices, user: CurrentUser, sessionId: string, raw: unknown, traceId: string, _request: FastifyRequest) {
+  requireResidentExecution(services.repository);
   requireStorage(services);
   const parsed = emailDeliveryCommandSchema.safeParse(raw);
   if (!parsed.success) deny("Request the exact saved draft revision, confirm sharing and provide a stable idempotency key", 422);

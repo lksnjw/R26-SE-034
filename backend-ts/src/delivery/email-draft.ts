@@ -10,12 +10,25 @@ export type DeliveryIntent = { channel: "email" | "unspecified"; recurring: bool
  * addresses in retrieved records, and cadence never become dispatch authority. */
 export function deliveryIntent(message: string): DeliveryIntent | null {
   const text = message.trim().toLowerCase();
-  if (/^(?:how\b|what\b|why\b|when\b|explain\b)/.test(text) || /\b(?:do not|don't|never|without)\s+(?:send|email|mail)\b/.test(text)) return null;
+  // A prohibition can coordinate several actions ("do not create records or
+  // send email"). It must not become a delivery request just because send is
+  // not the first verb. Stay within this clause; a separate later affirmative
+  // sentence or explicit contrast is evaluated normally. This conservative
+  // routing check is not delivery permission or a complete language parser.
+  const negatedDelivery = /\b(?:do not|don't|never|without)\b(?:(?![.!?;\n]|\b(?:but|however|instead)\b)[\s\S]){0,240}\b(?:send(?:ing)?|e-?mail(?:ing)?|deliver(?:ing)?|forward(?:ing)?)\b/;
+  if (/^(?:how\b|what\b|why\b|when\b|explain\b)/.test(text)) return null;
   const addresses = [...new Set(message.match(/[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?)+/gi) ?? [])];
   const email = /\b(?:e-?mail|mail)\b/.test(text);
-  const explicit = /\b(?:send|deliver|forward)\b/.test(text) && (email || addresses.length > 0 || /\b(?:report|details|invoices?|orders?)\b[\s\S]*\bto\b/.test(text));
-  const emailVerb = /^(?:(?:please|then|and)\s+)*(?:email|e-mail|mail)\s+(?:my|the|this|these|it|them|a|an|our|[\w.+-]+@)/.test(text) || /\b(?:and|then)\s+(?:email|e-mail|mail)\b/.test(text);
-  if (!explicit && !emailVerb) return null;
+  // Preserve affirmative conditional workflow intent ("email it if true;
+  // otherwise do not deliver") while ignoring the negative branch itself.
+  const requested = text.split(/[.!?;\n]+|\b(?:but|however|instead|otherwise)\b/).some(rawClause => {
+    const clause = rawClause.trim();
+    if (negatedDelivery.test(clause)) return false;
+    const explicit = /\b(?:send|deliver|forward)\b/.test(clause) && (email || addresses.length > 0 || /\b(?:report|details|invoices?|orders?)\b[\s\S]*\bto\b/.test(clause));
+    const emailVerb = /^(?:(?:please|then|and)\s+)*(?:email|e-mail|mail)\s+(?:my|the|this|these|it|them|a|an|our|[\w.+-]+@)/.test(clause) || /\b(?:and|then)\s+(?:email|e-mail|mail)\b/.test(clause);
+    return explicit || emailVerb;
+  });
+  if (!requested) return null;
   return { channel: email || addresses.length ? "email" : "unspecified", recurring: /\b(?:every|each)\s+(?:day|morning|evening|week|month|hour)|\b(?:daily|weekly|monthly)\b/.test(text),
     reportRequested: /\b(?:details|invoices?|orders?|payments?|report|records|sales)\b/.test(text), requestedAddresses: addresses,
     recipientReference: recipientReference(message, addresses) };
