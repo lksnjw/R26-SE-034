@@ -33,6 +33,7 @@ export async function discoverTools(
   if (cached !== undefined && cached.registryHash === registryHash && cached.generation === generation && cached.expiresAt > Date.now()) return admitted(session, await cached.result);
   const byMcpName = new Map<string, ToolDefinition>();
   for (const tool of registries.snapshot().tools) {
+    if (tool.connection_id && tool.connection_id !== (session.connectionId ?? "erpbridge-default")) continue;
     // Discovery is not admission. Legacy entries without identity, role
     // grants, or an explicit usable schema remain unavailable to agents.
     if (!tool.tool_id.trim() || !tool.mcp_tool_name.trim() || tool.allowed_roles.length === 0 || tool.input_schema.type !== "object") continue;
