@@ -1,3 +1,9 @@
+export type GenerationDiagnostics = {
+  finishReason: "stop" | "length" | "content_filter" | "tool_calls" | "other";
+  outputTokens?: number;
+  reasoningTokens?: number;
+};
+
 export type AnalysisResponse = {
   text: string;
   provider: string;
@@ -5,6 +11,7 @@ export type AnalysisResponse = {
   inputTokens: number;
   outputTokens: number;
   measured: boolean;
+  generationDiagnostics?: GenerationDiagnostics;
 };
 
 export type ProviderInvocationContext = {
