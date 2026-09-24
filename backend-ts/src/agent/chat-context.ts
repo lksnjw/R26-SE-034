@@ -1,6 +1,7 @@
 import type { RepositoryState, StoredRecord } from "../repository/store.js";
 
 export type ChatProcessingHooks = {
+  beforeCommit?(): Promise<void>;
   assertCurrent(state: RepositoryState): void;
   stage(stage: string): Promise<void>;
   read(name: string, args: Record<string, unknown>, dispatch: (beforeDispatch: (role: string) => Promise<void>) => Promise<Record<string, unknown>>): Promise<Record<string, unknown>>;
