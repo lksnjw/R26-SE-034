@@ -21,6 +21,8 @@ const environmentSchema = z
     MCP_MODE: z.string().optional(),
     MCP_TRANSPORT: z.string().optional(),
     MCP_TIMEOUT_MS: z.string().optional(),
+    FUNCTIONS_WRITER_ADMISSION_TIMEOUT_MS: z.string().optional(),
+    BACKEND_WORKER_CONCURRENCY: z.string().optional(),
     READ_WORKER_CONCURRENCY: z.string().optional(),
     READ_WORKER_PER_ACTOR: z.string().optional(),
     READ_WORKER_LEASE_MS: z.string().optional(),
@@ -34,6 +36,7 @@ const environmentSchema = z
     GENERATION_API_KEY: z.string().optional(),
     GENERATION_MODEL_PRIMARY: z.string().optional(),
     GENERATION_MODEL_FALLBACK: z.string().optional(),
+    GENERATION_ADDITIONAL_MODELS: z.string().optional(),
     GENERATION_TEMPERATURE: z.string().optional(),
     GENERATION_TIMEOUT_MS: z.string().optional(),
     GOVERNANCE_URL: z.string().optional(),
@@ -54,6 +57,9 @@ const environmentSchema = z
     POLICY_GATE_URL: z.string().optional(),
     POLICY_GATE_API_KEY: z.string().optional(),
     POLICY_GATE_TIMEOUT_MS: z.string().optional(),
+    PIPELINE_API_BASE_URL: z.string().optional(),
+    PIPELINE_API_KEY: z.string().optional(),
+    PIPELINE_TIMEOUT_MS: z.string().optional(),
     CORS_ORIGINS: z.string().optional(),
     PLATFORM_ADMIN_EMAIL: z.string().optional(),
     PLATFORM_ADMIN_PASSWORD: z.string().optional(),
@@ -94,6 +100,7 @@ export type AppConfig = {
   mcpMode: "remote" | "mock";
   mcpTransport: MCPTransport;
   mcpTimeoutMs: number;
+  functionsWriterAdmissionTimeoutMs?: number;
   readWorkerConcurrency: number;
   readWorkerPerActor: number;
   readWorkerLeaseMs: number;
@@ -107,6 +114,7 @@ export type AppConfig = {
   generationAPIKey?: string;
   generationModelPrimary?: string;
   generationModelFallback?: string;
+  generationAdditionalModels?: string[];
   generationTemperature?: number;
   generationTimeoutMs?: number;
   governanceURL?: string;
@@ -121,6 +129,9 @@ export type AppConfig = {
   policyGateURL?: string;
   policyGateAPIKey?: string;
   policyGateTimeoutMs: number;
+  pipelineAPIBaseURL?: string;
+  pipelineAPIKey?: string;
+  pipelineTimeoutMs?: number;
   corsOrigins: string[];
   platformAdminEmail: string;
   platformAdminPassword: string;
@@ -150,7 +161,10 @@ export function isMcpConfigured(config: McpConfigurationStatus): boolean {
 export function loadConfig(
   env: NodeJS.ProcessEnv = process.env,
   root = process.cwd(),
+  options: { administratorBootstrap?: "process-startup" | "external" } = {},
 ): AppConfig {
+  if (options.administratorBootstrap !== undefined && !["process-startup", "external"].includes(options.administratorBootstrap))
+    throw new Error("Unsupported administrator bootstrap policy");
   const source = environmentSchema.parse(env);
   const port = parseInteger(source.PORT, 8081, "PORT");
   const tokenTTLSeconds = parseInteger(
@@ -163,11 +177,17 @@ export function loadConfig(
     30_000,
     "MCP_TIMEOUT_MS",
   );
-  const readWorkerConcurrency = parseInteger(source.READ_WORKER_CONCURRENCY, 2, "READ_WORKER_CONCURRENCY");
+  if (source.BACKEND_WORKER_CONCURRENCY !== undefined && source.READ_WORKER_CONCURRENCY !== undefined &&
+      source.BACKEND_WORKER_CONCURRENCY !== source.READ_WORKER_CONCURRENCY)
+    throw new Error("BACKEND_WORKER_CONCURRENCY and legacy READ_WORKER_CONCURRENCY must match when both are supplied");
+  const workerConcurrencySource = source.BACKEND_WORKER_CONCURRENCY ?? source.READ_WORKER_CONCURRENCY;
+  const readWorkerConcurrency = parseInteger(workerConcurrencySource, 2,
+    source.BACKEND_WORKER_CONCURRENCY !== undefined ? "BACKEND_WORKER_CONCURRENCY" : "READ_WORKER_CONCURRENCY");
+  const functionsWriterAdmissionTimeoutMs = parseInteger(source.FUNCTIONS_WRITER_ADMISSION_TIMEOUT_MS, 30_000, "FUNCTIONS_WRITER_ADMISSION_TIMEOUT_MS");
   const readWorkerPerActor = parseInteger(source.READ_WORKER_PER_ACTOR, 1, "READ_WORKER_PER_ACTOR");
   const readWorkerLeaseMs = parseInteger(source.READ_WORKER_LEASE_MS, 30_000, "READ_WORKER_LEASE_MS");
   if (readWorkerConcurrency < 1 || readWorkerConcurrency > 8 || readWorkerPerActor < 1 || readWorkerPerActor > readWorkerConcurrency || readWorkerLeaseMs < 5000 || readWorkerLeaseMs > 300_000)
-    throw new Error("Read worker concurrency must be 1–8, per-actor concurrency 1–worker count, and lease duration 5000–300000 ms");
+    throw new Error("Backend worker concurrency must be 1–8, per-actor concurrency 1–worker count, and lease duration 5000–300000 ms");
   const mcpTransport = nonblank(
     source.MCP_TRANSPORT?.trim().toLowerCase(),
     "bridge-v1",
@@ -211,6 +231,11 @@ export function loadConfig(
     source.POLICY_GATE_TIMEOUT_MS,
     10_000,
     "POLICY_GATE_TIMEOUT_MS",
+  );
+  const pipelineTimeoutMs = parseInteger(
+    source.PIPELINE_TIMEOUT_MS,
+    180_000,
+    "PIPELINE_TIMEOUT_MS",
   );
   const storageDriver = nonblank(
     source.STORAGE_DRIVER?.trim().toLowerCase(),
@@ -270,6 +295,7 @@ export function loadConfig(
     mcpMode,
     mcpTransport,
     mcpTimeoutMs,
+    functionsWriterAdmissionTimeoutMs,
     readWorkerConcurrency,
     readWorkerPerActor,
     readWorkerLeaseMs,
@@ -283,6 +309,7 @@ export function loadConfig(
     generationAPIKey: source.GENERATION_API_KEY?.trim() ?? "",
     generationModelPrimary: source.GENERATION_MODEL_PRIMARY?.trim() ?? "",
     generationModelFallback: source.GENERATION_MODEL_FALLBACK?.trim() ?? "",
+    generationAdditionalModels: parseAdditionalModelIds(source.GENERATION_ADDITIONAL_MODELS),
     generationTemperature,
     generationTimeoutMs,
     governanceURL: source.GOVERNANCE_URL?.trim() ?? "",
@@ -305,6 +332,9 @@ export function loadConfig(
     policyGateURL: source.POLICY_GATE_URL?.trim() ?? "",
     policyGateAPIKey: source.POLICY_GATE_API_KEY?.trim() ?? "",
     policyGateTimeoutMs,
+    pipelineAPIBaseURL: source.PIPELINE_API_BASE_URL?.trim() ?? "",
+    pipelineAPIKey: source.PIPELINE_API_KEY?.trim() ?? "",
+    pipelineTimeoutMs,
     corsOrigins: nonblank(source.CORS_ORIGINS, "http://localhost:5173")
       .split(",")
       .map((item) => item.trim())
@@ -316,7 +346,7 @@ export function loadConfig(
     platformAdminPassword:
       source.PLATFORM_ADMIN_PASSWORD ?? "change-me-development-password",
   };
-  validateConfig(config);
+  validateConfig(config, options);
   return config;
 }
 
@@ -325,7 +355,10 @@ export function loadConfig(
  *
  * Checks application configuration for invalid or incompatible settings.
  ******************************************************************************/
-export function validateConfig(config: AppConfig): void {
+export function validateConfig(config: AppConfig, options: { administratorBootstrap?: "process-startup" | "external" } = {}): void {
+  const admissionTimeout = config.functionsWriterAdmissionTimeoutMs ?? 30_000;
+  if (!Number.isInteger(admissionTimeout) || admissionTimeout < 1000 || admissionTimeout > 60_000)
+    throw new Error("FUNCTIONS_WRITER_ADMISSION_TIMEOUT_MS must be between 1000 and 60000 ms");
   if (!["development", "test", "production"].includes(config.environment))
     throw new Error("APP_ENV must be development, test, or production");
   if (config.port < 1 || config.port > 65_535)
@@ -382,7 +415,7 @@ export function validateConfig(config: AppConfig): void {
     config.generationAPIKey,
     config.generationModelPrimary,
     config.generationModelFallback,
-  ].some((value) => (value ?? "").trim() !== "");
+  ].some((value) => (value ?? "").trim() !== "") || Boolean(config.generationAdditionalModels?.length);
   if (generationConfigured) {
     if ((config.generationBaseURL ?? "").trim() === "")
       throw new Error(
@@ -438,15 +471,32 @@ export function validateConfig(config: AppConfig): void {
     (config.governanceTimeoutMs ?? 0) <= 0
   )
     throw new Error("GOVERNANCE_TIMEOUT_MS must be a positive integer");
+  if (!Number.isInteger(config.pipelineTimeoutMs) || (config.pipelineTimeoutMs ?? 0) < 1_000 || (config.pipelineTimeoutMs ?? 0) > 300_000)
+    throw new Error("PIPELINE_TIMEOUT_MS must be between 1000 and 300000 ms");
+  const pipelineConfigured = Boolean(config.pipelineAPIBaseURL || config.pipelineAPIKey);
+  if (pipelineConfigured) {
+    if (!config.pipelineAPIBaseURL || !config.pipelineAPIKey)
+      throw new Error("PIPELINE_API_BASE_URL and PIPELINE_API_KEY must be configured together");
+    let endpoint: URL;
+    try { endpoint = new URL(config.pipelineAPIBaseURL); }
+    catch { throw new Error("PIPELINE_API_BASE_URL must be a valid service origin"); }
+    if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/")
+      throw new Error("PIPELINE_API_BASE_URL must be a credential-free HTTP(S) service origin");
+    if (config.environment === "production" && endpoint.protocol !== "https:")
+      throw new Error("PIPELINE_API_BASE_URL must use HTTPS in production");
+    if (/[\r\n]/.test(config.pipelineAPIKey) || config.pipelineAPIKey.length > 16_384)
+      throw new Error("PIPELINE_API_KEY is not a supported backend credential");
+  }
   if (
     config.environment === "production" &&
+    options.administratorBootstrap !== "external" &&
     config.platformAdminPassword === "change-me-development-password"
   )
     throw new Error("PLATFORM_ADMIN_PASSWORD must be configured in production");
-  if (config.environment === "production") validateProductionReleaseConfig(config);
+  if (config.environment === "production") validateProductionReleaseConfig(config, options.administratorBootstrap !== "external");
 }
 
-function validateProductionReleaseConfig(config: AppConfig): void {
+function validateProductionReleaseConfig(config: AppConfig, bootstrapAdministrator: boolean): void {
   if (config.storageDriver !== "firestore-records")
     throw new Error("Production requires STORAGE_DRIVER=firestore-records; memory, SQL and legacy Firestore are not the selected qualified release store");
   if (config.firestoreKeyFile || config.firestoreKeyJson)
@@ -457,9 +507,9 @@ function validateProductionReleaseConfig(config: AppConfig): void {
     throw new Error("Production requires at least one completely configured ERPBridge connection");
   if (Buffer.byteLength(config.jwtSecret, "utf8") < 32 || config.jwtSecret === "development-only-change-me")
     throw new Error("Production JWT_SECRET must contain at least 32 bytes and cannot use the development default");
-  if (config.platformAdminEmail === "admin@example.test")
+  if (bootstrapAdministrator && config.platformAdminEmail === "admin@example.test")
     throw new Error("PLATFORM_ADMIN_EMAIL must be explicitly configured in production");
-  if (Buffer.byteLength(config.platformAdminPassword, "utf8") < 16)
+  if (bootstrapAdministrator && Buffer.byteLength(config.platformAdminPassword, "utf8") < 16)
     throw new Error("PLATFORM_ADMIN_PASSWORD must contain at least 16 bytes in production");
   if (config.corsOrigins.length < 1)
     throw new Error("Production requires at least one exact HTTPS CORS origin");
@@ -469,6 +519,7 @@ function validateProductionReleaseConfig(config: AppConfig): void {
     ["GOVERNANCE_URL", config.governanceURL],
     ["GOVERNANCE_SECONDARY_URL", config.governanceSecondaryURL],
     ["POLICY_GATE_URL", config.policyGateURL],
+    ["PIPELINE_API_BASE_URL", config.pipelineAPIBaseURL],
   ] as const) {
     if ((value ?? "") !== "") validateProductionServiceURL(value!, name);
   }
@@ -665,6 +716,18 @@ function parseRoleMap(value: string | undefined): Record<string, string> {
     map[localRole] = remoteRole;
   }
   return map;
+}
+
+/** Additional environment choices are selectable, not automatic fallbacks or
+ * evidence of provider connectivity. Preserve order and reject unsafe aliases. */
+export function parseAdditionalModelIds(value: string | undefined): string[] {
+  const raw = value?.trim() ?? "";
+  if (!raw) return [];
+  if (raw.length > 16448) throw new Error("GENERATION_ADDITIONAL_MODELS exceeds the supported catalog size");
+  const models = raw.split(",").map(model => model.trim());
+  if (models.length > 64 || models.some(model => !model || model.length > 256 || /\s/.test(model) || model.includes(":latest")))
+    throw new Error("GENERATION_ADDITIONAL_MODELS requires at most 64 nonblank pinned model IDs, separated by commas");
+  return [...new Set(models)];
 }
 
 /*******************************************************************************
