@@ -11,11 +11,13 @@ import { admitEmailDelivery } from "../../delivery/email-operation.js";
 import { resolveRecipientReference } from "../../delivery/recipient-resolution.js";
 import { hasRecurringCompositionCapability, inspectRecurringAutomationCandidate, recurringAutomationCandidateContext,
   recurringAutomationShell, recurringDeliveryRequest, type RecurringAutomationComposition, type RecurringDeliveryRequest } from "../../delivery/recurring-automation.js";
-import { runQueryLoop, type ToolStep } from "../../agent/query-loop.js";
+import { runQueryLoop } from "../../agent/query-loop.js";
+import { queryChatHistory, queryChatPresentation } from "../../agent/query-chat-presentation.js";
 import { runActionLoop } from "../../agent/action-loop.js";
 import { discoverTools } from "../../agent/tool-discovery.js";
-import { validateSemantics } from "../../governance/semantic-validator.js";
-import { isPolicyCheckerEnabled, checkErpPolicy } from "../../governance/rbac.js";
+import { checkErpPolicy } from "../../governance/rbac.js";
+import { type PolicyDecision } from "../../governance/optional-policy.js";
+import { evaluateChatPolicy } from "../../governance/chat-policy.js";
 import { dispatchReadTool } from "../../tools/read-tool-broker.js";
 import { modifyWorkflow } from "../../agent/workflow-modifier.js";
 import { parseWorkflowYAMLStrict } from "../../parser/workflow.js";
@@ -26,27 +28,13 @@ import { processNodeProposal } from "../../agent/node-proposals.js";
 import { chatSummary, createChat, deleteChat, getChat, listChats, updateChat } from "./chat-sessions.js";
 import { effectiveChatContext, revisionPriorContext } from "../../agent/chat-request-revisions.js";
 import { buildCapabilitiesResponse, compactWorkflowArtifacts, errorText } from "./chat-artifacts.js";
-import { checkFeasibility } from "./chat-feasibility.js";
 import { reviewedModelSourceContext } from "../../synthesis/reviewed-model-sources.js";
-
+import { chatWorkspaceStatus, workspaceStatusAnswer } from "../../agent/chat-workspace-status.js";
 /*******************************************************************************
  * Function: buildWorkflowYamlFromSteps
  *
  * Builds workflow YAML from chat tool steps and the user prompt.
  ******************************************************************************/
-function buildWorkflowYamlFromSteps(steps: ToolStep[], userPrompt: string): string {
-  const safeName = userPrompt.trim().slice(0, 60).replace(/[^a-zA-Z0-9 ]/g, "").trim() || "Chat Workflow";
-  const stepsYaml = steps
-    .map((step, i) => {
-      const friendlyDesc = step.toolName.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-      const paramsJson = Object.keys(step.arguments).length > 0
-        ? "\n    parameters:\n" + Object.entries(step.arguments).map(([k, v]) => `      ${k}: ${JSON.stringify(v)}`).join("\n")
-        : "";
-      return `  - id: step_${i + 1}\n    action: ${step.toolName}\n    description: "${friendlyDesc}"${paramsJson}`;
-    })
-    .join("\n");
-  return `name: "${safeName}"\ndescription: "Saved from chat session"\nsteps:\n${stepsYaml}`;
-}
 export const CHAT_UNHANDLED = Symbol("chat-unhandled");
 
 /*******************************************************************************
@@ -119,12 +107,10 @@ export async function processStoredChat(input: {
   stored: import("../../agent/chat-context.js").StoredChatInput;
   user: CurrentUser; services: HandlerServices; signal?: AbortSignal;
   request?: FastifyRequest; hooks?: import("../../agent/chat-context.js").ChatProcessingHooks;
+  preGeneratedCandidate?: { input: import("../../synthesis/service.js").SynthesisInput; prepared: import("../../synthesis/service.js").PreparedCandidate;
+    generated: import("../../analysisprovider/types.js").AnalysisResponse; liveTools: readonly import("../../registry/schemas.js").ToolDefinition[]; admittedPolicy: PolicyDecision };
 }) {
-  const { body, content, sessionId, traceId, stored, user, services, signal, request, hooks } = input;
-  if (body.nodeContext !== undefined) {
-    if (!hooks) throw new HandlerFailure(400, "Selected node prompts require saved chat operations");
-    return processNodeProposal({ context: body.nodeContext, content, sessionId, traceId, user, services, ...(signal ? { signal } : {}), hooks });
-  }
+  const { body, content, sessionId, traceId, stored, user, services, signal, request, hooks, preGeneratedCandidate } = input;
   const provider = services.providerRuntime;
   const intent = classifyIntent(content);
   const parsedDeliveryIntent = deliveryIntent(content);
@@ -134,21 +120,45 @@ export async function processStoredChat(input: {
   const bodyWorkflowCtx = isRecord(body.workflowContext) ? body.workflowContext : null;
   const workflowContextYaml = typeof bodyWorkflowCtx?.yaml === "string" && bodyWorkflowCtx.yaml.trim() ? bodyWorkflowCtx.yaml.trim() : null;
   const workflowContextName = typeof bodyWorkflowCtx?.name === "string" && bodyWorkflowCtx.name ? bodyWorkflowCtx.name : "Workflow";
-  const chatMutation = <T>(mutation: (state: import("../../repository/store.js").RepositoryState) => T) =>
-    services.repository.mutate((state) => {
+  let policyCheck: PolicyDecision | undefined;
+  const chatMutation = async <T>(mutation: (state: import("../../repository/store.js").RepositoryState) => T) => {
+    await hooks?.beforeCommit?.();
+    return services.repository.mutate((state) => {
       hooks?.assertCurrent(state);
       const value = mutation(state);
-      if (isRecord(value) && value.role === "assistant") hooks?.saved(state, value);
+      if (isRecord(value) && value.role === "assistant") {
+        if (policyCheck?.source !== "skipped" && policyCheck !== undefined) {
+          (value as Record<string, unknown>).artifacts = { ...(isRecord(value.artifacts) ? value.artifacts : {}), policyCheck };
+        }
+        hooks?.saved(state, value);
+      }
       return value;
     });
+  };
   const readTool = (name: string, args: Record<string, unknown>) => hooks
     ? hooks.read(name, args, beforeDispatch => dispatchReadTool(services, user.id, name, args, { signal, traceId, sessionId, beforeDispatch }))
     : dispatchReadTool(services, user.id, name, args, { signal, traceId, sessionId });
   await hooks?.stage("PREPARING");
-  // Prepend workflow YAML context as a synthetic assistant message so the LLM can answer questions about it
-  const augmentedPriorMessages = workflowContextYaml
+  policyCheck = preGeneratedCandidate?.admittedPolicy ?? await evaluateChatPolicy(services, user, { prompt: content, intent, nodeContext: body.nodeContext, signal, traceId, sessionId, hooks });
+  if (policyCheck.decision !== "allow") {
+    const text = `**Request ${policyCheck.failureCode ? "stopped: policy check failed" : policyCheck.decision === "review" ? "needs policy review" : "blocked by policy"}.**\n\n${policyCheck.reason}`;
+    const assistantMessage = await chatMutation(state => {
+      const chat = assertChatAuthority(state, user, sessionId);
+      const message = { id: nextID(state, "msg"), role: "assistant", text, artifacts: { intent: "POLICY_DENIAL", policyCheck }, createdAt: now(), traceId };
+      chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
+      return message;
+    });
+    return ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage, answer: text, intent: "POLICY_DENIAL", policyCheck }, "Policy check stopped this request; no business operation performed", null);
+  }
+  if (body.nodeContext !== undefined) {
+    if (!hooks) throw new HandlerFailure(400, "Selected node prompts require saved chat operations");
+    return processNodeProposal({ context: body.nodeContext, content, sessionId, traceId, user, services, ...(signal ? { signal } : {}), hooks });
+  }
+  const contextMessages = workflowContextYaml
     ? [`assistant: I have the following workflow loaded for context:\n**${workflowContextName}**\n\`\`\`yaml\n${workflowContextYaml}\n\`\`\``, ...stored.priorMessages]
     : stored.priorMessages;
+  const augmentedPriorMessages = policyCheck.source === "skipped" ? contextMessages :
+    [...contextMessages, `assistant: Additional policy preflight (${policyCheck.source}): ${policyCheck.reason}. This is not execution permission; mandatory validation and approvals remain required.`];
   const preserveRecurringShell = async (requestValue: RecurringDeliveryRequest, compositionFailure?: "COMPOSITION_UNAVAILABLE" | "CAPABILITY_DISCOVERY_UNAVAILABLE" | "NO_REVIEWED_COMPOSITION_CAPABILITY") => {
     await hooks?.stage("GENERATING");
     const yaml = recurringAutomationShell(content, requestValue), timestamp = now();
@@ -181,24 +191,6 @@ export async function processStoredChat(input: {
     return ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage: savedAutomation.assistantMessage, answer: savedAutomation.text,
       intent: "ACTION", workflowDraft: { yaml }, validation: savedAutomation.artifacts.validation }, "Recurring workflow shell preserved; no schedule or delivery occurred", null);
   };
-  // ── Feasibility / role-policy check ─────────────────────────────────────
-  // Controlled by the Policy Checker toggle in Settings (state.settings.rbac.enabled).
-  const policyCheckerEnabled = await isPolicyCheckerEnabled(services.repository);
-  if (policyCheckerEnabled) {
-    const feasibility = checkFeasibility(content, user.role);
-    if (!feasibility.feasible) {
-      const denialText = feasibility.matchedWorkflow
-        ? `**Request blocked by policy.**\n\n${feasibility.reason}`
-        : `**Request blocked.**\n\n${feasibility.reason ?? "This action is not permitted in this system."}`;
-      const assistantMessage = await chatMutation((state) => {
-        const chat = assertChatAuthority(state, user, sessionId);
-        const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: denialText, artifacts: { intent: "POLICY_DENIAL", blockedWorkflow: feasibility.matchedWorkflow?.id ?? null }, createdAt: now(), traceId };
-        chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
-        return message;
-      });
-      return ok({ session: stored.session, userMessage: stored.userMessage, assistantMessage, answer: denialText, intent: "POLICY_DENIAL" }, "Message processed", null);
-    }
-  }
   if (intent === "EMAIL_DELIVERY") {
     const result = await prepareEmailDraft(services, user, sessionId, content, request, { ...(signal ? { signal } : {}), traceId, ...(hooks ? { hooks } : {}) });
     return ok({ session: stored.session, userMessage: stored.userMessage, ...result }, "Email draft prepared; nothing sent", null);
@@ -240,14 +232,12 @@ export async function processStoredChat(input: {
       readOnlyTools = (await discoverTools(services.erpbridgeSession, services.registries))
         .filter((tool) => tool.is_read_only && tool.allowed_roles.includes(user.role));
     }
-    const chatHistory = augmentedPriorMessages.map((line) => {
-      const sep = line.indexOf(": ");
-      return sep > -1 ? { role: line.slice(0, sep), text: line.slice(sep + 2) } : { role: "user", text: line };
-    });
+    const workspaceStatus = await services.repository.readAuthoritative(state => chatWorkspaceStatus(state, user, sessionId));
+    const chatHistory = queryChatHistory(body, stored, policyCheck);
     let loopResult;
     try {
       loopResult = await runQueryLoop(
-        { userMessage: content, chatHistory, sessionId, actorId: user.id, actorRole: user.role, ...(signal ? { signal } : {}), traceId, ...(hooks ? { onTurn: () => hooks.stage("MODEL") } : {}) },
+        { userMessage: content, chatHistory, workspaceStatus, sessionId, actorId: user.id, actorRole: user.role, ...(signal ? { signal } : {}), traceId, ...(hooks ? { onTurn: () => hooks.stage("MODEL") } : {}) },
         readOnlyTools,
         readTool,
         services.providerRuntime,
@@ -256,24 +246,10 @@ export async function processStoredChat(input: {
     } catch (error) {
       throw new HandlerFailure(502, `Query agent failed: ${errorText(error)}`);
     }
-    const workflowDraft = loopResult.readOutcome === "READS_COMPLETED" && !loopResult.narrativeRejected
-      ? buildWorkflowYamlFromSteps(loopResult.toolSteps, content)
-      : undefined;
-    const queryArtifacts = {
-      intent,
-      sources: loopResult.toolCallLog,
-      toolSteps: loopResult.toolSteps,
-      boundHit: loopResult.boundHit,
-      iterationsUsed: loopResult.iterationsUsed,
-      latencyMs: loopResult.latencyMs,
-      readOutcome: loopResult.readOutcome,
-      narrativeRejected: loopResult.narrativeRejected,
-      ...(loopResult.visualisation !== undefined ? { visualisation: loopResult.visualisation } : {}),
-      ...(workflowDraft !== undefined ? { workflowDraft } : {}),
-    };
+    const { workflowDraft, artifacts: queryArtifacts, answerBinding } = queryChatPresentation(intent, content, provider?.binding ?? null, loopResult);
     const assistantMessage = await chatMutation((state) => {
       const chat = assertChatAuthority(state, user, sessionId);
-      const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: loopResult.text, artifacts: queryArtifacts, createdAt: now(), traceId };
+      const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: answerBinding, ...workspaceStatusAnswer(state, user, sessionId, loopResult.text, queryArtifacts), createdAt: now(), traceId };
       chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
       return message;
     });
@@ -281,20 +257,21 @@ export async function processStoredChat(input: {
       session: stored.session,
       userMessage: stored.userMessage,
       assistantMessage,
-      answer: loopResult.text,
+      answer: assistantMessage.text,
       intent,
       sources: loopResult.toolCallLog,
       toolSteps: loopResult.toolSteps,
       ...(loopResult.visualisation !== undefined ? { visualisation: loopResult.visualisation } : {}),
       ...(workflowDraft !== undefined ? { workflowDraft } : {}),
       boundHit: loopResult.boundHit,
-      modelBinding: provider?.binding ?? null,
+      modelBinding: answerBinding,
       usage: { inputTokens: loopResult.totalTokens.input, outputTokens: loopResult.totalTokens.output, measured: loopResult.totalTokens.measured === true },
     }, "Message processed", null);
   }
   if (intent === "TOOL_CALL" && services.erpbridgeSession !== undefined && services.providerRuntime?.configured === true) {
     const bridgeSession = services.erpbridgeSession;
     const allTools = await discoverTools(bridgeSession, services.registries);
+    const workspaceStatus = await services.repository.readAuthoritative(state => chatWorkspaceStatus(state, user, sessionId));
     const chatHistory = augmentedPriorMessages.map((line) => {
       const sep = line.indexOf(": ");
       return sep > -1 ? { role: line.slice(0, sep), text: line.slice(sep + 2) } : { role: "user", text: line };
@@ -303,7 +280,7 @@ export async function processStoredChat(input: {
     let actionResult;
     try {
       actionResult = await runActionLoop(
-        { userMessage: content, chatHistory, sessionId, actorId: user.id, actorRole: user.role, user: governanceUser, ...(signal ? { signal } : {}), traceId, ...(hooks ? { onTurn: () => hooks.stage("MODEL") } : {}) },
+        { userMessage: content, chatHistory, workspaceStatus, sessionId, actorId: user.id, actorRole: user.role, user: governanceUser, ...(signal ? { signal } : {}), traceId, ...(hooks ? { onTurn: () => hooks.stage("MODEL") } : {}) },
         allTools,
         readTool,
         // Required write authorization cannot be disabled by an advisory toggle.
@@ -325,11 +302,14 @@ export async function processStoredChat(input: {
       steps: actionResult.steps,
       blocked: actionResult.blocked,
       workflowDraft: actionResult.workflowYaml,
+      ...(actionResult.modelRouting ? { modelRouting: actionResult.modelRouting } : {}),
       toolSteps: actionResult.steps.map((s) => ({ toolName: s.toolName, arguments: s.arguments, result: s.result })),
     };
+    const answerBinding = provider?.binding ? { ...provider.binding, ...(actionResult.modelRouting ? { model: actionResult.modelRouting.model,
+      requestedModel: actionResult.modelRouting.requestedModel, fallbackUsed: actionResult.modelRouting.fallbackUsed } : {}) } : null;
     const assistantMessage = await chatMutation((state) => {
       const chat = assertChatAuthority(state, user, sessionId);
-      const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: actionResult.text, artifacts: actionArtifacts, createdAt: now(), traceId };
+      const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: answerBinding, ...workspaceStatusAnswer(state, user, sessionId, actionResult.text, actionArtifacts), createdAt: now(), traceId };
       chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
       return message;
     });
@@ -337,12 +317,12 @@ export async function processStoredChat(input: {
       session: stored.session,
       userMessage: stored.userMessage,
       assistantMessage,
-      answer: actionResult.text,
+      answer: assistantMessage.text,
       intent,
       steps: actionResult.steps,
       blocked: actionResult.blocked,
       workflowDraft: actionResult.workflowYaml,
-      modelBinding: provider?.binding ?? null,
+      modelBinding: answerBinding,
       usage: { inputTokens: actionResult.totalTokens.input, outputTokens: actionResult.totalTokens.output, measured: actionResult.totalTokens.measured === true },
     }, "Message processed", null);
   }
@@ -412,7 +392,7 @@ export async function processStoredChat(input: {
 
   if (services.synthesis === undefined) throw new HandlerFailure(502, "Chat orchestration is not configured");
   let liveToolsForSynthesis: readonly import("../../registry/schemas.js").ToolDefinition[];
-  try { liveToolsForSynthesis = await discoverTools(services.erpbridgeSession ?? null, services.registries); }
+  try { liveToolsForSynthesis = preGeneratedCandidate?.liveTools ?? await discoverTools(services.erpbridgeSession ?? null, services.registries); }
   catch (error) {
     if (automationRequest) return preserveRecurringShell(automationRequest, "CAPABILITY_DISCOVERY_UNAVAILABLE");
     throw error;
@@ -421,7 +401,9 @@ export async function processStoredChat(input: {
     return preserveRecurringShell(automationRequest, "NO_REVIEWED_COMPOSITION_CAPABILITY");
   let result;
   await hooks?.stage("GENERATING");
-  try { result = await services.synthesis.synthesize({ prompt: content, userRole: user.role, user: { id: user.id, role: user.role, department: user.departmentId }, ...(provider === undefined ? {} : { providerRuntime: provider }), priorMessages: augmentedPriorMessages,
+  try { result = preGeneratedCandidate
+    ? await services.synthesis.validateGeneratedCandidate({ ...preGeneratedCandidate.input, ...(provider === undefined ? {} : { providerRuntime: provider }) }, preGeneratedCandidate.prepared, preGeneratedCandidate.generated)
+    : await services.synthesis.synthesize({ prompt: content, userRole: user.role, user: { id: user.id, role: user.role, department: user.departmentId }, ...(provider === undefined ? {} : { providerRuntime: provider }), priorMessages: augmentedPriorMessages,
     modelSourceContext: await reviewedModelSourceContext(services, user, liveToolsForSynthesis),
     ...(automationRequest ? { candidateContext: recurringAutomationCandidateContext(automationRequest),
       candidateValidator: (yaml: string) => { inspectRecurringAutomationCandidate(yaml, automationRequest, liveToolsForSynthesis, user.role); } } : {}),
@@ -515,9 +497,12 @@ export async function processStoredChat(input: {
   ].filter(Boolean).join("\n\n");
   const artifacts = compactWorkflowArtifacts(result, chatSessionId, chatMessageId, traceId, autoSavedWorkflowId, missingTools, pendingGenerationApproval,
     automationRequest, automationComposition);
+  const generatedModel = result.candidate.generation_metadata.model;
+  const answerBinding = provider?.binding ? { ...provider.binding, model: generatedModel,
+    ...(generatedModel !== provider.binding.model ? { requestedModel: provider.binding.model, fallbackUsed: true } : {}) } : null;
   const assistantMessage = await chatMutation((state) => {
     const chat = assertChatAuthority(state, user, sessionId);
-    const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: provider?.binding ?? null, text: assistantText, artifacts, createdAt: now(), traceId };
+    const message = { id: nextID(state, "msg"), role: "assistant", modelBinding: answerBinding, text: assistantText, artifacts, createdAt: now(), traceId };
     chat.messages.push(message); chat.messageCount = chat.messages.length; chat.updatedAt = now();
     return message;
   });

@@ -8,7 +8,7 @@ import { ok } from "../../models/schemas.js";
 const MAX_WAIT_MS = 25_000;
 const ACTIVE_STATUSES = new Set(["PENDING", "RUNNING", "AWAITING_APPROVAL"]);
 
-type EventPage = {
+export type EventPage = {
   events: unknown[];
   cursor: number;
   lastSequence: number;
@@ -27,9 +27,9 @@ export async function handleExecutionEvents(
 ): Promise<unknown> {
   const query = request.query as Record<string, unknown>;
   if (Object.keys(query).some((key) => !["after", "limit", "waitMs"].includes(key))) throw new HandlerFailure(400, "Unsupported event query");
-  const after = query.after === undefined ? 0 : integer(query.after, 0, Number.MAX_SAFE_INTEGER);
-  const limit = query.limit === undefined ? 100 : integer(query.limit, 1, 100);
-  const waitMs = query.waitMs === undefined ? 0 : integer(query.waitMs, 0, MAX_WAIT_MS);
+  const after = query.after === undefined ? 0 : progressInteger(query.after, 0, Number.MAX_SAFE_INTEGER);
+  const limit = query.limit === undefined ? 100 : progressInteger(query.limit, 1, 100);
+  const waitMs = query.waitMs === undefined ? 0 : progressInteger(query.waitMs, 0, MAX_WAIT_MS);
   const executionId = requestParam(request, "id");
   const startedAt = Date.now();
   let page = await authoritativePage(services, user, executionId, after, limit);
@@ -48,7 +48,7 @@ export async function handleExecutionEvents(
 
 async function authoritativePage(services: HandlerServices, user: CurrentUser, executionId: string, after: number, limit: number): Promise<EventPage> {
   try {
-    return await services.repository.readAuthoritative((state) => projectPage(state, user, executionId, after, limit));
+    return await services.repository.readAuthoritative((state) => projectExecutionEventPage(state, user, executionId, after, limit));
   } catch (error) {
     try { services.repository.assertAuthority(); }
     catch { throw new HandlerFailure(503, "Execution progress is unavailable until authoritative storage is recovered. No status or events are confirmed."); }
@@ -56,9 +56,12 @@ async function authoritativePage(services: HandlerServices, user: CurrentUser, e
   }
 }
 
-function projectPage(state: Readonly<RepositoryState>, user: CurrentUser, executionId: string, after: number, limit: number): EventPage {
+export function projectExecutionEventPage(state: Readonly<RepositoryState>, user: CurrentUser, executionId: string, after: number, limit: number): EventPage {
   const item = readableExecution(state, user, executionId);
   const events = state.executionEvents[item.id] ?? [];
+  if (events.some((event, index) => event.sequence !== index + 1 || event.version !== 1 || event.executionId !== item.id || event.workflowId !== item.workflowId || !Number.isFinite(Date.parse(event.timestamp)) || typeof event.type !== "string") ||
+      item.readProgress && events.length !== item.readProgress.lastSequence)
+    throw new HandlerFailure(409, "Execution event sequence gap; reload from zero", { code: "EXECUTION_EVENT_GAP" });
   const lastSequence = events.at(-1)?.sequence ?? 0;
   if (after > lastSequence) throw new HandlerFailure(400, "Event cursor is ahead of this execution");
   const batch = events.filter((event) => event.sequence > after).slice(0, limit);
@@ -72,7 +75,7 @@ function projectPage(state: Readonly<RepositoryState>, user: CurrentUser, execut
   };
 }
 
-function readableExecution(state: Readonly<RepositoryState>, user: CurrentUser, executionId: string) {
+export function readableExecution(state: Readonly<RepositoryState>, user: CurrentUser, executionId: string) {
   const item = state.executions[executionId];
   const stored = state.users[user.id];
   const role = stored && state.roles[stored.roleId];
@@ -129,7 +132,7 @@ async function waitForRelevantCommit(
   });
 }
 
-function integer(value: unknown, minimum: number, maximum: number): number {
+export function progressInteger(value: unknown, minimum: number, maximum: number): number {
   if (typeof value !== "string" || !/^\d{1,16}$/.test(value)) throw new HandlerFailure(400, "Invalid event cursor, limit, or wait duration");
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) throw new HandlerFailure(400, "Invalid event cursor, limit, or wait duration");

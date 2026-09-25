@@ -1,9 +1,10 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { ChatCreationFailure, createSavedChat } from "../../repository/chat-creation.js";
 import { activeChatStatus } from "../../agent/chat-jobs.js";
 import { chatRequestSourceHash } from "../../agent/chat-request-revisions.js";
 import { ok } from "../../models/schemas.js";
 import { assertChatAuthority, requestedModel, selectProvider } from "./model-selection.js";
-import { bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, numberValue, paginate, queryRecord, requestParam, stringValue } from "./common.js";
+import { bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, now, numberValue, paginate, queryRecord, requestParam, stringValue } from "./common.js";
 
 /*******************************************************************************
  * Function: chatSummary
@@ -11,6 +12,11 @@ import { bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isR
  * Returns chat metadata without the messages array.
  ******************************************************************************/
 export function chatSummary(chat: { messages: unknown[] } & Record<string, unknown>): Record<string, unknown> { const { messages: _messages, ...summary } = chat; return summary; }
+function chatTitle(body: Record<string, unknown>): string {
+  if (!Object.hasOwn(body, "title")) return "New conversation";
+  if (typeof body.title !== "string" || body.title.length > 200) throw new HandlerFailure(400, "Invalid chat title");
+  return body.title.trim() === "" ? "New conversation" : body.title;
+}
 // The frontend only ever reads `artifacts.retrieval` off the LAST message
 // that has one (see useChat.js: `[...messages].reverse().find(...)`) — so
 // carrying the full tool/rule/example retrieval payload (up to ~100 tool
@@ -48,7 +54,20 @@ export async function listChats(request: FastifyRequest, reply: FastifyReply, us
  *
  * Creates a chat session owned by the current user.
  ******************************************************************************/
-export async function createChat(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { const body = request.body === undefined ? {} : bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const chat = await services.repository.mutate((state) => { const id = nextID(state, "chat"); const timestamp = now(); const value = { id, ownerId: user.id, title: stringValue(body.title).trim() === "" ? "New conversation" : stringValue(body.title), createdAt: timestamp, updatedAt: timestamp, messageCount: 0, messages: [] }; state.chats[id] = value; return value; }); return reply.status(201).send(ok(chatSummary(chat), "Chat session created", null)); }
+export async function createChat(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: Pick<HandlerServices, "repository">): Promise<unknown> {
+  const body = request.body === undefined ? {} : bodyRecord(request);
+  if (body === null) throw new HandlerFailure(400, "Invalid request body");
+  const key = body.idempotencyKey;
+  if (Object.hasOwn(body, "idempotencyKey") && (typeof key !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(key))) throw new HandlerFailure(400, "Invalid chat creation identity");
+  const title = chatTitle(body);
+  try {
+    const result = await createSavedChat(services.repository, user.id, title, typeof key === "string" ? key : undefined);
+    return reply.status(result.created ? 201 : 200).send(ok(chatSummary(result.chat), result.created ? "Chat session created" : "Chat session recovered", null));
+  } catch (error) {
+    if (error instanceof ChatCreationFailure) throw new HandlerFailure(error.status, error.message);
+    throw error;
+  }
+}
 /*******************************************************************************
  * Function: getChat
  *
@@ -59,7 +78,7 @@ export async function createChat(request: FastifyRequest, reply: FastifyReply, u
  * transit. Defaults to the most recent `limit` messages; pass `before=<id>`
  * to page further back in history.
  ******************************************************************************/
-export async function getChat(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
+export async function getChat(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: { repository: Pick<HandlerServices["repository"], "read"> }): Promise<unknown> {
   const chat = await services.repository.read((state) => {
     const value = state.chats[requestParam(request, "id")];
     if (value === undefined || (!user.permissions.includes("workflow:read") && value.ownerId !== user.id)) return null;
