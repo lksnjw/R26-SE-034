@@ -10,11 +10,12 @@ import type { ApplicationServices } from "../application-services.js";
 import { INVALID_JSON_BODY } from "../request-body.js";
 
 export type AuthenticatedUser = User & { role: string; permissions: string[] };
+export type AuthenticationServices = Pick<ApplicationServices, "config" | "repository">;
 
 export async function login(
   request: FastifyRequest,
   reply: FastifyReply,
-  services: ApplicationServices,
+  services: AuthenticationServices,
 ): Promise<unknown> {
   if (request.body === INVALID_JSON_BODY)
     return reply.status(400).send(fail("Invalid request body", null));
@@ -43,7 +44,7 @@ export async function login(
 export async function register(
   request: FastifyRequest,
   reply: FastifyReply,
-  services: ApplicationServices,
+  services: AuthenticationServices,
 ): Promise<unknown> {
   if (request.body === INVALID_JSON_BODY)
     return reply.status(400).send(fail("Invalid request body", null));
@@ -85,7 +86,7 @@ export async function register(
 export async function refresh(
   request: FastifyRequest,
   reply: FastifyReply,
-  services: ApplicationServices,
+  services: AuthenticationServices,
 ): Promise<unknown> {
   if (request.body === INVALID_JSON_BODY)
     return reply.status(400).send(fail("Invalid request body", null));
@@ -108,7 +109,7 @@ export async function refresh(
 export async function logout(
   request: FastifyRequest,
   reply: FastifyReply,
-  services: ApplicationServices,
+  services: AuthenticationServices,
 ): Promise<unknown> {
   const token = isRecord(request.body) && typeof request.body.refreshToken === "string"
     ? request.body.refreshToken
@@ -121,7 +122,7 @@ export async function logout(
 export async function authenticate(
   request: FastifyRequest,
   reply: FastifyReply,
-  services: ApplicationServices,
+  services: { config: Pick<ApplicationServices["config"], "jwtSecret">; repository: Pick<ApplicationServices["repository"], "effectiveUser"> },
 ): Promise<{ user: AuthenticatedUser } | null> {
   let token = "";
   const header = request.headers.authorization;
@@ -132,26 +133,30 @@ export async function authenticate(
     await reply.status(401).send(fail("Missing access token", null));
     return null;
   }
+  let subject: string;
   try {
     const claims = jwt.verify(token, services.config.jwtSecret, { algorithms: ["HS256"] });
     if (typeof claims === "string" || typeof claims.sub !== "string" || claims.sub.trim() === "") {
       await reply.status(401).send(fail("Invalid token subject", null));
       return null;
     }
-    const user = await services.repository.effectiveUser(claims.sub);
-    if (user === null) {
-      await reply.status(401).send(fail("Authenticated user no longer exists", null));
-      return null;
-    }
-    if (user.status.toLowerCase() !== "active") {
-      await reply.status(403).send(fail("User account is not active", null));
-      return null;
-    }
-    return { user };
+    subject = claims.sub;
   } catch {
     await reply.status(401).send(fail("Invalid or expired access token", null));
     return null;
   }
+  // Storage failure is not proof of an invalid token. Let the host expose its
+  // sanitized availability response rather than log a user out on contention.
+  const user = await services.repository.effectiveUser(subject);
+  if (user === null) {
+    await reply.status(401).send(fail("Authenticated user no longer exists", null));
+    return null;
+  }
+  if (user.status.toLowerCase() !== "active") {
+    await reply.status(403).send(fail("User account is not active", null));
+    return null;
+  }
+  return { user };
 }
 
 export function publicAuthenticatedUser(
@@ -177,7 +182,7 @@ export function publicAuthenticatedUser(
   };
 }
 
-async function issueSession(user: User, remember: boolean, services: ApplicationServices): Promise<Record<string, unknown>> {
+async function issueSession(user: User, remember: boolean, services: AuthenticationServices): Promise<Record<string, unknown>> {
   const accessToken = jwt.sign({}, services.config.jwtSecret, {
     algorithm: "HS256",
     subject: user.id,

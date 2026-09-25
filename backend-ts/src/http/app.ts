@@ -75,6 +75,8 @@ import { attachSystemHealthSocket } from "./system-health-websocket.js";
 import { isMcpConfigured } from "../config/config.js";
 import { EXECUTION_QUERY_UNHANDLED, handleExecutionQueryRoute } from "./handlers/execution-queries.js";
 import { handleNotificationRoute, NOTIFICATION_UNHANDLED } from "./handlers/notifications.js";
+import { handlePipelineGatewayRoute, PIPELINE_GATEWAY_UNHANDLED } from "./handlers/pipeline-gateway.js";
+import { bindExecutionHost, type ExecutionHostMode } from "../runner/execution-host.js";
 
 const publicRoutes = new Set([
   "GET /healthz",
@@ -151,8 +153,12 @@ const malformedJSONMessages = new Map<string, string>([
  ******************************************************************************/
 export async function buildApp(
   services: ApplicationServices,
+  options: { executionHost?: ExecutionHostMode } = {},
 ): Promise<FastifyInstance> {
   assertApplicationServices(services);
+  // Bind before constructing queues. This cannot be changed by request data,
+  // a services spread, or another HTTP host sharing the same repository.
+  const residentHost = bindExecutionHost(services.repository, options.executionHost) === "resident-server";
   const app = Fastify({
     logger: process.env.NODE_ENV !== "test",
     bodyLimit: 10 * 1024 * 1024,
@@ -160,23 +166,23 @@ export async function buildApp(
   const resourceMutations = new ResourceMutations();
   if (supportsChatJobs(services)) {
     const queue = chatJobQueue(services);
-    app.addHook("onReady", () => queue.start());
+    if (residentHost) app.addHook("onReady", () => queue.start());
     app.addHook("onClose", () => queue.stop());
   }
   if (supportsReadJobs(services)) {
     const queue = readJobQueue(services);
-    app.addHook("onReady", () => queue.start());
+    if (residentHost) app.addHook("onReady", () => queue.start());
     app.addHook("onClose", () => queue.stop());
   }
   if (supportsOperationJobs(services)) {
     const queue = operationJobQueue(services);
-    app.addHook("onReady", () => queue.start());
+    if (residentHost) app.addHook("onReady", () => queue.start());
     app.addHook("onClose", () => queue.stop());
     const readbacks = operationReadbackQueue(services);
-    app.addHook("onReady", () => readbacks.start());
+    if (residentHost) app.addHook("onReady", () => readbacks.start());
     app.addHook("onClose", () => readbacks.stop());
     const schedules = workflowScheduleRunner(services);
-    app.addHook("onReady", () => schedules.start());
+    if (residentHost) app.addHook("onReady", () => schedules.start());
     app.addHook("onClose", () => schedules.stop());
   }
   app.removeContentTypeParser("application/json");
@@ -200,7 +206,7 @@ export async function buildApp(
     allowedHeaders: ["Origin", "Content-Type", "Accept", "Authorization"],
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
   });
-  await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
+  await app.register(multipart, { limits: { fileSize: 64 * 1024 * 1024, files: 1, fields: 8, parts: 9 } });
   await app.register(websocket);
 
   app.setErrorHandler((error, request, reply) => {
@@ -277,9 +283,9 @@ export async function buildApp(
       },
     });
   }
-  if (routeTable.length !== 204)
+  if (routeTable.length !== 209)
     throw new Error(
-      `route table has ${routeTable.length} routes, expected 204`,
+      `route table has ${routeTable.length} routes, expected 209`,
     );
   return app;
 }
@@ -455,6 +461,8 @@ async function handleRoute(
   if (workflowSchedule !== WORKFLOW_SCHEDULE_UNHANDLED) return workflowSchedule;
   const notification = await handleNotificationRoute(route, request, reply, current!, services);
   if (notification !== NOTIFICATION_UNHANDLED) return notification;
+  const pipelineGateway = await handlePipelineGatewayRoute(route, request, reply, current!, services);
+  if (pipelineGateway !== PIPELINE_GATEWAY_UNHANDLED) return pipelineGateway;
   if (
     route.path === `${services.config.apiBasePath}/profile` &&
     route.method === "GET"

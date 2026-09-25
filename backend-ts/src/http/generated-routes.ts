@@ -734,6 +734,10 @@ export const routeTable = [
   },
   {
     "method": "POST",
+    "path": "/api/registry/capabilities/import"
+  },
+  {
+    "method": "POST",
     "path": "/api/registry/capabilities/:id/review"
   },
   {
@@ -815,6 +819,22 @@ export const routeTable = [
   {
     "method": "GET",
     "path": "/api/dashboard/tasks"
+  },
+  {
+    "method": "GET",
+    "path": "/api/pipeline/v1/health/ready"
+  },
+  {
+    "method": "POST",
+    "path": "/api/pipeline/v1/files/csv"
+  },
+  {
+    "method": "POST",
+    "path": "/api/pipeline/v1/files/documents"
+  },
+  {
+    "method": "GET",
+    "path": "/api/pipeline/v1/jobs/:id"
   }
 ] as const;
 export type RouteDefinition = (typeof routeTable)[number];

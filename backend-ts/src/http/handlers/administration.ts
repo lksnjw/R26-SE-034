@@ -290,6 +290,9 @@ async function confirmedSettingsMutation<T>(services: HandlerServices, protected
 }
 
 function applySettingsGroup(state: RepositoryState, group: string, body: Record<string, unknown>, user: CurrentUser): void {
+  if (group === "rbac") for (const field of ["enabled", "localPolicyAgentEnabled"]) {
+    if (Object.hasOwn(body, field) && typeof body[field] !== "boolean") throw new HandlerFailure(422, `${field} must be a boolean`);
+  }
   if (Object.hasOwn(body, "runtimeApprovalPolicy")) {
     if (group !== "rbac") throw new HandlerFailure(422, "Runtime approval policy belongs to RBAC settings");
     updateRuntimeApprovalPolicy(state, user, body.runtimeApprovalPolicy);
