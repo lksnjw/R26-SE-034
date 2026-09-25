@@ -10,7 +10,7 @@ const roleAccessSchema = z.object({
   notes: z.string().optional(),
 });
 
-const fallbackPolicySchema = z.object({
+export const fallbackPolicySchema = z.object({
   version: z.string(),
   effective_date: z.string(),
   globally_blocked_tools: z.array(z.string()),

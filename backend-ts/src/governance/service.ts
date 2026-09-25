@@ -32,6 +32,18 @@ const persistedGovernanceSchema = z.object({
 type PersistedSnapshot = z.infer<typeof persistedSnapshotSchema>;
 type PersistedGovernance = z.infer<typeof persistedGovernanceSchema>;
 
+/** Policy identity is distinct from cache renewal timestamps. Invalid or
+ * unknown state remains fully bound, never normalized into valid authority. */
+export function operationGovernanceBinding(raw: unknown): { authority: unknown; expiresAt?: number } {
+  const parsed = persistedGovernanceSchema.safeParse(raw);
+  if (!parsed.success) return { authority: raw };
+  const { snapshot, ...state } = parsed.data;
+  if (!snapshot) return { authority: parsed.data };
+  const { fetchedAt, expiresAt, ...policy } = snapshot;
+  if (expiresAt < fetchedAt) return { authority: raw };
+  return { authority: { ...state, snapshot: policy }, expiresAt };
+}
+
 export type GovernanceDecisionStatus = "FRESH" | "CACHED_WARNING" | "BLOCKED" | "HUMAN_REVIEW";
 
 export type GovernanceDecision = {
