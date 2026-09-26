@@ -14,6 +14,8 @@ export type RegistrySnapshot = Readonly<{
 export class RegistryService {
   readonly #mutex = new AsyncMutex();
   #snapshot: RegistrySnapshot;
+  #baseSnapshot: RegistrySnapshot;
+  #reviewedTools: ToolDefinition[] = [];
   #toolUpsertCallbacks = new Set<(tool: ToolDefinition) => void>();
 
   /*******************************************************************************
@@ -23,6 +25,7 @@ export class RegistryService {
    ******************************************************************************/
   private constructor(readonly toolPath: string, readonly rulePath: string, snapshot: RegistrySnapshot) {
     this.#snapshot = snapshot;
+    this.#baseSnapshot = snapshot;
   }
 
   /*******************************************************************************
@@ -47,6 +50,52 @@ export class RegistryService {
    ******************************************************************************/
   snapshot(): RegistrySnapshot {
     return this.#snapshot;
+  }
+
+  /** Mount persisted reviewed definitions without writing immutable release
+   * assets. This is a catalog projection, not admission or a role grant. */
+  replaceReviewedTools(input: unknown): void {
+    const tools = toolArraySchema.parse(input);
+    this.assertReviewedTools(tools);
+    const previous = this.#snapshot;
+    this.#reviewedTools = structuredClone(tools);
+    this.refreshSnapshot();
+    for (const tool of tools) {
+      const old = previous.tools.find(value => value.tool_id === tool.tool_id);
+      if (!old || JSON.stringify(old) !== JSON.stringify(tool))
+        for (const callback of this.#toolUpsertCallbacks) callback(structuredClone(tool));
+    }
+  }
+
+  validateReviewedTools(input: unknown): void { this.assertReviewedTools(toolArraySchema.parse(input)); }
+
+  private assertReviewedTools(tools: ToolDefinition[]): void {
+    const ids = new Set(this.#baseSnapshot.tools.map(tool => normalize(tool.tool_id)));
+    const names = new Set(this.#baseSnapshot.tools.map(tool => normalize(tool.name)));
+    for (const tool of tools) {
+      if (!tool.connection_id || !tool.tool_id.trim() || !tool.name.trim() || !tool.bridge_contract ||
+          ids.has(normalize(tool.tool_id)) || names.has(normalize(tool.name)))
+        throw new Error("Reviewed dynamic contracts require unique connection-owned identities; release definitions cannot be replaced");
+      ids.add(normalize(tool.tool_id)); names.add(normalize(tool.name));
+    }
+  }
+
+  private refreshSnapshot(): void {
+    const base = this.#baseSnapshot;
+    if (!this.#reviewedTools.length) { this.#snapshot = base; return; }
+    const tools = [...this.#reviewedTools].sort((a, b) => a.tool_id.localeCompare(b.tool_id));
+    const version = fileVersion(Buffer.from(JSON.stringify([base.versions.tools, tools])));
+    this.#snapshot = freezeSnapshot([...base.tools, ...tools], [...base.rules], version, base.versions.rules);
+  }
+
+  private installBase(snapshot: RegistrySnapshot): void {
+    this.#baseSnapshot = snapshot;
+    this.refreshSnapshot();
+  }
+
+  private assertFileToolIdentity(tool: ToolDefinition): void {
+    if (tool.connection_id || tool.tool_id.startsWith("DISCOVERED-") || tool.name.startsWith("discovered.") || this.#reviewedTools.some(value => normalize(value.tool_id) === normalize(tool.tool_id) || normalize(value.name) === normalize(tool.name)))
+      throw new Error("Connection-owned contracts must use the persisted capability review path, not release file mutation");
   }
 
   /*******************************************************************************
@@ -112,7 +161,7 @@ export class RegistryService {
   replaceRuleSnapshot(input: unknown, ruleVersion: string): void {
     const rules = ruleArraySchema.parse(input);
     if (ruleVersion.trim() === "") throw new Error("rule snapshot version is required");
-    this.#snapshot = freezeSnapshot([...this.#snapshot.tools], rules, this.#snapshot.versions.tools, ruleVersion);
+    this.installBase(freezeSnapshot([...this.#baseSnapshot.tools], rules, this.#baseSnapshot.versions.tools, ruleVersion));
   }
 
   /*******************************************************************************
@@ -133,13 +182,14 @@ export class RegistryService {
   async upsertTool(input: unknown, allowUpdate: boolean): Promise<ToolDefinition> {
     const tool = toolArraySchema.element.parse(input);
     return this.#mutex.runExclusive(async () => {
-      const tools = [...this.#snapshot.tools];
+      this.assertFileToolIdentity(tool);
+      const tools = [...this.#baseSnapshot.tools];
       const index = tools.findIndex((item) => normalize(item.tool_id) === normalize(tool.tool_id) || normalize(item.name) === normalize(tool.name));
       if (index >= 0 && !allowUpdate) throw new Error(`tool ${tool.tool_id} already exists`);
       if (index >= 0) tools[index] = tool; else tools.push(tool);
       const raw = Buffer.from(JSON.stringify(tools, null, 2) + "\n", "utf8");
       await atomicReplace(this.toolPath, raw);
-      this.#snapshot = freezeSnapshot(tools, [...this.#snapshot.rules], fileVersion(raw), this.#snapshot.versions.rules);
+      this.installBase(freezeSnapshot(tools, [...this.#baseSnapshot.rules], fileVersion(raw), this.#baseSnapshot.versions.rules));
       for (const callback of this.#toolUpsertCallbacks) callback(structuredClone(tool));
       return structuredClone(tool);
     });
@@ -159,7 +209,7 @@ export class RegistryService {
       if (index >= 0) rules[index] = rule; else rules.push(rule);
       const raw = Buffer.from(JSON.stringify(rules, null, 2) + "\n", "utf8");
       await atomicReplace(this.rulePath, raw);
-      this.#snapshot = freezeSnapshot([...this.#snapshot.tools], rules, this.#snapshot.versions.tools, fileVersion(raw));
+      this.installBase(freezeSnapshot([...this.#baseSnapshot.tools], rules, this.#baseSnapshot.versions.tools, fileVersion(raw)));
       return structuredClone(rule);
     });
   }
@@ -173,9 +223,10 @@ export class RegistryService {
     const imported = toolArraySchema.parse(input);
     return this.#mutex.runExclusive(async () => {
       const oldHash = this.hash();
-      const tools = [...this.#snapshot.tools];
+      const tools = [...this.#baseSnapshot.tools];
       const seen = new Set<string>();
       for (const tool of imported) {
+        this.assertFileToolIdentity(tool);
         const identity = normalize(tool.tool_id);
         if (seen.has(identity)) throw new Error(`duplicate tool ${tool.tool_id} in import`);
         seen.add(identity);
@@ -185,7 +236,7 @@ export class RegistryService {
       }
       const raw = Buffer.from(JSON.stringify(tools, null, 2) + "\n", "utf8");
       await atomicReplace(this.toolPath, raw);
-      this.#snapshot = freezeSnapshot(tools, [...this.#snapshot.rules], fileVersion(raw), this.#snapshot.versions.rules);
+      this.installBase(freezeSnapshot(tools, [...this.#baseSnapshot.rules], fileVersion(raw), this.#baseSnapshot.versions.rules));
       for (const tool of imported) for (const callback of this.#toolUpsertCallbacks) callback(structuredClone(tool));
       return { tools: structuredClone(imported), oldHash, newHash: this.hash() };
     });
@@ -212,7 +263,7 @@ export class RegistryService {
       }
       const raw = Buffer.from(JSON.stringify(rules, null, 2) + "\n", "utf8");
       await atomicReplace(this.rulePath, raw);
-      this.#snapshot = freezeSnapshot([...this.#snapshot.tools], rules, this.#snapshot.versions.tools, fileVersion(raw));
+      this.installBase(freezeSnapshot([...this.#baseSnapshot.tools], rules, this.#baseSnapshot.versions.tools, fileVersion(raw)));
       return { rules: structuredClone(imported), oldHash, newHash: this.hash() };
     });
   }
