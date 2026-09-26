@@ -16,6 +16,8 @@ export const toolSchema = z.object({
   endpoint: z.string().default(""),
   http_method: z.string().default(""),
   mcp_tool_name: z.string().default(""),
+  // Additive, connection-owned dynamic contract; absence preserves release hashes.
+  connection_id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).optional(),
   input_schema: jsonObjectSchema.default({}),
   // Optional additive admission record; no default changes frozen legacy hashes.
   bridge_contract: z.object({

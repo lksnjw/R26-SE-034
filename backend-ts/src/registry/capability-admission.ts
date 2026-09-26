@@ -16,6 +16,7 @@ import { assertOperationReadbackSources } from "../tools/operation-readback-cont
 import { assertReportCoverageContract } from "../tools/report-coverage-contract.js";
 import { modelDataClasses, type ModelDataClass } from "../providers/egress-policy.js";
 import { assertReadErrorContract } from "../tools/read-business-error.js";
+import { discoveredCapabilityPreview } from "./discovered-contract.js";
 
 export const DEFAULT_BRIDGE_CONNECTION = "erpbridge-default";
 export function requireProductionAdmissionProfile(config: Pick<AppConfig, "mcpMode" | "mcpTransport">) {
@@ -23,7 +24,7 @@ export function requireProductionAdmissionProfile(config: Pick<AppConfig, "mcpMo
     throw new Error("Legacy remote bridge-v1 has no reviewed capability-admission profile. Use the supported modern ERPBridge MCP transport or implement and qualify an explicit legacy admission adapter; no live fallback is allowed.");
 }
 const id = z.string().min(1).max(256), hash = z.string().regex(/^sha256:[a-f0-9]{64}$/), binding = z.string().regex(/^[a-f0-9]{64}$/);
-const observationSchema = z.object({ id, capabilityId: id, connectionId: id, connectionBinding: binding, toolId: id,
+export const observationSchema = z.object({ id, capabilityId: id, connectionId: id, connectionBinding: binding, toolId: id,
   contractHash: hash, definition: toolSchema, discoveredAt: z.string().datetime(), registryHash: hash,
   discoveryGeneration: z.number().int().nonnegative(), remoteMatches: z.boolean() }).strict();
 const readPolicySchema = z.object({ effectClass: z.literal("read"), riskClass: z.literal("low"), dataClass: z.enum(modelDataClasses), retryPolicy: z.literal("never"), note: z.string().trim().min(1).max(2000) }).strict();
@@ -32,26 +33,26 @@ const operationPolicySchema = z.object({ effectClass: z.enum(["write", "notifica
 const policySchema = z.union([readPolicySchema, operationPolicySchema]);
 const reviewIdentity = { observationId: id, contractHash: hash, decisionKey: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/) };
 const reviewSchema = z.union([readPolicySchema.extend(reviewIdentity).strict(), operationPolicySchema.extend(reviewIdentity).strict()]);
-const revisionSchema = z.object({ id, capabilityId: id, connectionId: id, connectionBinding: binding, toolId: id,
+export const revisionSchema = z.object({ id, capabilityId: id, connectionId: id, connectionBinding: binding, toolId: id,
   contractHash: hash, definition: toolSchema, observationId: id, reviewedAt: z.string().datetime(), reviewedBy: z.object({ id, role: z.literal("Platform Admin") }).strict(),
-  decisionScope: hash, decisionHash: hash, policy: policySchema }).strict();
-const admissionSchema = z.object({ capabilityId: id, revisionId: id, state: z.enum(["AVAILABLE", "DISABLED", "BLOCKED"]), version: z.number().int().positive(), updatedAt: z.string().datetime(),
+  decisionScope: hash, decisionHash: hash, policy: policySchema, definitionSource: z.literal("discovered-contract/v1").optional() }).strict();
+export const admissionSchema = z.object({ capabilityId: id, revisionId: id, state: z.enum(["AVAILABLE", "DISABLED", "BLOCKED"]), version: z.number().int().positive(), updatedAt: z.string().datetime(),
   reason: z.enum(["REMOTE_CONTRACT_DRIFT", "LOCAL_CONTRACT_CHANGED", "CONNECTION_CHANGED"]).optional() }).strict();
 export const disableAdmissionSchema = z.object({ revisionId: id, baseVersion: z.number().int().positive(), note: z.string().trim().min(1).max(2000) }).strict();
 export const reviewAdmissionSchema = reviewSchema;
 const digest = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJSONBytes(value)).digest("hex")}`;
-function requireAdmissionStorage(repository: Repository) {
+export function requireAdmissionStorage(repository: Repository) {
   if (repository.persistence !== null && repository.persistence.readQueueDurability !== "encrypted-single-writer")
     throw new HandlerFailure(503, "Capability admission requires supported single-writer storage; cross-process review/revocation is not qualified on this backend", { code: "CAPABILITY_STORAGE_UNSUPPORTED" });
 }
 export const capabilityContractHash = (definition: ToolDefinition) => digest(definition);
 export const capabilityIdFor = (connectionId: string, toolId: string) => `cap_${createHash("sha256").update(canonicalJSONBytes([connectionId, toolId])).digest("hex")}`;
 
-function administrator(state: Readonly<RepositoryState>, user: CurrentUser) {
+export function administrator(state: Readonly<RepositoryState>, user: CurrentUser) {
   const permissions = assertActorAuthority(state, user);
   if (user.role !== "Platform Admin" || !permissions.includes("registry:write")) throw new HandlerFailure(403, "Capability review requires current Platform Admin registry authority");
 }
-function activeBinding(session: ErpbridgeMcpSession | undefined) {
+export function activeBinding(session: ErpbridgeMcpSession | undefined) {
   if (!session || session.available === false || session.requiresReviewedRevision !== true || !binding.safeParse(session.admissionBinding).success)
     throw new HandlerFailure(503, "A supported connected modern ERPBridge session is required; health or a URL record is not enough", { code: "ADMISSION_CONNECTION_UNAVAILABLE" });
   return session.admissionBinding!;
@@ -60,7 +61,7 @@ function supportedReadErrorReview(tool: ToolDefinition) {
   try { assertReadErrorContract(tool); }
   catch { throw new HandlerFailure(422, "Business error mappings require an explicit low-risk ERP read without effects", { code: "ADMISSION_REVIEW_UNSUPPORTED" }); }
 }
-function supportedRead(tool: ToolDefinition) {
+export function supportedRead(tool: ToolDefinition) {
   supportedReadErrorReview(tool);
   if (!tool.tool_id.trim() || !tool.name.trim() || !tool.bridge_contract || !tool.allowed_roles.length ||
     !tool.is_read_only || tool.risk_level.toLowerCase() !== "low" || tool.side_effects.length || /^system\..*_test$/i.test(tool.name) || /^system\..*_test$/i.test(tool.mcp_tool_name))
@@ -87,7 +88,7 @@ export function supportedOperation(tool: ToolDefinition): void {
     catch { throw new HandlerFailure(422, "Operation read-back selectors require supported declared non-secret business fields", { code: "ADMISSION_REVIEW_UNSUPPORTED" }); }
   }
 }
-function publicRevision(raw: unknown) {
+export function publicRevision(raw: unknown) {
   const revision = revisionSchema.parse(raw);
   const { connectionBinding: _binding, decisionScope: _scope, decisionHash: _decision, ...value } = revision;
   return value;
@@ -106,19 +107,19 @@ export async function observeCapabilities(input: { repository: Repository; regis
   const { repository, registries, session, user, request } = input;
   await repository.readAuthoritative(state => administrator(state, user));
   const connectionBinding = activeBinding(session), generation = session!.discoveryGeneration ?? 0;
-  const registryHash = registries.hash(), definitions = registries.snapshot().tools;
+  const connectionId = input.connectionId ?? DEFAULT_BRIDGE_CONNECTION;
+  const registryHash = registries.hash(), definitions = registries.snapshot().tools.filter(tool => !tool.connection_id || tool.connection_id === connectionId);
   const remote = await session!.listTools(input.signal);
   if (remote.length > 2048 || canonicalJSONBytes(remote).length > 2000000 || remote.some(tool => typeof tool.name !== "string" || !tool.name.trim() || tool.name.length > 256) || new Set(remote.map(tool => tool.name)).size !== remote.length ||
       registryHash !== registries.hash() || generation !== (session!.discoveryGeneration ?? 0) || activeBinding(session) !== connectionBinding)
     throw new HandlerFailure(409, "Discovery changed or is incomplete; no observation was saved");
-  const connectionId = input.connectionId ?? DEFAULT_BRIDGE_CONNECTION;
   const localIds = definitions.map(tool => tool.tool_id);
   if (definitions.length > 2048 || canonicalJSONBytes(definitions).length > 2000000 || definitions.some(tool => canonicalJSONBytes(tool).length > 65536))
     throw new HandlerFailure(413, "Local capability discovery exceeds supported review budgets");
   if (localIds.some(value => !value.trim() || value.length > 256) || new Set(localIds).size !== localIds.length)
     throw new HandlerFailure(422, "Unique nonblank local capability IDs are required before discovery review");
   const knownNames = new Set(definitions.map(exactBridgeName));
-  const inventory = remote.filter(tool => !knownNames.has(tool.name)).map(tool => ({ remoteName: tool.name, state: "DISCOVERED", reason: "NO_LOCAL_REVIEW_CONTRACT" }));
+  const inventory = remote.filter(tool => !knownNames.has(tool.name)).map(tool => discoveredCapabilityPreview(tool, connectionId));
   let blockedCount = 0;
   const saved = await repository.mutate(state => {
     administrator(state, user);
@@ -190,7 +191,8 @@ export async function reviewCapability(input: { repository: Repository; registri
       toolId: observation.toolId, contractHash: observation.contractHash, definition: structuredClone(current[0]!), observationId: observation.id,
       reviewedAt: now(), reviewedBy: { id: input.user.id, role: "Platform Admin" as const }, decisionScope, decisionHash,
       policy: policySchema.parse({ effectClass: data.effectClass, riskClass: data.riskClass, dataClass: data.dataClass, retryPolicy: data.retryPolicy, note: data.note,
-        ...(data.effectClass === "read" ? {} : { requireIndependentApproval: true }) }) };
+        ...(data.effectClass === "read" ? {} : { requireIndependentApproval: true }) }),
+      ...(current[0]!.connection_id && current[0]!.tool_id.startsWith("DISCOVERED-") ? { definitionSource: "discovered-contract/v1" as const } : {}) };
     const old = state.capabilityAdmissions[revision.capabilityId];
     const admission = { capabilityId: revision.capabilityId, revisionId: revision.id, state: "AVAILABLE", version: old ? admissionSchema.parse(old).version + 1 : 1, updatedAt: now() };
     state.capabilityRevisions[revision.id] = revision; state.capabilityAdmissions[revision.capabilityId] = admission;
@@ -240,6 +242,7 @@ export function captureReadAdmissionPin(state: Readonly<RepositoryState>, regist
 }
 export function captureCapabilityAdmissionPin(state: Readonly<RepositoryState>, registries: RegistryService, definition: ToolDefinition, connectionBinding: string,
   expectedPin?: ReadAdmissionPin, connectionId = DEFAULT_BRIDGE_CONNECTION): ReadAdmissionPin {
+  if (definition.connection_id && definition.connection_id !== connectionId) throw new Error("Capability contract belongs to another connection; no ERP dispatch is authorized");
   const capabilityId = capabilityIdFor(connectionId, definition.tool_id), admission = admissionSchema.safeParse(state.capabilityAdmissions[capabilityId]);
   if (!admission.success || admission.data.state !== "AVAILABLE") throw new Error("Capability is unreviewed, disabled or blocked; no ERP dispatch is authorized");
   const revision = revisionSchema.safeParse(state.capabilityRevisions[admission.data.revisionId]), current = registries.snapshot().tools.filter(tool => tool.tool_id === definition.tool_id);
@@ -312,6 +315,7 @@ export async function capabilityAdmissionCatalog(repository: Repository, offset 
     return { observations: observations.slice(offset, offset + limit).map(publicObservation), revisions: revisions.slice(offset, offset + limit).map(publicRevision),
       admissions: admissions.slice(offset, offset + limit).map(value => admissionSchema.parse(value)), offset, limit,
       persistence, connection, capabilities, hasMoreCapabilities: capabilityIds.length > offset + limit,
+      roleOptions: Object.values(state.roles).map(role => ({ id: role.id, name: role.name })),
       connections: context?.connections ?? [{ id: selectedConnectionId, primary: true, dispatchSupported: true }],
       hasMoreObservations: observations.length > offset + limit, hasMoreRevisions: revisions.length > offset + limit, hasMoreAdmissions: admissions.length > offset + limit };
   });
