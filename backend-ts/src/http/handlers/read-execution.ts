@@ -17,6 +17,8 @@ import { supportsCollectionReads, readIterationBindingKey } from "../../runner/r
 import { newReadIterationLedger } from "../../runner/read-iteration-checkpoints.js";
 import { completeCheckpointedCollectionRead } from "../../runner/checkpointed-collection-read.js";
 import { boundMcpConnection, selectedMcpConnectionId } from "../../tools/mcp-dispatch-context.js";
+import { residentExecutionAllowed, requireResidentExecution } from "../../runner/execution-host.js";
+import { dispatchReadTaskOutbox } from "../../runner/read-task-outbox.js";
 
 export async function runVerifiedRead(workflow: Workflow, input: Record<string, unknown>, token: ValidationToken | null, traceId: string,
   request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
@@ -25,6 +27,7 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
   const localIssues = inspectReadWorkflow(blueprint, services.registries.snapshot().tools, user.role, allowCollections);
   if (localIssues.length) return reply.status(422).send(fail("Workflow is outside the supported read execution profiles", { code: "UNSUPPORTED_EXECUTION_PROFILE", issues: localIssues, traceId }));
   const queued = (request.body as { mode?: string } | undefined)?.mode === "async-read";
+  if (!queued) requireResidentExecution(services.repository);
   if (!queued) {
     let bindings: ReturnType<typeof boundMcpConnection>[];
     try {
@@ -90,7 +93,14 @@ export async function runVerifiedRead(workflow: Workflow, input: Record<string, 
       before: null, after: { workflowId: workflow.id, profile }, createdAt: new Date().toISOString(), traceId });
     return structuredClone(item);
   });
-  if (queued) { queue!.kick(); return reply.status(202).send(ok(publicExecution(initial), "Published read run admitted; use its execution ID to follow saved progress", { traceId, executionProfile: profile, admission: "read-job-v1" })); }
+  if (queued) {
+    const taskDispatch = residentExecutionAllowed(services.repository) ? undefined : await dispatchReadTaskOutbox(services.repository, initial.id);
+    queue!.kick();
+    return reply.status(202).send(ok(publicExecution(initial), taskDispatch === "PENDING" ?
+      "Published read run saved; task enqueue is unconfirmed. Follow this original run while dispatch recovery reconciles its stable task identity." :
+      "Published read run admitted; use its execution ID to follow saved progress",
+    { traceId, executionProfile: profile, admission: "read-job-v1", ...(taskDispatch ? { taskDispatch } : {}) }));
+  }
   if (token === null) throw new HandlerFailure(422, "Execution verification receipt is unavailable", { traceId });
   let execution;
   try { execution = collection

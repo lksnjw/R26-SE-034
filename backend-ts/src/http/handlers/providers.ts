@@ -1,27 +1,30 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { ok } from "../../models/schemas.js";
 import { modelDataClasses, normalizeModelEgressPolicy, providerOrigin, type ModelDataClass } from "../../providers/egress-policy.js";
-import { providerConfigurationFromRecord, validateRuntimeProviderConfiguration } from "../../providers/runtime.js";
+import { providerConfigurationFromRecord, testProviderConnection, validateRuntimeProviderConfiguration } from "../../providers/runtime.js";
 import { withoutSecretFields } from "../../redact/secrets.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, numberValue, requestParam, stringValue } from "./common.js";
 import { assertActorAuthority } from "./model-selection.js";
 
 export const PROVIDER_UNHANDLED = Symbol("provider-unhandled");
+export type ProviderServices = Pick<HandlerServices, "config" | "repository" | "providerRuntime"> & {
+  providerActivationScope?: "stored-configuration";
+};
 
 /** Owns model-provider administration and runtime activation routes. */
-export async function handleProviderRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown | typeof PROVIDER_UNHANDLED> {
+export async function handleProviderRoute(route: RouteDefinition, request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: ProviderServices, signal: AbortSignal = request.signal): Promise<unknown | typeof PROVIDER_UNHANDLED> {
   const base = services.config.apiBasePath;
   if (route.path === `${base}/providers` && route.method === "GET") return listProviders(reply, user, services);
   if (route.path === `${base}/providers` && route.method === "POST") return createProvider(request, reply, user, services);
   if (route.path === `${base}/providers/:id` && route.method === "PUT") return updateProvider(request, reply, user, services);
   if (route.path === `${base}/providers/:id/activate`) return activateProvider(request, reply, user, services);
-  if (route.path === `${base}/providers/:id/test`) return testProvider(request, reply, user, services);
+  if (route.path === `${base}/providers/:id/test`) return testProvider(request, reply, user, services, signal);
   return PROVIDER_UNHANDLED;
 }
 
 function requirePlatformAdmin(user: CurrentUser): void { if (user.role !== "Platform Admin") throw new HandlerFailure(403, "Only Platform Admin can manage providers"); }
-async function listProviders(reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { requirePlatformAdmin(user); const providers = await services.repository.read((state) => Object.values(state.providers).map((item) => withoutSecretFields(item))); return reply.send(ok(providers, "Provider configurations loaded", null)); }
+async function listProviders(reply: FastifyReply, user: CurrentUser, services: ProviderServices): Promise<unknown> { requirePlatformAdmin(user); const providers = await services.repository.read((state) => Object.values(state.providers).map((item) => withoutSecretFields(item))); return reply.send(ok(providers, "Provider configurations loaded", null)); }
 function providerInput(body: Record<string, unknown>, id: string, user: CurrentUser, existing?: Record<string, unknown>): Record<string, unknown> {
   const name = stringValue(body.name).trim(), model = stringValue(body.model).trim();
   if (name === "" || model === "") throw new HandlerFailure(422, "Provider name and model are required");
@@ -53,17 +56,35 @@ function providerInput(body: Record<string, unknown>, id: string, user: CurrentU
   return { id, name, type, baseUrl, model, fallbackModel, ...(additionalModels.length > 0 ? { additionalModels } : {}), temperature: typeof body.temperature === "number" ? body.temperature : 0, apiKey: typeof body.apiKey === "string" && body.apiKey !== "" ? body.apiKey : existing?.apiKey ?? "", active: existing?.active === true, egressPolicy, revision: numberValue(existing?.revision, 0) + 1, createdAt: stringValue(existing?.createdAt) === "" ? now() : existing!.createdAt };
 }
 function validClasses(value: unknown): value is ModelDataClass[] { return Array.isArray(value) && value.length <= modelDataClasses.length && value.every((item) => typeof item === "string" && modelDataClasses.includes(item as ModelDataClass)) && new Set(value).size === value.length; }
-async function createProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { requirePlatformAdmin(user); const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const provider = await services.repository.mutate((state) => { if (Object.values(state.providers).some((item) => stringValue(item.name).toLowerCase() === stringValue(body.name).trim().toLowerCase())) throw new HandlerFailure(409, "A provider with this name already exists"); const id = nextID(state, "provider"), value = providerInput(body, id, user); state.providers[id] = value; appendAudit(state, user, "provider.created", "provider", id, null, withoutSecretFields(value) as Record<string, unknown>, request); return value; }); return reply.status(201).send(ok(withoutSecretFields(provider), "Provider created", null)); }
-async function updateProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
+async function createProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: ProviderServices): Promise<unknown> { requirePlatformAdmin(user); const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const provider = await services.repository.mutate((state) => { assertActorAuthority(state, user); if (Object.values(state.providers).some((item) => stringValue(item.name).toLowerCase() === stringValue(body.name).trim().toLowerCase())) throw new HandlerFailure(409, "A provider with this name already exists"); const id = nextID(state, "provider"), value = providerInput(body, id, user); state.providers[id] = value; appendAudit(state, user, "provider.created", "provider", id, null, withoutSecretFields(value) as Record<string, unknown>, request); return value; }); return reply.status(201).send(ok(withoutSecretFields(provider), "Provider created", null)); }
+async function updateProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: ProviderServices): Promise<unknown> {
   requirePlatformAdmin(user); const body = bodyRecord(request); if (body === null) throw new HandlerFailure(400, "Invalid request body"); const id = requestParam(request, "id");
   const provider = await services.repository.mutate((state) => { assertActorAuthority(state, user); const existing = state.providers[id]; if (existing === undefined) throw new HandlerFailure(404, "Provider configuration not found"); const value = providerInput(body, id, user, existing); if (value.active === true) { try { validateRuntimeProviderConfiguration(providerConfigurationFromRecord(value, services.config.generationTimeoutMs ?? 30_000)); } catch (error) { throw new HandlerFailure(422, errorText(error)); } } state.providers[id] = value; appendAudit(state, user, "provider.updated", "provider", id, withoutSecretFields(existing) as Record<string, unknown>, withoutSecretFields(value) as Record<string, unknown>, request); return value; });
   if (provider.active === true) services.providerRuntime?.activate(providerConfigurationFromRecord(provider, services.config.generationTimeoutMs ?? 30_000));
   return reply.send(ok(withoutSecretFields(provider), "Provider updated", null));
 }
-async function activateProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
-  requirePlatformAdmin(user); const id = requestParam(request, "id"); if (!(await services.repository.read((state) => state.providers[id]))) throw new HandlerFailure(404, "Provider configuration not found"); if (services.providerRuntime === undefined) throw new HandlerFailure(503, "Provider runtime is unavailable");
+async function activateProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: ProviderServices): Promise<unknown> {
+  requirePlatformAdmin(user); const id = requestParam(request, "id"); if (!(await services.repository.read((state) => state.providers[id]))) throw new HandlerFailure(404, "Provider configuration not found"); if (services.providerRuntime === undefined && services.providerActivationScope !== "stored-configuration") throw new HandlerFailure(503, "Provider runtime is unavailable");
   const provider = await services.repository.mutate((state) => { assertActorAuthority(state, user); const item = state.providers[id]; if (item === undefined) throw new HandlerFailure(404, "Provider configuration not found"); try { validateRuntimeProviderConfiguration(providerConfigurationFromRecord(item, services.config.generationTimeoutMs ?? 30_000)); } catch (error) { throw new HandlerFailure(422, errorText(error)); } for (const value of Object.values(state.providers)) value.active = false; item.active = true; appendAudit(state, user, "provider.activated", "provider", id, null, { active: true }, request); return structuredClone(item); });
-  services.providerRuntime.activate(providerConfigurationFromRecord(provider, services.config.generationTimeoutMs ?? 30_000)); return reply.send(ok(withoutSecretFields(provider), "Provider activated", null));
+  if (services.providerActivationScope === "stored-configuration") return reply.send(ok(withoutSecretFields(provider),
+    "Provider configuration selected for subsequent execution invocations; runtime activation and remote compatibility are unconfirmed",
+    { activationScope: "stored-configuration", runtimeActivationConfirmed: false, remoteCompatibilityConfirmed: false }));
+  services.providerRuntime!.activate(providerConfigurationFromRecord(provider, services.config.generationTimeoutMs ?? 30_000)); return reply.send(ok(withoutSecretFields(provider), "Provider activated", null));
 }
-async function testProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> { requirePlatformAdmin(user); const provider = await services.repository.read((state) => state.providers[requestParam(request, "id")] ?? null); if (provider === null) throw new HandlerFailure(404, "Provider configuration not found"); if (services.providerRuntime === undefined) throw new HandlerFailure(503, "Provider runtime is unavailable"); try { const response = await services.providerRuntime.test(providerConfigurationFromRecord(provider, services.config.generationTimeoutMs ?? 30_000), request.signal); return reply.send(ok({ ok: true, providerId: provider.id, provider: response.provider, model: response.model, measured: response.measured, inputTokens: response.inputTokens, outputTokens: response.outputTokens }, "Provider test completed", null)); } catch (error) { return reply.send(ok({ ok: false, providerId: provider.id, message: errorText(error) }, "Provider test completed", null)); } }
+async function testProvider(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: ProviderServices, signal: AbortSignal): Promise<unknown> {
+  requirePlatformAdmin(user);
+  const provider = await services.repository.read((state) => { assertActorAuthority(state, user); return state.providers[requestParam(request, "id")] ?? null; });
+  if (provider === null) throw new HandlerFailure(404, "Provider configuration not found");
+  if (services.providerRuntime === undefined && services.providerActivationScope !== "stored-configuration") throw new HandlerFailure(503, "Provider runtime is unavailable");
+  try {
+    const configuration = providerConfigurationFromRecord(provider, services.config.generationTimeoutMs ?? 30_000);
+    const response = services.providerActivationScope === "stored-configuration"
+      ? await testProviderConnection(services.repository, configuration, signal)
+      : await services.providerRuntime!.test(configuration, signal);
+    return reply.send(ok({ ok: true, providerId: provider.id, provider: response.provider, model: response.model, measured: response.measured, inputTokens: response.inputTokens, outputTokens: response.outputTokens }, "Provider test completed", null));
+  } catch (error) {
+    services.repository.assertAuthority();
+    return reply.send(ok({ ok: false, providerId: provider.id, message: errorText(error) }, "Provider test completed", null));
+  }
+}
 function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }

@@ -9,10 +9,12 @@ import { hasReportPageResolution } from "../../runner/report-page-resolution.js"
 import { runtimeApprovalAdministration, runtimeApprovalView } from "../../runner/runtime-approvals.js";
 import { protectedApprovalView } from "../../runner/protected-approval-review.js";
 import { buildTraceChain } from "../trace-chain.js";
-import { canReadExecution, visibleExecutions } from "../execution-scope.js";
+import { visibleExecutions } from "../execution-scope.js";
 import type { RouteDefinition } from "../generated-routes.js";
 import { isTraceId } from "../../trace/request-trace.js";
 import { HandlerFailure, isRecord, requestParam, stringValue, type CurrentUser, type HandlerServices } from "./common.js";
+import type { RepositoryState } from "../../repository/store.js";
+import { readableExecution } from "./execution-events.js";
 
 export const EXECUTION_QUERY_UNHANDLED = Symbol("execution-query-unhandled");
 
@@ -90,14 +92,15 @@ async function getExecution(request: FastifyRequest, reply: FastifyReply, user: 
       : runtimeApprovalView(state, id, user.id, query.approvalId as string | undefined));
     return reply.send(ok(review, "Exact transaction review only; approval does not execute", null));
   }
-  if (!user.permissions.some((key) => ["workflow:read", "execution:read_own"].includes(key)))
-    return reply.status(404).send(fail("Execution not found", null));
-  const item = await services.repository.read((state) => state.executions[id] ?? null);
-  if (item === null || !canReadExecution(user, item))
-    return reply.status(404).send(fail("Execution not found", null));
-  return reply.send(ok(publicExecution({ ...item,
+  const item = await services.repository.read(state => projectExecutionProgress(state, user, id));
+  return reply.send(ok(item, "OK", null));
+}
+
+export function projectExecutionProgress(state: Readonly<RepositoryState>, user: CurrentUser, id: string) {
+  const item = readableExecution(state, user, id);
+  return publicExecution({ ...item,
     ...(item.runtimeApprovalSecret || item.protectedApprovalSecret ? { hasRuntimeApproval: true } : {}),
     ...(hasOperationReconciliation(item) ? { hasOperationReconciliation: true } : {}),
     ...(hasReportPageResolution(item) ? { hasReportPageResolution: true } : {}),
-  }), "OK", null));
+  });
 }
