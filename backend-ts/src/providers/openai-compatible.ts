@@ -1,8 +1,9 @@
-import { boundedJSONRequest, InvalidResponseJSON } from "../core/bounded-json-request.js";
+import { boundedJSONRequest, InvalidResponseJSON, type OwnedJSONRequest } from "../core/bounded-json-request.js";
 import { OperationDeadlineExceeded } from "../core/bounded-operation.js";
-import type { AnalysisProvider, AnalysisResponse, ProviderInvocationContext } from "../analysisprovider/types.js";
+import type { AnalysisProvider, AnalysisResponse, GenerationDiagnostics, ProviderInvocationContext } from "../analysisprovider/types.js";
 import type { QueryMessage, QueryOptions, QueryToolCall, QueryToolDefinition, QueryTurnResult } from "../analysisprovider/query-types.js";
 import { generationMessages } from "../prompts/contracts.js";
+import { captureProviderContinuation, providerWireMessages } from "../analysisprovider/provider-continuation.js";
 
 export type OpenAICompatibleOptions = {
   baseURL: string;
@@ -11,6 +12,7 @@ export type OpenAICompatibleOptions = {
   temperature?: number;
   timeoutMs?: number;
   fetchImplementation?: typeof fetch;
+  ownRequest?: (request: OwnedJSONRequest) => void;
 };
 
 type OpenAIChatResponse = {
@@ -21,8 +23,12 @@ type OpenAIChatResponse = {
 type OpenAIQueryResponse = {
   choices: Array<{
     finish_reason: string;
+    explicit_finish_reason_stop: boolean;
     message: {
       content: string | null;
+      reasoning?: unknown;
+      reasoning_content?: unknown;
+      reasoning_details?: unknown;
       tool_calls?: Array<{
         id: string;
         type: string;
@@ -41,7 +47,7 @@ export class OpenAICompatibleError extends Error {
    *
    * Initializes a OpenAICompatibleError instance with its required state.
    ******************************************************************************/
-  constructor(message: string, readonly kind: OpenAICompatibleFailureKind, readonly statusCode: number | null = null) { super(message); this.name = "OpenAICompatibleError"; }
+  constructor(message: string, readonly kind: OpenAICompatibleFailureKind, readonly statusCode: number | null = null, readonly generationDiagnostics?: GenerationDiagnostics) { super(message); this.name = "OpenAICompatibleError"; }
 }
 
 /*******************************************************************************
@@ -55,6 +61,20 @@ export function isGenerationFallbackEligible(error: unknown): boolean {
   return error instanceof OpenAICompatibleError && ["timeout", "rate_limit", "server", "malformed"].includes(error.kind);
 }
 
+export function isQueryFallbackEligible(error: unknown): boolean {
+  // Invalid tool calls, credentials, policy denials and cancellation do not
+  // become valid by asking a different model. Never retry an ERP operation here.
+  return error instanceof OpenAICompatibleError && ["timeout", "rate_limit", "server", "transport"].includes(error.kind);
+}
+
+/** One pure wire builder for resident generation and exact phased dispatch. */
+export function generationRequestBody(baseURL: string, model: string, temperature: number, prompt: string, context?: ProviderInvocationContext) {
+  return { model, messages: generationMessages(prompt, context?.promptTemplateVersion), temperature,
+    ...(context?.maxOutputTokens === undefined ? {} : { max_tokens: context.maxOutputTokens }),
+    ...(context?.promptTemplateVersion === "prompt/local-policy/v2" && baseURL.trim().replace(/\/+$/, "") === "https://openrouter.ai/api/v1" && model === "deepseek/deepseek-v4.1-flash"
+      ? { response_format: { type: "json_object" }, reasoning: { enabled: false } } : {}) };
+}
+
 export class OpenAICompatibleClient implements AnalysisProvider {
   readonly provider = "openai_compatible";
   readonly baseURL: string;
@@ -63,6 +83,7 @@ export class OpenAICompatibleClient implements AnalysisProvider {
   readonly timeoutMs: number;
   readonly #apiKey: string;
   readonly #fetch: typeof fetch;
+  readonly #ownRequest: ((request: OwnedJSONRequest) => void) | undefined;
 
   /*******************************************************************************
    * Function: constructor
@@ -76,6 +97,7 @@ export class OpenAICompatibleClient implements AnalysisProvider {
     this.temperature = options.temperature ?? 0;
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.#fetch = options.fetchImplementation ?? fetch;
+    this.#ownRequest = options.ownRequest;
     if (this.baseURL === "") throw new Error("OpenAI-compatible base URL is required");
     if (this.#apiKey === "") throw new Error("OpenAI-compatible API key is required");
     if (this.model === "") throw new Error("OpenAI-compatible model is required");
@@ -90,15 +112,13 @@ export class OpenAICompatibleClient implements AnalysisProvider {
    ******************************************************************************/
   async generate(prompt: string, model: string, signal?: AbortSignal, context?: ProviderInvocationContext): Promise<AnalysisResponse> {
     const selectedModel = model.trim() === "" ? this.model : model;
-    const decoded = await this.requestJSON({
-      model: selectedModel, messages: generationMessages(prompt, context?.promptTemplateVersion), temperature: this.temperature,
-      ...(context?.maxOutputTokens === undefined ? {} : { max_tokens: context.maxOutputTokens }),
-    }, signal, "OpenAI-compatible");
+    const decoded = await this.requestJSON(generationRequestBody(this.baseURL, selectedModel, this.temperature, prompt, context), signal, "OpenAI-compatible");
+    const generationDiagnostics = context?.promptTemplateVersion === "prompt/local-policy/v2" ? policyResponseDiagnostics(decoded) : undefined;
     let parsed: OpenAIChatResponse;
     try { parsed = parseResponse(decoded); }
-    catch (error) { throw new OpenAICompatibleError(error instanceof Error ? error.message : "OpenAI-compatible response has an invalid shape", "malformed"); }
+    catch (error) { throw new OpenAICompatibleError(error instanceof Error ? error.message : "OpenAI-compatible response has an invalid shape", "malformed", null, generationDiagnostics); }
     const text = firstNonblankChoice(parsed);
-    if (text === "") throw new OpenAICompatibleError("OpenAI-compatible response contained no candidate text", "malformed");
+    if (text === "") throw new OpenAICompatibleError("OpenAI-compatible response contained no candidate text", "malformed", null, generationDiagnostics);
     const measured = parsed.usage !== undefined;
     return {
       text: stripMarkdownFence(text),
@@ -107,6 +127,7 @@ export class OpenAICompatibleClient implements AnalysisProvider {
       inputTokens: measured ? parsed.usage!.prompt_tokens : 0,
       outputTokens: measured ? parsed.usage!.completion_tokens : 0,
       measured,
+      ...(generationDiagnostics ? { generationDiagnostics } : {}),
     };
   }
 
@@ -118,7 +139,7 @@ export class OpenAICompatibleClient implements AnalysisProvider {
   async queryWithTools(messages: QueryMessage[], tools: QueryToolDefinition[], options: QueryOptions): Promise<QueryTurnResult> {
     const selectedModel = (options.model ?? "").trim() === "" ? this.model : options.model!.trim();
     const decoded = await this.requestJSON({
-      model: selectedModel, messages, tools: tools.length > 0 ? tools : undefined, temperature: this.temperature,
+      model: selectedModel, messages: providerWireMessages(messages, selectedModel, this.baseURL), tools: tools.length > 0 ? tools : undefined, temperature: this.temperature,
       ...(options.maxOutputTokens !== undefined ? { max_tokens: options.maxOutputTokens } : {}),
     }, options.signal, "Query");
     const parsed = parseQueryResponse(decoded);
@@ -127,7 +148,7 @@ export class OpenAICompatibleClient implements AnalysisProvider {
     const measured = parsed.usage !== undefined;
     const inputTokens = measured ? parsed.usage!.prompt_tokens : 0;
     const outputTokens = measured ? parsed.usage!.completion_tokens : 0;
-    const stopReason = choice.finish_reason ?? "stop";
+    const stopReason = choice.finish_reason || "stop";
     const text = (choice.message.content ?? "").trim();
     const toolCalls: QueryToolCall[] = [];
     if (Array.isArray(choice.message.tool_calls)) {
@@ -146,14 +167,24 @@ export class OpenAICompatibleClient implements AnalysisProvider {
         toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args });
       }
     }
-    return { text, toolCalls, stopReason, inputTokens, outputTokens, measured, model: selectedModel, provider: this.provider };
+    let providerContinuationSecret;
+    if (toolCalls.length) {
+      try { providerContinuationSecret = captureProviderContinuation(choice.message, selectedModel, this.baseURL); }
+      catch { throw new OpenAICompatibleError("Query provider returned invalid continuation metadata", "malformed"); }
+    }
+    // Only interactive query v4 consumes this new clarification evidence.
+    // Runtime-agent turns retain their strict persisted shape and ACK hashes.
+    return { text, toolCalls, stopReason,
+      ...(options.promptTemplateVersion === "prompt/query/v4" ? { completionConfirmed: choice.explicit_finish_reason_stop && toolCalls.length === 0 } : {}),
+      inputTokens, outputTokens, measured, model: selectedModel, provider: this.provider,
+      ...(providerContinuationSecret ? { providerContinuationSecret } : {}) };
   }
   private async requestJSON(payload: Record<string, unknown>, signal: AbortSignal | undefined, label: string): Promise<unknown> {
     try {
       const { response, decoded } = await boundedJSONRequest(this.#fetch, `${this.baseURL}/chat/completions`, {
         method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${this.#apiKey}` },
         body: JSON.stringify(payload), ...(signal === undefined ? {} : { signal }),
-      }, this.timeoutMs, `${label} provider response`);
+      }, this.timeoutMs, `${label} provider response`, this.#ownRequest);
       if (!response.ok) {
         const kind: OpenAICompatibleFailureKind = response.status === 429 ? "rate_limit" : response.status >= 500 ? "server" : "client";
         throw new OpenAICompatibleError(`${label} provider returned HTTP ${response.status}`, kind, response.status);
@@ -170,21 +201,37 @@ export class OpenAICompatibleClient implements AnalysisProvider {
 
 }
 
+/** Finite policy-only metadata; never retain provider bodies or reasoning. */
+function policyResponseDiagnostics(value: unknown): GenerationDiagnostics | undefined {
+  if (!isRecord(value) || !Array.isArray(value.choices)) return undefined;
+  const choice = value.choices.find(item => isRecord(item) && isRecord(item.message) && typeof item.message.content === "string" && item.message.content.trim()) ?? value.choices[0];
+  if (!isRecord(choice)) return undefined;
+  const finishReason = ["stop", "length", "content_filter", "tool_calls"].includes(choice.finish_reason as string) ? choice.finish_reason as GenerationDiagnostics["finishReason"] : "other";
+  const usage = isRecord(value.usage) ? value.usage : {};
+  const details = isRecord(usage.completion_tokens_details) ? usage.completion_tokens_details : {};
+  return { finishReason, ...(nonnegativeInteger(usage.completion_tokens) ? { outputTokens: usage.completion_tokens } : {}),
+    ...(nonnegativeInteger(details.reasoning_tokens) ? { reasoningTokens: details.reasoning_tokens } : {}) };
+}
+
 /*******************************************************************************
  * Function: parseQueryResponse
  *
  * Validates and normalizes a provider response containing tool calls.
  ******************************************************************************/
 function parseQueryResponse(value: unknown): OpenAIQueryResponse {
-  if (!isRecord(value) || !Array.isArray(value.choices)) throw new Error("Query response has an invalid shape");
+  if (!isRecord(value) || !Array.isArray(value.choices)) throw new OpenAICompatibleError("Query response has an invalid shape", "malformed");
   const choices: OpenAIQueryResponse["choices"] = [];
   for (const choice of value.choices) {
     if (!isRecord(choice) || !isRecord(choice.message)) continue;
+    const sourceMessage = choice.message;
     const content = choice.message.content === null ? null : typeof choice.message.content === "string" ? choice.message.content : null;
     if (choice.message.tool_calls !== undefined && !Array.isArray(choice.message.tool_calls))
       throw new OpenAICompatibleError("Query provider returned malformed tool calls", "malformed");
     const toolCalls = Array.isArray(choice.message.tool_calls) ? choice.message.tool_calls as OpenAIQueryResponse["choices"][0]["message"]["tool_calls"] : undefined;
-    choices.push({ finish_reason: typeof choice.finish_reason === "string" ? choice.finish_reason : "stop", message: { content, ...(toolCalls !== undefined ? { tool_calls: toolCalls } : {}) } });
+    choices.push({ finish_reason: typeof choice.finish_reason === "string" ? choice.finish_reason : "stop", explicit_finish_reason_stop: choice.finish_reason === "stop", message: { content,
+      ...(toolCalls !== undefined ? { tool_calls: toolCalls } : {}),
+      ...Object.fromEntries(["reasoning", "reasoning_content", "reasoning_details"].filter(key => Object.hasOwn(sourceMessage, key)).map(key => [key, sourceMessage[key]])),
+    } });
   }
   let usage: OpenAIQueryResponse["usage"];
   if (value.usage !== undefined && isRecord(value.usage) && nonnegativeInteger(value.usage.prompt_tokens) && nonnegativeInteger(value.usage.completion_tokens)) {

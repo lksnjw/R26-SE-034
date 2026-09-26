@@ -2,13 +2,14 @@ import { createHash, randomBytes } from "node:crypto";
 import type { AnalysisProvider, AnalysisResponse, ProviderInvocationContext } from "../analysisprovider/types.js";
 import type { Repository, StoredRecord } from "../repository/store.js";
 import type { Executor } from "../runner/executor.js";
-import { isGenerationFallbackEligible, OpenAICompatibleClient, OpenAICompatibleError } from "./openai-compatible.js";
+import { isGenerationFallbackEligible, isQueryFallbackEligible, OpenAICompatibleClient, OpenAICompatibleError } from "./openai-compatible.js";
+import { latestContinuationModel } from "../analysisprovider/provider-continuation.js";
 import type { QueryMessage, QueryOptions, QueryToolDefinition, QueryTurnResult } from "../analysisprovider/query-types.js";
 import { generationPromptHash, toolQuerySystemInstructionsFor } from "../prompts/contracts.js";
 import { assertModelEgress, normalizeModelEgressPolicy, type ModelEgressPolicy } from "./egress-policy.js";
 
 export const ANALYSIS_PROMPT_VERSION = "prompt/analysis/v2";
-export const CANDIDATE_PROMPT_VERSION = "prompt/candidate/v18";
+export const CANDIDATE_PROMPT_VERSION = "prompt/candidate/v20";
 
 export type RuntimeProviderConfiguration = {
   id: string;
@@ -184,22 +185,37 @@ export class ProviderRuntime {
     assertToolQueryPromptContract(messages, options.promptTemplateVersion);
     this.assertEgress(options.context?.egress);
     const client = this.#rawClient, configuration = structuredClone(this.#configuration), revision = this.#revision;
-    const model = options.model?.trim() || configuration.model;
-    if (!configuredModels(configuration).includes(model)) throw new Error("Requested model is not in the configured model catalog");
-    const started = performance.now();
+    const requestedModel = options.model?.trim() || configuration.model;
+    if (!configuredModels(configuration).includes(requestedModel)) throw new Error("Requested model is not in the configured model catalog");
+    const backup = configuration.fallbackModel?.trim();
+    const continued = options.allowFallback === true ? latestContinuationModel(messages, configuration.baseURL.trim().replace(/\/+$/, "")) : undefined;
+    // Conversation affinity is scoped to this dialogue, never global defaults.
+    const selected = continued && continued === backup ? continued : requestedModel;
+    const models = options.allowFallback === true && backup && backup !== selected ? [selected, backup] : [selected];
     const promptSha256 = `sha256:${createHash("sha256").update(JSON.stringify({ messages, tools })).digest("hex")}`;
-    const record = async (status: "SUCCEEDED" | "FAILED", turn?: QueryTurnResult) => this.repository.mutate((state) => {
+    const record = async (model: string, started: number, status: "SUCCEEDED" | "FAILED", turn?: QueryTurnResult) => this.repository.mutate((state) => {
       const id = `inv_${randomBytes(8).toString("hex")}`;
       state.invocationProvenance[id] = { id, promptTemplateVersion: options.promptTemplateVersion ?? "prompt/query/v2", promptSha256,
         provider: configuration.type, providerId: configuration.id, configurationRevision: revision, model,
         inputTokens: turn?.inputTokens ?? 0, outputTokens: turn?.outputTokens ?? 0, measured: turn?.measured === true,
-        latencyMs: elapsed(started), temperature: configuration.temperature, fallbackUsed: false, status, createdAt: new Date().toISOString(), ...options.context };
+        latencyMs: elapsed(started), temperature: configuration.temperature, fallbackUsed: model !== requestedModel, status, createdAt: new Date().toISOString(), ...options.context };
     });
-    let turn;
-    try { turn = await client.queryWithTools(messages, tools, { ...options, model }); }
-    catch (error) { await record("FAILED"); throw error; }
-    await record("SUCCEEDED", turn);
-    return { ...turn, model, provider: configuration.type, configurationRevision: revision };
+    for (const [index, model] of models.entries()) {
+      const started = performance.now();
+      let turn;
+      try { turn = await client.queryWithTools(messages, tools, { ...options, model }); }
+      catch (error) {
+        await record(model, started, "FAILED");
+        if (index === 0 && models.length > 1 && !options.signal?.aborted && isQueryFallbackEligible(error)) continue;
+        throw error;
+      }
+      await record(model, started, "SUCCEEDED", turn);
+      return { ...turn, model, provider: configuration.type, configurationRevision: revision,
+        ...(options.allowFallback === true ? { modelRouting: { requestedModel, model, fallbackUsed: model !== requestedModel },
+          // Failed inference usage is not available; don't claim measured totals.
+          ...(index > 0 ? { measured: false } : {}) } : {}) };
+    }
+    throw new Error("No configured query model could be used");
   }
 
   private assertEgress(declaration: ProviderInvocationContext["egress"]): void {
@@ -214,17 +230,26 @@ export class ProviderRuntime {
    * Tests a provider configuration with a small completion request.
    ******************************************************************************/
   async test(configuration: RuntimeProviderConfiguration, signal?: AbortSignal): Promise<AnalysisResponse> {
-    validateRuntimeProviderConfiguration(configuration);
-    const provider = new ProvenanceAnalysisProvider(createProviderClient(configuration, this.fetchImplementation), this.repository, configuration);
-    return provider.generate("Reply with exactly OK.", configuration.model, signal, { promptTemplateVersion: "prompt/provider-test/v1" });
+    return testProviderConnection(this.repository, configuration, signal, this.fetchImplementation);
   }
+}
+
+/** Explicit administration probe only: one fixed public literal, the requested
+ * configuration, bounded client timeout/cancellation and truthful provenance.
+ * Check current storage authority at the actual outbound boundary. */
+export async function testProviderConnection(repository: Repository, configuration: RuntimeProviderConfiguration,
+  signal?: AbortSignal, fetchImplementation: typeof fetch = fetch): Promise<AnalysisResponse> {
+  validateRuntimeProviderConfiguration(configuration);
+  const guardedFetch: typeof fetch = (input, init) => { repository.assertAuthority(); return fetchImplementation(input, init); };
+  const provider = new ProvenanceAnalysisProvider(createProviderClient(configuration, guardedFetch), repository, configuration);
+  return provider.generate("Reply with exactly OK.", configuration.model, signal, { promptTemplateVersion: "prompt/provider-test/v1" });
 }
 
 /** The caller may add assistant/tool evidence after the first turn, but it
  * cannot replace, duplicate or dynamically construct the privileged system
  * message. This is a structural boundary; validators and brokers still own
  * all authorization and dispatch decisions. */
-function assertToolQueryPromptContract(messages: readonly QueryMessage[], version?: string): void {
+export function assertToolQueryPromptContract(messages: readonly QueryMessage[], version?: string): void {
   const expected = toolQuerySystemInstructionsFor(version);
   if (expected === null) throw new Error("Known tool-query prompt version is required before provider entry");
   if (messages.length < 2 || messages[0]?.role !== "system" || messages[0].content !== expected ||
@@ -361,7 +386,7 @@ function createProviderClient(configuration: RuntimeProviderConfiguration, fetch
   return new OpenAICompatibleClient({ baseURL: configuration.baseURL, apiKey: configuration.apiKey, model: configuration.model, temperature: configuration.temperature, timeoutMs: configuration.timeoutMs, ...(fetchImplementation === undefined ? {} : { fetchImplementation }) });
 }
 
-function configuredModels(configuration: RuntimeProviderConfiguration): string[] {
+export function configuredModels(configuration: RuntimeProviderConfiguration): string[] {
   return [...new Set([configuration.model, configuration.fallbackModel ?? "", ...(configuration.additionalModels ?? [])].map((value) => value.trim()).filter(Boolean))];
 }
 
