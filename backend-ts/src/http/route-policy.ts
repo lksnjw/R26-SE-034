@@ -8,6 +8,7 @@ export function routePolicy(route: RouteDefinition): RoutePolicy | null {
   if (path === "/api/dashboard/tasks" && route.method === "GET") return { required: ["workflow:read", "workflow:read_own", "execution:read_own"], any: true };
   if (path === "/api/workflows/:id/run-receipts/:key") return { required: ["workflow:read", "execution:read_own"], any: true };
   if (path.startsWith("/api/import")) return { required: ["registry:write"], any: false };
+  if (path.startsWith("/api/pipeline/")) return { required: ["pipeline:upload"], any: false };
   // Must precede the general profile self-service exemption.
   if (path.startsWith("/api/profile/api-keys")) return { required: ["settings:manage"], any: false };
   if (path.startsWith("/ws/") || path.startsWith("/api/auth/") || path.startsWith("/api/company") ||
