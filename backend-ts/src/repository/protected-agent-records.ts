@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertProviderContinuation, providerContinuationSchema } from "../analysisprovider/provider-continuation.js";
 import { assertBoundedFiniteJSON } from "../core/bounded-finite-json.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonical-json.js";
 import { withoutSecretFields } from "../redact/secrets.js";
@@ -17,7 +18,10 @@ const ownedProgress = progress.extend({ profile: z.literal("protected-agent-invo
 const turn = z.object({ text: z.string(), toolCalls: z.array(z.object({ id: z.string().min(1).max(256), name: z.string().min(1).max(256),
   arguments: z.record(z.string(), z.unknown()) }).strict()).max(16), stopReason: z.string().min(1).max(64),
   inputTokens: integer, outputTokens: integer, measured: z.literal(true), model: z.string().min(1).max(256).optional(),
-  provider: z.string().min(1).max(256).optional(), configurationRevision: z.string().min(1).max(256).optional() }).strict();
+  provider: z.string().min(1).max(256).optional(), configurationRevision: z.string().min(1).max(256).optional(),
+  providerContinuationSecret: providerContinuationSchema.superRefine((value, ctx) => {
+    try { assertProviderContinuation(value); } catch { ctx.addIssue({ code: "custom", message: "Invalid private provider continuation" }); }
+  }).optional() }).strict();
 const modelRecord = z.object({ profile: z.literal("protected-agent-turn/v1"), invocationId: address,
   round: z.number().int().min(0).max(7), turn }).strict();
 const toolRecord = z.object({ profile: z.literal("protected-agent-result/v1"), invocationId: address,
@@ -66,6 +70,8 @@ export function assertProtectedAgentRecords(value: unknown, ledger: ProtectedInv
       throw new Error("Protected agent artifact lacks its exact acknowledged invocation");
     if (isModel) {
       if (intent.result?.kind !== "OUTPUT") throw new Error("Protected agent model artifact is not a successful model acknowledgement");
+      if (row.turn.providerContinuationSecret && (!row.turn.toolCalls.length || row.turn.providerContinuationSecret.model !== owner.model))
+        throw new Error("Protected agent continuation differs from its selected model or tool round");
       let acknowledged: unknown = row.turn;
       if (!row.turn.toolCalls.length) {
         if (row.turn.stopReason !== "stop") throw new Error("Protected agent final turn has no complete stop reason");

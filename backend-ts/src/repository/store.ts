@@ -5,6 +5,7 @@ import type { Principal, Workflow } from "../models/schemas.js";
 import type { ReadCompilationReceipt } from "../workflows/compiled-read.js";
 import { assertProtectedContinuation, type ProtectedContinuation } from "./protected-continuation-record.js";
 import { assertProtectedInvocationExecution, type ProtectedInvocationLedgerSnapshot } from "./protected-invocation-records.js";
+import { assertReadTaskOutbox, type ReadTaskOutbox } from "../runner/read-task-outbox.js";
 
 export type Role = { id: string; name: string; description: string; permissions: string[]; createdAt: string };
 export type User = {
@@ -114,11 +115,19 @@ export type ExecutionEvent = { version: 1; executionId: string; workflowId: stri
   traceId?: string; nodeId?: string; attemptId?: string; payload: Record<string, unknown> };
 // Private worker inputs are encrypted and never placed on public executions.
 export type ReadJob = { version: 1; executionId: string; actorId: string; admittedRole: string; state: "QUEUED" | "CLAIMED" | "FINISHED" | "RECOVERY_REQUIRED";
+  /** Private queue dispatch DATA, not a lease or permission to call ERP. */
+  taskDispatchSecret?: ReadTaskOutbox;
   inputCiphertext?: string; requestFingerprint: string; idempotencyScope: string; connectionFingerprint: string; createdAt: string; queueSequence?: number; claimedAt?: string; finishedAt?: string; workerId?: string;
   lease?: import("../runner/read-worker-lease.js").ReadWorkerLease };
 
 export type Permission = { key: string; name: string; description: string; group: string };
 export type ChatAttempt = { id: string; toolName: string; argumentHash: string; status: "PREPARING" | "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN"; startedAt: string; completedAt?: string; output?: Record<string, unknown> };
+/** Private model receipts stay in encrypted storage and outside public chat projections. */
+export type ChatModelAttempt = { id: string; taskId: string; workerId: string; epoch: number; expiresAt: string;
+  ordinal: number; requestHash: string; configurationFingerprint: string; configurationRevision: string;
+  model: string; promptTemplateVersion: string; egress: import("../providers/egress-policy.js").ModelEgressDeclaration;
+  status: "DISPATCH_INTENT" | "DONE" | "FAILED" | "UNKNOWN"; startedAt: string; completedAt?: string;
+  resultCiphertext?: string; provenanceId: string; purpose?: "QUERY" | "SYNTHESIS" | "NODE_PROPOSAL" | "POLICY_PREFLIGHT" };
 export type ChatOperation = { version: 1; id: string; sessionId: string; actorId: string; userMessageId: string; assistantMessageId?: string;
   status: "QUEUED" | "RUNNING" | "ANSWERED" | "FAILED" | "CANCELLED" | "RECOVERY_REQUIRED"; stage: string; epoch: number; lastSequence: number;
   createdAt: string; updatedAt: string; finishedAt?: string; traceId: string; persistence: "memory-only" | "durable";
@@ -128,6 +137,9 @@ export type ChatOperation = { version: 1; id: string; sessionId: string; actorId
   nodeContext?: { workflowId: string; nodeId: string; baseVersion: number; baseHash: string };
   requestRevision?: import("../agent/chat-request-revisions.js").ChatRequestRevision;
   revisionContextCiphertext?: string;
+  modelAttemptsSecret?: ChatModelAttempt[];
+  taskDispatchSecret?: import("../agent/chat-task-outbox.js").ChatTaskOutbox;
+  taskLeaseSecret?: { profile: "chat-task-lease/v1"; workerId: string; epoch: number; claimedAt: string; expiresAt: string };
   artifactRefs?: Array<{ type: "workflow-draft" | "node-proposal"; id: string }> };
 export type ChatOperationEvent = { version: 1; operationId: string; sessionId: string; sequence: number; timestamp: string; stage: string; type: string; attemptId?: string; status?: string };
 export type StoredRecord = Record<string, unknown>;
@@ -268,6 +280,8 @@ export type RepositoryState = {
   timelines: Record<string, StoredRecord[]>;
   healing: Record<string, StoredRecord>;
   chats: Record<string, ChatSessionRecord>;
+  /** Private creation receipts survive deletion, so late retries cannot resurrect a chat. */
+  chatCreationReceipts: Record<string, { profile: "chat-creation/v1"; ownerId: string; sessionId: string; requestHash: string }>;
   invocationProvenance: Record<string, InvocationProvenanceRecord>;
   governancePolicy: StoredRecord | null;
   company: StoredRecord | null;
@@ -537,14 +551,18 @@ export class Repository {
    * Returns a user with the permissions granted by its role and overrides.
    ******************************************************************************/
   async effectiveUser(userId: string): Promise<(User & { role: string; permissions: string[] }) | null> {
-    return this.read((state) => {
-      const user = state.users[userId];
-      if (user === undefined) return null;
-      const role = state.roles[user.roleId];
-      const permissions = [...new Set([...(role?.permissions ?? []), ...user.permissionOverrides].filter((item) => item !== ""))];
-      return { ...structuredClone(user), role: role?.name ?? "", permissions };
-    });
+    return this.read((state) => effectiveUserFromState(state, userId));
   }
+}
+
+/** Pure current-state identity projection. Token roles/permissions are not
+ * authority, and a snapshot reader is not a writable Repository. */
+export function effectiveUserFromState(state: Readonly<RepositoryState>, userId: string): (User & { role: string; permissions: string[] }) | null {
+  const user = state.users[userId];
+  if (user === undefined) return null;
+  const role = state.roles[user.roleId];
+  const permissions = [...new Set([...(role?.permissions ?? []), ...user.permissionOverrides].filter((item) => item !== ""))];
+  return { ...structuredClone(user), role: role?.name ?? "", permissions };
 }
 
 /*******************************************************************************
@@ -559,6 +577,10 @@ export function restoreState(payload: Uint8Array): RepositoryState {
   if (source.version !== 1) throw new Error(`unsupported stored repository version ${String(source.version)}`);
   const defaults = initialState();
   const restored: RepositoryState = { ...defaults, ...source } as RepositoryState;
+  if (!restored.chatCreationReceipts || typeof restored.chatCreationReceipts !== "object" || Array.isArray(restored.chatCreationReceipts)) throw new Error("Invalid chat creation receipts");
+  for (const [key, receipt] of Object.entries(restored.chatCreationReceipts)) {
+    if (!/^[a-f0-9]{64}$/.test(key) || !receipt || receipt.profile !== "chat-creation/v1" || typeof receipt.ownerId !== "string" || !receipt.ownerId || typeof receipt.sessionId !== "string" || !receipt.sessionId || !/^[a-f0-9]{64}$/.test(receipt.requestHash)) throw new Error("Invalid chat creation receipt");
+  }
   for (const key of ["users", "passwordHashes", "roles", "workflows", "versions", "templates", "executions", "executionLogs", "executionEvents", "readJobs", "chatOperations", "chatOperationEvents", "schedules", "scheduleOccurrences", "emailDeliveryAdmissions", "timelines", "healing", "chats", "invocationProvenance", "providers", "integrations", "webhooks", "refreshSessions", "notifications", "notificationPreferences", "apiKeys", "uploads", "uploadContents"] as const) {
     if (typeof restored[key] !== "object" || restored[key] === null || Array.isArray(restored[key])) restored[key] = defaults[key] as never;
   }
@@ -574,9 +596,17 @@ export function restoreState(payload: Uint8Array): RepositoryState {
     if (Object.hasOwn(restored.readContinuations, id)) throw new Error("Conflicting private continuation profiles");
   }
   for (const run of Object.values(restored.executions)) assertProtectedInvocationExecution(run);
+  for (const [id, job] of Object.entries(restored.readJobs)) if (Object.hasOwn(job, "taskDispatchSecret")) {
+    if (job.executionId !== id || !Object.hasOwn(restored.executions, id)) throw new Error("Orphan read task outbox");
+    assertReadTaskOutbox(job);
+  }
   for (const role of Object.values(defaults.roles)) if (restored.roles[role.id] === undefined) restored.roles[role.id] = role;
   const knownPermissions = new Set(restored.permissions.map((item) => item.key));
   for (const permission of defaults.permissions) if (!knownPermissions.has(permission.key)) restored.permissions.push(permission);
+  const defaultAdmin = defaults.roles.role_admin;
+  const restoredAdmin = restored.roles.role_admin;
+  if (defaultAdmin?.permissions.includes("pipeline:upload") && restoredAdmin && !restoredAdmin.permissions.includes("pipeline:upload"))
+    restoredAdmin.permissions = [...restoredAdmin.permissions, "pipeline:upload"];
   restored.counter = Math.max(0, Number.isInteger(restored.counter) ? restored.counter : 0);
   return restored;
 }
@@ -588,7 +618,7 @@ export function restoreState(payload: Uint8Array): RepositoryState {
  ******************************************************************************/
 export function initialState(): RepositoryState {
   const createdAt = new Date().toISOString();
-  const permissionKeys = ["workflow:read", "workflow:write", "workflow:run", "workflow:read_own", "workflow:run_own", "execution:read_own", "execution:approve", "execution:reconcile", "workflow_view_all", "chat:use", "registry:read", "registry:write", "settings:manage", "provider:manage", "user:manage", "audit:read"];
+  const permissionKeys = ["workflow:read", "workflow:write", "workflow:run", "workflow:read_own", "workflow:run_own", "execution:read_own", "execution:approve", "execution:reconcile", "workflow_view_all", "chat:use", "pipeline:upload", "registry:read", "registry:write", "settings:manage", "provider:manage", "user:manage", "audit:read"];
   const permissions = permissionKeys.map((key) => ({ key, name: permissionName(key), description: permissionDescription(key), group: permissionGroup(key) }));
   return {
     version: 1,
@@ -613,6 +643,7 @@ export function initialState(): RepositoryState {
     timelines: {},
     healing: {},
     chats: {},
+    chatCreationReceipts: {},
     invocationProvenance: {},
     governancePolicy: null,
     company: null,
@@ -660,6 +691,7 @@ function permissionName(key: string): string {
 function permissionGroup(key: string): string {
   if (key.startsWith("workflow") || key.startsWith("execution") || key.startsWith("chat")) return "Workflow";
   if (key.startsWith("registry")) return "Registry";
+  if (key.startsWith("pipeline")) return "Data Pipeline";
   if (key.startsWith("user") || key.startsWith("audit")) return "Administration";
   return "Settings";
 }
@@ -674,6 +706,7 @@ function permissionDescription(key: string): string {
     "workflow:run": "Start, cancel, and retry workflow executions",
     "workflow:read": "Read all workflows",
     "workflow:write": "Create and update workflows",
+    "pipeline:upload": "Upload and index files for governed ERP-agent retrieval",
     "user:manage": "Manage users and roles",
     "audit:read": "Read the audit log",
   };

@@ -25,6 +25,10 @@ export const protectedApprovalRecordSchema = z.object({ profile: z.literal("prot
   decision: z.object({ actorId: id, roleId: id, decisionKey: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/), fingerprint: sha,
     outcome: z.enum(["APPROVED", "REJECTED"]), note: z.string().max(2000), decidedAt: date }).strict().optional(),
   consumption: z.object({ intentId: id, epoch, consumedAt: date }).strict().optional(), expiredAt: date.optional(),
+  sdkReceipt: z.object({ profile: z.literal("protected-sdk-receipt/v1"), intentId: id, epoch, outputHash: sha, contractHash: sha,
+    connectionBinding: z.string().regex(/^[a-f0-9]{64}$/), identity: z.object({ userId: id, localRole: id, erpbridgeRole: z.string().nullable() }).strict(),
+    remoteName: id, resourceVersion: z.string().min(1).max(128), resourceDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    meaning: z.enum(["operation-accepted", "operation-confirmed"]), completedAt: date }).strict().optional(),
   closure: z.object({ reason: z.enum(["PROTECTED_APPROVAL_CANCELLED", "PROTECTED_APPROVAL_CONTEXT_CHANGED"]),
     status: z.enum(["CANCELLED", "FAILED"]), closedAt: date }).strict().optional()
 }).strict();
@@ -93,4 +97,10 @@ function assertRecord(value: unknown, ledger: ProtectedInvocationLedgerSnapshot)
       throw new Error("Protected approval consumption differs from its exact effect intent");
     if (b.sequence < ledger.nextSequence && (record.state !== "CONSUMED" || intent.state !== "ACKNOWLEDGED" || intent.result?.kind !== "OUTPUT"))
       throw new Error("Advanced protected effect lacks its consumed decision and acknowledgement");
+    const receipt = record.sdkReceipt;
+    if (receipt && (record.state !== "CONSUMED" || intent.state !== "ACKNOWLEDGED" || intent.result?.kind !== "OUTPUT" || receipt.intentId !== intent.id ||
+        receipt.epoch !== intent.epoch || receipt.outputHash !== intent.result.hash || receipt.contractHash !== b.admission.contractHash ||
+        receipt.connectionBinding !== b.connectionBinding || receipt.identity.userId !== b.requesterId || receipt.identity.localRole !== ledger.identity.admittedRole ||
+        Date.parse(receipt.completedAt) < Date.parse(consumed!.consumedAt) || Date.parse(receipt.completedAt) >= expiry))
+      throw new Error("Protected SDK receipt differs from exact consumed invocation and acknowledged output");
 }
