@@ -9,6 +9,8 @@ import { publicExecution } from "../../redact/public-model-usage.js";
 import type { Execution, User, RepositoryState } from "../../repository/store.js";
 import { operationJobQueue } from "../../runner/operation-jobs.js";
 import { readJobQueue } from "../../runner/read-jobs.js";
+import { residentExecutionAllowed } from "../../runner/execution-host.js";
+import { dispatchReadTaskOutbox } from "../../runner/read-task-outbox.js";
 import { inspectReadWorkflow } from "../../runner/read-workflow.js";
 import { isTraceId, requestTraceId } from "../../trace/request-trace.js";
 import { canViewWorkflow } from "../../workflows/commands.js";
@@ -161,7 +163,7 @@ export async function getWorkflow(
   request: FastifyRequest,
   reply: FastifyReply,
   user: User & { permissions: string[] },
-  services: ApplicationServices,
+  services: { repository: Pick<ApplicationServices["repository"], "read"> },
 ): Promise<unknown> {
   const item = await services.repository.read((state) => state.workflows[param(request, "id")] ?? null);
   if (item === null || !canViewWorkflow(item, user))
@@ -237,7 +239,8 @@ export async function runWorkflowFor(
       return reply.send(ok({ dry_run: true, simulation: "static-operation-plan", can_execute: false, live_readiness: "not_checked", requires_independent_approval: true,
         planned_steps: withoutSecretFields(parseWorkflowYAMLStrict(workflow.yaml).steps) }, "Static operation plan only; no ERP calls or effects occurred", { traceId }));
     const admission = await operationJobQueue(services).admit(workflow, parsed.data.input ?? {}, user, parsed.data.idempotencyKey, traceId);
-    return reply.status(202).send(ok(admission.execution, admission.replayed ? "Existing operation run; no additional run admitted" : "Operation queued; verification and independent approvals are required before writes", { traceId, admission: "operation-job/v1", replayed: admission.replayed }));
+    return reply.status(202).send(ok(admission.execution, admission.replayed ? "Existing operation run; no additional run admitted" : "Operation queued; verification and independent approvals are required before writes", { traceId, admission: "operation-job/v1", replayed: admission.replayed,
+      ...("taskDispatch" in admission ? { taskDispatch: admission.taskDispatch } : {}) }));
   }
   const asyncRead = parsed.data.mode === "async-read";
   if (asyncRead) {
@@ -246,8 +249,10 @@ export async function runWorkflowFor(
     const queue = readJobQueue(services);
     const admission = queue.prepare(workflow, parsed.data.input ?? {}, user, parsed.data.idempotencyKey);
     const existing = await services.repository.read((state) => queue.existing(state, admission, user));
-    if (existing)
-      return reply.status(202).send(ok(publicExecution(existing), "Existing read run for this idempotency key; no additional run was admitted", { traceId, admission: "read-job-v1", replayed: true }));
+    if (existing) {
+      const taskDispatch = residentExecutionAllowed(services.repository) ? undefined : await dispatchReadTaskOutbox(services.repository, existing.id);
+      return reply.status(202).send(ok(publicExecution(existing), "Existing read run for this idempotency key; no additional run was admitted", { traceId, admission: "read-job-v1", replayed: true, ...(taskDispatch ? { taskDispatch } : {}) }));
+    }
   }
   if (!["", "execute", "deterministic-read", "async-read"].includes(parsed.data.mode) || (!asyncRead && parsed.data.idempotencyKey !== ""))
     return reply.status(422).send(fail("Requested execution mode or idempotency contract is not implemented", { code: "UNSUPPORTED_EXECUTION_MODE", traceId }));

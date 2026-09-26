@@ -277,11 +277,11 @@ async function importWorkflow(
  *
  * Returns log entries for a visible execution.
  ******************************************************************************/
-async function executionLogs(
+export async function executionLogs(
   request: FastifyRequest,
   reply: FastifyReply,
   user: CurrentUser,
-  services: HandlerServices,
+  services: { repository: Pick<HandlerServices["repository"], "read"> },
 ): Promise<unknown> {
   const id = requestParam(request, "id");
   await requireExecution(id, user, services);
@@ -295,11 +295,11 @@ async function executionLogs(
  *
  * Returns the step timeline for a visible execution.
  ******************************************************************************/
-async function executionTimeline(
+export async function executionTimeline(
   request: FastifyRequest,
   reply: FastifyReply,
   user: CurrentUser,
-  services: HandlerServices,
+  services: { repository: Pick<HandlerServices["repository"], "read"> },
 ): Promise<unknown> {
   const id = requestParam(request, "id");
   await requireExecution(id, user, services);
@@ -377,7 +377,7 @@ async function retryExecution(
 async function requireExecution(
   id: string,
   user: CurrentUser,
-  services: HandlerServices,
+  services: { repository: Pick<HandlerServices["repository"], "read"> },
 ) {
   const execution = await services.repository.read(
     (state) => state.executions[id] ?? null,

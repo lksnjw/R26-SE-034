@@ -6,7 +6,7 @@ import { checksum, parseWorkflowYAMLStrict, workflowContentHash } from "../../pa
 import type { RouteDefinition } from "../generated-routes.js";
 import { appendAudit, bodyRecord, HandlerFailure, type CurrentUser, type HandlerServices, isRecord, nextID, now, publicUser, requestParam, stringValue, validateWorkflow } from "./common.js";
 import { requestTraceId } from "../../trace/request-trace.js";
-import { checkErpPolicy, isPolicyCheckerEnabled } from "../../governance/rbac.js";
+import { evaluateOptionalPolicy } from "../../governance/optional-policy.js";
 import { handleWorkflowCommand, assertCurrentWorkflowEditor } from "./workflow-commands.js";
 import { prepareReadPublication, assertReadPublicationCurrent } from "../../workflows/read-compilation-lifecycle.js";
 import { prepareOperationPublication, assertOperationPublicationCurrent } from "../../workflows/operation-compilation-lifecycle.js";
@@ -249,10 +249,13 @@ async function publishWorkflow(request: FastifyRequest, reply: FastifyReply, use
   const traceId = requestTraceId(request, current.traceId);
   const coverageIssues = savedGeneratedReturnCoverageIssues(current);
   if (coverageIssues.length) throw new HandlerFailure(422, "Generated workflow contains unreachable requested work or answers; edit the draft before publication", { code: "GENERATED_RETURN_COVERAGE_INVALID", issues: coverageIssues, traceId });
+  const draftValidation = validateWorkspaceDraft("PublishWorkflow", current.yaml, user.role, services.validator, services.registries.snapshot().tools);
+  if (!draftValidation.passed) throw new HandlerFailure(422, "Workflow must pass executable draft validation before publishing", { ...draftValidation, traceId });
   const gate = await validateWorkflow(services, "PublishWorkflow", current.yaml, user, { traceId, workflowId: current.id });
   if (!gate.result.passed) throw new HandlerFailure(422, "Workflow validation failed", { ...gate.result, traceId });
   const compilation = await prepareReadPublication(services, current.yaml, user);
   const operationCompilation = compilation ? null : await prepareOperationPublication(services, current.yaml, user);
+  if (!compilation && !operationCompilation) throw new HandlerFailure(422, "Workflow has no supported executable publication profile", { code: "UNSUPPORTED_PUBLICATION_PROFILE", traceId });
   const version = await services.repository.mutate((state) => {
     const item = state.workflows[id];
     if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
@@ -339,7 +342,7 @@ async function unassignWorkflow(request: FastifyRequest, reply: FastifyReply, us
  *
  * Returns the workflow's YAML document.
  ******************************************************************************/
-async function getWorkflowYAML(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: HandlerServices): Promise<unknown> {
+export async function getWorkflowYAML(request: FastifyRequest, reply: FastifyReply, user: CurrentUser, services: { repository: Pick<HandlerServices["repository"], "read"> }): Promise<unknown> {
   const workflow = await visibleWorkflow(requestParam(request, "id"), user, services);
   if (workflow === null) throw new HandlerFailure(404, "Workflow not found");
   return reply.send(ok(yamlRecord(workflow), "OK", null));
@@ -367,15 +370,14 @@ async function putWorkflowYAML(request: FastifyRequest, reply: FastifyReply, use
   const traceId = requestTraceId(request);
   const gate = await validateWorkflow(services, "PutWorkflowYAML", raw, user, { traceId, workflowId: requestParam(request, "id") }); if (!gate.result.passed) throw new HandlerFailure(422, "Workflow YAML failed validation", { ...gate.result, traceId });
   const validation = validateWorkspaceDraft("PutWorkflowYAML", raw, user.role, services.validator, services.registries.snapshot().tools);
-  if (!validation.passed) throw new HandlerFailure(422, "Workflow YAML failed validation", validation);
   const workflow = await services.repository.mutate((state) => {
     const item = state.workflows[id]; if (item === undefined) throw new HandlerFailure(404, "Workflow not found");
     const editor = assertCurrentWorkflowEditor(state, item, user); requireWorkflowBase(item, current.draftVersion, workflowContentHash(current.yaml));
-    saveDraftRevision(state, item, raw, { type: "restoreDraft", yaml: raw }, editor, true); item.canvas = canvasFromBlueprint(id, blueprint);
+    saveDraftRevision(state, item, raw, { type: "restoreDraft", yaml: raw }, editor, validation.passed); item.canvas = canvasFromBlueprint(id, blueprint);
     appendAudit(state, editor, "workflow.yaml.updated", "workflow", id, { contentHash: workflowContentHash(current.yaml) }, { contentHash: workflowContentHash(raw), version: item.draftVersion }, request);
     return structuredClone(item);
   });
-  return reply.send(ok(yamlRecord(workflow), "Workflow YAML updated", null));
+  return reply.send(ok({ ...yamlRecord(workflow), validation, canRun: workflow.canRun, status: workflow.status }, validation.passed ? "Workflow YAML updated" : "Workflow draft saved with executable validation errors; publishing and running remain blocked", null));
 }
 
 // Generation acceptance records review of the proposal. It never removes
@@ -398,16 +400,9 @@ async function approveWorkflowGeneration(request: FastifyRequest, reply: Fastify
   if (pending === undefined || pending === null || pending.steps.length === 0)
     throw new HandlerFailure(409, "This workflow has no pending generation approval");
 
-  if (await isPolicyCheckerEnabled(services.repository)) {
-    const gov = await checkErpPolicy(services.erpbridgeSession, {
-      userId: user.id,
-      userRole: user.role,
-      action: "approve_workflow_generation",
-      prompt: `User "${user.id}" (${user.role}) wants to approve workflow "${current.name}" for autonomous execution: ${pending.steps.map((s) => s.description).join("; ")}`,
-      context: { workflowId: id, steps: pending.steps },
-    });
-    if (!gov.allowed) throw new HandlerFailure(403, gov.reason ?? "You are not authorized to approve this workflow");
-  }
+  const policy = await evaluateOptionalPolicy(services, user, { action: "approve_workflow_generation",
+    prompt: `Accept workflow generation proposal: ${current.name}`, context: { workflowId: id, steps: pending.steps }, signal: request.signal, traceId: requestTraceId(request) });
+  if (policy.decision !== "allow") throw new HandlerFailure(403, policy.reason, { policyCheck: policy });
 
   let blueprint; try { blueprint = parseWorkflowYAMLStrict(current.yaml); } catch (error) { throw new HandlerFailure(422, "Workflow YAML failed validation", { error: errorText(error) }); }
   // Generation acceptance is not permission for future transactions.
@@ -561,16 +556,15 @@ async function restoreWorkflowVersion(request: FastifyRequest, reply: FastifyRep
   const raw = stringValue(snapshot.version.yaml); let blueprint; try { blueprint = parseWorkflowYAMLStrict(raw); } catch (error) { throw new HandlerFailure(422, "Workflow validation failed", { error: errorText(error) }); }
   const traceId = requestTraceId(request, snapshot.workflow.traceId); const expectedHash = workflowContentHash(raw); const gate = await validateWorkflow(services, "RestoreWorkflowVersion", raw, user, { traceId, workflowId: id }); if (!gate.result.passed) throw new HandlerFailure(422, "Workflow validation failed", { ...gate.result, traceId });
   const validation = validateWorkspaceDraft("RestoreWorkflowVersion", raw, user.role, services.validator, services.registries.snapshot().tools);
-  if (!validation.passed) throw new HandlerFailure(422, "Workflow validation failed", validation);
   const workflow = await services.repository.mutate((state) => {
     const item = state.workflows[id]; if (!item) throw new HandlerFailure(404, "Workflow not found");
     const editor = assertCurrentWorkflowEditor(state, item, user); requireWorkflowBase(item, snapshot.workflow!.draftVersion, workflowContentHash(snapshot.workflow!.yaml));
     const command = { type: "restoreVersion" as const, versionId: versionID, contentHash: expectedHash };
-    saveDraftRevision(state, item, raw, command, editor, true); item.canvas = canvasFromBlueprint(id, blueprint);
+    saveDraftRevision(state, item, raw, command, editor, validation.passed); item.canvas = canvasFromBlueprint(id, blueprint);
     appendAudit(state, editor, "workflow.version.restored", "workflow", id, { contentHash: workflowContentHash(snapshot.workflow!.yaml) }, { versionId: versionID, version: item.draftVersion, contentHash: expectedHash }, request);
     return structuredClone(item);
   });
-  return reply.send(ok(publicWorkflow(workflow), "Workflow restored", null));
+  return reply.send(ok({ ...publicWorkflow(workflow), validation }, validation.passed ? "Workflow restored" : "Workflow restored as a blocked draft; executable validation errors must be fixed before publishing or running", null));
 }
 
 /*******************************************************************************
@@ -622,7 +616,7 @@ function publicWorkflow(workflow: Workflow): Record<string, unknown> { const { y
  *
  * Loads a workflow and enforces the current user's visibility rules.
  ******************************************************************************/
-async function visibleWorkflow(id: string, user: CurrentUser, services: HandlerServices): Promise<Workflow | null> { return services.repository.read((state) => { const item = state.workflows[id]; return item !== undefined && permittedWorkflow(item, user, false) ? structuredClone(item) : null; }); }
+async function visibleWorkflow(id: string, user: CurrentUser, services: { repository: Pick<HandlerServices["repository"], "read"> }): Promise<Workflow | null> { return services.repository.read((state) => { const item = state.workflows[id]; return item !== undefined && permittedWorkflow(item, user, false) ? structuredClone(item) : null; }); }
 /*******************************************************************************
  * Function: executionShape
  *
