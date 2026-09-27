@@ -48,6 +48,17 @@ function independent(context: ProtectedApprovalContext, actor: ProtectedApprover
 export function assertProtectedApprovalContext(context: ProtectedApprovalContext, value: ProtectedApprovalRecord, now: number): void {
   current(context, value, now);
 }
+/** Consumed DATA consistency at the exact still-pending effect boundary.
+ * Current storage, worker, publication, actor and SDK authority are separate. */
+export function assertConsumedProtectedApprovalContext(context: ProtectedApprovalContext, value: ProtectedApprovalRecord, now: number): void {
+  assertProtectedApprovalRecord(value, context.ledger); time(now);
+  const expected = facts(context), binding = { ...expected.binding, requestEpoch: value.binding.requestEpoch };
+  if (value.state !== "CONSUMED" || value.decision?.outcome !== "APPROVED" || !value.consumption ||
+      hash(binding) !== hash(value.binding) || hash(value.arguments) !== hash(context.point.arguments) ||
+      expected.intent.state !== "DISPATCH_INTENT" || expected.intent.epoch !== value.consumption.epoch ||
+      value.consumption.intentId !== expected.intent.id || now < Date.parse(value.consumption.consumedAt) || now >= Date.parse(value.expiresAt))
+    throw new Error("Protected SDK entry lacks the exact unexpired consumed decision and durable intent");
+}
 
 /** Pure DATA constructors/transitions only. Callers cannot mint a confirmed
  * human decision, owned wait, commit, lease, current authority or SDK permit.
