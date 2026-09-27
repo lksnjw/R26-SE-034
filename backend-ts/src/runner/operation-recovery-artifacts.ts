@@ -11,6 +11,7 @@ import { exactBridgeName } from "../tools/erpbridge-contract.js";
 import { appendExecutionEvent, assertCurrentRunController, newReadProgress } from "./read-checkpoints.js";
 import { operationCaseEvidence } from "./operation-reconciliation.js";
 import { operationJobQueue } from "./operation-jobs.js";
+import { requireResidentExecution } from "./execution-host.js";
 import { runtimeApprovalPolicyHash } from "./runtime-approvals.js";
 import { assertOperationPublicationCurrent, prepareOperationPublication } from "../workflows/operation-compilation-lifecycle.js";
 import { resolveReadBinding } from "../workflows/compiled-read.js";
@@ -142,6 +143,7 @@ export async function createOperationRecoveryArtifact(repository: Repository, ex
 }
 
 export async function admitOperationRecovery(services: import("../http/handlers/common.js").HandlerServices, sourceExecutionId: string, artifactId: string, user: CurrentUser, raw: unknown, traceId: string) {
+  requireResidentExecution(services.repository);
   requireStorage(services.repository);
   const parsed = operationRecoveryAdmissionCommandSchema.safeParse(raw); if (!parsed.success) deny("Recovery admission requires the exact artifact hash and a fresh idempotency key", 422);
   const command = parsed.data;

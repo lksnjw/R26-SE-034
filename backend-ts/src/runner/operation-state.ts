@@ -6,6 +6,7 @@ export type OperationIntent = { id: string; nodeId: string; invocationId: string
 export type OperationJournal = { profile: "operation-job/v1"; actorId: string; roleId: string; admittedRole: string;
   state: "QUEUED" | "CLAIMED" | "WAITING" | "FINISHED" | "RECOVERY_REQUIRED"; idempotencyScope: string; requestFingerprint: string;
   createdAt: string; lease?: { id: string; workerId: string; expiresAt: number }; intents: Record<string, OperationIntent>;
+  taskDispatchSecret?: import("./operation-task-outbox.js").OperationTaskLedger;
   /** Private immutable-selection evidence. Not approval, retry or tool output. */
   protectedScopes?: Record<string, OperationProtectedReceipt>;
   analysisProvider?: { configuration: import("../providers/runtime.js").RuntimeProviderConfiguration; configurationRevision: string };

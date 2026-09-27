@@ -1,4 +1,5 @@
 import type { QueryMessage, QueryTurnResult, QueryToolDefinition } from "../analysisprovider/query-types.js";
+import { assertProviderContinuation, assistantToolCallMessage } from "../analysisprovider/provider-continuation.js";
 import { assertBoundedFiniteJSON } from "../core/bounded-finite-json.js";
 import { canonicalJSONBytes } from "../core/canonical-json.js";
 import { promptData, RUNTIME_AGENT_SYSTEM_PROMPT } from "../prompts/contracts.js";
@@ -60,6 +61,10 @@ export function protectedAgentTurnOutput(node: OperationAgentNode, model: string
       !Number.isSafeInteger(usedTokens) || usedTokens < 0 || !Number.isSafeInteger(usedTokens + turn.inputTokens + turn.outputTokens) ||
       usedTokens + turn.inputTokens + turn.outputTokens > node.maxTotalTokens || turn.outputTokens > Math.min(node.maxOutputTokens, node.maxTotalTokens - usedTokens)) exhausted();
   if (turn.model !== undefined && turn.model !== model || typeof turn.text !== "string" || !Array.isArray(turn.toolCalls) || turn.toolCalls.length > 16) invalid("Protected agent model/response contract changed");
+  if (turn.providerContinuationSecret) {
+    assertProviderContinuation(turn.providerContinuationSecret);
+    if (!turn.toolCalls.length || turn.providerContinuationSecret.model !== model) invalid("Protected agent continuation has a different model or no tool round");
+  }
   if (turn.toolCalls.length) {
     if (turn.stopReason !== "tool_calls") invalid("Protected agent tool calls have no complete tool-call stop reason");
     return structuredClone(turn);
@@ -146,8 +151,7 @@ export function nextProtectedAgent(context: Context, records: ProtectedAgentReco
           hasReservedBridgeRole(match.tool) && Object.hasOwn(call.arguments, "role")) denied("Protected agent repeated a call or proposed invalid/reserved arguments");
       seenCalls.add(callHash); seenIds.add(call.id); return match;
     });
-    messages.push({ role: "assistant", content: row.turn.text || null, tool_calls: row.turn.toolCalls.map(call => ({ id: call.id, type: "function", function: {
-      name: call.name, arguments: canonicalJSONBytes(call.arguments).toString("utf8") } })) });
+    messages.push(assistantToolCallMessage(row.turn, args => canonicalJSONBytes(args).toString("utf8")));
     for (const [callIndex, call] of row.turn.toolCalls.entries()) {
       const { capability, tool } = validated[callIndex]!;
       const toolComponent = { kind: "agent-tool" as const, round, callIndex }, toolKey = keyFor(toolComponent), result = records.results[toolKey];
