@@ -12,6 +12,8 @@ import { canViewWorkflow } from "../workflows/commands.js";
 import { isOperationToolNode, type CompiledOperationPlan, type ReadBinding } from "../workflows/compiled-read.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { scheduledReportPaths } from "./scheduled-report-paths.js";
+import { bindExecutionHost, residentExecutionAllowed, requireResidentExecution } from "./execution-host.js";
+import { assertWorkflowLifecycleScope, requireWorkflowLifecycleAdmission, type WorkflowLifecycleScope } from "./workflow-lifecycle-host.js";
 
 const digest = (value: unknown) => `sha256:${createHash("sha256").update(canonicalJSONBytes(value)).digest("hex")}`;
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -230,6 +232,7 @@ export async function saveWorkflowSchedule(services: HandlerServices, workflowId
   const parsed = scheduleCommandSchema.safeParse(raw);
   if (!parsed.success) throw new HandlerFailure(422, "Invalid calendar schedule command", { code: "SCHEDULE_COMMAND_INVALID" });
   const command = parsed.data;
+  if (command.enabled) requireWorkflowLifecycleAdmission(services.repository);
   formatter(command.timezone);
   if (canonicalJSONBytes(command.input).length > 64_000) throw new HandlerFailure(422, "Schedule input exceeds supported bounds");
   if (containsSecretField(command.input)) throw new HandlerFailure(422, "Schedule inputs cannot contain credentials or secret fields; use the admitted connection configuration");
@@ -303,13 +306,16 @@ export class WorkflowScheduleRunner {
   #running = false;
   #started = false;
   #closed = false;
+  #invocation: Promise<{ admitted: number; skipped: number; blocked: number; pending: number }> | undefined;
   readonly #unobserve: () => void;
   get closed() { return this.#closed; }
   constructor(readonly services: HandlerServices) {
+    bindExecutionHost(services.repository);
     if (!supportsOperationJobs(services)) throw new HandlerFailure(503, "Schedules require qualified encrypted operation persistence");
     this.#unobserve = services.repository.observeCommits({ committed: () => { void this.plan(); }, unavailable: () => { if (this.#timer) clearTimeout(this.#timer); this.#timer = undefined; }, });
   }
   async start() {
+    requireResidentExecution(this.services.repository);
     if (this.#started || this.#closed) return;
     this.#started = true;
     const due = await this.services.repository.read(state => {
@@ -319,9 +325,9 @@ export class WorkflowScheduleRunner {
     });
     if (due) await this.runDue(); else await this.plan();
   }
-  kick() { if (!this.#started || this.#closed) return; void this.runDue(); }
+  kick() { if (!residentExecutionAllowed(this.services.repository) || !this.#started || this.#closed) return; void this.runDue(); }
   private async plan() {
-    if (!this.#started || this.#closed || this.#running) return;
+    if (!residentExecutionAllowed(this.services.repository) || !this.#started || this.#closed || this.#running) return;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
     try {
@@ -336,28 +342,52 @@ export class WorkflowScheduleRunner {
     } catch {}
   }
   async runDue(nowMs = Date.now()) {
+    requireResidentExecution(this.services.repository);
     if (this.#running || this.#closed) return { admitted: 0, skipped: 0, blocked: 0 };
     this.#running = true;
-    const count = { admitted: 0, skipped: 0, blocked: 0 };
     try {
-      for (let index = 0; index < 100; index++) {
-        const claim = await this.claim(nowMs);
-        if (!claim) break;
-        if (claim.occurrence.state === "SKIPPED") { count.skipped++; continue; }
-        if (claim.occurrence.state === "BLOCKED") { count.blocked++; continue; }
-        const completed = await this.admit(claim, nowMs);
-        if (!completed) break;
-        completed === "ADMITTED" ? count.admitted++ : count.blocked++;
-      }
+      const { pending: _pending, ...count } = await this.driveDue(nowMs, 100, () => this.services.repository.assertAuthority());
       return count;
     } finally { this.#running = false; await this.plan(); }
   }
-  private async claim(nowMs: number): Promise<Claim | null> {
+  async runDueInvocation(scope: WorkflowLifecycleScope) {
+    const assertReady = () => {
+      assertWorkflowLifecycleScope(this.services.repository, scope);
+      if (this.#closed) throw new Error("Workflow schedule runner closed during invocation");
+    };
+    assertReady();
+    if (this.#running) throw new Error("Workflow schedule owner is already busy");
+    this.#running = true;
+    try {
+      this.#invocation = this.driveDue(scope.nowMs, scope.occurrenceLimit, assertReady, scope);
+      return await this.#invocation;
+    } finally { this.#invocation = undefined; this.#running = false; }
+  }
+  private async driveDue(nowMs: number, limit: number, assertReady: () => void, lifecycleScope?: WorkflowLifecycleScope) {
+      const count = { admitted: 0, skipped: 0, blocked: 0, pending: 0 };
+      for (let index = 0; index < limit; index++) {
+        assertReady();
+        const claim = await this.claim(nowMs, assertReady);
+        assertReady();
+        if (!claim) break;
+        if (claim.occurrence.state === "SKIPPED") { count.skipped++; continue; }
+        if (claim.occurrence.state === "BLOCKED") { count.blocked++; continue; }
+        const completed = await this.admit(claim, nowMs, assertReady, lifecycleScope);
+        assertReady();
+        if (!completed) { count.pending++; break; }
+        completed === "ADMITTED" ? count.admitted++ : count.blocked++;
+      }
+      return count;
+  }
+  private mutate<T>(assertReady: () => void, change: (state: RepositoryState) => T): Promise<T> {
+    return this.services.repository.mutate(state => { assertReady(); const value = change(state); assertReady(); return value; });
+  }
+  private async claim(nowMs: number, assertReady: () => void): Promise<Claim | null> {
     const available = await this.services.repository.readAuthoritative(state =>
       Object.values(state.scheduleOccurrences).some(value => value.state === "ADMITTING") ||
       Object.values(state.schedules).some(value => value.state === "ACTIVE" && value.nextRunAt && Date.parse(value.nextRunAt) <= nowMs));
-    if (!available) return null;
-    return this.services.repository.mutate(state => {
+    assertReady(); if (!available) return null;
+    return this.mutate(assertReady, state => {
       const pending = Object.values(state.scheduleOccurrences).filter(value => value.state === "ADMITTING")
         .sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor))[0];
       if (pending) { const schedule = state.schedules[pending.scheduleId]; return schedule ? { schedule: structuredClone(schedule), occurrence: structuredClone(pending) } : null; }
@@ -401,14 +431,16 @@ export class WorkflowScheduleRunner {
       return { schedule: structuredClone(schedule), occurrence: structuredClone(occurrence) };
     });
   }
-  private async admit(claim: Claim, nowMs: number): Promise<"ADMITTED" | "BLOCKED" | null> {
-    if (!claim.occurrence.reportWindow) return this.block(claim, "Occurrence has no immutable report window; save a new schedule revision");
+  private async admit(claim: Claim, nowMs: number, assertReady: () => void, lifecycleScope?: WorkflowLifecycleScope): Promise<"ADMITTED" | "BLOCKED" | null> {
+    assertReady();
+    if (!claim.occurrence.reportWindow) return this.block(claim, "Occurrence has no immutable report window; save a new schedule revision", assertReady);
     if (claim.occurrence.scheduleRevision !== claim.schedule.revision)
-      return this.block(claim, "Occurrence belongs to an older schedule revision and cannot use newer inputs");
+      return this.block(claim, "Occurrence belongs to an older schedule revision and cannot use newer inputs", assertReady);
     if (!claim.schedule.reportWindowBinding)
-      return this.block(claim, "Schedule has no reviewed report-window input binding; save a new schedule revision");
+      return this.block(claim, "Schedule has no reviewed report-window input binding; save a new schedule revision", assertReady);
     const principal = await this.services.repository.effectiveUser(claim.schedule.servicePrincipalId);
-    if (!principal) return this.block(claim, "Named service principal is unavailable");
+    assertReady();
+    if (!principal) return this.block(claim, "Named service principal is unavailable", assertReady);
     try {
       const prepared = await this.services.repository.readAuthoritative(state => {
         const workflow = state.workflows[claim.schedule.workflowId], publication = (state.versions[claim.schedule.workflowId] ?? [])
@@ -422,13 +454,15 @@ export class WorkflowScheduleRunner {
         occurrenceId: claim.occurrence.id, scheduledFor: claim.occurrence.scheduledFor, scheduleHash: claim.schedule.scheduleHash,
         reportWindow: structuredClone(claim.occurrence.reportWindow),
         reportWindowBinding: structuredClone(claim.schedule.reportWindowBinding), inputHash: digest(prepared.input) };
+      assertReady();
       const result = await operationJobQueue(this.services).admit(prepared.workflow, prepared.input, principal, claim.occurrence.idempotencyKey,
-        `schedule:${claim.schedule.id}:${claim.occurrence.id}`, source);
-      await this.services.repository.mutate(state => {
+        `schedule:${claim.schedule.id}:${claim.occurrence.id}`, source, lifecycleScope);
+      assertReady();
+      await this.mutate(assertReady, state => {
         const occurrence = state.scheduleOccurrences[claim.occurrence.id], schedule = state.schedules[claim.schedule.id];
         if (!occurrence || occurrence.state !== "ADMITTING") return;
         occurrence.state = "ADMITTED"; occurrence.executionId = String((result.execution as { id?: unknown }).id); occurrence.admittedAt = new Date(nowMs).toISOString();
-        if (schedule?.revision === claim.schedule.revision) {
+        if (schedule?.revision === claim.schedule.revision && schedule.state === "ACTIVE") {
           // A recovered durable claim may be ahead of the current wall clock
           // after clock correction. Never point back at its terminal occurrence.
           schedule.lastOccurrenceAt = occurrence.scheduledFor;
@@ -438,12 +472,13 @@ export class WorkflowScheduleRunner {
       });
       return "ADMITTED";
     } catch (error) {
-      if (error instanceof HandlerFailure && error.status < 500) return this.block(claim, error.message);
+      assertReady();
+      if (error instanceof HandlerFailure && error.status < 500) return this.block(claim, error.message, assertReady);
       return null;
     }
   }
-  private async block(claim: Claim, reason: string): Promise<"BLOCKED"> {
-    await this.services.repository.mutate(state => {
+  private async block(claim: Claim, reason: string, assertReady: () => void): Promise<"BLOCKED"> {
+    await this.mutate(assertReady, state => {
       const occurrence = state.scheduleOccurrences[claim.occurrence.id], schedule = state.schedules[claim.schedule.id];
       if (occurrence?.state === "ADMITTING") { occurrence.state = "BLOCKED"; occurrence.reason = reason; }
       if (schedule?.revision === claim.schedule.revision && claim.occurrence.scheduleRevision === claim.schedule.revision) {
@@ -452,5 +487,5 @@ export class WorkflowScheduleRunner {
     });
     return "BLOCKED";
   }
-  async stop() { this.#closed = true; if (this.#timer) clearTimeout(this.#timer); this.#unobserve(); }
+  async stop() { this.#closed = true; if (this.#timer) clearTimeout(this.#timer); this.#unobserve(); await this.#invocation?.catch(() => {}); }
 }
