@@ -15,6 +15,7 @@ import { ProtectedInvocationLedger } from "./protected-invocation-ledger.js";
 import { protectedHash as hash, assertProtectedActor, assertProtectedRequestActor, protectedAdmissionSeal, assertProtectedAdmission, sealProtectedCursor } from "./protected-job-state.js";
 import { publicExecution } from "../redact/public-model-usage.js";
 import { supportsOperationJobs } from "./operation-jobs.js";
+import { requireResidentExecution } from "./execution-host.js";
 
 /** Qualification of currently implemented invocation drivers, not the final
  * product scope. Refuse the WHOLE run before any prefix executes if a required
@@ -24,10 +25,19 @@ export function assertProtectedDriversAvailable(plan: CompiledProtectedOperation
       node.kind !== "analysis" && (node.kind !== "action" || node.effectClass !== "read" || plan.ir.contracts[node.capability.toolId]?.reportCoverageContract)))
     throw new HandlerFailure(422, "This protected collection requires approval/effect or report drivers that are still being integrated; no run was admitted", { code: "PROTECTED_INVOCATION_DRIVERS_PENDING" });
 }
+/** Implemented owned controller support, separate from whole-plan admission
+ * qualification. This never opens publication or the public v9 run gate. */
+export function assertProtectedOwnedDriversAvailable(plan: CompiledProtectedOperationPlan): void {
+  if (plan.ir.root.nodes.some(node => node.kind === "agent" ? node.allowedCapabilities.some(item => plan.ir.contracts[item.toolId]?.reportCoverageContract) :
+      node.kind !== "analysis" && (node.kind !== "action" || plan.ir.contracts[node.capability.toolId]?.reportCoverageContract && !plan.ir.contracts[node.capability.toolId]?.reportCoverageContract?.pagination ||
+        node.effectClass !== "read" && !plan.ir.contracts[node.capability.toolId]?.operationContract)))
+    throw new HandlerFailure(422, "This protected job requires an owned driver that is not implemented", { code: "PROTECTED_INVOCATION_DRIVERS_PENDING" });
+}
 
 /** Internal, authenticated durable admission. No normal HTTP route is enabled.
  * Inputs never carry plans, receipts, cursors, actor flags or worker authority. */
 export async function admitProtectedOperation(services: HandlerServices, workflowId: string, user: CurrentUser, rawInput: Record<string, unknown>, key: string) {
+  requireResidentExecution(services.repository);
   user = structuredClone(user);
   const validator = services.validator, validationGate = services.validationGate;
   if (!supportsOperationJobs(services)) throw new HandlerFailure(503, "Protected jobs require qualified scoped single-writer storage", { code: "PROTECTED_JOB_STORAGE_UNSUPPORTED" });

@@ -12,7 +12,7 @@ import { validateToolInput } from "../tools/tool-input-schema.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { dispatchReadTool, acknowledgedReadToolFailure } from "../tools/read-tool-broker.js";
 import { appendExecutionEvent } from "./read-checkpoints.js";
-import { assertProtectedDriversAvailable } from "./protected-job-admission.js";
+import { assertProtectedOwnedDriversAvailable } from "./protected-job-admission.js";
 import { protectedOperationConnections, assertProtectedConnectionsCurrent, discoverProtectedOperationConnections, assertProtectedCapabilitiesDiscovered, type ProtectedConnectionObservation } from "../workflows/protected-operation-bindings.js";
 import { assertProtectedJobCurrent, restoreProtectedJob, sealProtectedCursor, protectedHash as hash, type ProtectedJobOwner } from "./protected-job-state.js";
 import type { ValidationToken } from "../validator/registry-validator.js";
@@ -24,6 +24,9 @@ import { validateValue } from "../structured-output/validate.js";
 import { executeProtectedAgent, type ProtectedAgentCandidate } from "./protected-job-agent.js";
 import { nextProtectedAgent } from "./protected-agent-protocol.js";
 import { createOwnedProtectedApprovalWait, settleProtectedApprovalWait } from "./protected-approval-wait.js";
+import { executeOwnedProtectedEffect } from "./protected-job-effect.js";
+import { executeProtectedReport, type ProtectedReportCall } from "./protected-job-report.js";
+import { assertProtectedReportProgress, protectedReportDefinition, protectedReportArguments } from "./protected-report-state.js";
 
 const same = (left: unknown, right: unknown) => canonicalJSONBytes(left).equals(canonicalJSONBytes(right));
 type ReadNode = Extract<OperationNode, { kind: "action" }>;
@@ -46,6 +49,9 @@ export class ProtectedJobCheckpoints {
   #expiresAt = 0; #valid = true; #closed = false; #timer: NodeJS.Timeout | undefined; #token: ValidationToken | undefined;
   #read: ActiveRead | undefined;
   #analysis = false;
+  #effect = false;
+  #report: ProtectedReportCall | undefined;
+  #reporting = false;
   #agentRead: ProtectedAgentCandidate | undefined;
   private constructor(readonly services: HandlerServices, readonly executionId: string, owner: ProtectedJobOwner, run: Execution, governanceHash: string) {
     this.#owner = owner; this.#governanceHash = governanceHash; this.#expiresAt = run.protectedJobSecret!.lease!.expiresAt;
@@ -68,7 +74,11 @@ export class ProtectedJobCheckpoints {
     const claimed = await services.repository.mutateExecution(executionId, state => {
       const saved = restoreProtectedJob(state, services, executionId), { run, ledger, machine } = saved, job = run.protectedJobSecret!;
       if (["FINISHED", "RECOVERY_REQUIRED"].includes(job.state)) return undefined;
-      if (job.state === "WAITING") { settleProtectedApprovalWait(state, services, executionId); return undefined; }
+      if (job.state === "WAITING") {
+        if (settleProtectedApprovalWait(state, services, executionId)) return undefined;
+        const records = run.protectedApprovalSecret!, record = records.records[records.activeId!]!;
+        if (record.state !== "APPROVED") return undefined;
+      }
       if (job.state === "CLAIMED" && job.lease!.expiresAt > Date.now()) throw new Error("Protected run already has a current worker");
       const pending = Object.values(ledger.snapshot().intents).filter(value => value.sequence === machine.snapshot().sequence);
       // A durable entered intent is uncertain after takeover, never replayable.
@@ -80,7 +90,7 @@ export class ProtectedJobCheckpoints {
         sealProtectedCursor(services, state, run, machine); appendExecutionEvent(state, run, "run.recovery_required", { reason: "UNCONFIRMED_INVOCATION" });
         return undefined;
       }
-      try { assertProtectedJobCurrent(state, services, executionId); assertProtectedDriversAvailable(saved.plan); }
+      try { assertProtectedJobCurrent(state, services, executionId); assertProtectedOwnedDriversAvailable(saved.plan); }
       catch {
         // The historical state is authentic, but revoked admission must not
         // leave a queued job frozen forever or silently borrow new authority.
@@ -139,8 +149,8 @@ export class ProtectedJobCheckpoints {
       this.assertDispatch(); return this.current(state).machine.peek() ?? undefined;
     });
   }
-  private advance(state: RepositoryState, result: ProtectedBoundaryResult, expected: ProtectedMachinePoint) {
-    this.assertDispatch(); const saved = this.current(state), point = saved.machine.peek();
+  private advance(state: RepositoryState, result: ProtectedBoundaryResult, expected: ProtectedMachinePoint, reportSaved?: ReturnType<typeof assertProtectedJobCurrent>) {
+    this.assertDispatch(); const saved = reportSaved ?? this.current(state), point = saved.machine.peek();
     if (!same(point, expected)) throw new Error("Protected invocation pointer changed before commit");
     const next = saved.ledger.advance(saved.machine, result), run = saved.run;
     run.protectedInvocationSecret = next.ledger; sealProtectedCursor(this.services, state, run, next.machine);
@@ -172,9 +182,15 @@ export class ProtectedJobCheckpoints {
    * acknowledged lexical reads are included; failed/prior-item/handler locals
    * never acquire completion authority through their static node names. */
   prerequisiteYAML(state: Readonly<RepositoryState>, yaml: string, index: number, pin: ReadAdmissionPin | undefined, args: Record<string, unknown>): string {
-    this.assertDispatch(); const saved = this.current(state), active = this.#read, point = saved.machine.peek();
-    if (!active || saved.run.workflowSnapshot!.yaml !== yaml || active.index !== index || !same(point, active.point) || !same(pin, active.node.capability.admission) || !same(args, point?.arguments))
+    this.assertDispatch(); const saved = this.current(state), active = this.#read ?? this.#report, point = saved.machine.peek();
+    if (!active || saved.run.workflowSnapshot!.yaml !== yaml || active.index !== index || !same(point, active.point) || !same(pin, active.node.capability.admission) || !same(args, active.args))
       throw new Error("Protected read does not own the exact selected invocation/arguments");
+    if (this.#report) {
+      const tool = protectedReportDefinition(state, active.node), progress = saved.run.reportPageSecret?.[point!.invocationId];
+      if (!progress) throw new Error("Protected report lacks its exact private continuation");
+      assertProtectedReportProgress(tool, point!, progress);
+      if (!same(args, protectedReportArguments(tool, point!.arguments as Record<string, unknown>, progress))) throw new Error("Protected report arguments differ from its current server-owned page");
+    } else if (!same(args, point?.arguments)) throw new Error("Protected read arguments differ from selected item");
     const intent = saved.run.protectedInvocationSecret!.intents[active.key];
     if (!intent || !["PREPARING", "DISPATCH_INTENT"].includes(intent.state) || intent.epoch !== this.#owner.epoch) throw new Error("Protected read lacks its current prepared intent");
     const values = saved.machine.snapshot().values, receipts = Object.values(saved.run.protectedInvocationSecret!.receipts);
@@ -185,7 +201,7 @@ export class ProtectedJobCheckpoints {
   }
   private async dispatchIntent(role: string): Promise<void> {
     await this.repository.mutateExecution(this.executionId, state => {
-      this.assertDispatch(); const saved = this.current(state), active = this.#read;
+      this.assertDispatch(); const saved = this.current(state), active = this.#read ?? this.#report;
       if (!active || role !== saved.run.protectedJobSecret!.admittedRole || !same(saved.machine.peek(), active.point)) throw new Error("Protected dispatch actor or invocation changed");
       saved.ledger.dispatchIntent(saved.machine, active.key, active.args, this.#owner.epoch);
       saved.run.protectedInvocationSecret = saved.ledger.snapshot(); sealProtectedCursor(this.services, state, saved.run, saved.machine);
@@ -194,18 +210,62 @@ export class ProtectedJobCheckpoints {
   }
   /** Original compiled definition selects the driver, never caller flags. */
   async executeAction(): Promise<void> {
-    if (this.#read || this.#analysis) throw new Error("Protected invocation is already active");
+    if (this.#read || this.#analysis || this.#effect || this.#reporting) throw new Error("Protected invocation is already active");
     const kind = await this.repository.readAuthoritative(state => {
       this.assertDispatch(); const saved = this.current(state), point = saved.machine.peek();
-      return saved.plan.ir.root.nodes.find(node => node.id === point?.nodeId)?.kind;
+      const node = saved.plan.ir.root.nodes.find(node => node.id === point?.nodeId);
+      return node?.kind === "action" ? node.effectClass !== "read" ? "effect" : saved.plan.ir.contracts[node.capability.toolId]?.reportCoverageContract ? "report" : "action" : node?.kind;
     });
-    if (kind === "analysis") await this.executeAnalysis(); else if (kind === "agent") await this.executeAgentBoundary(false); else await this.executeRead();
+    if (kind === "analysis") await this.executeAnalysis(); else if (kind === "agent") await this.executeAgentBoundary(false);
+    else if (kind === "effect") {
+      const approved = await this.repository.readAuthoritative(state => {
+        const saved = this.current(state), records = saved.run.protectedApprovalSecret, point = saved.machine.peek();
+        return records?.activeId && records.records[records.activeId]?.binding.sequence === point?.sequence && records.records[records.activeId]?.state === "APPROVED";
+      });
+      if (approved) await this.executeEffect(); else await this.requestApproval();
+    } else if (kind === "report") await this.executeReportBoundary(false); else await this.executeRead();
+  }
+  /** One confirmed page can yield; callers cannot supply page answers or cursors. */
+  async executeReportBoundary(oneBoundary = true): Promise<void> {
+    if (this.#read || this.#analysis || this.#effect || this.#reporting || !this.#token) throw new Error("Protected report is active or unverified");
+    this.#reporting = true;
+    try { await executeProtectedReport(this.services, this.executionId, { checkpoints: this, owner: this.#owner, guard: () => this.assertDispatch(),
+      current: state => this.current(state), oneBoundary,
+      dispatch: async (call, yaml, workflowId, actorId) => {
+        this.#report = call;
+        try { return await dispatchReadTool(this.services, actorId, call.node.capability.action, call.args, {
+          executionId: this.executionId, workflowId, signal: this.controller.signal, assertDispatch: () => this.assertDispatch(),
+          beforeDispatch: role => this.dispatchIntent(role), protectedInvocation: { checkpoints: this },
+          plan: { yaml, stepIndex: call.index, token: this.#token!, admissionPin: call.node.capability.admission!, toolId: call.node.capability.toolId, contractHash: call.node.capability.contractHash } }); }
+        finally { this.#report = undefined; }
+      }, advance: (state, point, output, saved) => this.advance(state, { kind: "accept", output }, point, saved) }); }
+    catch (error) {
+      // A selected page denied before SDK entry is safely terminal; an entered
+      // page without acknowledged completion requires reconciliation. If
+      // storage is fenced, do not fabricate either transition. In all cases
+      // revoke this controller immediately, including private direct callers.
+      try { await this.stop(); } finally { this.close(); }
+      throw error;
+    }
+    finally { this.#report = undefined; this.#reporting = false; }
+  }
+  async executeEffect(): Promise<void> {
+    if (this.#read || this.#analysis || this.#effect || this.#reporting || !this.#token) throw new Error("Protected effect is already active or worker is unverified");
+    this.#effect = true;
+    try { await executeOwnedProtectedEffect(this.services, this.executionId, { owner: this.#owner, token: this.#token,
+      signal: this.controller.signal, guard: () => this.assertDispatch(), advance: (state, point, output) => this.advance(state, { kind: "accept", output }, point) }); }
+    catch (error) {
+      // Every failure after durable entry is uncertain. Never select a read
+      // handler, execute another item or expose a generic retryable state.
+      try { await this.stop(); } finally { this.close(); }
+      throw error;
+    } finally { this.#effect = false; }
   }
   /** Capture only this controller's exact current owned effect invocation.
    * A wait releases the lease and closes renewal/dispatch observers. This does
    * not qualify effect admission, SDK entry or public advanced Run. */
   async requestApproval(): Promise<string> {
-    if (this.#read || this.#analysis || !this.#token) throw new Error("Protected approval cannot interrupt an active or uninitialized call");
+    if (this.#read || this.#analysis || this.#effect || this.#reporting || !this.#token) throw new Error("Protected approval cannot interrupt an active or uninitialized call");
     const id = await this.repository.mutateExecution(this.executionId, state => {
       this.assertDispatch(); this.current(state);
       return createOwnedProtectedApprovalWait(state, this.services, this.executionId, this.#owner);
@@ -215,7 +275,7 @@ export class ProtectedJobCheckpoints {
   /** One genuine confirmed agent sub-call may be yielded/reopened. No supplied
    * turn, answer or serialized flag can invoke this owned driver. */
   async executeAgentBoundary(oneBoundary = true): Promise<void> {
-    if (this.#read || this.#analysis || !this.#token || !this.#provider || !this.#providerRevision) throw new Error("Protected agent driver is unavailable or active");
+    if (this.#read || this.#analysis || this.#effect || this.#reporting || !this.#token || !this.#provider || !this.#providerRevision) throw new Error("Protected agent driver is unavailable or active");
     this.#analysis = true;
     try {
       await executeProtectedAgent(this.services, this.executionId, {
@@ -284,7 +344,7 @@ export class ProtectedJobCheckpoints {
    * public error/result, model tool request or malformed output is never an ERP
    * business fault and cannot select a handler. No model fallback/replay. */
   private async executeAnalysis(): Promise<void> {
-    if (this.#read || this.#analysis || !this.#token || !this.#provider || !this.#providerRevision) throw new Error("Protected analysis driver is unavailable or active");
+    if (this.#read || this.#analysis || this.#effect || this.#reporting || !this.#token || !this.#provider || !this.#providerRevision) throw new Error("Protected analysis driver is unavailable or active");
     this.#analysis = true;
     try {
       const prepared = await this.repository.mutateExecution(this.executionId, state => {
@@ -343,7 +403,7 @@ export class ProtectedJobCheckpoints {
   /** Read completion requires a real governed broker return or its
    * privately minted acknowledged business-error evidence, never caller data. */
   async executeRead(): Promise<void> {
-    if (this.#read || this.#analysis || !this.#token) throw new Error("Protected read is already active or worker is unverified");
+    if (this.#read || this.#analysis || this.#effect || this.#reporting || !this.#token) throw new Error("Protected read is already active or worker is unverified");
     const prepared = await this.repository.mutateExecution(this.executionId, state => {
       this.assertDispatch(); const saved = this.current(state), point = saved.machine.peek();
       if (!point?.valid || point.kind !== "action") throw new Error("Protected read has no exact action");
@@ -403,13 +463,19 @@ export class ProtectedJobCheckpoints {
     await this.repository.mutateExecution(this.executionId, state => {
       this.assertDispatch(); const saved = this.current(state);
       const pending = Object.values(saved.ledger.snapshot().intents).filter(item => item.sequence === saved.machine.snapshot().sequence);
-      if (this.#read || this.#analysis || pending.some(item => item.state !== "ACKNOWLEDGED")) throw new Error("Protected worker cannot yield with a pending call");
+      if (this.#read || this.#analysis || this.#effect || this.#reporting || pending.some(item => item.state !== "ACKNOWLEDGED")) throw new Error("Protected worker cannot yield with a pending call");
       if (pending.length) {
         const point = saved.machine.peek()!, node = saved.plan.ir.root.nodes.find(item => item.id === point.nodeId), records = saved.run.protectedAgentSecret,
           progress = records?.invocations[point.invocationId];
-        if (node?.kind !== "agent" || !records || progress?.profile !== "protected-agent-invocation/v2") throw new Error("Protected yield lacks complete agent dialogue");
-        const next = nextProtectedAgent({ node, point, model: progress.model, tools: progress.offers }, records, saved.ledger.snapshot(), Date.now());
-        if (!["MODEL", "TOOL"].includes(next.kind)) throw new Error("Protected agent must confirm its terminal boundary before yield");
+        if (node?.kind === "action" && saved.plan.ir.contracts[node.capability.toolId]?.reportCoverageContract) {
+          const report = saved.run.reportPageSecret?.[point.invocationId];
+          if (!report) throw new Error("Protected report cannot yield without acknowledged continuation");
+          assertProtectedReportProgress(protectedReportDefinition(state, node), point, report);
+        } else {
+          if (node?.kind !== "agent" || !records || progress?.profile !== "protected-agent-invocation/v2") throw new Error("Protected yield lacks complete agent dialogue");
+          const next = nextProtectedAgent({ node, point, model: progress.model, tools: progress.offers }, records, saved.ledger.snapshot(), Date.now());
+          if (!["MODEL", "TOOL"].includes(next.kind)) throw new Error("Protected agent must confirm its terminal boundary before yield");
+        }
       }
       saved.run.status = "PENDING"; saved.run.protectedJobSecret!.state = "QUEUED"; delete saved.run.protectedJobSecret!.lease;
       appendExecutionEvent(state, saved.run, "run.checkpoint_yielded", {});
