@@ -14,6 +14,7 @@ import { assertProtectedAgentRecords } from "../repository/protected-agent-recor
 import { assertProtectedAgentHistory } from "./protected-agent-protocol.js";
 import { assertProtectedApprovalRecords } from "../repository/protected-approval-records.js";
 import { assertProtectedApprovalHistory } from "./protected-approval-history.js";
+import { assertProtectedReportHistory } from "./protected-report-state.js";
 
 export const protectedHash = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
 export type ProtectedJobOwner = { leaseId: string; workerId: string; epoch: number };
@@ -57,7 +58,9 @@ export function protectedEvidence(run: Execution) {
   return { profile: "owned-protected-job-evidence/v1", admissionSeal: run.protectedJobSecret!.admissionSeal,
     ledgerHash: protectedHash(run.protectedInvocationSecret),
     ...(Object.hasOwn(run, "protectedAgentSecret") ? { agentHash: protectedHash(run.protectedAgentSecret) } : {}),
-    ...(Object.hasOwn(run, "protectedApprovalSecret") ? { approvalHash: protectedHash(run.protectedApprovalSecret) } : {}) };
+    ...(Object.hasOwn(run, "protectedApprovalSecret") ? { approvalHash: protectedHash(run.protectedApprovalSecret) } : {}),
+    ...(Object.hasOwn(run, "reportPageSecret") ? { reportProgressHash: protectedHash(run.reportPageSecret) } : {}),
+    ...(Object.hasOwn(run, "reportCoverages") ? { reportCoverageHash: protectedHash(run.reportCoverages) } : {}) };
 }
 export function sealProtectedCursor(services: HandlerServices, state: RepositoryState, run: Execution, machine: ProtectedMachine): void {
   const codec = protectedCodec(services), identity = protectedCursorIdentity(services, run);
@@ -76,6 +79,7 @@ export function restoreProtectedJob(state: Readonly<RepositoryState>, services: 
   const machine = new ProtectedMachine(historical.plan.machine, {}, snapshot), ledger = new ProtectedInvocationLedger(run.protectedInvocationSecret!.identity, historical.plan.machine, machine, run.protectedInvocationSecret);
   assertProtectedAgentHistory(historical.plan, run);
   assertProtectedApprovalHistory(historical.plan, run);
+  assertProtectedReportHistory(historical.plan, run, state);
   // Continue the fully checked semantic replay, not canonical JSON's property
   // insertion order. Existing v1 scope arrays/receipt identities stay unchanged.
   return { run, plan: historical.plan, machine: ledger.replayedMachine(), ledger };

@@ -13,12 +13,14 @@ import { prepareCompiledExecution } from "../workflows/read-compilation-lifecycl
 import { supportsCollectionReads, readIterationBindingKey } from "./read-collection-admission.js";
 import { completeCheckpointedCollectionRead } from "./checkpointed-collection-read.js";
 import { boundMcpConnection, selectedMcpConnectionId } from "../tools/mcp-dispatch-context.js";
+import { bindExecutionHost, residentExecutionAllowed, requireResidentExecution } from "./execution-host.js";
+import { newReadTaskOutbox, assertReadTaskOutbox, readTaskCommandSchema, requireReadTaskAdmission, type ReadTaskCommand } from "./read-task-outbox.js";
 
 type Admission = { input: Record<string, unknown>; actorId: string; admittedRole: string; scope: string; fingerprint: string; connectionFingerprint: string };
 const queues = new WeakMap<Repository, ReadJobQueue>();
 const memoryKeys = new WeakMap<Repository, string>();
 type ActiveRead = { id: string; actorId: string; controller: AbortController; lease?: ReadWorkerLease; failure?: ReadWorkerLeaseFailure;
-  controllerAllowed: boolean; timer?: NodeJS.Timeout; task?: Promise<void> };
+  controllerAllowed: boolean; timer?: NodeJS.Timeout; task?: Promise<void>; taskCommand?: ReadTaskCommand; deadlineAt?: number };
 export function supportsReadJobs(services: HandlerServices): boolean {
   return services.repository.persistence === null || services.repository.persistence.readQueueDurability === "encrypted-single-writer";
 }
@@ -50,6 +52,7 @@ export class ReadJobQueue {
   #started = false;
   get closed(): boolean { return this.#closed; }
   constructor(readonly services: HandlerServices) {
+    bindExecutionHost(services.repository);
     if (!supportsReadJobs(services)) throw new HandlerFailure(503, "This storage backend has no verified encrypted single-writer read queue", { code: "READ_QUEUE_STORAGE_UNSUPPORTED" });
     let key = services.config.storageEncryptionKey;
     if (services.repository.persistence === null) { key = memoryKeys.get(services.repository) ?? randomBytes(32).toString("base64"); memoryKeys.set(services.repository, key); }
@@ -105,11 +108,13 @@ export class ReadJobQueue {
     return structuredClone(item);
   }
   assertCapacity(state: RepositoryState): void {
+    requireReadTaskAdmission(this.services.repository);
     if (this.#closed || this.#stalled) throw new HandlerFailure(503, "Read workers are unavailable; inspect recovery state before admitting another run", { code: "READ_QUEUE_UNAVAILABLE" });
     if (Object.values(state.readJobs).filter((job) => ["QUEUED", "CLAIMED"].includes(job.state)).length >= 100)
       throw new HandlerFailure(429, "Read queue is full; no run was admitted", { code: "READ_QUEUE_FULL" });
   }
   store(state: RepositoryState, item: Execution, admission: Admission): void {
+    requireReadTaskAdmission(this.services.repository);
     if (this.#closed || this.#stalled) throw new HandlerFailure(503, "Read workers are unavailable", { code: "READ_QUEUE_UNAVAILABLE" });
     if (!item.workflowSnapshot?.yaml || this.connectionFingerprint(item.workflowSnapshot.yaml) !== admission.connectionFingerprint)
       throw new HandlerFailure(503, "Read connection identity is unavailable or changed during admission", { code: "READ_CONNECTION_BINDING_REQUIRED" });
@@ -118,8 +123,71 @@ export class ReadJobQueue {
     if (!Number.isSafeInteger(queueSequence) || queueSequence < 1) throw new Error("Read admission sequence is unavailable");
     state.readJobs[item.id] = { version: 1, executionId: item.id, actorId: admission.actorId, admittedRole: admission.admittedRole, state: "QUEUED", inputCiphertext,
       requestFingerprint: admission.fingerprint, idempotencyScope: admission.scope, connectionFingerprint: admission.connectionFingerprint, createdAt: item.startedAt, queueSequence };
+    if (!residentExecutionAllowed(this.services.repository)) state.readJobs[item.id]!.taskDispatchSecret = newReadTaskOutbox(state.readJobs[item.id]!);
+  }
+  /** Internal task-handler API, never a browser route. The authenticated queue
+   * envelope identifies work; original publication/RBAC/SDK checks still grant
+   * dispatch authority. One awaited task, no resident pump or lease renewal. */
+  async executeTask(raw: unknown, options: { timeoutMs: number; signal?: AbortSignal }): Promise<Execution> {
+    if (residentExecutionAllowed(this.services.repository)) throw new Error("Read task execution requires a bounded invocation owner");
+    if (this.#closed || this.#stalled) throw new Error("Read task owner is unavailable");
+    const command = readTaskCommandSchema.parse(raw);
+    if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 100 || options.timeoutMs > this.#leaseMs - 100)
+      throw new Error("Read task deadline must fit inside its fixed original lease");
+    const state = await this.services.repository.readAuthoritative(state => {
+      const job = state.readJobs[command.executionId], run = state.executions[command.executionId];
+      if (!job || !run || assertReadTaskOutbox(job).taskId !== command.taskId || job.taskDispatchSecret!.state === "PREPARED")
+        throw new Error("Read task is not backed by an acknowledged enqueue intent");
+      return { job: structuredClone(job), run: structuredClone(run) };
+    });
+    if (["FINISHED", "RECOVERY_REQUIRED"].includes(state.job.state)) return this.taskReceipt(command);
+    if (state.job.state === "QUEUED" && state.run.status !== "PENDING")
+      throw new Error("Queued read task has inconsistent execution state");
+    if (state.job.state === "CLAIMED") {
+      // A duplicate delivery cannot usurp a live original lease. Expired claims
+      // are reconciled from the original journal, never replayed under a task.
+      if (!state.job.lease || Date.now() < Date.parse(state.job.lease.expiresAt)) throw new Error("Read task has an unresolved existing claim; retry after authoritative recovery");
+      await reconcileInterruptedExecutions(this.services.repository, "READ_TASK_INTERRUPTED", command.executionId);
+      await this.services.repository.mutateExecution(command.executionId, current => {
+        const job = current.readJobs[command.executionId], run = current.executions[command.executionId];
+        if (job?.state !== "CLAIMED" || !run) return;
+        job.state = ["DONE", "FAILED", "CANCELLED"].includes(run.status) ? "FINISHED" : "RECOVERY_REQUIRED";
+        if (job.state === "FINISHED") { job.finishedAt = run.completedAt ?? new Date().toISOString(); delete job.inputCiphertext; delete job.lease; }
+      });
+      return this.taskReceipt(command);
+    }
+    if (this.#active.size || options.signal?.aborted) throw new Error("Read task invocation is busy or cancelled before claim");
+    const control: ActiveRead = { id: command.executionId, actorId: state.job.actorId, controller: new AbortController(), controllerAllowed: false,
+      taskCommand: command, deadlineAt: Date.now() + options.timeoutMs };
+    const expire = () => { control.failure ??= new ReadWorkerLeaseFailure("READ_TASK_DEADLINE_OR_CANCELLED"); control.controller.abort(control.failure); };
+    options.signal?.addEventListener("abort", expire, { once: true });
+    control.timer = setTimeout(expire, options.timeoutMs);
+    this.#active.set(control.id, control);
+    try {
+      control.task = this.process(control);
+      await control.task;
+      return await this.taskReceipt(command);
+    } finally {
+      clearTimeout(control.timer); options.signal?.removeEventListener("abort", expire);
+      this.#active.delete(control.id); control.controller.abort();
+    }
+  }
+  /** A successful task response only acknowledges authoritative terminal work.
+   * A racing delivery that lost the claim must retry, not strand a live run by
+   * returning PENDING/RUNNING to the queue as a completed task invocation. */
+  private taskReceipt(command: ReadTaskCommand): Promise<Execution> {
+    return this.services.repository.readAuthoritative(current => {
+      const job = current.readJobs[command.executionId], run = current.executions[command.executionId];
+      if (!job || !run || assertReadTaskOutbox(job).taskId !== command.taskId ||
+          job.state === "FINISHED" && !["DONE", "FAILED", "CANCELLED"].includes(run.status) ||
+          job.state === "RECOVERY_REQUIRED" && run.status !== "RECOVERY_REQUIRED" ||
+          !["FINISHED", "RECOVERY_REQUIRED"].includes(job.state))
+        throw new Error("Read task has no confirmed terminal receipt; retry original delivery after authoritative recovery");
+      return structuredClone(run);
+    });
   }
   async start(): Promise<void> {
+    requireResidentExecution(this.services.repository);
     if (this.#started) return;
     this.#started = true;
     const jobs = await this.services.repository.read(state => Object.values(state.readJobs).map(job => ({ state: job.state, id: job.executionId })));
@@ -136,19 +204,19 @@ export class ReadJobQueue {
     if (jobs.some(job => job.state === "QUEUED")) this.kick();
   }
   kick(): void {
-    if (this.#closed || this.#stalled || this.#scheduled) return;
+    if (!residentExecutionAllowed(this.services.repository) || this.#closed || this.#stalled || this.#scheduled) return;
     if (this.#pumping) { this.#repump = true; return; }
     this.#scheduled = true;
     setImmediate(() => { this.#scheduled = false; void this.pump(); });
   }
   private async pump(): Promise<void> {
-    if (this.#closed || this.#pumping) return;
+    if (!residentExecutionAllowed(this.services.repository) || this.#closed || this.#pumping) return;
     this.#pumping = true;
     try {
       while (!this.#closed && !this.#stalled && this.#active.size < this.#concurrency) {
         const selected = await this.services.repository.readAuthoritative(state => {
           const actors = new Map<string, number>(); for (const control of this.#active.values()) actors.set(control.actorId, (actors.get(control.actorId) ?? 0) + 1);
-          const pick = nextFairReadJob(Object.values(state.readJobs).filter(job => !this.#active.has(job.executionId)), actors, this.#actorRing, this.#perActor);
+          const pick = nextFairReadJob(Object.values(state.readJobs).filter(job => !job.taskDispatchSecret && !this.#active.has(job.executionId)), actors, this.#actorRing, this.#perActor);
           return { ...pick, actorId: pick.executionId ? state.readJobs[pick.executionId]!.actorId : undefined };
         });
         this.#actorRing = selected.ring; if (!selected.executionId || !selected.actorId || this.#closed || this.#stalled) break;
@@ -174,13 +242,14 @@ export class ReadJobQueue {
   }
   private workerContext(control: ActiveRead): ReadWorkerContext {
     const assertActive = () => {
-      if (this.#closed || this.#stalled || control.failure || !control.lease || Date.now() < Date.parse(control.lease.renewedAt) || Date.now() >= Date.parse(control.lease.expiresAt)) {
+      if (this.#closed || this.#stalled || control.failure || control.controller.signal.aborted || control.deadlineAt !== undefined && Date.now() >= control.deadlineAt || !control.lease || Date.now() < Date.parse(control.lease.renewedAt) || Date.now() >= Date.parse(control.lease.expiresAt)) {
         control.failure ??= new ReadWorkerLeaseFailure(); throw control.failure;
       }
     };
     return { assertActive, assertDispatch: () => { assertActive(); if (!control.controllerAllowed) throw new Error("Current queued controller is no longer authorized"); } };
   }
   private heartbeat(control: ActiveRead): void {
+    if (control.taskCommand) return; // Fixed task lease; no renewal loop after handler return.
     if (this.#closed || !this.#active.has(control.id)) return;
     control.timer = setTimeout(() => { void (async () => {
       try {
@@ -205,10 +274,14 @@ export class ReadJobQueue {
   private async process(control: ActiveRead): Promise<void> {
     const id = control.id;
     let initial: Execution | null = null;
+    let preparationStage = "CLAIM";
     try {
       const claimed = await this.services.repository.mutateExecution(id, (state) => {
         const job = state.readJobs[id], item = state.executions[id];
         if (job?.state !== "QUEUED") return null;
+        if (control.failure || control.controller.signal.aborted) throw new Error("Read task cancelled before claim");
+        if (control.taskCommand ? assertReadTaskOutbox(job).taskId !== control.taskCommand.taskId || job.taskDispatchSecret!.state === "PREPARED" : !!job.taskDispatchSecret)
+          throw new Error("Read task ownership changed before claim");
         if (item?.status !== "PENDING" || !item.readProgress) throw new Error("Queued job has inconsistent execution state; refusing dispatch");
         job.state = "CLAIMED"; job.workerId = this.#workerId; job.claimedAt = new Date().toISOString();
         item.status = "RUNNING"; item.readProgress.epoch += 1;
@@ -219,30 +292,37 @@ export class ReadJobQueue {
       });
       if (!claimed) return;
       initial = claimed.item;
+      preparationStage = "SOURCE";
       control.lease = claimed.job.lease!; control.controllerAllowed = true; this.heartbeat(control);
       const job = claimed.job, snapshot = initial.workflowSnapshot;
       if (this.#closed || control.controller.signal.aborted || job.version !== 1 || !snapshot || snapshot.contentHash !== workflowContentHash(snapshot.yaml) ||
           job.actorId !== initial.startedBy.id || !job.inputCiphertext) throw new Error("Invalid queued job");
       if (this.services.config.mcpTransport === "erpbridge-mcp" && this.services.config.mcpMode === "remote" && !snapshot.compilation) throw new Error("Queued modern run has no compiled admission receipt");
       const actor = await this.services.repository.effectiveUser(job.actorId);
+      preparationStage = "PUBLICATION";
       const compilation = await this.services.repository.readAuthoritative((state) => {
         assertCurrentRunController(state as RepositoryState, initial!, job.actorId, job.admittedRole);
         const publication = (state.versions[initial!.workflowId] ?? []).findLast((version) => version.version === snapshot.version && version.artifactState === "PUBLISHED");
         if (publication?.yaml !== snapshot.yaml) throw new Error("Pinned publication unavailable");
         return prepareCompiledExecution(state, this.services, publication, snapshot.yaml, job.admittedRole, snapshot.compilation);
       });
+      preparationStage = "AUTHORITY_AND_CONNECTION";
       if (!actor || actor.role !== job.admittedRole || snapshot.registryHash !== this.services.registries.hash() ||
           job.connectionFingerprint !== this.connectionFingerprint(snapshot.yaml)) throw new Error("Queued authority, connection or registry changed");
+      preparationStage = "PRIVATE_INPUT";
       const privateInput = JSON.parse(this.#codec.decode(Buffer.from(job.inputCiphertext, "base64")).toString("utf8")) as { version?: number; executionId?: string; input?: Record<string, unknown> };
       if (privateInput.version !== 1 || privateInput.executionId !== id || !privateInput.input || Array.isArray(privateInput.input) || typeof privateInput.input !== "object") throw new Error("Private job input is not authentic");
       canonicalInput(privateInput.input);
+      preparationStage = "GOVERNANCE_AND_VALIDATION";
       const gate = await validateWorkflow(this.services, "ReadJobWorker", snapshot.yaml, actor, { traceId: initial.traceId, workflowId: initial.workflowId, executionId: id, signal: control.controller.signal });
       if (!gate.result.passed || !gate.token || gate.token.registry_hash !== snapshot.registryHash) throw new Error("Queued verification failed");
+      preparationStage = "LIVE_CONTRACTS";
       const pinnedIds = compilation.plan.ir.root.nodes.map(node => node.capability.admission?.connectionId).filter((value): value is string => !!value);
       const connectionIds = [...new Set(pinnedIds.length ? pinnedIds : parseWorkflowYAMLStrict(snapshot.yaml).steps.map(step => selectedMcpConnectionId(this.services, step.connection_id)))];
       const live = [...new Map((await Promise.all(connectionIds.map(async id => discoverTools(boundMcpConnection(this.services, id).session, this.services.registries))))
         .flatMap(tools => tools.map(tool => [tool.tool_id, tool] as const))).values()];
       if (inspectReadWorkflow(parseWorkflowYAMLStrict(snapshot.yaml), live, actor.role, supportsCollectionReads(this.services)).length) throw new Error("Queued contracts changed");
+      preparationStage = "CHECKPOINT_ENTRY";
       this.workerContext(control).assertActive();
       const assertConnection = () => {
         if (job.connectionFingerprint !== this.connectionFingerprint(snapshot.yaml))
@@ -264,7 +344,9 @@ export class ReadJobQueue {
           // no attempt existed. Other errors were reconciled by checkpoints.
           if (item?.status !== "RUNNING" || item.readProgress?.epoch !== initial!.readProgress!.epoch || Object.keys(item.readProgress.attempts).length) return;
           item.status = item.readProgress.cancellation ? "CANCELLED" : "FAILED"; item.completedAt = new Date().toISOString(); item.durationMs = Math.max(0, Date.parse(item.completedAt) - Date.parse(item.startedAt));
-          item.failure = { failureCategory: "READ_JOB_PREPARATION_FAILED", failedStepId: "preflight", toolWasCalled: false };
+          // Fixed stage names help diagnose safe refusals without exposing raw
+          // exception text, input data, connection addresses or credentials.
+          item.failure = { failureCategory: "READ_JOB_PREPARATION_FAILED", failedStepId: "preflight", toolWasCalled: false, preparationStage };
           item.agentSummary = "Read job stopped before dispatch because its current authority, input, publication, connection or verification could not be confirmed. No replay was performed.";
           appendExecutionEvent(state, item, "run.completed", { status: item.status, phase: "preparation", outcome: "NOT_DISPATCHED" });
           appendJobAudit(state, item, "execution.completed", this.#workerId);
@@ -283,6 +365,9 @@ export class ReadJobQueue {
     this.#closed = true; this.#unobserve();
     const active = [...this.#active.values()]; for (const control of active) { if (control.timer) clearTimeout(control.timer); control.failure ??= new ReadWorkerLeaseFailure("READ_WORKER_SHUTDOWN"); control.controller.abort(control.failure); }
     await Promise.all(active.map(control => this.retire(control, "READ_WORKER_SHUTDOWN")));
+    // Bounded invocation teardown must drain the owned task before storage/SDK
+    // disposal. Resident workers retain their existing shutdown protocol.
+    await Promise.allSettled(active.filter(control => control.taskCommand).map(control => control.task));
   }
 }
 
