@@ -6,6 +6,10 @@ import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow
 import type { Execution, Repository, RepositoryState } from "../repository/store.js";
 import { appendExecutionEvent, assertCurrentRunController } from "./read-checkpoints.js";
 import { HandlerFailure, type CurrentUser } from "../http/handlers/common.js";
+import { requireResidentExecution } from "./execution-host.js";
+import { residentExecutionAllowed } from "./execution-host.js";
+import { requireOperationTaskAdmission, completeOperationTaskGeneration, assertOperationTaskLedger, prepareOperationTaskGeneration,
+  dispatchOperationTaskOutbox } from "./operation-task-outbox.js";
 import { withoutSecretFields } from "../redact/secrets.js";
 import { validateToolInput } from "../tools/tool-input-schema.js";
 import { capabilityContractHash } from "../registry/capability-admission.js";
@@ -218,11 +222,12 @@ export async function requestRuntimeApproval(repository: Repository, executionId
   });
 }
 export async function decideRuntimeApproval(repository: Repository, executionId: string, user: CurrentUser, raw: unknown, outcome: "APPROVED" | "REJECTED") {
+  if (outcome === "APPROVED") requireOperationTaskAdmission(repository);
   requireApprovalStorage(repository);
   const parsed = runtimeApprovalDecisionSchema.safeParse(raw);
   if (!parsed.success) deny("Approval requires the exact review ID, version, hash and decision key", 422);
   const command = parsed.data, fingerprint = digest({ ...command, outcome, actorId: user.id });
-  try { return await repository.mutateExecution(executionId, state => {
+  try { const decision = await repository.mutateExecution(executionId, state => {
     const execution = state.executions[executionId];
     if (!execution) deny("Approval execution not found", 404);
     const record = active(execution), { actor, role } = approver(state, record, user.id);
@@ -236,6 +241,10 @@ export async function decideRuntimeApproval(repository: Repository, executionId:
     }
     assertBinding(state, execution, record, Date.now());
     if (execution.status !== "AWAITING_APPROVAL" || record.state !== "PENDING" || command.baseVersion !== record.version) deny("Approval checkpoint changed; reload before deciding");
+    if (!residentExecutionAllowed(repository) && execution.operationSecret?.taskDispatchSecret) {
+      const generation = assertOperationTaskLedger(execution).generations.at(-1)!;
+      completeOperationTaskGeneration(state, execution, { profile: "operation-task-delivery/v1", executionId, taskId: generation.taskId });
+    } else if (!residentExecutionAllowed(repository) && outcome === "APPROVED") requireResidentExecution(repository);
     record.version++; record.state = outcome;
     record.decision = { actorId: actor.id, roleId: role.id, decisionKey: command.decisionKey, fingerprint, outcome, note: command.note, decidedAt: new Date().toISOString() };
     ledger(execution).records[record.id] = record;
@@ -254,9 +263,14 @@ export async function decideRuntimeApproval(repository: Repository, executionId:
     delete execution.pendingApproval;
     execution.agentSummary = outcome === "APPROVED" ? resumeQueued ? "Exact approval recorded and the operation is queued for fresh authorization. Approval is not confirmation of execution or delivery." : "Exact approval recorded. Safe effect resume/outbox dispatch is not connected yet; no ERP action or email was sent." : "Transaction rejected. This approval checkpoint did not dispatch its operation.";
     event(state, execution, record, outcome === "APPROVED" ? "approval.granted" : "approval.rejected");
+    if (resumeQueued && !residentExecutionAllowed(repository)) prepareOperationTaskGeneration(execution);
     return { replayed: false, approvalId: record.id, state: record.state, version: record.version, executionId, executionStatus: execution.status, canResume: false, resumeQueued,
       operationManaged: execution.workflowSnapshot?.executionProfile === "sequential-operation-v1" };
-  }); } catch (error) {
+  });
+    if (outcome === "APPROVED" && decision.operationManaged && !residentExecutionAllowed(repository)) return { ...decision,
+      taskDispatch: await dispatchOperationTaskOutbox(repository, executionId) };
+    return decision;
+  } catch (error) {
     if (error instanceof HandlerFailure) throw error;
     throw new HandlerFailure(503, "Approval acknowledgement is unconfirmed. Reload authoritative storage before another decision; do not automatically retry.", { code: "RUNTIME_APPROVAL_SAVE_UNCONFIRMED" });
   }

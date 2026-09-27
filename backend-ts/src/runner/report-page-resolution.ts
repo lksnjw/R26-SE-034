@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonical-json.js";
 import { HandlerFailure, type CurrentUser } from "../http/handlers/common.js";
+import { requireResidentExecution } from "./execution-host.js";
 import { canReadExecution } from "../http/execution-scope.js";
 import { jsonObjectSchema } from "../models/schemas.js";
 import { workflowContentHash } from "../parser/workflow.js";
@@ -224,6 +225,7 @@ function receipt(execution: Execution, record: ReportPageResolutionRecord, repla
 }
 
 export async function resolveReportPage(repository: Repository, executionId: string, user: CurrentUser, raw: unknown) {
+  if (raw && typeof raw === "object" && "outcome" in raw && raw.outcome === "PAGE_CONFIRMED") requireResidentExecution(repository);
   requireStorage(repository);
   const parsed = reportPageResolutionCommandSchema.safeParse(raw);
   if (!parsed.success || canonicalJSONBytes(raw).length > 600_000) deny("Resolution requires one exact case revision, bounded evidence and either a captured page result or abandonment", 422);
