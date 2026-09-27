@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { jsonObjectSchema } from "../models/schemas.js";
+import { readbackTaskOutboxSchema } from "./readback-task-outbox.js";
 
 const id = z.string().min(1).max(256), hash = z.string().regex(/^sha256:[a-f0-9]{64}$/), at = z.string().datetime();
 export const operationReadbackCommandSchema = z.object({ intentId: id, baseVersion: z.number().int().positive(), factsHash: hash,
@@ -12,6 +13,7 @@ export const operationReadbackJobSchema = z.object({ profile: z.literal("operati
   targetId: id, targetHash: hash, connectionBinding: z.string().min(1).max(512), argumentHash: hash,
   admission: z.object({ connectionId: id, capabilityId: id, revisionId: id, admissionVersion: z.number().int().positive(), contractHash: hash }).strict(),
   arguments: jsonObjectSchema, createdAt: at, epoch: z.number().int().positive(),
+  taskDispatchSecret: readbackTaskOutboxSchema.optional(),
   state: z.enum(["QUEUED", "RUNNING", "ANSWERED", "FAILED", "CANCELLED", "RECOVERY_REQUIRED"]),
   startedAt: at.optional(), dispatchIntentAt: at.optional(), completedAt: at.optional(),
   lease: z.object({ id, workerId: id, expiresAt: z.number().int().positive() }).strict().optional(),

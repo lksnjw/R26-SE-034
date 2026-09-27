@@ -15,6 +15,9 @@ import { validateHistoricalOperationReadback } from "./operation-readback-eviden
 import { operationReadbackCommandSchema, operationReadbackJobSchema, readbackEvaluationSchema, type OperationReadbackJob } from "./operation-readback-state.js";
 import { supportsOperationJobs } from "./operation-jobs.js";
 import { boundMcpConnection } from "../tools/mcp-dispatch-context.js";
+import { bindExecutionHost, residentExecutionAllowed, requireResidentExecution } from "./execution-host.js";
+import { assertReadbackTaskOutbox, newReadbackTaskOutbox, requireReadbackTaskAdmission, readbackTaskAdmissionAvailable,
+  dispatchReadbackTaskOutbox, readbackTaskCommandSchema, type ReadbackTaskCommand } from "./readback-task-outbox.js";
 
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
 const same = (a: unknown, b: unknown) => canonicalJSONBytes(a).equals(canonicalJSONBytes(b));
@@ -82,7 +85,7 @@ function finish(state: RepositoryState, job: OperationReadbackJob, status: Opera
 }
 function immutable(job: OperationReadbackJob) {
   const { state: _state, epoch: _epoch, lease: _lease, startedAt: _start, completedAt: _end, dispatchIntentAt: _intent, cancellation: _cancel,
-    result: _result, evaluation: _evaluation, failure: _failure, ...fixed } = job;
+    result: _result, evaluation: _evaluation, failure: _failure, taskDispatchSecret: _outbox, ...fixed } = job;
   return digest(fixed);
 }
 export function operationReadbackHistory(state: Readonly<RepositoryState>, services: HandlerServices, executionId: string, actorId: string) {
@@ -101,7 +104,7 @@ export function operationReadbackHistory(state: Readonly<RepositoryState>, servi
         target?.length === 1 && target[0]!.allowed_roles.includes(actor.role)) {
       resolveOperationReadbackArguments(source.tool, target[0]!, source.args);
       captureReadAdmissionPin(state, services.registries, target[0]!, session.admissionBinding, binding.admission, binding.admission.connectionId);
-      canQuery = jobs.length < 100 && !jobs.some(pending);
+      canQuery = readbackTaskAdmissionAvailable(services.repository) && supportsOperationJobs(services) && jobs.length < 100 && !jobs.some(pending);
     }
   } catch { /* Historical evidence remains inspectable; no query authority. */ }
   return { profile: "operation-readback-history/v1", executionId, intentId: source.intent.id, nodeId: source.intent.nodeId, baseVersion: source.version, factsHash: source.factsHash,
@@ -117,7 +120,8 @@ export function operationReadbackQueue(services: HandlerServices) {
   return queue;
 }
 type Active = { executionId: string; id: string; actorId: string; leaseId: string; epoch: number; fixed: string; valid: boolean; expiresAt: number;
-  controller: AbortController; timer?: NodeJS.Timeout; task?: Promise<void>; connectionId: string; roleMapHash: string; governanceHash?: string };
+  controller: AbortController; timer?: NodeJS.Timeout; task?: Promise<void>; connectionId: string; roleMapHash: string; governanceHash?: string;
+  taskCommand?: ReadbackTaskCommand; deadlineAt?: number };
 /** Separate read-only query jobs. Original run status, effect intents, SDK
  * answers, timeline and continuation pointer are never changed by this queue. */
 export class OperationReadbackQueue {
@@ -127,12 +131,14 @@ export class OperationReadbackQueue {
   #closed = false; #started = false; #stalled = false; #pumping = false; #repump = false; #lastActor = "";
   get closed() { return this.#closed; }
   constructor(readonly services: HandlerServices) {
+    bindExecutionHost(services.repository);
     if (!supportsOperationJobs(services)) deny("Status queries require qualified encrypted scoped persistence", 503);
     this.#unobserve = services.repository.observeCommits({ committed: state => {
       for (const control of this.#active.values()) {
         try { const job = journal(state, control.executionId).find(job => job.id === control.id);
           if (!job || job.state !== "RUNNING" || job.epoch !== control.epoch || immutable(job) !== control.fixed || job.lease?.id !== control.leaseId || job.lease.workerId !== this.#workerId || job.lease.expiresAt <= Date.now() || job.cancellation)
             throw new Error("Status query claim changed");
+          if (control.taskCommand && (assertReadbackTaskOutbox(job).taskId !== control.taskCommand.taskId || job.taskDispatchSecret!.state === "PREPARED")) throw new Error("Task query identity changed");
           currentQuery(state, services, job);
           if (digest(boundMcpConnection(services, control.connectionId).roleMap) !== control.roleMapHash || control.governanceHash && digest(state.governancePolicy) !== control.governanceHash) throw new Error("Query policy or role map changed");
           control.expiresAt = job.lease.expiresAt;
@@ -142,6 +148,7 @@ export class OperationReadbackQueue {
     }, unavailable: () => { this.#stalled = true; for (const control of this.#active.values()) { control.valid = false; control.controller.abort(); } } });
   }
   async admit(executionId: string, user: CurrentUser, raw: unknown) {
+    requireReadbackTaskAdmission(this.services.repository);
     if (this.#closed || this.#stalled) deny("Status query worker is unavailable; authoritative recovery and restart are required", 503);
     const parsed = operationReadbackCommandSchema.safeParse(raw); if (!parsed.success) deny("Status query requires exact intent, case revision, facts hash and idempotency key", 422);
     const command = parsed.data, keyHash = digest(["operation-readback/v1", executionId, user.id, command.idempotencyKey]);
@@ -162,13 +169,74 @@ export class OperationReadbackQueue {
           targetId: binding.toolId, targetHash: binding.contractHash, admission: { ...binding.admission }, connectionBinding: source.connectionBinding,
           argumentHash: source.intent.argumentHash, arguments: args, createdAt: new Date().toISOString(), epoch: 1, state: "QUEUED" });
         currentQuery(state, this.services, job);
+        if (!residentExecutionAllowed(this.services.repository)) job.taskDispatchSecret = newReadbackTaskOutbox(job);
         (state.executions[executionId]!.operationSecret!.readbacks ??= {})[job.id] = job; event(state, job, "queued");
         return { ...publicJob(job), replayed: false };
-      }); this.kick(); return receipt;
+      });
+      if (!residentExecutionAllowed(this.services.repository)) return { ...receipt,
+        taskDispatch: await dispatchReadbackTaskOutbox(this.services.repository, executionId, receipt.id) };
+      this.kick(); return receipt;
     } catch (error) {
       if (error instanceof HandlerFailure) throw error;
       throw new HandlerFailure(503, "Status query admission is unconfirmed. Reload authoritative history before submitting again; the original action was not replayed.", { code: "OPERATION_READBACK_UNCONFIRMED" });
     }
+  }
+  /** Private task entry. The envelope identifies one original read-only query;
+   * it supplies no role, arguments, approval, permit or authority to resend. */
+  async executeTask(raw: unknown, options: { timeoutMs: number; signal?: AbortSignal }) {
+    const repository = this.services.repository, command = readbackTaskCommandSchema.parse(raw);
+    if (residentExecutionAllowed(repository) || this.#closed || this.#stalled) throw new Error("Readback task requires an available bounded owner");
+    if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 100 || options.timeoutMs > Math.min(240_000, this.services.config.readWorkerLeaseMs - 100))
+      throw new Error("Readback task wait must fit inside its fixed lease");
+    const initial = await repository.readAuthoritative(state => {
+      const job = journal(state, command.executionId).find(job => job.id === command.queryId);
+      if (!job || assertReadbackTaskOutbox(job).taskId !== command.taskId || job.taskDispatchSecret!.state === "PREPARED") throw new Error("Query has no acknowledged task intention");
+      historicalQuery(state, job); return structuredClone(job);
+    });
+    if (!pending(initial)) return this.taskReceipt(command);
+    if (initial.state === "RUNNING") {
+      if (!initial.lease || Date.now() < initial.lease.expiresAt) throw new Error("Original query claim is live; retry original delivery after expiry");
+      await repository.mutateExecution(command.executionId, state => {
+        const job = journal(state, command.executionId).find(job => job.id === command.queryId);
+        if (!job || job.state !== "RUNNING" || job.epoch !== initial.epoch || job.lease?.id !== initial.lease!.id || job.lease.workerId !== initial.lease!.workerId ||
+            job.lease.expiresAt !== initial.lease!.expiresAt || Date.now() < job.lease.expiresAt || assertReadbackTaskOutbox(job).taskId !== command.taskId) throw new Error("Original query claim changed");
+        // journal() validates and clones records; mutate the authoritative leaf.
+        const stored = state.executions[command.executionId]!.operationSecret!.readbacks![command.queryId]!;
+        stored.epoch++; finish(state, stored, stored.dispatchIntentAt ? "RECOVERY_REQUIRED" : "FAILED",
+          stored.dispatchIntentAt ? "READBACK_INTERRUPTED" : "READBACK_BLOCKED_BEFORE_DISPATCH");
+      });
+      return this.taskReceipt(command);
+    }
+    if (this.#active.size || options.signal?.aborted) throw new Error("Readback task owner is busy or cancelled");
+    const connection = boundMcpConnection(this.services, initial.admission.connectionId);
+    const control: Active = { executionId: initial.executionId, id: initial.id, actorId: initial.actorId, epoch: initial.epoch, fixed: immutable(initial),
+      leaseId: `readback-lease-${randomBytes(16).toString("hex")}`, valid: true, expiresAt: Date.now() + this.services.config.readWorkerLeaseMs,
+      controller: new AbortController(), connectionId: initial.admission.connectionId, roleMapHash: digest(connection.roleMap), taskCommand: command,
+      deadlineAt: Date.now() + options.timeoutMs };
+    const expire = () => { control.valid = false; control.controller.abort(); };
+    options.signal?.addEventListener("abort", expire, { once: true });
+    this.#active.set(control.id, control);
+    try {
+      control.task = boundedOperation(() => this.work(control), { timeoutMs: options.timeoutMs, signal: control.controller.signal,
+        label: "Readback task processing", onAbandon: expire });
+      try { await control.task; } catch { expire(); await this.retire(control); }
+      return await this.taskReceipt(command);
+    } finally {
+      options.signal?.removeEventListener("abort", expire); expire(); this.#active.delete(control.id);
+    }
+  }
+  private taskReceipt(command: ReadbackTaskCommand) {
+    return this.services.repository.readAuthoritative(state => {
+      const job = journal(state, command.executionId).find(job => job.id === command.queryId);
+      if (!job || pending(job) || job.lease || assertReadbackTaskOutbox(job).taskId !== command.taskId || job.taskDispatchSecret!.state === "PREPARED")
+        throw new Error("Readback task has no acknowledged terminal receipt; retry original delivery");
+      historicalQuery(state, job);
+      const events = state.executionEvents[command.executionId] ?? [], progress = state.executions[command.executionId]?.readProgress;
+      if (!progress || events.length !== progress.lastSequence || events.some((entry, index) => entry.sequence !== index + 1) ||
+          !events.some(entry => entry.type === `operation.readback_${job.state.toLowerCase()}` && entry.attemptId === job.id))
+        throw new Error("Readback task terminal journal is incomplete");
+      return publicJob(job);
+    });
   }
   async cancel(executionId: string, id: string, user: CurrentUser) {
     if (this.#closed || this.#stalled) deny("Status query worker is unavailable", 503);
@@ -184,12 +252,13 @@ export class OperationReadbackQueue {
       throw new HandlerFailure(503, "Query cancellation acknowledgement is unconfirmed; reload history. No original action was replayed.", { code: "OPERATION_READBACK_UNCONFIRMED" }); }
   }
   async start() {
+    requireResidentExecution(this.services.repository);
     if (this.#started || this.#closed) return;
     // The repository was authoritatively opened before worker startup. Avoid
     // an empty background pump; every real claim/dispatch still rechecks it.
     const jobs = await this.services.repository.read(state => { this.services.repository.assertAuthority(); return allJobs(state); });
     this.services.repository.assertAuthority();
-    for (const job of jobs.filter(job => job.state === "RUNNING")) await this.services.repository.mutateExecution(job.executionId, state => {
+    for (const job of jobs.filter(job => job.state === "RUNNING" && !job.taskDispatchSecret)) await this.services.repository.mutateExecution(job.executionId, state => {
       const current = state.executions[job.executionId]!.operationSecret!.readbacks![job.id]!;
       if (current.state !== "RUNNING") return; current.epoch++;
       finish(state, current, current.dispatchIntentAt ? "RECOVERY_REQUIRED" : "FAILED", "READBACK_INTERRUPTED");
@@ -197,14 +266,15 @@ export class OperationReadbackQueue {
     this.#started = true; if (jobs.some(job => job.state === "QUEUED")) this.kick();
   }
   kick() {
-    if (!this.#started || this.#closed || this.#stalled) return;
+    if (!residentExecutionAllowed(this.services.repository) || !this.#started || this.#closed || this.#stalled) return;
     if (this.#pumping) { this.#repump = true; return; }
     this.#pumping = true;
     setImmediate(() => { void this.pump().catch(() => { this.#stalled = true; }).finally(() => { this.#pumping = false; if (this.#repump) { this.#repump = false; this.kick(); } }); });
   }
   private async pump() {
+    if (!residentExecutionAllowed(this.services.repository)) return;
     while (!this.#closed && !this.#stalled && this.#active.size < this.services.config.readWorkerConcurrency) {
-      const candidates = await this.services.repository.readAuthoritative(state => allJobs(state).filter(job => job.state === "QUEUED" && !this.#active.has(job.id) &&
+      const candidates = await this.services.repository.readAuthoritative(state => allJobs(state).filter(job => !job.taskDispatchSecret && job.state === "QUEUED" && !this.#active.has(job.id) &&
         [...this.#active.values()].filter(control => control.actorId === job.actorId).length < this.services.config.readWorkerPerActor).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)));
       const job = candidates.find(job => job.actorId !== this.#lastActor) ?? candidates[0]; if (!job) return;
       const connection = boundMcpConnection(this.services, job.admission.connectionId);
@@ -216,13 +286,16 @@ export class OperationReadbackQueue {
   }
   private assert(control: Active) {
     this.services.repository.assertAuthority();
-    if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt || digest(boundMcpConnection(this.services, control.connectionId).roleMap) !== control.roleMapHash)
+    if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt ||
+        control.deadlineAt !== undefined && Date.now() >= control.deadlineAt || digest(boundMcpConnection(this.services, control.connectionId).roleMap) !== control.roleMapHash)
       throw new Error("Status query worker is fenced");
   }
   private async retire(control: Active) {
     await this.services.repository.mutateExecution(control.executionId, state => {
       const job = state.executions[control.executionId]?.operationSecret?.readbacks?.[control.id];
       if (!job || job.epoch !== control.epoch || !pending(job) || job.state === "RUNNING" && job.lease?.id !== control.leaseId) return;
+      if (control.taskCommand && (immutable(job) !== control.fixed || assertReadbackTaskOutbox(job).taskId !== control.taskCommand.taskId))
+        throw new Error("Original task query changed; retirement cannot rewrite another identity");
       finish(state, job, job.dispatchIntentAt ? "RECOVERY_REQUIRED" : job.cancellation ? "CANCELLED" : "FAILED",
         job.dispatchIntentAt ? "READBACK_INTERRUPTED" : job.cancellation ? "READBACK_CANCELLED" : "READBACK_BLOCKED_BEFORE_DISPATCH");
     });
@@ -233,15 +306,19 @@ export class OperationReadbackQueue {
       const initial = await repository.mutateExecution(control.executionId, state => {
         this.assert(control); const job = state.executions[control.executionId]!.operationSecret!.readbacks![control.id]!;
         if (job.state !== "QUEUED" || job.epoch !== control.epoch || immutable(job) !== control.fixed) throw new Error("Query is not its exact queued record");
+        if (control.taskCommand ? assertReadbackTaskOutbox(job).taskId !== control.taskCommand.taskId || job.taskDispatchSecret!.state === "PREPARED" : !!job.taskDispatchSecret)
+          throw new Error("Query is not owned by this worker host");
         currentQuery(state, services, job); job.state = "RUNNING"; job.startedAt = new Date().toISOString();
-        job.lease = { id: control.leaseId, workerId: this.#workerId, expiresAt: Date.now() + services.config.readWorkerLeaseMs }; event(state, job, "started"); return structuredClone(job);
+        job.lease = { id: control.leaseId, workerId: this.#workerId,
+          expiresAt: control.taskCommand ? control.expiresAt : Date.now() + services.config.readWorkerLeaseMs };
+        event(state, job, "started"); return structuredClone(job);
       });
       this.assert(control);
-      control.timer = setInterval(() => { void repository.mutateExecution(control.executionId, state => {
+      if (!control.taskCommand) { control.timer = setInterval(() => { void repository.mutateExecution(control.executionId, state => {
         this.assert(control); const job = state.executions[control.executionId]!.operationSecret!.readbacks![control.id]!;
         if (job.state !== "RUNNING" || job.lease?.id !== control.leaseId || job.epoch !== control.epoch) throw new Error("Query lease changed");
         currentQuery(state, services, job); job.lease.expiresAt = Date.now() + services.config.readWorkerLeaseMs;
-      }).catch(() => { control.valid = false; control.controller.abort(); }); }, Math.max(1000, Math.floor(services.config.readWorkerLeaseMs / 3))); control.timer.unref();
+      }).catch(() => { control.valid = false; control.controller.abort(); }); }, Math.max(1000, Math.floor(services.config.readWorkerLeaseMs / 3))); control.timer.unref(); }
       const verified = await repository.readAuthoritative(state => currentQuery(state, services, initial));
       const yaml = stringify({ name: "Exact operation status query", description: "Read-only query of one reviewed uncertain operation; no resend or resume", trigger: { type: "manual" },
         steps: [{ id: "query", action: verified.target.name, connection_id: initial.admission.connectionId, parameters: initial.arguments }] });

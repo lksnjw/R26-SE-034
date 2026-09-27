@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
+import { boundedOperation } from "../core/bounded-operation.js";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../core/canonical-json.js";
 import type { CurrentUser, HandlerServices } from "../http/handlers/common.js";
 import { HandlerFailure, validateWorkflow } from "../http/handlers/common.js";
+import { operationGovernanceBinding } from "../governance/service.js";
 import type { Execution, ReportWindow, ReportWindowInputBinding, Repository, RepositoryState } from "../repository/store.js";
 import { effectiveStepKind, type Workflow } from "../models/schemas.js";
 import { parseWorkflowYAMLStrict, workflowContentHash } from "../parser/workflow.js";
@@ -29,7 +31,7 @@ import { acknowledgedReadToolFailure, dispatchReadTool } from "../tools/read-too
 import { createDispatchIdentity } from "../tools/registry.js";
 import { issueOperationDispatchPermit, retireOperationDispatchPermit } from "../tools/operation-dispatch-permit.js";
 import { hasReservedBridgeRole } from "../tools/erpbridge-contract.js";
-import { assertConsumedRuntimeApproval, consumeRuntimeApproval, requestRuntimeApproval, runtimeApprovalPolicyHash } from "./runtime-approvals.js";
+import { assertConsumedRuntimeApproval, consumeRuntimeApproval, requestRuntimeApproval, runtimeApprovalPolicyHash, runtimeApprovalEvidence } from "./runtime-approvals.js";
 import type { OperationIntent } from "./operation-state.js";
 import type { ToolDefinition } from "../registry/schemas.js";
 import { assertReportCursorProgress, assertReportPageProgress, assertScheduledReportCoverageReceipt, completeCursorPaginatedReport, completePaginatedReport,
@@ -42,6 +44,10 @@ import { validateValue } from "../structured-output/validate.js";
 import { runRuntimeAgent, RuntimeAgentKnownFailure } from "./runtime-agent.js";
 import { boundMcpConnection } from "../tools/mcp-dispatch-context.js";
 import type { ReviewedReadBusinessFailure } from "../tools/read-business-error.js";
+import { bindExecutionHost, residentExecutionAllowed, requireResidentExecution } from "./execution-host.js";
+import { assertOperationTaskReady, operationTaskGeneration, operationTaskReceipt, operationTaskCommandSchema, prepareOperationTaskGeneration,
+  completeOperationTaskGeneration, dispatchOperationTaskOutbox, requireOperationTaskAdmission, type OperationTaskCommand } from "./operation-task-outbox.js";
+import { assertWorkflowLifecycleScope, type WorkflowLifecycleScope } from "./workflow-lifecycle-host.js";
 
 const queues = new WeakMap<Repository, OperationJobQueue>();
 const digest = (value: unknown) => resolvedParameterHashBytes(canonicalJSONBytes(value));
@@ -54,7 +60,8 @@ export function operationJobQueue(services: HandlerServices): OperationJobQueue 
   if (!queue || queue.closed) { queue = new OperationJobQueue(services); queues.set(services.repository, queue); }
   return queue;
 }
-type Active = { id: string; actorId: string; leaseId: string; controller: AbortController; valid: boolean; expiresAt: number; governanceHash?: string; timer?: NodeJS.Timeout; task?: Promise<void> };
+type Active = { id: string; actorId: string; leaseId: string; controller: AbortController; valid: boolean; expiresAt: number; governanceHash?: string; governanceExpiresAt?: number; timer?: NodeJS.Timeout; task?: Promise<void>;
+  taskCommand?: OperationTaskCommand; deadlineAt?: number };
 function audit(state: RepositoryState, run: Execution, action: string) {
   state.auditLogs.push({ id: `operation-audit-${randomBytes(12).toString("hex")}`, actor: run.startedBy, source: "operation-job/v1", action,
     resource: { type: "execution", id: run.id }, after: { status: run.status }, createdAt: new Date().toISOString() });
@@ -147,6 +154,7 @@ export class OperationJobQueue {
   #waitTimer: NodeJS.Timeout | undefined;
   get closed() { return this.#closed; }
   constructor(readonly services: HandlerServices) {
+    bindExecutionHost(services.repository);
     if (!supportsOperationJobs(services)) throw new HandlerFailure(503, "Operations require qualified encrypted scoped persistence", { code: "OPERATION_STORAGE_UNSUPPORTED" });
     this.#unsubscribe = services.repository.observeCommits({ committed: state => { this.observe(state); this.scheduleWaitExpiry(state);
       if (Object.values(state.executions).some(run => run.operationSecret?.state === "QUEUED" && run.status === "PENDING")) this.kick();
@@ -163,22 +171,57 @@ export class OperationJobQueue {
     this.#waitTimer = setTimeout(() => { void this.expireWaits().catch(() => { this.#stalled = true; }); }, Math.max(1, Math.min(...deadlines) - Date.now())); this.#waitTimer.unref();
   }
   private async expireWaits() {
+    return this.expireApprovals(Date.now(), 100, () => this.services.repository.assertAuthority());
+  }
+  async expireWaitingApprovalInvocation(scope: WorkflowLifecycleScope) {
+    const assertReady = () => { assertWorkflowLifecycleScope(this.services.repository, scope); if (this.#closed || this.#stalled) throw new Error("Operation expiry owner is unavailable"); };
+    assertReady(); return this.expireApprovals(scope.nowMs, scope.expiryLimit, assertReady);
+  }
+  private async expireApprovals(nowMs: number, limit: number, assertReady: () => void) {
+    assertReady();
     const ids = await this.services.repository.readAuthoritative(state => Object.values(state.executions).filter(run => run.status === "AWAITING_APPROVAL" && run.operationSecret?.state === "WAITING" &&
-      Date.parse(run.runtimeApprovalSecret?.records[run.runtimeApprovalSecret.activeId]?.expiresAt ?? "") <= Date.now()).map(run => run.id));
-    for (const id of ids) await this.services.repository.mutateExecution(id, state => {
-      const run = state.executions[id]!, record = run.runtimeApprovalSecret?.records[run.runtimeApprovalSecret.activeId];
-      if (run.status !== "AWAITING_APPROVAL" || run.operationSecret?.state !== "WAITING" || !record || Date.parse(record.expiresAt) > Date.now()) return;
+      Date.parse(run.runtimeApprovalSecret?.records[run.runtimeApprovalSecret.activeId]?.expiresAt ?? "") <= nowMs)
+      .sort((a,b) => a.runtimeApprovalSecret!.records[a.runtimeApprovalSecret!.activeId]!.expiresAt.localeCompare(b.runtimeApprovalSecret!.records[b.runtimeApprovalSecret!.activeId]!.expiresAt) || a.id.localeCompare(b.id)).slice(0, limit).map(run => run.id));
+    assertReady(); let expired = 0;
+    for (const id of ids) {
+      assertReady();
+      const changed = await this.services.repository.mutateExecution(id, state => {
+      assertReady();
+      const run = state.executions[id]!;
+      if (run.status !== "AWAITING_APPROVAL" || run.operationSecret?.state !== "WAITING") return false;
+      const record = runtimeApprovalEvidence(run, run.runtimeApprovalSecret!.activeId);
+      if (Date.parse(record.expiresAt) > nowMs) return false;
+      if (record.state !== "PENDING" || run.operationSecret.lease || record.binding.executionId !== run.id || record.binding.workflowId !== run.workflowId ||
+          record.binding.nodeId !== run.pendingApproval?.stepId || nowMs < Date.parse(record.requestedAt) ||
+          Object.values(run.operationSecret.intents).some(intent => intent.invocationId === record.binding.invocationId))
+        throw new Error("Approval expiry cannot certify an unconfirmed or dispatched action");
       delete run.pendingApproval; run.failure = { failureCategory: "RUNTIME_APPROVAL_EXPIRED", failedStepId: record.binding.nodeId };
+      appendExecutionEvent(state, run, "approval.expired", { approvalId: record.id, version: record.version, reviewHash: record.reviewHash, expiresAt: record.expiresAt }, record.binding.nodeId, record.binding.invocationId);
       finish(state, run, "FAILED", "The exact approval expired before dispatch. Previous saved results remain available; no automatic operation replay occurred.");
-    });
+      assertReady(); return true;
+      });
+      assertReady(); if (changed) expired++;
+    }
+    return expired;
   }
   private observe(state: Readonly<RepositoryState>) {
     for (const control of this.#active.values()) {
       try {
         const run = state.executions[control.id], job = run?.operationSecret;
         if (!run || run.status !== "RUNNING" || !job || job.state !== "CLAIMED" || job.lease?.id !== control.leaseId || job.lease.workerId !== this.#workerId || job.lease.expiresAt <= Date.now() || run.readProgress?.cancellation || state.users[job.actorId]?.roleId !== job.roleId) throw new Error("Operation claim changed");
+        if (control.taskCommand) {
+          const { ledger, generation } = operationTaskGeneration(run, control.taskCommand);
+          if (generation.completion || ledger.generations.at(-1)!.taskId !== control.taskCommand.taskId) throw new Error("Operation task generation changed");
+        }
         assertCurrentRunController(state as RepositoryState, run, job.actorId, job.admittedRole);
-        if (control.governanceHash && control.governanceHash !== digest(state.governancePolicy)) throw new Error("Operation governance policy changed");
+        const governance = operationGovernanceBinding(state.governancePolicy);
+        if (control.governanceHash && control.governanceHash !== digest(governance.authority)) throw new Error("Operation governance policy changed");
+        if (control.governanceExpiresAt !== undefined && governance.expiresAt !== undefined) {
+          // Renewal may not extend this invocation's original authorization
+          // window. A shorter current deadline immediately fences dispatch.
+          control.governanceExpiresAt = Math.min(control.governanceExpiresAt, governance.expiresAt);
+          if (Date.now() >= control.governanceExpiresAt) throw new Error("Operation governance policy expired");
+        }
         const snapshot = run.workflowSnapshot!, publication = state.versions[run.workflowId]?.findLast(item => item.version === snapshot.version && item.artifactState === "PUBLISHED");
         if (!publication || publication.yaml !== snapshot.yaml) throw new Error("Operation publication changed");
         const compiled = prepareOperationExecution(state, this.services, publication, snapshot.yaml, job.admittedRole, snapshot.operationCompilation);
@@ -195,7 +238,9 @@ export class OperationJobQueue {
   }
   private assert(control: Active) {
     this.services.repository.assertAuthority();
-    if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt) throw new Error("Operation worker is fenced");
+    if (this.#closed || this.#stalled || !control.valid || control.controller.signal.aborted || Date.now() >= control.expiresAt ||
+        control.governanceExpiresAt !== undefined && Date.now() >= control.governanceExpiresAt ||
+        control.deadlineAt !== undefined && Date.now() >= control.deadlineAt) throw new Error("Operation worker is fenced");
   }
   /** Identity evidence only; no compilation, model/tool entry or admission. */
   findAdmission(state: Readonly<RepositoryState>, workflowId: string, actorId: string, key: string): Execution | null {
@@ -209,7 +254,10 @@ export class OperationJobQueue {
   }
   async admit(workflow: Workflow, rawInput: Record<string, unknown>, user: CurrentUser, key: string, traceId: string,
     source?: { profile: "workflow-schedule-source/v1"; scheduleId: string; scheduleRevision: number; occurrenceId: string; scheduledFor: string;
-      scheduleHash: string; reportWindow: ReportWindow; reportWindowBinding: ReportWindowInputBinding; inputHash: string }) {
+      scheduleHash: string; reportWindow: ReportWindow; reportWindowBinding: ReportWindowInputBinding; inputHash: string }, lifecycleScope?: WorkflowLifecycleScope) {
+    const assertLifecycle = () => { if (lifecycleScope) assertWorkflowLifecycleScope(this.services.repository, lifecycleScope); };
+    assertLifecycle();
+    requireOperationTaskAdmission(this.services.repository);
     if (workflow.recoverySource) throw new HandlerFailure(409, "Linked recovery workflows can only be admitted once through their exact source artifact", { code: "RECOVERY_ARTIFACT_ADMISSION_REQUIRED" });
     if (workflow.emailDeliverySource) throw new HandlerFailure(409, "Linked email-delivery workflows can only be admitted once from their exact reviewed draft", { code: "EMAIL_DELIVERY_ADMISSION_REQUIRED" });
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new HandlerFailure(422, "Operation runs require a stable 16–128 character idempotency key", { code: "OPERATION_KEY_REQUIRED" });
@@ -220,11 +268,12 @@ export class OperationJobQueue {
     const scope = digest(["operation/v1", user.id, workflow.id, key]);
     const fingerprint = digest({ sourceHash: workflowContentHash(workflow.yaml), version: workflow.publishedVersion, input, source: source ?? null });
     const result = await this.services.repository.mutate(state => {
+      assertLifecycle();
       const existing = Object.values(state.executions).find(run => run.operationSecret?.idempotencyScope === scope);
       if (existing) {
         if (existing.operationSecret!.requestFingerprint !== fingerprint) throw new HandlerFailure(409, "Operation key already belongs to different inputs or publication");
         assertCurrentRunController(state, existing, user.id, user.role);
-        return { execution: publicExecution(existing), replayed: true };
+        assertLifecycle(); return { execution: publicExecution(existing), replayed: true };
       }
       const current = state.workflows[workflow.id], publication = state.versions[workflow.id]?.findLast(item => item.version === workflow.publishedVersion && item.artifactState === "PUBLISHED");
       if (!current || current.archived || current.yaml !== workflow.yaml || current.publishedVersion !== workflow.publishedVersion || !publication || publication.yaml !== workflow.yaml || current.pendingGenerationApproval?.steps.length) throw new HandlerFailure(409, "A current accepted immutable operation publication is required");
@@ -284,29 +333,90 @@ export class OperationJobQueue {
       assertCurrentRunController(state, run, user.id, user.role);
       state.executions[id] = run; state.timelines[id] = []; state.executionEvents[id] = []; state.executionLogs[id] = [];
       appendExecutionEvent(state, run, "run.queued", { profile: "operation-job/v1", persistence: run.readProgress!.persistence }); audit(state, run, "execution.queued");
-      return { execution: publicExecution(run), replayed: false };
+      if (!residentExecutionAllowed(this.services.repository)) prepareOperationTaskGeneration(run);
+      assertLifecycle(); return { execution: publicExecution(run), replayed: false };
     });
+    assertLifecycle();
+    if (!residentExecutionAllowed(this.services.repository)) {
+      const taskDispatch = await dispatchOperationTaskOutbox(this.services.repository, String(result.execution.id));
+      assertLifecycle(); return { ...result, taskDispatch };
+    }
     this.kick(); return result;
   }
+  /** One private original generation, never a browser supplied continuation or
+   * approval. Delivery may stop at an acknowledged wait, not business success. */
+  async executeTask(raw: unknown, options: { timeoutMs: number; signal?: AbortSignal }) {
+    const repository = this.services.repository, command = operationTaskCommandSchema.parse(raw);
+    if (residentExecutionAllowed(repository) || this.#closed || this.#stalled) throw new Error("Operation tasks require an available bounded owner");
+    if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 100 || options.timeoutMs > Math.min(240_000, this.services.config.readWorkerLeaseMs - 100)) throw new Error("Operation task deadline must fit inside its fixed lease");
+    const initial = await repository.readAuthoritative(state => {
+      const run = state.executions[command.executionId]; if (!run) throw new Error("Original operation is unavailable");
+      const { generation } = operationTaskGeneration(run, command);
+      if (!generation.completion && run.operationSecret!.state === "QUEUED") assertOperationTaskReady(state, run, command);
+      return { run: structuredClone(run), completed: !!generation.completion };
+    });
+    const receipt = () => repository.readAuthoritative(state => operationTaskReceipt(state, state.executions[command.executionId]!, command));
+    if (initial.completed) return receipt();
+    const retireOriginal = async (lease: NonNullable<NonNullable<Execution["operationSecret"]>["lease"]>) => {
+      await repository.mutateExecution(command.executionId, state => {
+        const run = state.executions[command.executionId]!; operationTaskGeneration(run, command);
+        if (run.status !== "RUNNING" || run.operationSecret?.lease?.id !== lease.id || run.operationSecret.lease.workerId !== lease.workerId) return;
+        recover(state, run, "OPERATION_TASK_INTERRUPTED");
+      });
+    };
+    if (initial.run.operationSecret!.state === "CLAIMED") {
+      const lease = initial.run.operationSecret!.lease;
+      if (!lease || Date.now() < lease.expiresAt) throw new Error("Original operation claim is live; retry its original task after expiry");
+      await retireOriginal(lease);
+    } else if (initial.run.operationSecret!.state === "QUEUED") {
+      if (this.#active.size || options.signal?.aborted) throw new Error("Operation task owner is busy or cancelled");
+      const control: Active = { id: command.executionId, actorId: initial.run.operationSecret!.actorId, leaseId: randomBytes(16).toString("hex"),
+        controller: new AbortController(), valid: false, expiresAt: Date.now() + this.services.config.readWorkerLeaseMs, taskCommand: command,
+        deadlineAt: Date.now() + options.timeoutMs };
+      const expire = () => { control.valid = false; control.controller.abort(); };
+      options.signal?.addEventListener("abort", expire, { once: true }); this.#active.set(control.id, control);
+      try {
+        control.task = boundedOperation(() => this.process(control), { timeoutMs: options.timeoutMs, signal: control.controller.signal,
+          label: "Operation task processing", onAbandon: expire });
+        try { await control.task; } catch { expire(); await retireOriginal({ id: control.leaseId, workerId: this.#workerId, expiresAt: control.expiresAt }); }
+      } finally { options.signal?.removeEventListener("abort", expire); expire(); this.#active.delete(control.id); }
+    }
+    await repository.mutateExecution(command.executionId, state => {
+      const run = state.executions[command.executionId]!;
+      if (["DONE", "AWAITING_APPROVAL"].includes(run.status)) {
+        const snapshot = run.workflowSnapshot!, publication = state.versions[run.workflowId]?.findLast(value => value.version === snapshot.version && value.yaml === snapshot.yaml && value.artifactState === "PUBLISHED");
+        const compiled = publication?.compiledOperation as { plan?: CompiledOperationPlan; receipt?: unknown } | undefined;
+        if (!compiled?.plan || !canonicalJSONBytes(compiled.receipt).equals(canonicalJSONBytes(snapshot.operationCompilation))) throw new Error("Original operation compilation receipt changed");
+        assertConfirmedOperationResults(state, run, compiled.plan);
+      }
+      const completion = completeOperationTaskGeneration(state, run, command);
+      if (completion.milestone === "CONTINUATION") prepareOperationTaskGeneration(run);
+    });
+    const result = await receipt();
+    if (result.milestone === "CONTINUATION") await dispatchOperationTaskOutbox(repository, command.executionId);
+    return result;
+  }
   async start() {
+    requireResidentExecution(this.services.repository);
     if (this.#started || this.#closed) return; this.#started = true;
-    const jobs = await this.services.repository.read(state => Object.values(state.executions).filter(run => run.operationSecret).map(run => ({ id: run.id, state: run.operationSecret!.state })));
+    const jobs = await this.services.repository.read(state => Object.values(state.executions).filter(run => run.operationSecret && !run.operationSecret.taskDispatchSecret).map(run => ({ id: run.id, state: run.operationSecret!.state })));
     for (const { id } of jobs.filter(job => job.state === "CLAIMED")) await this.services.repository.mutateExecution(id, state => recover(state, state.executions[id]!, "OPERATION_WORKER_RESTARTED"));
     if (jobs.some(job => job.state === "WAITING")) await this.services.repository.readAuthoritative(state => this.scheduleWaitExpiry(state));
     if (jobs.some(job => job.state === "QUEUED")) this.kick();
   }
   kick() {
-    if (!this.#started || this.#closed || this.#stalled) return;
+    if (!residentExecutionAllowed(this.services.repository) || !this.#started || this.#closed || this.#stalled) return;
     if (this.#pumping) { this.#repump = true; return; }
     void this.pump().catch(() => { this.#stalled = true; });
   }
   private async pump() {
+    if (!residentExecutionAllowed(this.services.repository)) return;
     this.#pumping = true;
     try {
       while (!this.#closed && !this.#stalled && this.#active.size < this.services.config.readWorkerConcurrency) {
         const id = await this.services.repository.readAuthoritative(state => {
           const counts = new Map<string, number>(); for (const c of this.#active.values()) counts.set(c.actorId, (counts.get(c.actorId) ?? 0) + 1);
-          const pending = Object.values(state.executions).filter(run => run.status === "PENDING" && run.operationSecret?.profile === "operation-job/v1" && run.operationSecret.state === "QUEUED" && !this.#active.has(run.id) && (counts.get(run.operationSecret.actorId) ?? 0) < this.services.config.readWorkerPerActor)
+          const pending = Object.values(state.executions).filter(run => !run.operationSecret?.taskDispatchSecret && run.status === "PENDING" && run.operationSecret?.profile === "operation-job/v1" && run.operationSecret.state === "QUEUED" && !this.#active.has(run.id) && (counts.get(run.operationSecret.actorId) ?? 0) < this.services.config.readWorkerPerActor)
             .sort((a, b) => a.operationSecret!.createdAt.localeCompare(b.operationSecret!.createdAt) || a.id.localeCompare(b.id));
           return pending.find(run => run.operationSecret!.actorId !== this.#lastActor)?.id ?? pending[0]?.id;
         });
@@ -338,21 +448,24 @@ export class OperationJobQueue {
       const initial = await repository.mutateExecution(id, state => {
         const run = state.executions[id]!, job = run.operationSecret!;
         if (run.status !== "PENDING" || job.state !== "QUEUED") throw new Error("Operation is not queued");
+        if (control.taskCommand) assertOperationTaskReady(state, run, control.taskCommand);
+        else if (job.taskDispatchSecret) throw new Error("Resident worker cannot claim a task-owned operation");
         const denied = operationClaimDenial(state, run);
         if (denied) { finish(state, run, denied.status, denied.summary); return undefined; }
-        run.status = "RUNNING"; job.state = "CLAIMED"; job.lease = { id: control.leaseId, workerId: this.#workerId, expiresAt: Date.now() + services.config.readWorkerLeaseMs };
+        run.status = "RUNNING"; job.state = "CLAIMED"; job.lease = { id: control.leaseId, workerId: this.#workerId,
+          expiresAt: control.taskCommand ? control.expiresAt : Date.now() + services.config.readWorkerLeaseMs };
         appendExecutionEvent(state, run, "run.started", { profile: "operation-job/v1" }); return structuredClone(run);
       });
       if (!initial) return;
       this.assert(control);
-      control.timer = setInterval(() => { void repository.mutateExecution(id, state => {
+      if (!control.taskCommand) { control.timer = setInterval(() => { void repository.mutateExecution(id, state => {
         this.assert(control); const run = state.executions[id]!; if (run.operationSecret?.lease?.id !== control.leaseId) throw new Error("Operation lease changed");
         run.operationSecret.lease.expiresAt = Date.now() + services.config.readWorkerLeaseMs;
-      }).catch(() => { control.valid = false; control.controller.abort(); }); }, Math.max(1000, Math.floor(services.config.readWorkerLeaseMs / 3))); control.timer.unref();
+      }).catch(() => { control.valid = false; control.controller.abort(); }); }, Math.max(1000, Math.floor(services.config.readWorkerLeaseMs / 3))); control.timer.unref(); }
       const snapshot = initial.workflowSnapshot!, actor = await repository.effectiveUser(control.actorId);
       if (!actor || actor.role !== initial.operationSecret!.admittedRole) throw new Error("Operation actor changed");
       const plan = await repository.readAuthoritative(state => {
-        control.governanceHash = digest(state.governancePolicy);
+        control.governanceHash = digest(operationGovernanceBinding(state.governancePolicy).authority);
         const publication = state.versions[initial.workflowId]?.findLast(item => item.version === snapshot.version && item.artifactState === "PUBLISHED");
         if (!publication || publication.yaml !== snapshot.yaml) throw new Error("Operation publication changed");
         return prepareOperationExecution(state, services, publication, snapshot.yaml, actor.role, snapshot.operationCompilation).plan;
@@ -380,6 +493,12 @@ export class OperationJobQueue {
       assertContext();
       const gate = await validateWorkflow(services, "OperationJobWorker", snapshot.yaml, actor, { executionId: id, workflowId: initial.workflowId, traceId: initial.traceId, signal: control.controller.signal });
       if (!gate.result.passed || !gate.token) throw new Error("Operation deterministic verification failed");
+      await repository.readAuthoritative(state => {
+        const governance = operationGovernanceBinding(state.governancePolicy);
+        if (control.governanceHash !== digest(governance.authority)) throw new Error("Operation governance policy changed during verification");
+        if (governance.expiresAt !== undefined) control.governanceExpiresAt = governance.expiresAt;
+      });
+      this.assert(control);
       while (true) {
         const next = plan.ir.flow ? await repository.mutateExecution(id, state => {
           assertContext(); const run = state.executions[id]!;
