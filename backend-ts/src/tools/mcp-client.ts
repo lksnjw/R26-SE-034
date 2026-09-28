@@ -28,7 +28,7 @@ export type GovernedMCPClient = Readonly<{
     signal?: AbortSignal,
     beforeDispatch?: () => Promise<void>,
     assertDispatch?: () => void,
-    operationPermit?: import("./operation-dispatch-permit.js").OperationDispatchPermit | undefined,
+    operationPermit?: import("./operation-dispatch-permit.js").OperationDispatchPermit | import("./protected-operation-dispatch-permit.js").ProtectedOperationDispatchPermit | undefined,
     /** Opaque server-owned identity for this read invocation, not remote metadata. */
     readErrorBinding?: object,
   ): Promise<Record<string, unknown>>;
@@ -110,7 +110,9 @@ export function createGovernedMCPClient(options: {
       signal?: AbortSignal,
       beforeDispatch?: () => Promise<void>,
       assertDispatch?: () => void,
+      operationPermit?: import("./operation-dispatch-permit.js").OperationDispatchPermit | import("./protected-operation-dispatch-permit.js").ProtectedOperationDispatchPermit,
     ): Promise<Record<string, unknown>> {
+      if (operationPermit) throw new Error("Operation SDK permits require the reviewed governed ERPBridge SDK facade");
       assertStorageAuthority();
       const captured = structuredClone(parameters), capturedIdentity = structuredClone(identity);
       const parameterBytes = canonicalJSONBytes(captured);

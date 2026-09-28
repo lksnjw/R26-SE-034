@@ -11,6 +11,7 @@ import { assertActorAuthority } from "../http/handlers/model-selection.js";
 import { appendAudit, HandlerFailure, nextID, now, type CurrentUser } from "../http/handlers/common.js";
 import { createErpbridgeMcpSession, type ErpbridgeMcpSession } from "./erpbridge-mcp-client.js";
 import type { FastifyRequest } from "fastify";
+import { bindExecutionHost } from "../runner/execution-host.js";
 
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const connectionId = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
@@ -45,6 +46,7 @@ export class McpConnectionRuntime {
   #revision = 0;
   #probeBusy = false;
   #probeController: AbortController | undefined;
+  readonly #disposals = new Set<Promise<void>>();
   readonly #configurationHash: string;
   readonly #configured: boolean;
   readonly connection: ErpbridgeConnectionConfig;
@@ -62,6 +64,7 @@ export class McpConnectionRuntime {
   }
   static async open(options: RuntimeOptions) {
     const runtime = new McpConnectionRuntime(options);
+    const residentStartup = bindExecutionHost(options.repository) === "resident-server";
     if (!runtime.supportedStorage()) { runtime.#state = "STORAGE_UNSUPPORTED"; return runtime; }
     const record = await options.repository.mutate(state => {
       const old = state.mcpConnections[runtime.connection.id];
@@ -69,7 +72,7 @@ export class McpConnectionRuntime {
       // No stored live socket is trusted after a process restart. Interrupted
       // admin operations require an explicit new decision, not auto-completion.
       let interrupted = false;
-      for (const raw of Object.values(state.mcpConnectionOperations)) {
+      for (const raw of residentStartup ? Object.values(state.mcpConnectionOperations) : []) {
         const operation = operationSchema.parse(raw);
         if ((operation.connectionId ?? DEFAULT_BRIDGE_CONNECTION) === runtime.connection.id && operation.state === "RUNNING") {
           state.mcpConnectionOperations[operation.id] = { ...operation, connectionId: runtime.connection.id, state: "INTERRUPTED", reason: "MCP_OPERATION_INTERRUPTED", completedAt: now() };
@@ -83,7 +86,8 @@ export class McpConnectionRuntime {
     runtime.#revision = record.revision; runtime.#state = runtime.#configured ? "DISCONNECTED" : "UNCONFIGURED";
     // Persisted enabled intent may restore only the same configured revision.
     // This is initialize/discovery, never replay of a business operation.
-    if (runtime.#configured && record.desiredEnabled) await runtime.restore(record);
+    const blocked = await options.repository.readAuthoritative(state => runtime.running(state, record).some(operation => operation.action !== "test"));
+    if (runtime.#configured && record.desiredEnabled && !blocked) await runtime.restore(record);
     return runtime;
   }
   get session(): ErpbridgeMcpSession | undefined {
@@ -96,6 +100,10 @@ export class McpConnectionRuntime {
   sessionFor(id: string) { return id === this.connection.id ? this.session : undefined; }
   roleMapFor(id: string) { return id === this.connection.id ? this.connection.roleMap : undefined; }
   private supportedStorage() { return this.options.repository.persistence === null || this.options.repository.persistence.readQueueDurability === "encrypted-single-writer"; }
+  private running(state: Readonly<RepositoryState>, record: ConnectionRecord) {
+    return Object.values(state.mcpConnectionOperations).map(raw => operationSchema.parse(raw)).filter(operation =>
+      (operation.connectionId ?? DEFAULT_BRIDGE_CONNECTION) === this.connection.id && operation.revision === record.revision && operation.state === "RUNNING");
+  }
   private requireStorage() { if (!this.supportedStorage()) throw new HandlerFailure(503, "MCP lifecycle requires supported single-writer storage", { code: "MCP_STORAGE_UNSUPPORTED" }); }
   private authority(state: Readonly<RepositoryState>, user: CurrentUser, mutation: boolean) {
     const permissions = assertActorAuthority(state, user);
@@ -105,10 +113,14 @@ export class McpConnectionRuntime {
     this.#epoch++; this.#state = next; this.#controller?.abort(); this.#controller = undefined;
     this.#probeController?.abort(); this.#probeController = undefined;
     const old = this.#session; this.#session = undefined;
-    if (old) void this.dispose(old);
+    if (old) {
+      const disposal = this.dispose(old); this.#disposals.add(disposal);
+      void disposal.finally(() => this.#disposals.delete(disposal)).catch(() => {});
+    }
   }
   private async dispose(session: ErpbridgeMcpSession) {
-    try { await boundedOperation(() => session.close(), { timeoutMs: Math.min(1000, this.options.config.mcpTimeoutMs), label: "MCP session disposal" }); } catch { /* fenced locally even if remote cleanup is unknown */ }
+    try { await boundedOperation(() => session.close(), { timeoutMs: Math.min(1000, this.options.config.mcpTimeoutMs), label: "MCP session disposal" }); }
+    catch (error) { if (bindExecutionHost(this.options.repository) === "bounded-invocation") throw error; }
   }
   private async assertRevision(revision: number, epoch: number) {
     if (this.#stopped || epoch !== this.#epoch || this.#state !== "CONNECTED") throw new Error("MCP connection was superseded or disconnected");
@@ -124,7 +136,7 @@ export class McpConnectionRuntime {
     const authorizer = admissionAuthorizer(repository, registries, this.connection.id);
     return boundedOperation(async () => {
       candidate = await (this.options.factory ?? createErpbridgeMcpSession)({ baseURL: this.connection.baseURL, token: this.connection.mcpToken,
-        timeoutMs: config.mcpTimeoutMs, validator, signal: controller.signal, connectionRevision: `${this.connection.id}:${revision}`,
+        timeoutMs: config.mcpTimeoutMs, validator, signal: controller.signal, connectionId: this.connection.id, connectionRevision: `${this.connection.id}:${revision}`,
         admissionAuthorizer: async (definition, binding, pin) => { await this.assertRevision(revision, epoch); await authorizer(definition, binding, pin); await this.assertRevision(revision, epoch); } });
       if (controller.signal.aborted || epoch !== this.#epoch || this.#stopped) { await this.dispose(candidate); throw new Error("MCP initialization superseded"); }
       if (candidate.available === false || candidate.requiresReviewedRevision !== true || !/^[a-f0-9]{64}$/.test(candidate.admissionBinding ?? "")) throw new Error("Unsupported initialized MCP profile");
@@ -146,16 +158,16 @@ export class McpConnectionRuntime {
       this.#session = initialized.session; this.#state = "CONNECTED";
     } catch { if (initialized) await this.dispose(initialized.session); if (epoch === this.#epoch) this.invalidate("DEGRADED"); }
   }
-  private view(record: ConnectionRecord | null) {
+  private view(record: ConnectionRecord | null, durableBusy = false) {
     const state = this.#stopped ? "STOPPED" : this.#state === "CONNECTED" && (this.#session?.available === false || !record?.desiredEnabled || record.revision !== this.#revision || record.configurationHash !== this.#configurationHash) ? "DEGRADED" : this.#state;
-    const canInitialize = this.#configured && this.supportedStorage() && !this.#stopped && this.#state !== "CONNECTING" && !this.#probeBusy;
+    const canInitialize = this.#configured && this.supportedStorage() && !this.#stopped && this.#state !== "CONNECTING" && !this.#probeBusy && !durableBusy;
     return { id: this.connection.id, transport: "erpbridge-mcp", configurationSource: "backend-environment", secretReference: this.connection.tokenReference,
       primary: this.connection.primary, dispatchSupported: true, configured: this.#configured,
       revision: record?.revision ?? this.#revision, desiredEnabled: record?.desiredEnabled ?? false, state,
       initialized: state === "CONNECTED" && Boolean(this.session), discoveryAvailable: state === "CONNECTED" && Boolean(this.session), qualification: "Initialization/discovery only; not live ERP tool authorization or delivery",
       notificationStream: this.#session?.notificationState ?? null,
       persistence: !this.supportedStorage() ? "unsupported" : this.options.repository.persistence === null ? "memory-only" : "durable-single-writer",
-      operationInProgress: this.#probeBusy || this.#state === "CONNECTING",
+      operationInProgress: durableBusy || this.#probeBusy || this.#state === "CONNECTING",
       supports: { connect: canInitialize, test: canInitialize, disconnect: this.supportedStorage() && !this.#stopped },
       configurationChange: "Endpoint/secret rotation requires backend configuration and restart; re-review after connection revision changes" };
   }
@@ -163,7 +175,7 @@ export class McpConnectionRuntime {
     return this.options.repository.readAuthoritative(state => {
       this.authority(state, user, false);
       const raw = state.mcpConnections[this.connection.id]; const record = raw ? recordSchema.parse(raw) : null;
-      return { connections: [this.view(record)], recentOperations: Object.values(state.mcpConnectionOperations).filter(item => (operationSchema.parse(item).connectionId ?? DEFAULT_BRIDGE_CONNECTION) === this.connection.id).reverse().slice(0, 10).map(publicOperation) };
+      return { connections: [this.view(record, record ? this.running(state, record).length > 0 : false)], recentOperations: Object.values(state.mcpConnectionOperations).filter(item => (operationSchema.parse(item).connectionId ?? DEFAULT_BRIDGE_CONNECTION) === this.connection.id).reverse().slice(0, 10).map(publicOperation) };
     });
   }
   async command(action: "connect" | "disconnect" | "test", user: CurrentUser, body: unknown, request?: FastifyRequest, targetConnectionId = this.connection.id) {
@@ -182,8 +194,11 @@ export class McpConnectionRuntime {
       if (record.revision !== data.baseRevision) throw new HandlerFailure(409, "Connection revision changed; reload before a new operation", { code: "MCP_REVISION_CONFLICT" });
       if (action !== "disconnect" && !this.#configured) throw new HandlerFailure(503, "Configure the backend ERPBridge endpoint and credential reference first", { code: "MCP_NOT_CONFIGURED" });
       if (action !== "disconnect" && (this.#state === "CONNECTING" || this.#probeBusy)) throw new HandlerFailure(409, "A bounded MCP initialization/test is already in progress", { code: "MCP_OPERATION_IN_PROGRESS" });
+      if (action !== "disconnect" && this.running(state, record).length) throw new HandlerFailure(409, "An original MCP operation is unresolved", { code: "MCP_OPERATION_IN_PROGRESS" });
       if (Object.keys(state.mcpConnectionOperations).length >= 1000) throw new HandlerFailure(429, "MCP operation history retention limit reached", { code: "MCP_HISTORY_LIMIT" });
       const updated = action === "test" ? record : { ...record, revision: record.revision + 1, desiredEnabled: action === "connect", updatedAt: now() };
+      if (action === "disconnect") for (const operation of this.running(state, record))
+        state.mcpConnectionOperations[operation.id] = { ...operation, state: "INTERRUPTED", reason: "MCP_OPERATION_INTERRUPTED", completedAt: now() };
       const operation: Operation = { id: nextID(state, "mcpop"), actorId: user.id, connectionId: this.connection.id, action, scope, requestHash, requestId: data.requestId, revision: updated.revision, state: "RUNNING", startedAt: now() };
       transitionStarted = true;
       if (action !== "test") { this.invalidate(action === "connect" ? "CONNECTING" : "DISCONNECTED"); this.#revision = updated.revision; }
@@ -192,7 +207,7 @@ export class McpConnectionRuntime {
       appendAudit(state, user, `mcp.${action}.requested`, "connection", this.connection.id, { revision: record.revision }, { operationId: operation.id, revision: updated.revision }, request);
       return { operation, record: updated, duplicate: false };
     }).catch(error => { if (transitionStarted || !(error instanceof HandlerFailure)) this.invalidate("STORAGE_UNCERTAIN"); if (transitionStarted) this.#probeBusy = false; throw error; });
-    if (claimed.duplicate) return { operation: publicOperation(claimed.operation), connection: this.view(claimed.record), duplicate: true };
+    if (claimed.duplicate) return { operation: publicOperation(claimed.operation), connection: await this.options.repository.readAuthoritative(state => this.view(claimed.record, this.running(state, claimed.record).length > 0)), duplicate: true };
     const epoch = this.#epoch, controller = new AbortController();
     if (action === "connect") this.#controller = controller;
     if (action === "test") this.#probeController = controller;
@@ -231,7 +246,7 @@ export class McpConnectionRuntime {
       throw new HandlerFailure(error instanceof HandlerFailure && error.status === 403 ? 403 : 502, "MCP operation did not establish confirmed readiness; reload its saved operation before deciding on another request", { code: reason, operationId: claimed.operation.id });
     } finally { if (action === "test") { this.#probeBusy = false; this.#probeController = undefined; } }
   }
-  async stop() { this.#stopped = true; const old = this.#session; this.invalidate("STOPPED"); if (old) await this.dispose(old); }
+  async stop() { this.#stopped = true; this.invalidate("STOPPED"); await Promise.all([...this.#disposals]); }
 }
 
 /** Owns a bounded set of independently revisioned backend connections.
@@ -267,7 +282,11 @@ export class McpConnectionManager {
     const runtime = this.runtimes.get(targetConnectionId); if (!runtime) throw new HandlerFailure(404, "MCP connection not found");
     return runtime.command(action, user, body, request, targetConnectionId);
   }
-  async stop() { await Promise.allSettled([...this.runtimes.values()].map(runtime => runtime.stop())); }
+  async stop() {
+    const outcomes = await Promise.allSettled([...this.runtimes.values()].map(runtime => runtime.stop()));
+    const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    if (failures.length) throw new AggregateError(failures.map(failure => failure.reason), "MCP manager cleanup was not confirmed");
+  }
 }
 
 function validateOwnedConfiguration(config: AppConfig, connection: ErpbridgeConnectionConfig) {

@@ -16,6 +16,8 @@ import type { McpNotificationState } from "./mcp-notification-stream.js";
 import type { ReadAdmissionPin } from "../workflows/compiled-read.js";
 import { consumeOperationDispatchPermit, type OperationDispatchPermit } from "./operation-dispatch-permit.js";
 import { supportedRemoteReadError } from "./read-business-error.js";
+import { consumeProtectedOperationDispatchPermit, isProtectedOperationDispatchPermit, type ProtectedOperationDispatchPermit } from "./protected-operation-dispatch-permit.js";
+import { capabilityContractHash } from "../registry/capability-admission.js";
 
 export type ErpbridgeMcpSdkTool = {
   name: string;
@@ -38,6 +40,7 @@ export type ErpbridgeMcpSdkClient = Readonly<{
 }>;
 
 export type ErpbridgeMcpSession = Readonly<{
+  connectionId?: string;
   available?: boolean;
   notificationState?: McpNotificationState | undefined;
   requiresReviewedRevision?: boolean;
@@ -69,6 +72,18 @@ export class ErpbridgeMcpToolError extends Error {
 // this facade can mint evidence, after the bounded governed call returns. The
 // broker supplies a fresh opaque identity for each invocation (including pages).
 const acknowledgedReadErrors = new WeakMap<object, { binding: object; result: Record<string, unknown>; remoteBusinessError?: "not_found" }>();
+const acknowledgedProtectedEffects = new WeakMap<object, { permit: ProtectedOperationDispatchPermit; result: Record<string, unknown>; contractHash: string;
+  argumentBytes: Buffer; identityBytes: Buffer; completedAt: string }>();
+/** Only this governed SDK facade mints completion evidence. Clone/replay/JSON,
+ * an injected client response or a public error cannot advance an effect. */
+export function consumeAcknowledgedProtectedEffectResult(result: object, permit: ProtectedOperationDispatchPermit, definition: ToolDefinition,
+  args: Record<string, unknown>, identity: DispatchIdentity): { result: Record<string, unknown>; completedAt: string } | undefined {
+  const proof = acknowledgedProtectedEffects.get(result); acknowledgedProtectedEffects.delete(result);
+  if (!proof || proof.permit !== permit || proof.contractHash !== capabilityContractHash(definition) ||
+      !proof.argumentBytes.equals(canonicalJSONBytes(args)) || !proof.identityBytes.equals(canonicalJSONBytes(identity)) ||
+      !canonicalJSONBytes(proof.result).equals(canonicalJSONBytes(result))) return undefined;
+  return { result: structuredClone(proof.result), completedAt: proof.completedAt };
+}
 export function consumeAcknowledgedReadError(error: unknown, binding: object): Record<string, unknown> | undefined {
   return consumeAcknowledgedReadErrorEvidence(error, binding)?.result;
 }
@@ -89,6 +104,7 @@ export function consumeAcknowledgedReadErrorEvidence(error: unknown, binding: ob
  * Connects an ERPBridge MCP session and exposes its tool client adapters.
  ******************************************************************************/
 export async function createErpbridgeMcpSession(options: {
+  connectionId?: string;
   baseURL: string;
   token: string;
   timeoutMs: number;
@@ -100,6 +116,7 @@ export async function createErpbridgeMcpSession(options: {
   // Trusted backend lifecycle revision, never a model/client argument.
   connectionRevision?: string;
 }): Promise<ErpbridgeMcpSession> {
+  if (options.connectionId !== undefined && !/^[a-z][a-z0-9_-]{0,63}$/.test(options.connectionId)) throw new Error("ERPBridge connection identity is invalid");
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 2_147_483_647)
     throw new Error("ERPBridge MCP timeout must be a positive supported integer");
   const admissionBinding = createHash("sha256").update(JSON.stringify(options.connectionRevision === undefined ? [options.baseURL.trim(), options.token] : [options.baseURL.trim(), options.token, options.connectionRevision])).digest("hex");
@@ -155,6 +172,7 @@ export async function createErpbridgeMcpSession(options: {
     get notificationState() { return sdkClient.notificationState; },
     get discoveryGeneration() { return discoveryGeneration; },
     requiresReviewedRevision: sdkClient.metadataComplete === true,
+    connectionId: options.connectionId ?? "erpbridge-default",
     admissionBinding,
     dispatchBoundary: "sdk-entry/v1" as const,
     assertAdmission,
@@ -228,6 +246,7 @@ function createToolClient(
   definition: ToolDefinition,
   isClosed: () => boolean,
 ): GovernedMCPClient {
+  definition = structuredClone(definition);
   const remoteName = exactBridgeName(definition);
   const guarded = hasReservedBridgeRole(definition);
   return Object.freeze({
@@ -244,7 +263,7 @@ function createToolClient(
       signal?: AbortSignal,
       beforeDispatch?: () => Promise<void>,
       assertDispatch?: () => void,
-      operationPermit?: OperationDispatchPermit,
+      operationPermit?: OperationDispatchPermit | ProtectedOperationDispatchPermit,
       readErrorBinding?: object,
     ): Promise<Record<string, unknown>> {
       if (signal?.aborted)
@@ -276,10 +295,16 @@ function createToolClient(
       const args = guarded
         ? { ...parameters, role: identity.erpbridgeRole! }
         : { ...parameters };
+      let protectedPermit: ProtectedOperationDispatchPermit | undefined;
       const result = await callTool(remoteName || action, args, signal, beforeDispatch, () => {
         if (signal?.aborted || isClosed()) throw new Error("ERPBridge dispatch was cancelled or disconnected");
         assertDispatch?.();
-        if (!definition.is_read_only) consumeOperationDispatchPermit(operationPermit, definition, parameterBytes, identity);
+        if (isProtectedOperationDispatchPermit(operationPermit)) {
+          protectedPermit = operationPermit;
+          consumeProtectedOperationDispatchPermit(protectedPermit, definition, parameterBytes, identity);
+        } else if (operationPermit || !definition.is_read_only) {
+          consumeOperationDispatchPermit(operationPermit as OperationDispatchPermit | undefined, definition, parameterBytes, identity);
+        }
         validator.verifyAndConsumeCapability(capability, action, parameterBytes, identity);
       });
       const envelope = boundResult(result, definition);
@@ -292,6 +317,8 @@ function createToolClient(
         }
         throw error;
       }
+      if (protectedPermit) acknowledgedProtectedEffects.set(envelope, { permit: protectedPermit, result: structuredClone(envelope),
+        contractHash: capabilityContractHash(definition), argumentBytes: parameterBytes, identityBytes: canonicalJSONBytes(identity), completedAt: new Date().toISOString() });
       return envelope;
     },
   });
