@@ -17,7 +17,7 @@ type Options = Pick<Settings, "keyFilename" | "credentials"> & {
 };
 class FirestoreLegacyMigrationRequired extends Error {}
 const cached = (record: RuntimeRecord): Cached => ({ record: structuredClone(record), json: canonicalJSONBytes(record).toString("utf8") });
-function checkedState(payload: Uint8Array): RepositoryState {
+export function checkedFirestoreState(payload: Uint8Array): RepositoryState {
   const decoded: unknown = JSON.parse(Buffer.from(payload).toString("utf8")), restored = restoreState(payload);
   // Normalized authority is not an implicit legacy migration or a catch-all
   // repair that silently replaces malformed authorization/domain records.
@@ -69,10 +69,16 @@ export class FirestoreRecordPersistence implements PersistenceBackend {
       adapter.#unsubscribe = adapter.records.observeWriterUnavailable(() => { adapter.#unavailable = true; adapter.deny(); });
       adapter.records.assertWriterActive(); adapter.scheduleRenewal(); return adapter;
     } catch (error) {
-      void adapter.close().catch(() => {});
+      // Confirmed contention is observed before a lease transition or repository opens.
+      // It may be retried by a bounded host only after this SDK client drains.
+      // Failed disposal removes that retry category; unknown ACKs never get it.
+      let reason = error instanceof FirestoreOwnershipFailure ? error.reason : "UNCONFIRMED";
+      if (reason === "WRITER_HELD" || reason === "WRITER_HANDOFF") {
+        try { await adapter.close(); } catch { reason = "UNCONFIRMED"; }
+      } else void adapter.close().catch(() => {});
       // Preserve only our bounded category, never raw SDK/credential errors.
       throw new Error("Firestore record storage could not establish confirmed exclusive writer authority", {
-        cause: new FirestoreOwnershipFailure(error instanceof FirestoreOwnershipFailure ? error.reason : "UNCONFIRMED"),
+        cause: new FirestoreOwnershipFailure(reason),
       });
     } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); }
   }
@@ -128,7 +134,7 @@ export class FirestoreRecordPersistence implements PersistenceBackend {
         let payload: Buffer | null = null;
         if (!records.length) {
           if ((await this.records.db.doc("runtime/state").get()).exists) throw new FirestoreLegacyMigrationRequired("Legacy Firestore aggregate exists; explicit backed-up migration is required");
-        } else payload = Buffer.from(JSON.stringify(checkedState(Buffer.from(JSON.stringify(assembleFirestoreState(records))))));
+        } else payload = Buffer.from(JSON.stringify(checkedFirestoreState(Buffer.from(JSON.stringify(assembleFirestoreState(records))))));
         this.records.assertWriterActive(); this.assertOwner();
         const values = records.map(record => [recordKey(record.path), cached(record)] as const);
         this.#records.clear(); this.#scopes.clear(); for (const [key, value] of values) this.install(key, value);
@@ -175,7 +181,7 @@ export class FirestoreRecordPersistence implements PersistenceBackend {
   async save(payload: Uint8Array): Promise<void> {
     await this.#mutex.runExclusive(async () => {
       this.assertAuthority();
-      await this.commit(splitFirestoreState(checkedState(payload)), new Set(this.#records.keys()));
+      await this.commit(splitFirestoreState(checkedFirestoreState(payload)), new Set(this.#records.keys()));
     });
   }
   async saveExecutionCheckpoint(checkpoint: ExecutionCheckpoint): Promise<void> {

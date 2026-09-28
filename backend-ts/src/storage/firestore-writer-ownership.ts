@@ -16,7 +16,7 @@ const same = (a: unknown, b: unknown) => canonicalJSONBytes(a).equals(canonicalJ
 const exact = (value: unknown, keys: string[]): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("|") === [...keys].sort().join("|"));
 const integer = (value: unknown, min = 0) => Number.isSafeInteger(value) && Number(value) >= min;
 export type FirestoreWriterFailureReason = "UNCONFIRMED" | "CLOCK_INVALID" | "CONTROLLER_UNAVAILABLE" | "LOCAL_DEADLINE" | "SERVER_TIME_INVALID" |
-  "LEASE_INVALID" | "ANCHOR_INVALID" | "ANCHOR_CHANGED" | "SERVER_TIME_REGRESSED" | "WRITER_HELD" | "OWNER_CHANGED_OR_EXPIRED" |
+  "LEASE_INVALID" | "ANCHOR_INVALID" | "ANCHOR_CHANGED" | "SERVER_TIME_REGRESSED" | "WRITER_HELD" | "WRITER_HANDOFF" | "OWNER_CHANGED_OR_EXPIRED" |
   "GENERATION_INVALID" | "HEAD_GENERATION_INVALID" | "LEASE_CHANGED" | "TRANSITION_DEADLINE" | "ACK_DEADLINE";
 export class FirestoreOwnershipFailure extends Error {
   constructor(readonly reason: FirestoreWriterFailureReason = "UNCONFIRMED") { super("Confirmed Firestore writer ownership is unavailable, expired or changed; dispatch is fenced"); }
@@ -124,9 +124,16 @@ export class FirestoreWriterOwnership {
     });
   }
   private async transition(kind: "acquire" | "renew" | "release"): Promise<void> {
-    const start = this.sample(), reference = this.db.doc(this.path), observed = await reference.get(), serverAt = this.time(observed);
-    const before = observed.exists ? this.decode(observed.data()) : null;
-    const anchorRef = this.db.doc(this.anchorPath), observedAnchor = await anchorRef.get(), anchor = observedAnchor.exists ? this.anchor(observedAnchor.data()) : null;
+    const start = this.sample(), reference = this.db.doc(this.path), anchorRef = this.db.doc(this.anchorPath);
+    // Initial acquisition must observe lease and generation in one image. Two
+    // independent reads can straddle a legitimate handoff and look corrupted.
+    const [observed, observedAnchor] = kind === "acquire"
+      ? await this.db.runTransaction(transaction => transaction.getAll(reference, anchorRef), { readOnly: true })
+      : [await reference.get(), await anchorRef.get()];
+    const serverAt = this.time(observed!);
+    const before = observed!.exists ? this.decode(observed!.data()) : null;
+    const priorEnd = before ? before.state === "RELEASED" ? before.issuedAt : before.expiresAt : serverAt;
+    const anchor = observedAnchor!.exists ? this.anchor(observedAnchor!.data()) : null;
     if (before ? !same(anchor, this.anchorValue(before)) : anchor !== null) throw new FirestoreOwnershipFailure("ANCHOR_CHANGED");
     if (before && serverAt < before.issuedAt) throw new FirestoreOwnershipFailure("SERVER_TIME_REGRESSED");
     if (kind === "acquire") {
@@ -142,6 +149,20 @@ export class FirestoreWriterOwnership {
     await this.db.runTransaction(async transaction => {
       const row = await transaction.get(reference), actual = row.exists ? this.decode(row.data()) : null, now = this.time(row);
       const anchorRow = await transaction.get(anchorRef), currentAnchor = anchorRow.exists ? this.anchor(anchorRow.data()) : null;
+      // A simultaneous acknowledged OTHER writer may win after observation.
+      // This branch does no writes. Own identity, damaged/mismatched anchor,
+      // invalid clocks, expired owners and unknown commit ACKs are not busy.
+      if (kind === "acquire" && actual?.state === "HELD" && actual.ownerId !== this.#ownerId && actual.leaseId !== this.#leaseId &&
+          same(currentAnchor, this.anchorValue(actual)) && now >= serverAt && now >= actual.issuedAt && now < actual.expiresAt)
+        throw new FirestoreOwnershipFailure("WRITER_HELD");
+      // Another acknowledged owner can acquire AND release between our read
+      // and this transaction. Discard the stale proposal before any writes.
+      // Only an advanced, coherent, different released owner is admission
+      // contention; own unknown ACKs, clock damage and broken anchors are not.
+      if (kind === "acquire" && actual?.state === "RELEASED" && actual.ownerId !== this.#ownerId && actual.leaseId !== this.#leaseId &&
+          actual.generation > (before?.generation ?? 0) && actual.sequence >= 2 && same(currentAnchor, this.anchorValue(actual)) &&
+          actual.acquiredAt >= priorEnd && actual.issuedAt >= serverAt && now >= actual.issuedAt)
+        throw new FirestoreOwnershipFailure("WRITER_HANDOFF");
       if (!same(currentAnchor, anchor)) throw new FirestoreOwnershipFailure("ANCHOR_CHANGED");
       if (kind === "acquire") {
         const headRow = await transaction.get(this.db.doc(`workspaces/${this.codec.namespace.workspaceId}/lcwe_runtime/head`));
