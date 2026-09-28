@@ -9,6 +9,10 @@ import { inspectWorkflowDraft } from "../workflows/compiled-read.js";
 import { withWorkspaceCompilationIssues } from "../workflows/draft-validation.js";
 import type { ReviewedModelSourceContext } from "./reviewed-model-sources.js";
 import { generatedReturnCoverageIssues } from "./return-coverage.js";
+import type { AnalysisResponse } from "../analysisprovider/types.js";
+
+export type SynthesisInput = { prompt: string; userRole: string; user?: GovernanceUser; model?: string; providerRuntime?: ProviderRuntime; priorMessages?: string[]; caseContext?: Record<string, unknown>; candidateContext?: Record<string, unknown>; modelSourceContext?: ReviewedModelSourceContext; candidateValidator?: (yaml: string) => void; signal?: AbortSignal; traceId?: string; sessionId?: string; messageId?: string; liveTools?: readonly ToolDefinition[] };
+export type PreparedCandidate = { prompt: string; liveTools: readonly ToolDefinition[]; candidateId: "candidate_1" };
 
 export type SynthesisResult = {
   candidate: CandidateReport;
@@ -62,31 +66,22 @@ export class SynthesisService {
    ******************************************************************************/
   constructor(readonly providers: ProviderRuntime, readonly registries: RegistryService, readonly validator: RegistryValidator, readonly validationGate?: ValidationGate) {}
 
-  /*******************************************************************************
-   * Function: synthesize
-   *
-   * Generates a workflow candidate and evaluates its validation outcome.
-   ******************************************************************************/
-  async synthesize(input: { prompt: string; userRole: string; user?: GovernanceUser; model?: string; providerRuntime?: ProviderRuntime; priorMessages?: string[]; caseContext?: Record<string, unknown>; candidateContext?: Record<string, unknown>; modelSourceContext?: ReviewedModelSourceContext; candidateValidator?: (yaml: string) => void; signal?: AbortSignal; traceId?: string; sessionId?: string; messageId?: string; liveTools?: readonly ToolDefinition[] }): Promise<SynthesisResult> {
-    const baseProvider = input.providerRuntime ?? this.providers;
-    const providers = baseProvider.snapshot?.(input.model) ?? baseProvider;
-    const prompt = assembleCandidatePrompt(input.prompt, input.userRole, this.registries, input.priorMessages ?? [], input.liveTools, input.candidateContext, input.modelSourceContext);
-    let generated;
-    try { generated = await providers.generateCandidate(prompt, CANDIDATE_PROMPT_VERSION, (response) => {
-      const yaml = response.text.trim(); parseWorkflowYAMLStrict(yaml); input.candidateValidator?.(yaml);
-    }, input.signal, {
-      ...(input.traceId === undefined ? {} : { traceId: input.traceId }),
-      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-      ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
-      candidateId: "candidate_1",
-      ...(input.user === undefined ? {} : { actor: { id: input.user.id, role: input.user.role } }),
-      egress: { purpose: "interactive", dataClass: "restricted" },
-    }); }
-    catch (error) { throw new SynthesisFailure(`Candidate generation failed: ${errorText(error)}`); }
-    // Preserve the exact proposal: deterministic verification reports unknown
-    // actions. Renaming/removing steps requires a separate reviewed revision.
+  prepareCandidate(input: SynthesisInput): PreparedCandidate {
+    const liveTools = structuredClone(input.liveTools ?? this.registries.snapshot().tools);
+    const prompt = assembleCandidatePrompt(input.prompt, input.userRole, this.registries, input.priorMessages ?? [], liveTools, input.candidateContext, input.modelSourceContext);
+    return { prompt, liveTools, candidateId: "candidate_1" };
+  }
+
+  validateCandidateOutput(input: SynthesisInput, generated: AnalysisResponse): void {
     const yaml = generated.text.trim();
-    const candidateID = "candidate_1";
+    parseWorkflowYAMLStrict(yaml);
+    input.candidateValidator?.(yaml);
+  }
+
+  async validateGeneratedCandidate(input: SynthesisInput, prepared: PreparedCandidate, generated: AnalysisResponse): Promise<SynthesisResult> {
+    const providers = input.providerRuntime ?? this.providers;
+    const yaml = generated.text.trim();
+    const candidateID = prepared.candidateId;
     let gate;
     if (this.validationGate === undefined) {
       gate = await this.validator.validateAndIssueToken(candidateID, yaml, input.userRole, {
@@ -108,10 +103,9 @@ export class SynthesisService {
         });
     }
     const blueprint = parseWorkflowYAMLStrict(yaml);
-    const offeredTools = input.liveTools ?? this.registries.snapshot().tools;
     const executionIssues = [
       ...(blueprint.metadata?.controlFlow !== undefined || blueprint.steps.some(step => ["analysis", "agent"].includes(step.kind ?? "")) ?
-        inspectWorkflowDraft(blueprint, offeredTools, input.userRole).issues : []),
+        inspectWorkflowDraft(blueprint, prepared.liveTools, input.userRole).issues : []),
       ...generatedReturnCoverageIssues(blueprint),
     ];
     if (executionIssues.length) withWorkspaceCompilationIssues(gate.result, executionIssues);
@@ -125,7 +119,7 @@ export class SynthesisService {
       score: gate.result.score,
       generation_metadata: {
         promptTemplateVersion: CANDIDATE_PROMPT_VERSION,
-        promptSha256: generationPromptHash(prompt, CANDIDATE_PROMPT_VERSION),
+        promptSha256: generationPromptHash(prepared.prompt, CANDIDATE_PROMPT_VERSION),
         provider: generated.provider,
         model: generated.model,
         inputTokens: generated.inputTokens,
@@ -151,6 +145,32 @@ export class SynthesisService {
       execution_profile_issues: executionIssues,
       next_action: canExecute ? "execute" : "escalate",
     };
+  }
+
+  /*******************************************************************************
+   * Function: synthesize
+   *
+   * Generates a workflow candidate and evaluates its validation outcome.
+   ******************************************************************************/
+  async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
+    const baseProvider = input.providerRuntime ?? this.providers;
+    const providers = baseProvider.snapshot?.(input.model) ?? baseProvider;
+    const prepared = this.prepareCandidate(input);
+    let generated;
+    try { generated = await providers.generateCandidate(prepared.prompt, CANDIDATE_PROMPT_VERSION, (response) => {
+      this.validateCandidateOutput(input, response);
+    }, input.signal, {
+      ...(input.traceId === undefined ? {} : { traceId: input.traceId }),
+      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+      candidateId: "candidate_1",
+      ...(input.user === undefined ? {} : { actor: { id: input.user.id, role: input.user.role } }),
+      egress: { purpose: "interactive", dataClass: "restricted" },
+    }); }
+    catch (error) { throw new SynthesisFailure(`Candidate generation failed: ${errorText(error)}`); }
+    // Preserve the exact proposal: deterministic verification reports unknown
+    // actions. Renaming/removing steps requires a separate reviewed revision.
+    return this.validateGeneratedCandidate(input, prepared, generated);
   }
 }
 
