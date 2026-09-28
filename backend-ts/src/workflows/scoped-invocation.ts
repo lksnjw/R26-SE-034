@@ -62,7 +62,7 @@ export class ScopedInvocationIndex {
       const frame = iterations[index];
       return !frame || Object.keys(frame).sort().join("|") !== "index|loopId" || frame.loopId !== owner.loopId ||
         !Number.isSafeInteger(frame.index) || frame.index < 0 || frame.index >= owner.maxItems;
-    })) throw new Error("Invocation must match exact declared iteration scope, ownership and bounds");
+    })) throw new Error("Invocation must match exact declared iteration ownership and bounds");
     const frames = iterations.map(frame => ({ ...frame }));
     return { profile: "scoped-invocation/v1", nodeId, kind: node.kind, invocationId: invocationId(nodeId, frames), iterations: frames,
       ...(node.actionIndex === undefined ? {} : { actionIndex: node.actionIndex }),

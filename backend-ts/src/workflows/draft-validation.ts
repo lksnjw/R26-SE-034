@@ -10,7 +10,8 @@ export function validateWorkspaceDraft(candidateId: string, yaml: string, role: 
   let issues: string[] = [];
   try {
     const blueprint = parseWorkflowYAMLStrict(yaml);
-    if (blueprint.metadata?.controlFlow === undefined && !blueprint.steps.some(step => ["analysis", "agent"].includes(step.kind ?? ""))) return result;
+    // Flat tool plans need the same literal-type and unique-ID checks as
+    // structured plans. A generic registry PASS is not a compiler PASS.
     issues = inspectWorkflowDraft(blueprint, tools, role).issues;
     if (blueprint.metadata?.controlFlow === undefined && !issues.length) return result;
   } catch {
