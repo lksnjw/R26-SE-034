@@ -22,8 +22,42 @@ import { consumeAcknowledgedReadErrorEvidence, ErpbridgeMcpToolError } from "./e
 import { assertReadErrorContract, type ReviewedReadBusinessFailure } from "./read-business-error.js";
 import { protectedReadPrerequisiteYAML, type ProtectedReadDispatch } from "../runner/protected-read-dispatch.js";
 import { ProtectedJobCheckpoints } from "../runner/protected-job-checkpoints.js";
+import { assertLocalPolicyCurrent, assertLocalPolicyCurrentSync, evaluateOptionalPolicy, policySwitches, type PolicyDecision } from "../governance/optional-policy.js";
 
 const acknowledgedFailures = new WeakMap<object, { result: Record<string, unknown>; businessFailure?: ReviewedReadBusinessFailure }>();
+type ReadPolicyFailureContext = { repository: HandlerServices["repository"]; actorId: string; toolName: string; args: Record<string, unknown> };
+const policyFailures = new WeakMap<object, Omit<ReadPolicyFailureContext, "args"> & { arguments: Buffer; result: Record<string, unknown> }>();
+type PhasedReadPolicy = { actorId: string; toolId: string; contractHash: string; arguments: Buffer; settings: string;
+  decision: PolicyDecision; policyPath: string; localPolicyHash?: string };
+const phasedReadPolicies = new WeakMap<object, PhasedReadPolicy>();
+/** Server-only, one-use continuation of an acknowledged selected policy result. */
+export function bindPhasedReadPolicy(binding: PhasedReadPolicy): object {
+  const ticket = Object.freeze({});
+  phasedReadPolicies.set(ticket, { ...binding, arguments: Buffer.from(binding.arguments), decision: structuredClone(binding.decision) });
+  return ticket;
+}
+/** Diagnostic evidence only: never an SDK outcome, approval or replay grant. */
+export function observedReadPolicyFailure(error: unknown, context: ReadPolicyFailureContext): Record<string, unknown> | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const evidence = policyFailures.get(error);
+  if (!evidence || evidence.repository !== context.repository || evidence.actorId !== context.actorId || evidence.toolName !== context.toolName ||
+      !evidence.arguments.equals(canonicalJSONBytes(context.args))) return undefined;
+  return structuredClone(evidence.result);
+}
+const acknowledgedProtectedReads = new WeakMap<object, { checkpoints: ProtectedJobCheckpoints; toolId: string; contractHash: string;
+  args: Buffer; binding: Buffer; output: Record<string, unknown> }>();
+/** One-use broker completion for protected report pages. An injected callback,
+ * cloned/modified result or another item/controller cannot manufacture it. */
+export function consumeAcknowledgedProtectedReadResult(result: Record<string, unknown>, checkpoints: ProtectedJobCheckpoints,
+  toolId: string, contractHash: string, args: Record<string, unknown>, binding: {
+    actorId: string; executionId: string; workflowId: string; admissionPin: ReadAdmissionPin;
+  }): Record<string, unknown> | undefined {
+  const proof = acknowledgedProtectedReads.get(result); acknowledgedProtectedReads.delete(result);
+  if (!proof || proof.checkpoints !== checkpoints || proof.toolId !== toolId || proof.contractHash !== contractHash ||
+      !proof.args.equals(canonicalJSONBytes(args)) || !proof.binding.equals(canonicalJSONBytes(binding)) ||
+      !canonicalJSONBytes(proof.output).equals(canonicalJSONBytes(result))) return undefined;
+  return structuredClone(proof.output);
+}
 /** Read-only observation for nested server checkpoints. Never accepts a
  * serialized flag, public exception constructor, or the mutable error.result. */
 export function acknowledgedReadToolFailure(error: unknown): { code: "MCP_READ_TOOL_ERROR"; result: Record<string, unknown>; businessFailure?: ReviewedReadBusinessFailure } | undefined {
@@ -45,7 +79,9 @@ export type ReadDispatchContext = { signal?: AbortSignal | undefined; traceId?: 
   plan?: { yaml: string; stepIndex: number; token: ValidationToken; admissionPin?: ReadAdmissionPin; contractHash?: string; toolId?: string };
   /** Exact reviewed dynamic-node allow-list binding. The broker still builds
    * and validates one synthetic single-tool workflow for the concrete call. */
-  dynamicPlan?: { admissionPin: ReadAdmissionPin; contractHash: string; toolId: string } };
+  dynamicPlan?: { admissionPin: ReadAdmissionPin; contractHash: string; toolId: string };
+  /** Private in-process ticket. Serialized or copied values have no authority. */
+  phasedPolicy?: object };
 
 // Phase-0 containment: only explicitly registered, role-granted reads may
 // reach the SDK. Transaction writes await approval/idempotency/recovery.
@@ -83,8 +119,10 @@ export async function dispatchReadTool(
   const registryHash = services.registries.hash(), generation = session.discoveryGeneration ?? 0;
   const roleMap = canonicalJSONBytes(bound.roleMap);
   const iteration = context.iteration && { ...context.iteration, plan: structuredClone(context.iteration.plan), visit: structuredClone(context.iteration.visit) };
+  let assertPolicyCurrent = () => {};
   const assertContext = () => {
     assertStorageAuthority();
+    assertPolicyCurrent();
     const current = boundMcpConnection(services, connectionId);
     if (current.session !== session || session.available === false || services.registries.hash() !== registryHash ||
         (session.discoveryGeneration ?? 0) !== generation || !roleMap.equals(canonicalJSONBytes(current.roleMap)))
@@ -173,7 +211,30 @@ export async function dispatchReadTool(
     }
   }
   if (protectedJournal && !context.dynamicPlan && blueprint.metadata?.controlFlow === undefined) throw new Error("Protected invocation requires its original structural source");
-  const { signal, plan, dynamicPlan: _privateDynamicPlan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, protectedOperation: _privateProtectedOperation, protectedInvocation: _privateProtectedInvocation, ...metadata } = context;
+  const { signal, plan, dynamicPlan: _privateDynamicPlan, beforeDispatch, assertDispatch: _privateGuard, iteration: _privateIteration, protectedOperation: _privateProtectedOperation, protectedInvocation: _privateProtectedInvocation, phasedPolicy: _privatePhasedPolicy, ...metadata } = context;
+  const policySettings = await services.repository.read(state => JSON.stringify(policySwitches(state.settings.rbac)));
+  const phased = context.phasedPolicy && phasedReadPolicies.get(context.phasedPolicy);
+  if (context.phasedPolicy) phasedReadPolicies.delete(context.phasedPolicy);
+  if (context.phasedPolicy && (!phased || phased.actorId !== actorId || phased.toolId !== tool.tool_id ||
+      phased.contractHash !== capabilityContractHash(tool) || !phased.arguments.equals(canonicalJSONBytes(parameters)) ||
+      phased.settings !== policySettings || phased.decision.decision === "allow" && phased.decision.source === "local_model" &&
+        (!phased.localPolicyHash || phased.decision.policyHash !== phased.localPolicyHash)))
+    throw new Error("Original phased policy binding changed");
+  if (phased?.localPolicyHash) {
+    await assertLocalPolicyCurrent(phased.policyPath, { metadata: { policyHash: phased.localPolicyHash } });
+    assertPolicyCurrent = () => assertLocalPolicyCurrentSync(phased.policyPath, phased.localPolicyHash!);
+  }
+  const policy = phased?.decision ?? await evaluateOptionalPolicy(services, actor, { prompt: `Read ERP data using ${tool.display_name ?? tool.name}`, action: tool.mcp_tool_name,
+    context: { actions: [tool.name, tool.mcp_tool_name], arguments: parameters, readOnly: true, domain: tool.module }, signal, traceId: context.traceId, sessionId: context.sessionId });
+  if (policy.decision !== "allow") {
+    const error = new Error("Tool dispatch stopped by optional policy; safe diagnostic receipt available");
+    const result: Record<string, unknown> = {};
+    if (["deny", "review", "unavailable"].includes(policy.decision)) result.decision = policy.decision;
+    if (["erpbridge", "local_model", "skipped"].includes(policy.source)) result.source = policy.source;
+    if (["LOCAL_POLICY_CONFIG_INVALID", "LOCAL_POLICY_PROVIDER_FAILED", "LOCAL_POLICY_RESPONSE_INVALID", "POLICY_CHECK_CANCELLED"].includes(policy.failureCode ?? "")) result.failureCode = policy.failureCode;
+    policyFailures.set(error, { repository: services.repository, actorId, toolName, arguments: canonicalJSONBytes(parameters), result });
+    throw error;
+  }
   const gate = await validateWorkflow(services, "ReadToolBroker", yaml, actor, { ...metadata, ...(signal === undefined ? {} : { signal }) });
   if (!gate.result.passed || gate.token === null) throw new Error("Tool dispatch denied: deterministic verification failed");
   const identity = createDispatchIdentity(actor, bound.roleMap);
@@ -187,6 +248,9 @@ export async function dispatchReadTool(
   // those waits; a revoked or changed identity cannot use an older capability.
   const finalDispatch = async () => {
     assertContext();
+    if (phased?.localPolicyHash) await assertLocalPolicyCurrent(phased.policyPath, { metadata: { policyHash: phased.localPolicyHash } });
+    if (await services.repository.read(state => JSON.stringify(policySwitches(state.settings.rbac))) !== policySettings)
+      throw new Error("Tool dispatch blocked: policy settings changed during verification");
     await assertAgentPath();
     if (protectedJournal && context.plan) await services.repository.readAuthoritative(state => {
       assertContext(); protectedJournal.prerequisiteYAML(state, yaml, index, context.plan?.admissionPin, parameters);
@@ -217,8 +281,12 @@ export async function dispatchReadTool(
   if (session.dispatchBoundary !== "sdk-entry/v1") await finalDispatch();
   const readErrorBinding = Object.freeze({});
   try {
-    return await session.clientFor(tool, dispatchPin).execute(authored.action!, resolved.capability, parameters, identity, context.signal,
+    const output = await session.clientFor(tool, dispatchPin).execute(authored.action!, resolved.capability, parameters, identity, context.signal,
       session.dispatchBoundary === "sdk-entry/v1" ? finalDispatch : undefined, assertContext, undefined, readErrorBinding);
+    if (protectedJournal && context.plan?.admissionPin && context.executionId && context.workflowId && session.dispatchBoundary === "sdk-entry/v1") acknowledgedProtectedReads.set(output, {
+      checkpoints: protectedJournal, toolId: tool.tool_id, contractHash: capabilityContractHash(tool), args: canonicalJSONBytes(parameters),
+      binding: canonicalJSONBytes({ actorId, executionId: context.executionId, workflowId: context.workflowId, admissionPin: context.plan.admissionPin }), output: structuredClone(output) });
+    return output;
   } catch (cause) {
     const evidence = consumeAcknowledgedReadErrorEvidence(cause, readErrorBinding);
     if (evidence) {

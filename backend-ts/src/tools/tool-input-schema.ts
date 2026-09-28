@@ -2,7 +2,7 @@ import { validateSchema, validateValue } from "../structured-output/validate.js"
 
 // Explicit, bounded phase-0 JSON Schema profile. Unknown constraints block
 // dispatch rather than silently passing through a partial validator.
-const allowed = new Set(["type", "properties", "required", "additionalProperties", "items", "maxItems", "$schema", "title", "description", "default", "examples", "deprecated", "readOnly", "writeOnly"]);
+const allowed = new Set(["type", "enum", "properties", "required", "additionalProperties", "items", "maxItems", "$schema", "title", "description", "default", "examples", "deprecated", "readOnly", "writeOnly"]);
 export function validateToolSchemaProfile(schema: unknown): string[] {
   let nodes = 0;
   const errors: string[] = [];
