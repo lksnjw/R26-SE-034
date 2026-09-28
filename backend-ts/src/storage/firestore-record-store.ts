@@ -11,6 +11,7 @@ type Head = { profile: "firestore-record-head/v2"; revision: number; records: nu
 type Manifest = { profile: "firestore-record-manifest/v1"; key: string; hash: string; bytes: number; chunks: string[] };
 type Entry = EncodedFirestoreRecord & { manifest: PrivateFirestoreDocument };
 type View = { head: Head | null; index: RuntimeRecordIndex; entries: Map<string, Entry> };
+export class FirestoreSnapshotChanged extends Error { constructor() { super("Committed Firestore image changed before control acknowledgement"); } }
 export type FirestoreRecordSnapshot = Readonly<{ profile: "firestore-record-snapshot/v1"; revision: number; recordCount: number; chunkCount: number; bytes: number; fingerprint: string; transitionIdentity: string | null }>;
 export type FirestoreRecordMutation = { transitionId: string; upsert: readonly RuntimeRecord[]; remove?: readonly string[][] };
 const same = (a: unknown, b: unknown) => canonicalJSONBytes(a).equals(canonicalJSONBytes(b));
@@ -37,6 +38,7 @@ export class FirestoreRecordStore {
   readonly headPath: string;
   readonly writerPath: string;
   readonly writerGenerationPath: string;
+  get namespace() { return this.#codec.namespace; }
   private constructor(readonly db: Firestore, codec: FirestoreRecordCodec) {
     this.#codec = codec; const namespace = codec.namespace;
     if (db.databaseId !== namespace.databaseId) throw new Error("Firestore client and explicit namespace differ");
@@ -127,6 +129,16 @@ export class FirestoreRecordStore {
   }
   private view(snapshot: FirestoreRecordSnapshot): View {
     const view = this.#views.get(snapshot); if (!view) throw new Error("Firestore snapshot does not belong to this store"); return view;
+  }
+  /** Read-only coherence proof for a stop-only control transaction. This grants
+   * no writer, repository, checkpoint or dispatch authority to its caller. */
+  async assertCommittedSnapshot(transaction: Transaction, snapshot: FirestoreRecordSnapshot): Promise<void> {
+    this.assertOpen();
+    const expected = this.view(snapshot).head;
+    if (!expected || this.#uncertain) throw new Error("An authenticated committed image is required");
+    const row = await transaction.get(this.db.doc(this.headPath));
+    if (!row.exists || !same(this.head(row.data()), expected)) throw new FirestoreSnapshotChanged();
+    this.assertOpen();
   }
   private snapshot(view: View): FirestoreRecordSnapshot {
     const snapshot = Object.freeze({ profile: "firestore-record-snapshot/v1" as const, revision: view.head?.revision ?? 0,
