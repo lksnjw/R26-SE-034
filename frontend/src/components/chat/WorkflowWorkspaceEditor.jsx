@@ -10,7 +10,8 @@ import "./workflowWorkspace.css";
 import ReadableValue, { ReadableResult } from "./ReadableValue";
 import ValueFields from "./ValueFields";
 import SchemaFields from "./SchemaFields";
-import ReadFlowTree from "./ReadFlowTree";
+import WorkflowMiniCanvas from "./WorkflowMiniCanvas";
+import WorkflowSourcePreview from "./WorkflowSourcePreview";
 import { useExecutionMonitor } from "../../hooks/useExecutionMonitor";
 import ExecutionRunControls from "../executions/ExecutionRunControls";
 import OperationReconciliationEvidence from "../executions/OperationReconciliationEvidence";
@@ -41,6 +42,44 @@ const button = "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 py-1.
 const input = "w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none focus:border-primary focus:ring-1 focus:ring-primary dark:border-gray-700 dark:bg-darkBackground";
 const message = (error) => error?.response?.data?.message || error?.message || "The operation could not be completed.";
 const emptyTimeline = [];
+const stepStatus = (attempt, hasOutput) => {
+  if (hasOutput && attempt?.status !== "FAILED") return { label: "Answer ready", tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" };
+  if (attempt?.status === "FAILED") return { label: "Stopped", tone: "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300" };
+  if (attempt?.status === "UNKNOWN") return { label: "Check outcome", tone: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300" };
+  if (attempt?.status === "AWAITING_APPROVAL") return { label: "Needs approval", tone: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300" };
+  if (attempt?.status === "RUNNING") return { label: "Working", tone: "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300" };
+  if (attempt?.status === "SKIPPED") return { label: "Skipped", tone: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300" };
+  if (attempt?.status === "DONE") return { label: "Completed", tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" };
+  return null;
+};
+
+function NodeAnswer({ output, attempt, runId, analysis, agent, selected }) {
+  const [open, setOpen] = useState(Boolean(selected));
+  useEffect(() => { if (selected) setOpen(true); }, [selected, runId]);
+  const label = attempt?.status === "FAILED" ? "Node failure response" : analysis ? "Structured analysis answer" : agent ? "Agent structured answer" : "Node answer";
+  return <details open={open} className="workspace-node-answer relative z-10 ml-10 mt-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-[10px] shadow-sm dark:border-gray-700 dark:bg-gray-900">
+    <summary onClick={event => { event.preventDefault(); setOpen(value => !value); }} className="cursor-pointer font-medium text-gray-700 dark:text-gray-200">{label} · run {runId}</summary>
+    {open && <div className="workspace-reveal mt-2 max-h-64 overflow-auto border-t border-gray-100 pt-2 dark:border-gray-800"><ReadableResult value={output} /></div>}
+  </details>;
+}
+
+function WorkflowProgress({ record, shownRun, workflowId }) {
+  const stages = [
+    { label: "Review", detail: record.validation?.passed ? "Draft checked" : "Fix issues", done: record.validation?.passed },
+    { label: "Publish", detail: record.published ? "Version published" : "Your approval", done: record.published },
+    { label: "Run", detail: shownRun ? String(shownRun.status || "Recorded").replaceAll("_", " ").toLowerCase() : "Start when ready", done: shownRun?.status === "DONE" },
+  ];
+  return <nav aria-label="Workflow progress" className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+    {stages.map((stage, index) => <div key={stage.label} className={`rounded-lg border px-2.5 py-2 ${stage.done ? "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900 dark:bg-emerald-950/20" : "border-gray-200 bg-white dark:border-gray-700 dark:bg-darkBackground"}`}>
+      <p className="flex items-center gap-1.5 text-[10px] font-semibold"><span className={`flex h-4 w-4 items-center justify-center rounded-full text-[9px] ${stage.done ? "bg-emerald-600 text-white" : "bg-gray-100 text-gray-500 dark:bg-gray-800"}`}>{stage.done ? <Icon icon="lucide:check" /> : index + 1}</span>{stage.label}</p>
+      <p className="mt-1 truncate text-[9px] text-gray-500">{stage.detail}</p>
+    </div>)}
+    <a href={`/workflows/${encodeURIComponent(workflowId)}#schedule`} className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 transition hover:border-primary hover:text-primary dark:border-gray-700 dark:bg-darkBackground">
+      <p className="flex items-center gap-1.5 text-[10px] font-semibold"><span className="flex h-4 w-4 items-center justify-center rounded-full bg-gray-100 text-[9px] text-gray-500 dark:bg-gray-800">4</span>Schedule</p>
+      <p className="mt-1 truncate text-[9px] text-gray-500">Run automatically</p>
+    </a>
+  </nav>;
+}
 function ConditionInspector({ node, canEdit, busy, onPreview, onMergePreview, sessionId, context, onProposal, sharedChat, draftStorageKey, authoring, operationFlow = false, mergesSupported = false }) {
   const [predicate, setPredicate] = useState(node.predicate);
   const [merge, setMerge] = useState(node.merge || null);
@@ -90,7 +129,7 @@ function NodeInspector({ node, canEdit, busy, onPreview, sessionId, context, onP
   </aside>;
 }
 
-export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId, canEdit = false, canControl = false, initialSelectedNodeId = "", selectionStorageKey, onChatChanged, savedProposals = [], onNodeContext, onFocusChat }) {
+export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId, canEdit = false, canControl = false, simple = false, initialSelectedNodeId = "", selectionStorageKey, onChatChanged, savedProposals = [], onNodeContext, onFocusChat }) {
   const [record, setRecord] = useState(null), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(() => {
     const stored = readWorkspaceValue(selectionStorageKey ? `${selectionStorageKey}.node` : null, null);
@@ -219,6 +258,7 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
     return target ? <FlowPlacementPoint key={target.key} target={target} model={placementModel} moving={moving} revision={{ workflowId, baseVersion: record.version, baseHash: record.contentHash }} disabled={busy || record.readinessUnknown || Boolean(pendingProposal)} onInsert={value => { setMoving(null); setInsertTarget({ target: value, workflowId, baseVersion: record.version, baseHash: record.contentHash }); }} onMove={previewMove} /> : null;
   };
   const attemptRun = async () => {
+    if (pendingProposal) { setNotice("Apply or discard the preview before running. Runs use the saved published workflow, not browser edits."); return; }
     if (submittingRun || unconfirmedRun || recovery.pending || recovery.checking || runActive || ["RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED", "RECONCILED"].includes(shownRun?.status)) return;
     setSubmittingRun(true); setError(""); setNotice("");
     try {
@@ -238,20 +278,32 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
   };
   if (!record) return <div className="p-5"><p className="text-xs text-gray-500">Loading saved workflow…</p>{error && <p role="alert" className="mt-3 text-xs text-red-600">{error}</p>}<button className={button} onClick={() => perform(load)}>Reload</button></div>;
   return <div className="flex min-h-0 flex-1 flex-col">
-    <div className="border-b border-gray-200 px-5 py-3 dark:border-gray-800">
-      <div className="flex items-center justify-between gap-2"><h3 className="truncate text-sm font-semibold">{preview.name}</h3><span className="shrink-0 font-mono text-[10px] text-gray-500">draft v{record.version}</span></div>
-      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-gray-500"><span>{record.validation?.passed ? "Validation passed" : "Validation needs attention"}</span><span>{record.published ? "Published snapshot" : "Not published"}</span><span>{record.bridge === "discovery_available" ? "Live tools discovered · preflight required" : "ERP connection unavailable"}</span></div>
+    <div className="border-b border-gray-200 px-5 py-4 dark:border-gray-800">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-semibold">{preview.name}</h3>
+          {!simple && <p className="mt-1 text-[11px] leading-4 text-gray-500">Review the steps below. Publishing and running each require your explicit action.</p>}
+        </div>
+        <span className="shrink-0 rounded-full border border-gray-200 px-2 py-1 text-[10px] text-gray-500 dark:border-gray-700">Revision {record.version}</span>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-1.5 text-[10px]">
+        <span className={`rounded-full px-2 py-1 font-medium ${record.validation?.passed ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300" : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"}`}>{record.validation?.passed ? "Ready for review" : "Needs fixes"}</span>
+        <span className="rounded-full bg-gray-100 px-2 py-1 font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">{record.published ? record.compilation?.state === "BLOCKED" || !record.validation?.passed ? "Published · blocked" : "Published" : "Draft only"}</span>
+        <span className="rounded-full bg-gray-100 px-2 py-1 font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">{record.bridge === "discovery_available" ? "ERP tools found · final check required" : "ERP not connected"}</span>
+      </div>
+      <WorkflowProgress record={record} shownRun={shownRun} workflowId={workflowId} />
+      {(!simple || shownRun?.status !== "DONE") && <p className="mt-3 text-xs text-gray-600 dark:text-gray-300"><span className="font-semibold">Next:</span> {!record.validation?.passed ? "Open the issues below and fix the draft." : !record.published ? "Review the steps, then publish only when you are satisfied." : shownRun?.status === "DONE" && snapshotMatches ? "Select a node to review its answer, or choose Schedule for automatic runs." : shownRun?.status === "AWAITING_APPROVAL" ? "An assigned reviewer needs to approve the waiting action." : runActive ? "Follow the highlighted step while the workflow runs." : "Confirm the inputs and permissions before starting a run."}</p>}
       <div className="mt-3 flex flex-wrap items-center gap-1">
         <button className={button} disabled={busy} onClick={() => perform(load)} aria-label="Reload workflow"><Icon icon="lucide:refresh-cw" /></button>
         <button className={button} aria-expanded={showHistory} disabled={busy} onClick={() => setShowHistory(value => !value)}><Icon icon="lucide:history" />Edit history</button>
         {canEdit && <><button className={button} aria-label="Undo workflow edit" disabled={busy || record.readinessUnknown || !record.editHistory?.undoTarget} onClick={() => perform(() => save({ type: "undoDraft", versionId: record.editHistory.undoTarget }))}><Icon icon="lucide:undo-2" /></button>
           <button className={button} aria-label="Redo workflow edit" disabled={busy || record.readinessUnknown || !record.editHistory?.redoTarget} onClick={() => perform(() => save({ type: "redoDraft", versionId: record.editHistory.redoTarget }))}><Icon icon="lucide:redo-2" /></button>
           <button className={button} disabled={busy} onClick={() => setAdding((value) => !value)}><Icon icon="lucide:plus" />Add node</button>
-          {supportsModelInsertion && <><button className={button} disabled={busy || record.readinessUnknown || !placementModel.valid || Boolean(pendingProposal)} onClick={() => addingAnalysis ? setAddingAnalysis(false) : openModelInsertion("analysis")}><Icon icon="lucide:brain-circuit" />Add analysis</button>
+          {!simple && <>{supportsModelInsertion && <><button className={button} disabled={busy || record.readinessUnknown || !placementModel.valid || Boolean(pendingProposal)} onClick={() => addingAnalysis ? setAddingAnalysis(false) : openModelInsertion("analysis")}><Icon icon="lucide:brain-circuit" />Add analysis</button>
           <button className={button} disabled={busy || record.readinessUnknown || !placementModel.valid || Boolean(pendingProposal) || agentReadActions.length === 0} onClick={() => addingAgent ? setAddingAgent(false) : openModelInsertion("agent")}><Icon icon="lucide:bot" />Add bounded agent</button></>}
           <button className={button} disabled={busy || record.readinessUnknown || preview.error} onClick={() => setConditionMode(value => value === "add" ? null : "add")}>Add condition</button>
           <button className={button} disabled={busy || record.readinessUnknown || preview.error || !supportsReturnInsertion} onClick={() => setAddingReturn(value => !value)}>Add return</button>
-          <button className={button} aria-pressed={arranging} disabled={busy || record.readinessUnknown || !placementModel.valid || Boolean(pendingProposal)} onClick={() => { setArranging(value => !value); setMoving(null); setInsertTarget(null); }}>Arrange flow</button>
+          <button className={button} aria-pressed={arranging} disabled={busy || record.readinessUnknown || !placementModel.valid || Boolean(pendingProposal)} onClick={() => { setArranging(value => !value); setMoving(null); setInsertTarget(null); }}>Arrange flow</button></>}
           <button className={`${button} ml-auto border border-gray-200 dark:border-gray-700`} disabled={busy || record.readinessUnknown || !record.validation?.passed || record.published && record.compilation?.state !== "BLOCKED"} onClick={() => perform(async () => { await workflowService.publish(workflowId, "Explicitly reviewed in chat workspace", record); setNotice("Draft published. Execution has not been requested."); await load(); })}>{record.published && record.compilation?.state === "BLOCKED" ? "Republish reviewed draft" : "Publish reviewed draft"}</button></>}
       </div>
     </div>
@@ -265,15 +317,19 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
       {(addingAnalysis || addingAgent) && modelInsertionStale && <p role="alert" className="mb-3 text-xs text-amber-700">The draft changed since this model editor opened. Your inputs are retained. Close and reopen the editor to deliberately select a position in the current revision.</p>}
       {!!record.validation?.errors?.length && <details className="mb-4 text-xs"><summary className="cursor-pointer text-amber-700">Validation issues ({record.validation.errors.length})</summary><ul className="mt-2 space-y-1 text-gray-500">{record.validation.errors.map((issue, index) => <li key={index}>{issue}</li>)}</ul></details>}
       {!!record.issues?.length && <details className="mb-4 text-xs" open><summary className="cursor-pointer text-amber-700">Execution readiness issues ({record.issues.length})</summary><ul className="mt-2 space-y-1 text-gray-500">{record.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul></details>}
-      {(shownRun || monitor.denied) && <div className="mb-5"><ExecutionRunControls key={shownRun?.id || "unavailable"} execution={shownRun} canControl={canControl} monitor={monitor} />
+      {(shownRun || monitor.denied) && (!simple || shownRun?.status !== "DONE" || !snapshotMatches) && <div className="mb-5"><ExecutionRunControls key={shownRun?.id || "unavailable"} execution={shownRun} canControl={canControl} monitor={monitor} />
         {shownRun && !snapshotMatches && <p className="mt-2 text-[10px] text-gray-500">These answers belong to a different or unverified run snapshot, not the current draft.</p>}
       </div>}
-      {adding && <form className="mb-5 space-y-2 border-b border-gray-200 pb-4 dark:border-gray-700" onSubmit={(event) => { event.preventDefault(); perform(async () => { await save({ type: "addNode", node: { id: newId, action: newAction, ...(authoring?.connectionChoices?.length ? { connection_id: newConnectionId || primaryConnectionId } : {}), parameters: {} }, beforeNodeId: null, ...branchDestination(addScope, authoring?.controlFlow) }); setAdding(false); setNewId(""); setNewAction(""); }); }}>
+      {adding && <form className="mb-5 space-y-2 border-b border-gray-200 pb-4 dark:border-gray-700" onSubmit={(event) => { event.preventDefault();
+        const node = { id: newId, action: newAction, ...(authoring?.connectionChoices?.length ? { connection_id: newConnectionId || primaryConnectionId } : {}), parameters: {} };
+        previewChange(newId, { type: "addNode", node, beforeNodeId: null, ...branchDestination(addScope, authoring?.controlFlow) }, "No node at this destination", node);
+        setAdding(false); setNewId(""); setNewAction("");
+      }}>
         <input className={input} aria-label="New node ID" placeholder="Unique node ID" pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" value={newId} onChange={(event) => setNewId(event.target.value)} required />
         {!!authoring?.connectionChoices?.length && <select className={input} aria-label="New node ERPBridge connection" value={newConnectionId || primaryConnectionId} onChange={event => setNewConnectionId(event.target.value)}>{authoring.connectionChoices.map(item => <option key={item.id} value={item.id}>{item.id}{item.primary ? " · primary" : ""}</option>)}</select>}
         <input className={input} aria-label="New node tool" placeholder="Exact registered tool name" value={newAction} onChange={(event) => setNewAction(event.target.value)} required />
         {authoring?.controlFlow && <ScopeSelect flow={authoring.controlFlow} value={addScope} onChange={setAddScope} label="New node destination" />}
-        <button className={`${button} bg-primary/10 text-primary`} disabled={busy}>Add draft node</button><p className="text-[10px] text-gray-500">Fill required parameters in the inspector. Unavailable tools remain blocked drafts.</p>
+        <button className={`${button} bg-primary/10 text-primary`} disabled={busy || record.readinessUnknown || Boolean(pendingProposal)}>Add draft node</button><p className="text-[10px] text-gray-500">Creates a local preview first. Apply explicitly to save; fill required parameters in the inspector. Unavailable tools remain blocked drafts.</p>
       </form>}
       {addingAnalysis && <form aria-label="Create analysis node" className="workspace-reveal mb-5 space-y-3 border-y border-primary/25 py-4" onSubmit={event => { event.preventDefault(); previewModelInsertion("addAnalysis",
         { id: newAnalysisId, kind: "analysis", description: "Structured analysis", instruction: newAnalysisInstruction, input: newAnalysisInput,
@@ -318,29 +374,31 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
         {conditionMode === "wrap" && node ? <select aria-label="Wrapped node branch" className={input} value={conditionBranch} onChange={event => setConditionBranch(event.target.value)}><option value="then">Put selected action in If yes</option><option value="else">Put selected action in If no</option></select> : <ScopeSelect flow={authoring?.controlFlow} value={conditionScope} onChange={setConditionScope} label="New condition destination" />}
         <button className={button} disabled={busy}>Preview new condition</button><button type="button" className={button} onClick={() => setConditionMode(null)}>Cancel condition creation</button>
       </form>}
-      <p className="mb-4 text-[10px] leading-4 text-gray-500">{flowProtectedGroups(authoring?.controlFlow).length ? "Protected workflow · body and error handler are separate scopes. Only a reviewed ERP resource-not-found can select a handler. Saved group values do not change the failed lookup or approve an effect. Check readiness before running." : authoring?.executionProfile === "decision-operation-v1" ? "Governed decision flow · each run selects one boolean path. Unselected nodes do not run; selected effects require independent approval. Branch outputs remain in scope. Calendar activation additionally requires complete report evidence before every effect." : authoring?.controlFlow ? "Structured read flow · exactly one path per boolean condition. Branch outputs remain in scope." : preview.metadata?.controlFlow !== undefined ? "Structural view is unavailable. These are source declarations, not a confirmed execution layout; reload or repair the saved structure." : "Source-order flow · conditions and approvals are preserved, not inferred as branch paths."}</p>
+      {!simple && <p className="mb-4 text-[10px] leading-4 text-gray-500">{flowProtectedGroups(authoring?.controlFlow).length ? "Protected workflow · body and error handler are separate scopes. Only a reviewed ERP resource-not-found can select a handler. Saved group values do not change the failed lookup or approve an effect. Check readiness before running." : authoring?.executionProfile === "decision-operation-v1" ? "Governed decision flow · each run selects one boolean path. Unselected nodes do not run; selected effects require independent approval. Branch outputs remain in scope. Calendar activation additionally requires complete report evidence before every effect." : authoring?.controlFlow ? "Structured read flow · exactly one path per boolean condition. Branch outputs remain in scope." : preview.metadata?.controlFlow !== undefined ? "Structural view is unavailable. These are source declarations, not a confirmed execution layout; reload or repair the saved structure." : "Source-order flow · conditions and approvals are preserved, not inferred as branch paths."}</p>}
       {addingReturn && <form aria-label="Create return" className="mb-5 space-y-3 border-b pb-4" onSubmit={event => { event.preventDefault(); previewChange(returnId, { type: "addReturn", nodeId: returnId, output: returnOutput, beforeNodeId: null, ...branchDestination(returnScope, authoring?.controlFlow) }, "No return at this destination", { id: returnId, output: returnOutput, destination: returnScope }); }}><h4 className="text-xs font-semibold">Declare workflow return</h4><input aria-label="New return ID" className={input} value={returnId} onChange={event => setReturnId(event.target.value)} pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" placeholder="Unique stable return ID" required /><ScopeSelect flow={authoring?.controlFlow} value={returnScope} onChange={setReturnScope} label="New return destination" /><ReadValueFields value={returnOutput} onChange={setReturnOutput} /><button disabled={busy} className={button}>Preview new return</button><button type="button" className={button} onClick={() => setAddingReturn(false)}>Cancel return creation</button></form>}
       {iterationModel && !iterationModel.valid && <p role="alert" className="mb-3 text-xs text-amber-700">{iterationModel.error}</p>}
-      <ReadFlowTree flow={authoring?.controlFlow} steps={preview.steps} selectedId={selected} onSelectCondition={select} renderPlacement={canEdit && arranging && placementModel.valid ? renderPlacement : undefined} renderMoveHandle={renderMoveHandle} iterations={iterationModel} timeline={snapshotMatches ? shownTimeline : undefined} decisions={!iterationModel && snapshotMatches ? shownRun?.readProgress?.decisions : undefined} values={!iterationModel && snapshotMatches ? shownRun?.readProgress?.values : undefined} valueOutputs={!iterationModel && snapshotMatches ? shownRun?.valueOutputs : undefined} renderAction={(step, index) => {
+      <WorkflowMiniCanvas simple={simple} run={snapshotMatches && !iterationModel ? shownRun : undefined} declaredStructure={preview.metadata?.controlFlow !== undefined} flow={authoring?.controlFlow} steps={preview.steps} selectedId={selected} onSelectCondition={select} renderPlacement={canEdit && arranging && placementModel.valid ? renderPlacement : undefined} renderMoveHandle={renderMoveHandle} iterations={iterationModel} timeline={snapshotMatches ? shownTimeline : undefined} decisions={!iterationModel && snapshotMatches ? shownRun?.readProgress?.decisions : undefined} values={!iterationModel && snapshotMatches ? shownRun?.readProgress?.values : undefined} valueOutputs={!iterationModel && snapshotMatches ? shownRun?.valueOutputs : undefined} renderAction={(step, index) => {
           const attempt = !iterationModel ? shownTimeline.find((item) => item.nodeId === step.id) : undefined;
           const output = !iterationModel ? shownRun?.stepOutputs?.[step.id] ?? (attempt?.status === "FAILED" ? attempt.output : undefined) : undefined;
           const analysis = step.source.kind === "analysis", agent = step.source.kind === "agent", modelNode = analysis || agent;
+          const status = snapshotMatches ? stepStatus(attempt, output !== undefined) : null;
           return <li key={step.id} className="relative">
             <button type="button" aria-pressed={node?.id === step.id} onClick={() => select(step.id)} className={`workspace-node relative z-10 flex w-full items-center gap-3 rounded-lg border bg-white px-4 py-3 text-left dark:bg-darkBackground ${node?.id === step.id ? "border-primary ring-1 ring-primary/20" : "border-gray-200 dark:border-gray-700"}`}>
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 text-xs text-gray-400 dark:bg-gray-900">{snapshotMatches && attempt?.status === "DONE" ? <Icon icon="lucide:check" /> : snapshotMatches && attempt?.status === "FAILED" ? <Icon icon="lucide:triangle-alert" /> : analysis ? <Icon icon="lucide:brain-circuit" /> : agent ? <Icon icon="lucide:bot" /> : String(index + 1).padStart(2, "0")}</span>
-              <span className="min-w-0 flex-1"><span className="block break-words text-xs font-semibold">{step.source.description || step.id}</span><span className="mt-1 block break-words font-mono text-[10px] text-gray-500">{analysis ? `Structured analysis · ${step.source.data_class || "unclassified"}` : agent ? `Bounded agent · ${(step.source.allowed_actions || []).length} allowed reads · ${step.source.connection_id || primaryConnectionId}` : `${step.action} · ${step.source.connection_id || primaryConnectionId}`}</span></span>
+              <span className="min-w-0 flex-1"><span className="block break-words text-xs font-semibold">{step.source.description || step.id}</span><span className="mt-1 block break-words text-[10px] text-gray-500">{analysis ? "Analysis step" : agent ? "ERP assistant step" : "ERP step"} · select to review or edit</span></span>
+              {status && <span aria-label={`Step status: ${status.label}`} className={`shrink-0 rounded-full px-2 py-1 text-[9px] font-semibold ${status.tone}`}>{status.label}</span>}
               {step.source.condition && <span className="text-[9px] text-gray-500">condition</span>}
               <Icon icon="lucide:chevron-right" className="h-3 w-3 text-gray-400" />
             </button>
             {renderMoveHandle(step.id)}
             <IterationNodeEvidence key={`${iterationModel?.executionId}:${step.id}`} model={iterationModel} nodeId={step.id} />
-            {output !== undefined && <details className="relative z-10 ml-10 mt-2 rounded-md bg-white/80 px-3 py-2 text-[10px] dark:bg-gray-900"><summary className="cursor-pointer">{attempt?.status === "FAILED" ? "Node failure response" : analysis ? "Structured analysis answer" : agent ? "Agent structured answer" : "Node answer"} · run {shownRun.id}</summary><div className="mt-2 max-h-64 overflow-auto"><ReadableResult value={output} /></div></details>}
+            {output !== undefined && <NodeAnswer output={output} attempt={attempt} runId={shownRun.id} analysis={analysis} agent={agent} selected={node?.id === step.id} />}
             {attempt?.status === "FAILED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-red-600">{snapshotMatches && flowProtectedGroups(authoring?.controlFlow).length ? "In this run, this node failed or was blocked. A declared handler may continue only after the server records its exact eligible failure. This node has no successful answer." : "In this run, this node failed or was blocked. Following nodes were not executed."}</p>}
             {attempt?.status === "UNKNOWN" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-amber-700 dark:text-amber-300">{modelNode ? "Model or bounded agent outcome unknown · no validated structured answer was saved, no later effect ran and the call is never replayed automatically." : attempt.sideEffect ? "Outcome unknown · the operation may have taken effect in ERP, but no confirmed result was saved. Reconcile before retrying. No automatic replay." : "Outcome unknown · the read may have reached ERP, but no confirmed answer was saved. No automatic replay."}</p>}
             {attempt?.reconciliation && <div className="relative z-10 ml-10 mt-2"><OperationReconciliationEvidence record={attempt.reconciliation} /></div>}
             {snapshotMatches && shownRun?.hasOperationReconciliation === true && attempt?.status === "UNKNOWN" && attempt.sideEffect && <div className="relative z-10 ml-3 mt-3 sm:ml-10"><OperationStatusQueries executionId={shownRun.id} nodeId={step.id} onHistoryChanged={monitor.refresh} /></div>}
             {attempt?.status === "AWAITING_APPROVAL" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-amber-700 dark:text-amber-300">Waiting for an independent exact approval · this operation has not been dispatched.</p>}
-            {attempt?.status === "RUNNING" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">{analysis ? attempt.phase === "MODEL_DISPATCH_INTENT" ? "Model dispatch recorded · waiting for one validated structured answer" : "Checking analysis input, model and egress policy" : agent ? `Bounded agent in progress · ${String(attempt.phase || "checking limits").replaceAll("_", " ").toLowerCase()}` : attempt.phase === "DISPATCH_INTENT" ? attempt.sideEffect ? "Operation dispatch recorded · waiting for a saved result" : "Read dispatch recorded · waiting for a saved answer" : "Checking this node before dispatch"}</p>}
+            {attempt?.status === "RUNNING" && output === undefined && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">{analysis ? attempt.phase === "MODEL_DISPATCH_INTENT" ? "Model dispatch recorded · waiting for one validated structured answer" : "Checking analysis input, model and egress policy" : agent ? `Bounded agent in progress · ${String(attempt.phase || "checking limits").replaceAll("_", " ").toLowerCase()}` : attempt.phase === "DISPATCH_INTENT" ? attempt.sideEffect ? "Operation dispatch recorded · waiting for a saved result" : "Read dispatch recorded · waiting for a saved answer" : "Checking this node before dispatch"}</p>}
             {attempt?.outcome === "operation-accepted" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">Tool acceptance saved · recipient delivery is not independently verified.</p>}
             {attempt?.outcome === "operation-confirmed" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">Tool-reported operation confirmation saved.</p>}
             {attempt?.outcome === "NOT_DISPATCHED" && <p className="relative z-10 ml-10 mt-2 text-[10px] text-gray-500">No dispatch was recorded for this attempt.</p>}
@@ -364,16 +422,16 @@ export default function WorkflowWorkspaceEditor({ workflowId, sessionId, actorId
         {pendingProposal.command.type === "updateProtected" && pendingProposal.command.patch.output && !pendingProposal.command.patch.onError ? <ProtectedPatchPreview proposal={pendingProposal} /> : pendingProposal.command.type === "updateCollection" ? <CollectionPatchPreview proposal={pendingProposal} /> : pendingProposal.command.type === "updateCondition" && pendingProposal.id ? <ConditionPatchPreview proposal={pendingProposal} /> : <><details className="mt-3 text-[10px]"><summary className="cursor-pointer">Before</summary><div className="mt-2 max-h-56 overflow-auto"><ReadableValue value={pendingProposal.before} /></div></details>
         <p className="mt-3 text-[10px] text-gray-500">After{pendingProposal.after === null ? " · node will be removed" : ""}</p><div className="mt-1 max-h-64 overflow-auto"><ReadableValue value={pendingProposal.after} /></div></>}
         {pendingProposal.validation && <p className="mt-2 text-[10px] text-gray-500">{pendingProposal.validation.passed ? "Proposal validation passed · not published" : "Proposal has validation issues · may only be saved as a blocked draft"}</p>}
-        {!pendingProposal.validation && <p className="mt-2 text-[10px] text-gray-500">Manual preview only · the backend validates this draft when you apply it. Nothing executes.</p>}
+        {!pendingProposal.validation && <p className="mt-2 text-[10px] text-gray-500">Local preview only · not saved to the database. Apply to draft validates and saves it. Refreshing or closing this page loses this preview. Nothing executes.</p>}
         {!!pendingProposal.validation?.errors?.length && <details className="mt-2 text-xs"><summary className="cursor-pointer text-amber-700">Proposal issues ({pendingProposal.validation.errors.length})</summary><ul className="mt-2 space-y-1 text-gray-500">{pendingProposal.validation.errors.map((issue, index) => <li key={index}>{issue}</li>)}</ul></details>}
         <div className="mt-3 flex gap-2"><button className={`${button} bg-primary text-white hover:bg-primary/90`} disabled={busy || record.readinessUnknown || staleProposal} onClick={() => perform(() => save(pendingProposal.command, { version: pendingProposal.baseVersion, contentHash: pendingProposal.baseHash, proposalId: pendingProposal.id }))}>Apply to draft</button><button className={button} disabled={busy || record.readinessUnknown} onClick={() => perform(async () => { if (pendingProposal.id) { await workflowService.command(workflowId, record, { type: "discardProposal", proposalId: pendingProposal.id }); setResolvedProposals((items) => [...items, pendingProposal.id]); onChatChanged?.(); } setProposal(null); setNotice("Proposal discarded. The workflow was not changed."); })}>Discard</button></div>
       </section>}
       <RunAdmissionRecoveryPanel recovery={recovery} execution={shownRun} onReleased={() => { setRun(null); setTimeline([]); setUnconfirmedRun(false); setNotice("The recorded terminal run was reviewed. A new run requires an explicit click."); }} />
-      <PublishedWorkflowRunForm record={record} authoring={authoring} runInput={runInput} onInput={setRunInput} buttonClass={button} onRun={attemptRun} submitting={submittingRun || recovery.checking} unconfirmed={unconfirmedRun && !recovery.run} disabled={busy || submittingRun || recovery.checking || recovery.pending || unconfirmedRun || runActive || ["RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED", "RECONCILED"].includes(shownRun?.status) || !record.can_attempt_run} />
+      <PublishedWorkflowRunForm record={record} authoring={authoring} runInput={runInput} onInput={setRunInput} buttonClass={button} onRun={attemptRun} submitting={submittingRun || recovery.checking} unconfirmed={unconfirmedRun && !recovery.run} disabled={busy || Boolean(pendingProposal) || submittingRun || recovery.checking || recovery.pending || unconfirmedRun || runActive || ["RECOVERY_REQUIRED", "RECONCILIATION_REQUIRED", "RECONCILED"].includes(shownRun?.status) || !record.can_attempt_run} />
       <ReadSimulationPanel workflowId={workflowId} record={record} steps={preview.steps} canControl={canControl} disabled={busy || record.readinessUnknown || Boolean(preview.error)} />
       {shownRun && <div className="mt-4 border-t border-gray-200 pt-3 text-[10px] text-gray-500 dark:border-gray-700"><p>Run {shownRun.id} · {shownRun.status} · published v{shownRun.workflowSnapshot?.version ?? "unknown"}</p><p className="mt-1">Answers belong to this run snapshot, not unsaved edits.</p>{shownRun.agentSummary && <p className="mt-2">{shownRun.agentSummary}</p>}<a href={`/executions/${encodeURIComponent(shownRun.id)}`} className="mt-2 inline-block text-primary">Open full run evidence</a></div>}
       {shownRun?.hasOperationReconciliation === true && !snapshotMatches && <div className="mt-4"><OperationStatusQueries executionId={shownRun.id} onHistoryChanged={monitor.refresh} /></div>}
-      <details className="mt-5 text-xs"><summary className="cursor-pointer">Saved source</summary><pre className="mt-3 overflow-auto whitespace-pre-wrap break-words text-[10px]">{record.yaml}</pre></details>
+      <WorkflowSourcePreview source={record.yaml} />
       {busy && <p role="status" className="mt-4 text-xs text-gray-500">Working… no completed result is assumed.</p>}
     </div>
   </div>;
