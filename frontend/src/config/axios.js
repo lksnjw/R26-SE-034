@@ -1,9 +1,10 @@
 import axios from "axios";
 import { appConfig } from "./app";
+import { currentAuthorityEpoch } from "../utils/authAuthority";
 
 export const apiClient = axios.create({
   baseURL: appConfig.apiBaseUrl,
-  timeout: 30000,
+  timeout: appConfig.apiRequestTimeoutMs,
   headers: {
     "Content-Type": "application/json",
   },
@@ -24,6 +25,7 @@ export function clearStoredSession() {
   localStorage.removeItem(AUTH_STORAGE.token);
   localStorage.removeItem(AUTH_STORAGE.refresh);
   localStorage.removeItem(AUTH_STORAGE.user);
+  delete apiClient.defaults.headers.common.Authorization;
 }
 
 /**
@@ -38,6 +40,10 @@ export function clearStoredSession() {
  ******************************************************************************/
 export function isNetworkError(error) {
   if (!error) return false;
+  // Navigation and monitor teardown intentionally abort outstanding polls.
+  // Axios cancellation carries a request but says nothing about reachability.
+  // Keep real ECONNABORTED timeouts in the transport-failure branch below.
+  if (axios.isCancel(error) || error.code === "ERR_CANCELED" || error.name === "AbortError") return false;
   if (error.response) return false;
   return Boolean(error.request) || error.code === "ECONNABORTED" || error.message === "Network Error";
 }
@@ -54,10 +60,20 @@ export function isServerUnavailable(error) {
 
 // Attach Bearer token to every request
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem(AUTH_STORAGE.token);
+  if (config._authEpoch === undefined) config._authEpoch = currentAuthorityEpoch();
+  if (config._authEpoch !== currentAuthorityEpoch()) {
+    const error = new Error("Authentication changed before the request was dispatched");
+    error.code = "ERR_STALE_AUTHORITY";
+    return Promise.reject(error);
+  }
+  const token = config._authTokenOverride ? "" : localStorage.getItem(AUTH_STORAGE.token);
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  } else if (!config._authTokenOverride) {
+    delete config.headers.Authorization;
+    delete config.headers.authorization;
   }
+  delete config._authTokenOverride;
   return config;
 });
 
@@ -76,7 +92,11 @@ let refreshPromise = null;
  * Gets refresh in flight for the axios module.
  ******************************************************************************/
 export function getRefreshInFlight() {
-  return refreshPromise;
+  return refreshPromise?.promise ?? null;
+}
+
+export function getRefreshEpoch() {
+  return refreshPromise?.epoch ?? null;
 }
 
 /*******************************************************************************
@@ -84,17 +104,20 @@ export function getRefreshInFlight() {
  *
  * Refreshes session for the axios module.
  ******************************************************************************/
-export function refreshSession() {
-  if (refreshPromise) return refreshPromise;
+export function refreshSession(expectedEpoch = currentAuthorityEpoch()) {
+  if (expectedEpoch !== currentAuthorityEpoch()) return Promise.reject(new Error("Authentication changed before refresh"));
+  if (refreshPromise?.epoch === expectedEpoch) return refreshPromise.promise;
 
   const refreshToken = localStorage.getItem(AUTH_STORAGE.refresh);
   if (!refreshToken) return Promise.reject(new Error("no refresh token stored"));
 
   // Bare axios, not apiClient: the request interceptor would otherwise attach
   // the expired access token, and a failure here must not re-enter this logic.
-  refreshPromise = axios
-    .post(`${appConfig.apiBaseUrl}/auth/refresh`, { refreshToken })
+  const pending = { epoch: expectedEpoch, promise: null };
+  pending.promise = axios
+    .post(`${appConfig.apiBaseUrl}/auth/refresh`, { refreshToken }, { timeout: appConfig.apiRequestTimeoutMs })
     .then((response) => {
+      if (expectedEpoch !== currentAuthorityEpoch()) throw new Error("Authentication changed during refresh");
       const session = response.data?.data ?? {};
       if (!session.accessToken) throw new Error("refresh returned no access token");
       localStorage.setItem(AUTH_STORAGE.token, session.accessToken);
@@ -105,10 +128,15 @@ export function refreshSession() {
       return session.accessToken;
     })
     .finally(() => {
-      refreshPromise = null;
+      if (refreshPromise === pending) refreshPromise = null;
     });
+  refreshPromise = pending;
 
-  return refreshPromise;
+  // Keep the public getter's historical promise shape while allowing auth
+  // bootstrap to join only a refresh owned by its own authority epoch.
+  Object.defineProperty(pending.promise, "epoch", { value: expectedEpoch, configurable: true });
+
+  return pending.promise;
 }
 
 // Endpoints that must never trigger a refresh, because refreshing them is
@@ -118,9 +146,20 @@ export function refreshSession() {
 const NON_REFRESHABLE = ["/auth/login", "/auth/register", "/auth/refresh", "/auth/logout"];
 
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const requestEpoch = response.config?._authEpoch;
+    if (requestEpoch !== undefined && requestEpoch !== currentAuthorityEpoch()) {
+      const error = new Error("Authentication changed before the response was accepted");
+      error.code = "ERR_STALE_AUTHORITY";
+      error.config = response.config;
+      return Promise.reject(error);
+    }
+    return response;
+  },
   async (error) => {
     const originalRequest = error.config || {};
+    const requestEpoch = originalRequest._authEpoch;
+    if (requestEpoch !== undefined && requestEpoch !== currentAuthorityEpoch()) return Promise.reject(error);
 
     // No HTTP response was received. Keep the session and tell the app.
     if (isServerUnavailable(error)) {
@@ -144,11 +183,13 @@ apiClient.interceptors.response.use(
 
     originalRequest._retry = true;
     try {
-      const token = await refreshSession();
+      const token = await refreshSession(requestEpoch ?? currentAuthorityEpoch());
+      if ((requestEpoch ?? currentAuthorityEpoch()) !== currentAuthorityEpoch()) return Promise.reject(error);
       originalRequest.headers = originalRequest.headers || {};
       originalRequest.headers.Authorization = `Bearer ${token}`;
       return apiClient(originalRequest);
     } catch (refreshError) {
+      if ((requestEpoch ?? currentAuthorityEpoch()) !== currentAuthorityEpoch()) return Promise.reject(refreshError);
       // The refresh itself failed. That, and only that, ends the session.
       if (isServerUnavailable(refreshError)) {
         window.dispatchEvent(new CustomEvent("auth:unreachable"));

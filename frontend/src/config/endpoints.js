@@ -17,16 +17,19 @@ export function validateEndpoint(value, { kind, origin, allowRelative = false, a
 }
 
 export function createAppConfig(env = {}, browserOrigin = "http://localhost") {
+  const apiRequestTimeoutMs = Number(env.VITE_API_REQUEST_TIMEOUT_MS ?? 90000);
+  if (!Number.isInteger(apiRequestTimeoutMs) || apiRequestTimeoutMs < 1000 || apiRequestTimeoutMs > 300000)
+    throw new Error("VITE_API_REQUEST_TIMEOUT_MS must be between 1000 and 300000 ms");
   const apiBaseUrl = validateEndpoint(env.VITE_API_BASE_URL ?? "/api", { kind: "API", origin: browserOrigin, allowRelative: true });
   const apiOrigin = new URL(apiBaseUrl, browserOrigin).origin;
   const wsBaseUrl = validateEndpoint(env.VITE_WS_BASE_URL ?? `${apiOrigin.replace(/^http/, "ws")}/ws`, { kind: "WebSocket", origin: browserOrigin });
   return Object.freeze({
     name: env.VITE_APP_NAME ?? "Agentic Workflow Engine",
-    version: "0.1.0", apiBaseUrl, wsBaseUrl,
+    version: "0.1.0", apiBaseUrl, wsBaseUrl, apiRequestTimeoutMs,
     analyticsEnabled: env.VITE_ANALYTICS_ENABLED === "true",
-    // No authenticated, audited backend contract exists for document-pipeline
-    // uploads. Keep this unavailable in every build until that contract is
-    // implemented through the governed backend/ERPBridge boundary.
-    pipelineUploadEnabled: false,
+    // This controls only route visibility. Every request still terminates at
+    // the authenticated backend and requires the server-side pipeline:upload
+    // permission; no pipeline endpoint or credential enters the browser build.
+    pipelineUploadEnabled: env.VITE_PIPELINE_UPLOAD_ENABLED !== "false",
   });
 }
