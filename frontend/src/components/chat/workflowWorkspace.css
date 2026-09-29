@@ -7,6 +7,21 @@
 .workspace-move-handle:active { cursor: grabbing; }
 .workspace-flow > li.workspace-placement::after { display: none; }
 .workspace-flow > li { position: relative; }
+.mini-workflow-surface { background-color: #f8fafc; background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 18px 18px; }
+.dark .mini-workflow-surface { background-color: #111827; background-image: radial-gradient(#334155 1px, transparent 1px); }
+.mini-workflow-node { position: absolute; display: flex; flex-direction: column; border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px 12px; background: white; text-align: left; box-shadow: 0 2px 4px rgb(15 23 42 / .04); transition: border-color 160ms ease, box-shadow 160ms ease; }
+.mini-workflow-node:hover, .mini-workflow-node:focus-visible { border-color: #93328e; outline: 2px solid rgb(147 50 142 / .15); }
+.dark .mini-workflow-node { background: #1f2937; border-color: #475569; }
+.mini-workflow-node.mini-node-selected { border-color: #93328e; box-shadow: 0 0 0 2px rgb(147 50 142 / .14); }
+.mini-node-status { color: #64748b; }
+.mini-node-done .mini-node-status { color: #059669; }
+.mini-node-attention { border-color: #f59e0b; }
+.mini-node-attention .mini-node-status { color: #b45309; }
+.mini-node-failed .mini-node-status { color: #dc2626; }
+.mini-node-running .mini-node-status { color: #2563eb; }
+.mini-canvas-control { display: inline-flex; min-height: 30px; min-width: 30px; align-items: center; justify-content: center; border: 1px solid #e2e8f0; border-radius: 5px; background: white; color: #475569; }
+.mini-canvas-control:disabled { opacity: .35; }
+.dark .mini-canvas-control { border-color: #475569; background: #1f2937; color: #cbd5e1; }
 .workspace-flow > li:not(:last-child)::after { content: ""; position: absolute; pointer-events: none; left: 28px; top: 40px; bottom: -22px; width: 1px; background: #d1d5db; }
 @keyframes workspace-reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .workspace-node, .workspace-placement { transition: none; } .workspace-node:hover { transform: none; } .workspace-reveal { animation: none; } }
