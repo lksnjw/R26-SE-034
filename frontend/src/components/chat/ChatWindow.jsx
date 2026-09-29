@@ -15,24 +15,21 @@ import { peekWorkflowForChatEdit, clearWorkflowForChatEdit } from "../../utils/w
  ******************************************************************************/
 function ThinkingIndicator() {
   return (
-    <div className="flex flex-col items-start gap-1 pl-1">
-      <div className="mb-0.5 flex items-center gap-1.5">
-        <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10">
-          <Icon icon="hugeicons:ai-magic" className="h-3 w-3 text-primary" />
+    <div role="status" aria-live="polite" aria-label="Thinking…" className="rounded-xl border border-primary/20 bg-primary/[0.035] p-3.5 dark:border-primary/25 dark:bg-primary/[0.06]">
+      <div className="flex items-start gap-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+          <Icon icon="hugeicons:ai-magic" className="h-4 w-4 animate-pulse text-primary" />
         </div>
-        <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400">Workflow Assistant</span>
-      </div>
-      <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-        <span className="flex gap-0.5">
-          {[0, 0.15, 0.3].map((delay, i) => (
-            <span
-              key={i}
-              className="inline-block h-1.5 w-1.5 rounded-full bg-primary"
-              style={{ animation: `pulse 1s ${delay}s infinite` }}
-            />
-          ))}
-        </span>
-        <span className="text-xs">Waiting for acknowledgement…</span>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-gray-950 dark:text-white">Thinking…</p>
+          <p className="mt-0.5 text-[11px] text-gray-600 dark:text-gray-300">Sending your request securely…</p>
+          <div className="mt-3 grid grid-cols-4 gap-1" aria-hidden="true">
+            {["Request", "Checks", "Work", "Answer"].map((label, index) => <div key={label} className="min-w-0">
+              <div className={`h-1 rounded-full ${index === 0 ? "animate-pulse bg-primary" : "bg-gray-200 dark:bg-gray-700"}`} />
+              <span className={`mt-1 block truncate text-[10px] ${index === 0 ? "font-semibold text-primary" : "text-gray-500 dark:text-gray-400"}`}>{label}</span>
+            </div>)}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -74,13 +71,19 @@ const QUICK_PROMPTS = [
   { icon: "mdi:robot-outline", label: "Review failure handling", text: "Review this workflow's failure handling. Identify which operations are safe to retry and which require reconciliation or human approval. Do not execute it." },
   { icon: "mdi:account-check-outline", label: "Supplier onboarding draft", text: "Draft a supplier onboarding workflow using available ERP tools. Identify unsupported capabilities and required approvals; do not execute it." },
 ];
+const INDEXED_PROMPTS = [
+  { icon: "mdi:account-search-outline", label: "Find a document", text: "Find the indexed documents for a person. Ask for the source system, entity and exact ID or person name if missing. Return only details supported by the retrieved text." },
+  { icon: "mdi:file-search-outline", label: "Search stored text", text: "Search the uploaded document text. Ask for the source system, entity and search phrase if missing, and retrieve the matching details through ERPBridge." },
+];
 
 /*******************************************************************************
  * Function: ChatWindow
  *
  * Performs the Chat Window operation on window for the ChatWindow module.
  ******************************************************************************/
-function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, savedModel, nodeContext, onClearNodeContext, onChatChanged, operation, operationEvents, operationError, reconnecting, onCancelOperation, cancelling, onRefreshOperation }) {
+function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessages, loadingMore, onLoadMore, draftStorageKey, savedModel, nodeContext, onClearNodeContext, onChatChanged, operation, operationEvents, operationError, reconnecting, onCancelOperation, cancelling, onRefreshOperation, variant = "workflow" }) {
+  const indexed = variant === "indexed";
+  const quickPrompts = indexed ? INDEXED_PROMPTS : QUICK_PROMPTS;
   const [draft, setDraft] = useState(() => readWorkspaceValue(draftStorageKey));
   const [sendError, setSendError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -93,7 +96,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
   const [modelError, setModelError] = useState("");
   const [catalogRetry, setCatalogRetry] = useState(0);
   const modelChosenByUser = useRef(false);
-  const [editContext, setEditContext] = useState(() => peekWorkflowForChatEdit());
+  const [editContext, setEditContext] = useState(() => indexed ? null : peekWorkflowForChatEdit());
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -179,7 +182,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
     }
   };
 
-  const isEmpty = messages.length === 0 && !loading;
+  const isEmpty = messages.length === 0 && !busy;
 
   return (
     <section aria-label="Workflow chat" className="flex h-full min-h-0 flex-col overflow-hidden bg-white dark:bg-darkBackground">
@@ -189,11 +192,12 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
           <Icon icon="hugeicons:ai-magic" className="h-4 w-4 text-primary" />
         </div>
         <div className="min-w-0">
-          <h2 className="text-sm font-bold text-gray-950 dark:text-white">Workflow Assistant</h2>
-          <p className="text-[10px] text-gray-400">Generate · Query · Validate · Execute</p>
+          <h2 className="text-sm font-bold text-gray-950 dark:text-white">{indexed ? "Indexed data assistant" : "Workflow assistant"}</h2>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">{indexed ? "Retrieves stored document details through ERPBridge" : "Plans, checks, and uses approved tools"}</p>
         </div>
         <div className="ml-auto flex items-center gap-1.5 rounded-full border border-gray-200 px-2.5 py-1 dark:border-gray-700">
-          <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400">{loading ? "Request in progress" : "Chat"}</span>
+          <span className={`h-1.5 w-1.5 rounded-full ${busy ? "animate-pulse bg-primary" : "bg-emerald-500"}`} />
+          <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400">{busy ? "Working" : "Ready"}</span>
         </div>
       </div>
 
@@ -228,7 +232,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
       {/* ── Messages ── */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-4">
         <div className="mx-auto max-w-3xl space-y-5">
-          {isEmpty && <ChatWelcome onPrompt={setDraft} prompts={QUICK_PROMPTS} />}
+          {isEmpty && <ChatWelcome onPrompt={setDraft} prompts={quickPrompts} variant={variant} />}
 
           {hasMoreMessages && (
             <div className="flex justify-center">
@@ -253,7 +257,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
           ))}
 
           {(operation || operationError) && <ChatOperationProgress operation={operation} events={operationEvents} error={operationError} reconnecting={reconnecting} onCancel={onCancelOperation} cancelling={cancelling} onRefresh={onRefreshOperation} />}
-          {loading && !operation && <ThinkingIndicator />}
+          {busy && !operation && <ThinkingIndicator />}
 
           {(error || sendError) && (
             <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800/40 dark:bg-red-900/20 dark:text-red-400">
@@ -280,12 +284,12 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
                 onChange={setDraft}
                 onKeyDown={handleKeyDown}
                 disabled={busy}
-                placeholder={nodeContext ? `Describe the change to ${nodeContext.nodeId}…` : "Describe a workflow, query ERP data, or ask anything… (Enter to send, Shift+Enter for newline)"}
+                placeholder={nodeContext ? `Describe the change to ${nodeContext.nodeId}…` : indexed ? "Ask about stored documents. Include a name or ID and source scope…" : "Describe a workflow, query ERP data, or ask anything… (Enter to send, Shift+Enter for newline)"}
               />
             </div>
-            <div className="mt-2 flex items-center justify-between gap-2">
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap gap-1.5">
-                {!nodeContext && QUICK_PROMPTS.slice(0, 2).map((p) => (
+                {!nodeContext && quickPrompts.slice(0, 2).map((p) => (
                   <button
                     key={p.label}
                     type="button"
@@ -324,7 +328,7 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
                   disabled={busy || scopePending || !draft.trim()}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary text-white transition hover:bg-primary/90 disabled:opacity-40"
                 >
-                  {loading
+                  {busy
                     ? <Icon icon="mdi:loading" className="h-4 w-4 animate-spin" />
                     : <Icon icon="mdi:send" className="h-4 w-4" />
                   }
@@ -332,10 +336,10 @@ function ChatWindow({ messages, onSend, onRevise, loading, error, hasMoreMessage
               </div>
             </div>
             {modelError && <p role="status" className="mt-2 text-xs text-gray-600 dark:text-gray-300">{modelError} <button type="button" disabled={busy} className="underline" onClick={() => setCatalogRetry((value) => value + 1)}>Reload models</button></p>}
-            <p className="mt-2 text-[10px] text-gray-500 dark:text-gray-400">Chat model applies to new messages and edit proposals. Saved runtime nodes keep their reviewed models.</p>
+            <p className="mt-2 text-[10px] text-gray-500 dark:text-gray-400">{indexed ? "Answers use retrieved text from reviewed ERPBridge tools, not the original file bytes." : "Chat model applies to new messages and edit proposals. Saved runtime nodes keep their reviewed models."}</p>
           </div>
           <p className="mt-1.5 text-center text-[10px] text-gray-400">
-            {nodeContext ? "Enter to propose · configured provider · review Apply/Discard in the canvas · nothing executes" : "Enter to send · Shift+Enter for newline · A draft is not proof of ERP readiness or safe execution"}
+            {nodeContext ? "Changes are prepared for your review. Nothing runs automatically." : indexed ? "Check the saved tool results for the source evidence." : "Follow your request’s progress. Drafts never run automatically."}
           </p>
         </div>
       </div>

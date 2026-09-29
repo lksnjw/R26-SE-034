@@ -1,10 +1,10 @@
 import { Icon } from "@iconify/react";
 
 const CAPABILITIES = [
-  { icon: "mdi:auto-fix", label: "Generate workflows", desc: "Describe what you need in plain language" },
-  { icon: "mdi:shield-check-outline", label: "Review validation", desc: "Inspect returned checks and blocking errors" },
-  { icon: "mdi:database-search-outline", label: "Query ERP data", desc: "Ask for live data from connected systems" },
-  { icon: "mdi:graph-outline", label: "Inspect the draft", desc: "Select steps in the canvas beside this chat" },
+  { icon: "mdi:auto-fix", label: "Build a workflow", desc: "Describe the outcome you need" },
+  { icon: "mdi:shield-check-outline", label: "Check safety", desc: "Permissions and validation stay enforced" },
+  { icon: "mdi:database-search-outline", label: "Use approved ERP tools", desc: "See every confirmed result" },
+  { icon: "mdi:graph-outline", label: "Review before running", desc: "Nothing executes automatically" },
 ];
 
 /*******************************************************************************
@@ -12,54 +12,55 @@ const CAPABILITIES = [
  *
  * Performs the Chat Welcome operation on welcome for the ChatWelcome module.
  ******************************************************************************/
-function ChatWelcome({ onPrompt = () => {}, prompts = [] }) {
+function ChatWelcome({ onPrompt = () => {}, prompts = [], variant = "workflow" }) {
+  const indexed = variant === "indexed";
   return (
-    <div className="space-y-6 py-4">
+    <div className="space-y-7 py-5">
       {/* Hero */}
       <div className="text-center">
-        <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
-          <Icon icon="hugeicons:ai-magic" className="h-8 w-8 text-primary" />
+        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+          <Icon icon="hugeicons:ai-magic" className="h-6 w-6 text-primary" />
         </div>
-        <h2 className="text-xl font-black text-gray-950 dark:text-white">Workflow Assistant</h2>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          Generate, query, and validate workflows with natural language.
+        <h2 className="text-xl font-bold text-gray-950 dark:text-white">{indexed ? "Find stored document details" : "What would you like to do?"}</h2>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-500 dark:text-gray-400">
+          {indexed ? "Use a person name or exact ID with the source system and entity from upload. The agent retrieves indexed text through ERPBridge." : "Describe the result you need. Follow each step as your request is checked, prepared and completed."}
         </p>
       </div>
 
-      {/* Capability pills */}
-      <div className="grid grid-cols-2 gap-2">
+      {/* Compact trust and capability list */}
+      {!indexed && <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
         {CAPABILITIES.map((cap) => (
           <div
             key={cap.label}
-            className="flex items-start gap-2.5 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-gray-800 dark:bg-darkBackgroundVery"
+            className="flex items-start gap-2.5"
           >
-            <Icon icon={cap.icon} className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <Icon icon={cap.icon} className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
             <div>
               <p className="text-xs font-semibold text-gray-800 dark:text-white">{cap.label}</p>
-              <p className="text-[10px] text-gray-400">{cap.desc}</p>
+              <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">{cap.desc}</p>
             </div>
           </div>
         ))}
-      </div>
+      </div>}
 
       {/* Quick-start prompts */}
       {prompts.length > 0 && (
         <div className="space-y-2">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">Try an example</p>
+          <p className="text-[11px] font-semibold text-gray-500 dark:text-gray-400">Or start with an example</p>
           <div className="space-y-1.5">
             {prompts.map((p) => (
               <button
                 key={p.label}
                 type="button"
                 onClick={() => onPrompt(p.text)}
-                className="flex w-full items-center gap-3 rounded-xl border border-gray-100 bg-white p-3 text-left transition hover:border-primary/30 hover:bg-primary/5 dark:border-gray-800 dark:bg-darkBackgroundVery dark:hover:border-primary/40"
+                className="group flex w-full items-center gap-3 border-b border-gray-100 px-1 py-3 text-left transition hover:text-primary dark:border-gray-800"
               >
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10">
                   <Icon icon={p.icon} className="h-4 w-4 text-primary" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs font-semibold text-gray-800 dark:text-white">{p.label}</p>
-                  <p className="truncate text-[10px] text-gray-400">{p.text.slice(0, 80)}…</p>
+                  <p className="text-xs font-semibold text-gray-800 group-hover:text-primary dark:text-white">{p.label}</p>
+                  <p className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">{p.text.slice(0, 80)}…</p>
                 </div>
                 <Icon icon="mdi:chevron-right" className="ml-auto h-4 w-4 shrink-0 text-gray-300" />
               </button>
