@@ -3,6 +3,7 @@ import Button from "../shared/ui/Button";
 import Modal from "../shared/ui/Modal";
 import Textarea from "../shared/ui/Textarea";
 import { useNotifications } from "../../context/NotificationContext";
+import { useRoute } from "../../context/RouteContext";
 import { executionService } from "../../services/execution.service";
 import { workflowService } from "../../services/workflow.service";
 import { apiErrorDetails, apiErrorMessage } from "../../services/api";
@@ -17,12 +18,15 @@ import GateRejectionAlert from "./GateRejectionAlert";
  ******************************************************************************/
 function WorkflowActions({ workflow, onChanged }) {
   const { notify } = useNotifications();
+  const { navigateTo } = useRoute();
   const { has, hasAny } = usePermissions();
   const [running, setRunning] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [runtimeInput, setRuntimeInput] = useState("{}");
   const [inputError, setInputError] = useState("");
   const [runError, setRunError] = useState(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
 /*******************************************************************************
  * Function: openRunDialog
@@ -90,14 +94,36 @@ function WorkflowActions({ workflow, onChanged }) {
     }
   };
 
+/*******************************************************************************
+ * Function: handleDelete
+ *
+ * Deletes the workflow after confirmation and returns to the workflow list.
+ ******************************************************************************/
+  const handleDelete = async () => {
+    setDeleting(true);
+    try {
+      await workflowService.remove(workflow.id);
+      notify(`Workflow "${workflow.name}" deleted.`, "success");
+      setDeleteDialogOpen(false);
+      navigateTo("workflows", "list");
+    } catch (error) {
+      notify(apiErrorMessage(error, "Could not delete workflow."), "error");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <>
       <WorkflowActionControls
         canRun={hasAny(["workflow:run", "workflow:run_own"])}
         canExport={has("workflow:write")}
+        canDelete={has("workflow:write")}
         running={running}
+        deleting={deleting}
         onRun={openRunDialog}
         onExport={exportYAML}
+        onDelete={() => setDeleteDialogOpen(true)}
       />
       <Modal open={runDialogOpen} title="Run workflow">
         <form className="space-y-4" onSubmit={run}>
@@ -138,6 +164,21 @@ function WorkflowActions({ workflow, onChanged }) {
             </Button>
           </div>
         </form>
+      </Modal>
+      <Modal open={deleteDialogOpen} title="Delete workflow">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600 dark:text-gray-300">
+            Delete <span className="font-semibold text-gray-950 dark:text-white">{workflow.name}</span>? This permanently removes the workflow definition, its schedule, and its assignments. This cannot be undone.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setDeleteDialogOpen(false)} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={handleDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete workflow"}
+            </Button>
+          </div>
+        </div>
       </Modal>
     </>
   );
