@@ -370,6 +370,15 @@ function ChatMessage({ message, onChatChanged, onRevise, busy, draftStorageKey }
       <div className="max-w-[92%]">
         <MessageMarkdown text={message.text} />
 
+        {["erpbridge", "local_model"].includes(artifacts?.policyCheck?.source) && <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+          <p role="status">Policy check · {artifacts.policyCheck.source === "erpbridge" ? "ERPBridge" : "Local JSON / model"} · {artifacts.policyCheck.failureCode ? "Check failed" : ({ allow: "Allowed", deny: "Denied", review: "Needs review", unavailable: "Unavailable" })[artifacts.policyCheck.decision] || "Not confirmed"}{artifacts.policyCheck.fallbackUsed ? " · Fallback used" : ""}</p>
+          {typeof artifacts.policyCheck.reason === "string" && <p className="mt-1">{artifacts.policyCheck.reason}</p>}
+        </div>}
+
+        {artifacts?.modelRouting?.fallbackUsed === true && typeof artifacts.modelRouting.model === "string" && <p role="status" className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+          Answered with backup model · {artifacts.modelRouting.model}
+        </p>}
+
         {intent === "EMAIL_DELIVERY" && artifacts?.emailDraft && <EmailDraftPreview draft={artifacts.emailDraft} emailDelivery={artifacts.emailDelivery} reportReason={artifacts.reportReason} superseded={artifacts.emailDraftSuperseded} onSaved={onChatChanged} />}
 
         {intent === "NODE_PATCH_PROPOSAL" && artifacts?.proposal && <p className="mt-2 text-xs text-gray-500">
