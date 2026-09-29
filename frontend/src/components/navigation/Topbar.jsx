@@ -5,11 +5,11 @@ import Breadcrumb from "./Breadcrumb";
 import CommandPalette from "./CommandPalette";
 import { appConfig } from "../../config/app";
 import { useTheme } from "../../context/ThemeContext";
-import { useNotifications } from "../../context/NotificationContext";
+import NotificationsMenu from "./NotificationsMenu";
 import { useAuthContext } from "../../context/AuthContext";
 import { useClickOutside } from "../../hooks/useClickOutside";
-import { notificationService } from "../../services/notification.service";
 import { apiClient } from "../../config/axios";
+import { BrandMark } from "../brand/BrandLogo";
 
 /*******************************************************************************
  * Function: UserMenu
@@ -107,18 +107,7 @@ function UserMenu({ user, onLogout }) {
  ******************************************************************************/
 function Topbar() {
   const { isDarkMode, toggleTheme } = useTheme();
-  const { notify } = useNotifications();
   const { user, logout } = useAuthContext();
-/*******************************************************************************
- * Function: notificationQuery
- *
- * Performs the notification Query operation on query for the Topbar module.
- ******************************************************************************/
-  const notificationQuery = useQuery({
-    queryKey: ["notifications", "unread"],
-    queryFn: () => notificationService.list({ unreadOnly: true, limit: 100 }),
-    refetchInterval: 30_000,
-  });
 /*******************************************************************************
  * Function: environmentQuery
  *
@@ -130,7 +119,6 @@ function Topbar() {
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
-  const unreadCount = notificationQuery.data?.length || 0;
   const environment = environmentQuery.data?.environment;
   const mockERP = environmentQuery.data?.mcpBackend === "mock-erp";
 
@@ -138,8 +126,8 @@ function Topbar() {
     <header className="flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3 transition-colors duration-200 dark:border-darkBackgroundVery dark:bg-darkBackground sm:px-6">
       <div className="min-w-0 flex-1 sm:flex-none">
         <div className="flex items-center gap-4">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-panel">
-            <Icon icon="tabler:git-branch" className="h-5 w-5" />
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-white">
+            <BrandMark size={27} />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -181,19 +169,7 @@ function Topbar() {
             className="h-5 w-5"
           />
         </button>
-        <button
-          type="button"
-          className="icon-button relative hidden sm:flex"
-          aria-label="Notifications"
-          onClick={async () => {
-            const result = await notificationQuery.refetch();
-            const count = result.data?.length || 0;
-            notify(count ? `${count} unread notification${count === 1 ? "" : "s"}.` : "No unread notifications.");
-          }}
-        >
-          <Icon icon="mdi:bell-outline" className="h-5 w-5" />
-          {unreadCount ? <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border-2 border-white bg-red-500 px-1 text-[10px] font-bold text-white dark:border-gray-900">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
-        </button>
+        <NotificationsMenu user={user} />
 
         <UserMenu user={user} onLogout={logout} />
       </div>

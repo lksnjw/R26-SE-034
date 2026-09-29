@@ -5,6 +5,9 @@ import { apiErrorMessage } from "../../services/api";
 import { usePermissions } from "../../hooks/usePermissions";
 import Button from "../shared/ui/Button";
 import { reviewDataClasses, reviewPolicyMatches, sensitivityOptions, supportedReviewPolicy } from "./capabilityReviewPolicy";
+import Fields, { fullyVisible } from "./CapabilityFields";
+import DiscoveredCapabilityReview from "./DiscoveredCapabilityReview";
+import { importReceiptMatches, supportedImportDecision } from "./discoveredReviewPolicy";
 
 const words = (value) => String(value ?? "Not recorded").replaceAll("_", " ").toLowerCase();
 const label = (value) => words(value).replace(/^./, (letter) => letter.toUpperCase());
@@ -15,38 +18,15 @@ function restoreDecision(actorId, connectionId) {
     if (!text) return null;
     if (text.length > 8192) throw new Error();
     const value = JSON.parse(text);
-    if (!["review", "disable"].includes(value.action) || value.connectionId !== connectionId || typeof value.capabilityId !== "string" ||
+    if (!["review", "disable", "import"].includes(value.action) || value.connectionId !== connectionId || typeof value.capabilityId !== "string" ||
         !value.capabilityId || value.capabilityId.length > 256 || !value.body || typeof value.body.note !== "string" ||
         !value.body.note.trim() || value.body.note.length > 2000) throw new Error();
     if (value.action === "review" && (typeof value.body.observationId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.body.contractHash) ||
         !/^[A-Za-z0-9_-]{16,128}$/.test(value.body.decisionKey) || !supportedReviewPolicy(value.body))) throw new Error();
     if (value.action === "disable" && (typeof value.body.revisionId !== "string" || !Number.isSafeInteger(value.body.baseVersion) || value.body.baseVersion < 1)) throw new Error();
+    if (value.action === "import" && !supportedImportDecision(value.body)) throw new Error();
     return value;
   } catch { return { invalid: true }; }
-}
-
-// Inspect data as labelled fields, never HTML or a raw JSON document. Budgets
-// protect the inspector; an incomplete rendering disables new review.
-function fitsInspector(value, depth = 0, budget = { remaining: 1200 }) {
-  if (depth > 16 || --budget.remaining < 0) return false;
-  if (value && typeof value === "object") return Object.values(value).every((item) => fitsInspector(item, depth + 1, budget));
-  return true;
-}
-function Fields({ value, depth = 0 }) {
-  if (depth > 16) return <p>Nested detail exceeds the inspector limit.</p>;
-  if (value === null || value === undefined) return <span>Not specified</span>;
-  if (typeof value !== "object") return <span className="whitespace-pre-wrap break-words">{typeof value === "boolean" ? value ? "Yes" : "No" : String(value)}</span>;
-  const entries = Object.entries(value);
-  if (!entries.length) return <span>No entries</span>;
-  return <dl className="space-y-2">{entries.slice(0, 60).map(([key, item]) => <div key={key} className="border-l border-gray-200 pl-3 dark:border-gray-700">
-    <dt className="text-xs font-semibold text-gray-500">{Array.isArray(value) ? `Item ${Number(key) + 1}` : label(key)}</dt>
-    <dd className="mt-1 text-sm"><Fields value={item} depth={depth + 1} /></dd>
-  </div>)}{entries.length > 60 ? <p>Additional entries exceed the inspector limit.</p> : null}</dl>;
-}
-function fullyVisible(value) {
-  if (!fitsInspector(value)) return false;
-  if (value && typeof value === "object") return Object.keys(value).length <= 60 && Object.values(value).every(fullyVisible);
-  return true;
 }
 
 export default function CapabilityReviewPanel() {
@@ -64,6 +44,7 @@ function ReviewWorkspace({ actorId, canReview }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [inventory, setInventory] = useState([]);
+  const [selectedRemote, setSelectedRemote] = useState(null);
   const lock = useRef(false);
   const query = useQuery({ queryKey: ["capability-review", actorId, selectedConnectionId, offset], queryFn: () => capabilityService.catalog(offset, selectedConnectionId), retry: false });
   const connectionId = query.data?.connection.id ?? selectedConnectionId;
@@ -83,8 +64,9 @@ function ReviewWorkspace({ actorId, canReview }) {
   }
   async function sendDecision(decision) {
     const result = await capabilityService[decision.action](decision.capabilityId, decision.body, decision.connectionId);
-    const admission = decision.action === "review" ? result?.admission : result;
-    if (admission?.capabilityId !== decision.capabilityId || !["AVAILABLE", "DISABLED", "BLOCKED"].includes(admission?.state) || !Number.isSafeInteger(admission?.version) ||
+    const admission = decision.action === "review" || decision.action === "import" ? result?.admission : result;
+    if ((decision.action !== "import" && admission?.capabilityId !== decision.capabilityId) || !["AVAILABLE", "DISABLED", "BLOCKED"].includes(admission?.state) || !Number.isSafeInteger(admission?.version) ||
+        (decision.action === "import" && (!importReceiptMatches(decision, result) || !reviewPolicyMatches(decision.body, result?.revision?.policy))) ||
         (decision.action === "review" && (result?.revision?.capabilityId !== decision.capabilityId || result?.revision?.connectionId !== decision.connectionId || result?.revision?.observationId !== decision.body.observationId || result?.revision?.contractHash !== decision.body.contractHash || !reviewPolicyMatches(decision.body, result?.revision?.policy))) ||
         (decision.action === "disable" && (admission?.state !== "DISABLED" || admission?.revisionId !== decision.body.revisionId))) {
       throw new Error("Decision acknowledgement is invalid");
@@ -92,7 +74,8 @@ function ReviewWorkspace({ actorId, canReview }) {
     // Keep the exact request until a receipt is confirmed. Retries of a saved
     // review cannot re-enable a capability that has subsequently been disabled.
     sessionStorage.removeItem(storageKey(actorId, decision.connectionId)); setPending(null);
-    setMessage(decision.action === "review" ? "Review decision acknowledged. Current authority is shown in the reloaded catalog, not inferred from this receipt." : "Disable acknowledged. New dispatch is blocked; already-sent remote work is not rolled back.");
+    if (decision.action === "import") { setInventory(current => current.filter(item => item.remoteName !== decision.body.remoteName)); setSelectedRemote(null); setSelectedId(admission.capabilityId); setOffset(0); }
+    setMessage(decision.action === "import" ? "Discovered-tool review acknowledged. Reloaded authority, not this receipt, determines whether the agent may use it." : decision.action === "review" ? "Review decision acknowledged. Current authority is shown in the reloaded catalog, not inferred from this receipt." : "Disable acknowledged. New dispatch is blocked; already-sent remote work is not rolled back.");
     await query.refetch();
   }
   function decide(action, entry, note, dataClass) {
@@ -112,6 +95,16 @@ function ReviewWorkspace({ actorId, canReview }) {
       await sendDecision(decision);
     });
   }
+  function importTool(item, policy) {
+    if (!mutationAllowed || pending || busy) return;
+    run("Import review", async () => {
+      const decision = { action: "import", capabilityId: item.remoteName, connectionId, body: {
+        ...policy, remoteName: item.remoteName, remoteHash: item.remoteHash, decisionKey: `import_${crypto.randomUUID()}` } };
+      if (!supportedImportDecision(decision.body)) throw new Error("The discovered contract needs a complete explicit review");
+      sessionStorage.setItem(storageKey(actorId, connectionId), JSON.stringify(decision)); setPending(decision);
+      await sendDecision(decision);
+    });
+  }
   return <section aria-label="ERP capability review" className="border-t border-gray-200 pt-6 dark:border-gray-800">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><h2 className="section-title">ERP capability review</h2><p className="mt-2 max-w-3xl text-sm text-gray-500">Discovery records evidence. An administrator reviews capability contracts; each operation still needs independent exact approval.</p></div>
@@ -119,7 +112,7 @@ function ReviewWorkspace({ actorId, canReview }) {
         {canReview ? <Button disabled={!ready || busy || Boolean(pending) || !query.data?.connection.discoveryAvailable} onClick={() => run("Discovery", async () => {
           const result = await capabilityService.discover(connectionId);
           if (result?.connectionId !== connectionId || result?.authorityGranted !== false || !Array.isArray(result?.unreviewedInventory)) throw new Error("Unsupported discovery response");
-          setInventory(result.unreviewedInventory); setOffset(0); setSelectedId(null);
+          setInventory(result.unreviewedInventory); setSelectedRemote(null); setOffset(0); setSelectedId(null);
           setMessage(`Discovery saved; no tool enabled. ${result.blockedCount ?? 0} existing admissions blocked by drift.`);
           await query.refetch();
         })}>{busy ? "Working…" : "Refresh discovery"}</Button> : null}
@@ -161,7 +154,13 @@ function ReviewWorkspace({ actorId, canReview }) {
       </div>
       {selected ? <CapabilityInspector key={`${selected.capabilityId}:${selected.observation?.id}:${selected.admission?.version}`} entry={selected} canReview={mutationAllowed && !busy && !pending} onDecision={decide} /> : <p className="text-sm text-gray-500">Select a capability to inspect its inputs, output contract, roles, and current authority.</p>}
     </div>
-    {inventory.length ? <details className="mt-6"><summary className="cursor-pointer text-sm font-semibold">Unmapped remote tools ({inventory.length})</summary><p className="my-2 text-sm text-gray-500">These names have no local reviewed contract. They are not executable. Inventory is from this discovery request only.</p><ul className="space-y-2 text-sm">{inventory.map((item) => <li key={item.remoteName} className="break-all">{item.remoteName} — {label(item.reason)}</li>)}</ul></details> : null}
+    {inventory.length ? <details className="mt-6"><summary className="cursor-pointer text-sm font-semibold">Unmapped remote tools ({inventory.length})</summary><p className="my-2 text-sm text-gray-500">These tools have no local reviewed contract. They are not executable. Select a tool to inspect and review its policy.</p><ul className="divide-y divide-gray-200 text-sm dark:divide-gray-800">{inventory.map(item => <li key={item.remoteName} className="flex flex-wrap items-center justify-between gap-3 py-3">
+      <div className="min-w-0"><p className="break-all">{item.definition?.display_name ?? item.remoteName} — {label(item.reason)}</p>
+        <p className="mt-1 text-xs text-gray-500">{item.definition?.bridge_contract?.resource_version ? `Version ${item.definition.bridge_contract.resource_version}` : "Version not pinned"}{!item.importable ? " · Not eligible for import" : ""}</p>
+        {item.definition?.display_name && item.remoteName !== item.definition.display_name ? <p className="mt-1 break-all text-xs text-gray-500">Selector: {item.remoteName}</p> : null}
+      </div><Button variant="ghost" aria-label={`Inspect ${item.definition?.display_name ?? item.remoteName} · ${item.remoteName}`} disabled={busy || Boolean(pending)} onClick={() => setSelectedRemote(item.remoteName)}>Inspect</Button>
+    </li>)}</ul></details> : null}
+    {inventory.find(item => item.remoteName === selectedRemote) ? <DiscoveredCapabilityReview key={`${connectionId}:${selectedRemote}`} item={inventory.find(item => item.remoteName === selectedRemote)} roles={query.data?.roleOptions} canReview={mutationAllowed && !busy && !pending} onReview={importTool} /> : null}
   </section>;
 }
 
