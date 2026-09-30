@@ -129,11 +129,14 @@ const allNavigationGroups = [
   },
   {
     id: "pipeline_upload",
-    label: "Document Upload",
-    description: "CSV and PDF/image pipeline ingestion",
+    label: "Data Ingestion",
+    description: "Role-controlled files and indexed-data chat",
     icon: "mdi:cloud-upload-outline",
-    requiredAny: ["workflow:read"],
-    subMenu: [{ id: "upload", label: "Upload Documents", path: "/datafeed/upload" }],
+    requiredAny: ["pipeline:upload", "chat:use"],
+    subMenu: [
+      { id: "upload", label: "Files & Documents", path: "/datafeed/upload", requiredAny: ["pipeline:upload"] },
+      { id: "chat", label: "Indexed Data Chat", path: "/datafeed/chat", requiredAny: ["chat:use"] },
+    ],
   },
   {
     id: "registry_search",

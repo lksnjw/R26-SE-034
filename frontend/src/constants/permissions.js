@@ -4,6 +4,7 @@ export const PERMISSIONS = {
   WORKFLOW_RUN: "workflow:run",
   WORKFLOW_VIEW_ALL: "workflow_view_all",
   CHAT_USE: "chat:use",
+  PIPELINE_UPLOAD: "pipeline:upload",
   WORKFLOW_READ_OWN: "workflow:read_own",
   WORKFLOW_RUN_OWN: "workflow:run_own",
   EXECUTION_READ_OWN: "execution:read_own",
