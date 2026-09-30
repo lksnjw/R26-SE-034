@@ -24,7 +24,7 @@ export function reconcileChatProgress(previous, cursor, page, operationId) {
 }
 
 // Reconnect only reads acknowledged operations. It never resubmits a message.
-export function useChatOperationMonitor(operationId, { interval = 1500, scope = "" } = {}) {
+export function useChatOperationMonitor(operationId, { interval = 1500, waitMs = 25000, scope = "" } = {}) {
   const [frame, setFrame] = useState(null), [generation, setGeneration] = useState(0);
   const refresh = useCallback(() => setGeneration(value => value + 1), []);
   useEffect(() => {
@@ -35,10 +35,13 @@ export function useChatOperationMonitor(operationId, { interval = 1500, scope = 
       let again = true, delay = interval;
       try {
         if (navigator.onLine === false) throw new Error("Browser is offline");
-        const page = await chatService.operation(operationId, cursor, { signal: controller.signal });
+        // Firebase-safe SSE-like delivery: the server holds this authenticated
+        // cursor read until progress changes. Teardown aborts it; reconnects
+        // only read saved evidence and never resubmit the chat command.
+        const page = await chatService.operation(operationId, cursor, { signal: controller.signal, waitMs });
         if (disposed) return;
         const next = reconcileChatProgress(events, cursor, page, operationId);
-        delay = page.hasMore && next.cursor > cursor ? 0 : interval;
+        delay = page.hasMore && next.cursor > cursor ? 0 : page.waited === true && isActiveChatOperation(next.operation.status) ? 0 : interval;
         current = next.operation; cursor = next.cursor; events = next.events; failures = 0;
         again = page.hasMore || isActiveChatOperation(current.status);
         setFrame({ id: operationId, scope, operation: current, events, cursor, error: "", denied: false, reconnecting: false });
@@ -57,7 +60,7 @@ export function useChatOperationMonitor(operationId, { interval = 1500, scope = 
     const visible = () => { if (document.visibilityState === "visible") reconnect(); };
     window.addEventListener("online", reconnect); document.addEventListener("visibilitychange", visible); void poll();
     return () => { disposed = true; controller.abort(); clearTimeout(timer); window.removeEventListener("online", reconnect); document.removeEventListener("visibilitychange", visible); };
-  }, [operationId, interval, generation, scope]);
+  }, [operationId, interval, waitMs, generation, scope]);
   const active = frame?.id === operationId && frame?.scope === scope ? frame : null;
   return { operation: active?.operation ?? null, events: active?.events ?? [], cursor: active?.cursor ?? 0, error: active?.error ?? "", denied: active?.denied ?? false, reconnecting: active?.reconnecting ?? false, refresh };
 }
