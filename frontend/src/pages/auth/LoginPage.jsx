@@ -1,130 +1,68 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { ArrowRight, Eye, EyeOff } from "lucide-react";
 import { useAuthContext } from "../../context/AuthContext";
-import AuthLayout from "../../layouts/AuthLayout";
+import LoginLayout from "../../layouts/LoginLayout";
 
-/*******************************************************************************
- * Function: InputField
- *
- * Performs the Input Field operation on field for the LoginPage module.
- ******************************************************************************/
-function InputField({ label, id, type = "text", value, onChange, placeholder, autoComplete }) {
-  return (
-    <div>
-      <label htmlFor={id} className="mb-1.5 block text-xs font-medium text-white/60">
-        {label}
-      </label>
-      <input
-        id={id}
-        type={type}
-        value={value}
-        onChange={onChange}
-        placeholder={placeholder}
-        autoComplete={autoComplete}
-        required
-        className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder-white/30 outline-none ring-indigo-500 transition focus:border-indigo-500/60 focus:ring-1"
-      />
-    </div>
-  );
-}
-
-/*******************************************************************************
- * Function: LoginPage
- *
- * Performs the Login Page operation on page for the LoginPage module.
- ******************************************************************************/
-function LoginPage({ onNavigate }) {
+export default function LoginPage({ onNavigate }) {
   const { login, loading, authError } = useAuthContext();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [localError, setLocalError] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const submitting = useRef(false);
+  const [submittingLocally, setSubmittingLocally] = useState(false);
+  const busy = loading || submittingLocally;
 
-/*******************************************************************************
- * Function: handleSubmit
- *
- * Handles submit for the LoginPage module.
- ******************************************************************************/
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLocalError("");
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    if (submitting.current || loading) return;
+    submitting.current = true;
+    setSubmittingLocally(true);
     try {
       await login({ email, password });
-      // On success, AuthContext sets user → App re-renders the main app automatically
+      // AuthContext retains responsibility for session state and navigation.
     } catch {
-      // authError from context is already set
+      // The existing authentication context supplies the error message.
+    } finally {
+      submitting.current = false;
+      setSubmittingLocally(false);
     }
   };
 
-  const error = localError || authError;
-
   return (
-    <AuthLayout
-      title="Welcome back"
-      subtitle="Sign in to your Agentic Workflow account"
-    >
-      <form className="space-y-4" onSubmit={handleSubmit} noValidate>
-        <InputField
-          label="Email address"
-          id="login-email"
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@company.com"
-          autoComplete="email"
-        />
-        <InputField
-          label="Password"
-          id="login-password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="••••••••"
-          autoComplete="current-password"
-        />
-
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={() => onNavigate?.("forgot-password")}
-            className="text-xs text-indigo-400 hover:text-indigo-300 transition"
-          >
-            Forgot password?
-          </button>
+    <LoginLayout>
+      <form className="login-form" onSubmit={handleSubmit} aria-busy={busy}>
+        <div className="login-field">
+          <label htmlFor="login-email">Email address</label>
+          <input id="login-email" name="email" type="email" value={email}
+            onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com"
+            autoComplete="email" autoCapitalize="none" spellCheck={false} required disabled={busy}
+            aria-describedby={authError ? "login-error" : undefined} aria-invalid={authError ? true : undefined} />
         </div>
-
-        {error && (
-          <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs font-medium text-red-400">
-            {error}
+        <div className="login-field">
+          <label htmlFor="login-password">Password</label>
+          <div className="login-input-wrap">
+            <input id="login-password" name="password" className="login-password-input"
+              type={showPassword ? "text" : "password"} value={password}
+              onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password"
+              autoComplete="current-password" required disabled={busy}
+              aria-describedby={authError ? "login-error" : undefined} aria-invalid={authError ? true : undefined} />
+            <button type="button" className="login-password-toggle" onClick={() => setShowPassword((visible) => !visible)}
+              aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} disabled={busy}>
+              {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+            </button>
           </div>
-        )}
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition hover:from-indigo-500 hover:to-violet-500 disabled:opacity-60"
-        >
-          {loading ? (
-            <span className="flex items-center justify-center gap-2">
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-              Signing in…
-            </span>
-          ) : (
-            "Sign in"
-          )}
+        </div>
+        <div className="login-forgot-row">
+          <button type="button" className="login-text-button" onClick={() => onNavigate?.("forgot-password")} disabled={busy}>Forgot password?</button>
+        </div>
+        {authError && <div id="login-error" className="login-error" role="alert">{authError}</div>}
+        <button type="submit" className="login-submit" disabled={busy}>
+          {busy ? <><span className="login-spinner" aria-hidden="true" /> Signing in…</> : <>Sign in <ArrowRight aria-hidden="true" /></>}
         </button>
-
-        <p className="pt-2 text-center text-xs text-white/40">
-          Don&apos;t have an account?{" "}
-          <button
-            type="button"
-            onClick={() => onNavigate?.("register")}
-            className="font-semibold text-indigo-400 hover:text-indigo-300 transition"
-          >
-            Create one free
-          </button>
+        <p className="login-signup">New to Agentic?
+          <button type="button" className="login-text-button" onClick={() => onNavigate?.("register")} disabled={busy}>Create an account</button>
         </p>
       </form>
-    </AuthLayout>
+    </LoginLayout>
   );
 }
-
-export default LoginPage;

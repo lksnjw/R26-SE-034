@@ -21,11 +21,17 @@ function PipelineUploadPage() {
     <div className="space-y-6">
       <section>
         <p className="text-xs font-bold uppercase tracking-[0.22em] text-primary">Data pipeline</p>
-        <h1 className="page-heading mt-3 text-gray-950 dark:text-white">Upload Documents</h1>
+        <h1 className="page-heading mt-3 text-gray-950 dark:text-white">Files &amp; Documents</h1>
         <p className="mt-3 max-w-3xl text-sm leading-6 text-gray-500 dark:text-gray-400">
-          Send CSV data or PDF/image documents into the semantic retrieval pipeline. Uploads route through this
-          app's own server-side proxy — the pipeline API key is never exposed to the browser.
+          Upload tabular schemas or attach PDF and image records to an exact person or business record. Your role
+          must include Data Pipeline Upload; the pipeline credential remains only on the application backend.
         </p>
+      </section>
+
+      <section className="surface-panel grid gap-4 rounded-2xl px-5 py-4 text-sm md:grid-cols-3">
+        <FlowStep number="1" title="Identify" detail="Bind a document to its source, entity, and exact record key." />
+        <FlowStep number="2" title="Scan & index" detail="The pipeline extracts text, uses OCR when needed, and stores searchable vectors." />
+        <FlowStep number="3" title="Retrieve in chat" detail="The agent searches and resolves content through reviewed ERPBridge read tools." />
       </section>
 
       <div className="grid gap-6 xl:grid-cols-2">
@@ -137,14 +143,14 @@ function CsvUploadCard() {
 /*******************************************************************************
  * Function: DocumentUploadCard
  *
- * Handles PDF/image upload with optional identity metadata, then polls
+ * Handles PDF/image upload with required exact identity metadata, then polls
  * index_job_id (when present) until the document-indexing job finishes.
  ******************************************************************************/
 function DocumentUploadCard() {
   const [file, setFile] = useState(null);
   const [metadata, setMetadata] = useState({
     source_system_id: "", source_entity: "", parent_record_id: "",
-    business_key_name: "", business_key_value: "", document_type: "", sensitivity: "",
+    business_key_name: "", business_key_value: "", document_type: "", sensitivity: "internal",
   });
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState(null);
@@ -159,6 +165,10 @@ function DocumentUploadCard() {
 
   const handleUpload = async () => {
     if (!file) return;
+    if (!metadata.source_system_id || !metadata.source_entity || !metadata.business_key_name || !metadata.business_key_value) {
+      notify("Source system, entity, business key name, and related record value are required", "error");
+      return;
+    }
     // business_key_name and business_key_value must travel together, or the API returns 422.
     if (Boolean(metadata.business_key_name) !== Boolean(metadata.business_key_value)) {
       notify("Business key name and value must both be set, or both left blank", "error");
@@ -186,6 +196,7 @@ function DocumentUploadCard() {
   };
 
   const busy = status === "uploading" || status === "indexing";
+  const identityComplete = Boolean(metadata.source_system_id && metadata.source_entity && metadata.business_key_name && metadata.business_key_value);
 
   return (
     <Card>
@@ -210,23 +221,29 @@ function DocumentUploadCard() {
         />
       </label>
 
-      <details className="mt-3 rounded-xl border border-gray-100 dark:border-gray-800">
+      <details open className="mt-3 rounded-xl border border-gray-100 dark:border-gray-800">
         <summary className="cursor-pointer px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-gray-500">
-          Optional document identity
+          Related person or record · required
         </summary>
         <div className="grid gap-3 px-4 pb-4 md:grid-cols-2">
-          <TextField label="Source system ID" value={metadata.source_system_id} onChange={setField("source_system_id")} disabled={busy} />
-          <TextField label="Source entity" value={metadata.source_entity} onChange={setField("source_entity")} placeholder="e.g. employee, invoice" disabled={busy} />
+          <TextField required label="Source system ID" value={metadata.source_system_id} onChange={setField("source_system_id")} placeholder="e.g. hr_system" disabled={busy} />
+          <TextField required label="Source entity" value={metadata.source_entity} onChange={setField("source_entity")} placeholder="e.g. employee" disabled={busy} />
           <TextField label="Parent record ID" value={metadata.parent_record_id} onChange={setField("parent_record_id")} disabled={busy} />
           <SelectField label="Document type" value={metadata.document_type} onChange={setField("document_type")} options={DOCUMENT_TYPES} disabled={busy} />
-          <TextField label="Business key name" value={metadata.business_key_name} onChange={setField("business_key_name")} placeholder="e.g. employee_number" disabled={busy} />
-          <TextField label="Business key value" value={metadata.business_key_value} onChange={setField("business_key_value")} placeholder="e.g. EMP-10042" disabled={busy} />
+          <TextField required label="Business key name" value={metadata.business_key_name} onChange={setField("business_key_name")} placeholder="e.g. employee_id" disabled={busy} />
+          <TextField required label="Related record value" value={metadata.business_key_value} onChange={setField("business_key_value")} placeholder="e.g. EMP-10042" disabled={busy} />
           <SelectField label="Sensitivity" value={metadata.sensitivity} onChange={setField("sensitivity")} options={SENSITIVITY_LEVELS} disabled={busy} />
         </div>
       </details>
 
+      {!identityComplete && (
+        <p className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+          Exact identity is required so chat retrieval cannot return a same-named person or record from the wrong source.
+        </p>
+      )}
+
       <div className="mt-4 flex items-center gap-2">
-        <Button onClick={handleUpload} disabled={!file || busy}>
+        <Button onClick={handleUpload} disabled={!file || busy || !identityComplete}>
           {busy ? <Icon icon="mdi:loading" className="h-4 w-4 animate-spin" /> : <Icon icon="mdi:upload" className="h-4 w-4" />}
           {status === "uploading" ? "Uploading…" : status === "indexing" ? "Indexing…" : "Upload"}
         </Button>
@@ -246,6 +263,7 @@ function DocumentUploadCard() {
           <SummaryRow label="Pages" value={result.page_count} />
           <SummaryRow label="Extraction" value={result.extraction_status} />
           <SummaryRow label="OCR used" value={result.ocr_used ? "Yes" : "No"} />
+          <SummaryRow label="Index job" value={result.index_job_id ?? "—"} mono />
           {result.warnings?.length > 0 && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-300">
               {result.warnings.join(" · ")}
@@ -324,7 +342,7 @@ function SummaryRow({ label, value, mono = false, tone = null }) {
  *
  * Performs the Text Field operation for the PipelineUploadPage module.
  ******************************************************************************/
-function TextField({ label, value, onChange, placeholder, disabled }) {
+function TextField({ label, value, onChange, placeholder, disabled, required = false }) {
   return (
     <label className="block text-xs">
       <span className="font-bold uppercase tracking-wide text-gray-500">{label}</span>
@@ -334,9 +352,22 @@ function TextField({ label, value, onChange, placeholder, disabled }) {
         onChange={onChange}
         placeholder={placeholder}
         disabled={disabled}
+        required={required}
         className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-primary disabled:opacity-50 dark:border-gray-700 dark:bg-darkBackground dark:text-white"
       />
     </label>
+  );
+}
+
+function FlowStep({ number, title, detail }) {
+  return (
+    <div className="flex gap-3">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">{number}</span>
+      <div>
+        <p className="font-semibold text-gray-950 dark:text-white">{title}</p>
+        <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{detail}</p>
+      </div>
+    </div>
   );
 }
 
