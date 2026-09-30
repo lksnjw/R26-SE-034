@@ -19,6 +19,7 @@ function routeFromPath(pathname) {
     }
   }
   if (matchPath("/builder/:workflowId", pathname)) return { main: "workflows", sub: "builder" };
+  if (matchPath("/datafeed/chat/:sessionId", pathname)) return { main: "pipeline_upload", sub: "chat" };
   if (matchPath("/chat/:sessionId", pathname)) return { main: "chat", sub: "session" };
   if (matchPath("/executions/:executionId", pathname)) return { main: "executions", sub: "history" };
   if (pathname === "/registry/rules") return { main: "registry", sub: "overview" };

@@ -1,94 +1,87 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { AUTH_STORAGE, getRefreshInFlight, isServerUnavailable } from "../config/axios";
+import { useQueryClient } from "@tanstack/react-query";
+import { AUTH_STORAGE, clearStoredSession, getRefreshInFlight, isServerUnavailable } from "../config/axios";
 import { authService } from "../services/auth.service";
+import { beginAuthorityTransition, captureAuthority, isAuthorityCurrent, staleAuthorityError, transitionAuthority } from "../utils/authAuthority";
 
 const AuthContext = createContext(null);
+const LEGACY_HANDOFFS = ["workflow.pendingChatEdit", "workflow.pendingCanvasWorkflow"];
 
-/*******************************************************************************
- * Function: loadStoredUser
- *
- * Loads stored user for the AuthContext module.
- ******************************************************************************/
 function loadStoredUser() {
   try {
-    const raw = localStorage.getItem("workflow.user");
-    return raw ? JSON.parse(raw) : null;
+    const raw = localStorage.getItem(AUTH_STORAGE.user);
+    const user = raw ? JSON.parse(raw) : null;
+    transitionAuthority(user);
+    return user;
   } catch {
+    transitionAuthority(null);
     return null;
   }
 }
 
-/*******************************************************************************
- * Function: loadCurrentUser
- *
- * Loads current user for the AuthContext module.
- ******************************************************************************/
-async function loadCurrentUser() {
-  const refreshInFlight = getRefreshInFlight();
-  if (refreshInFlight) {
-    await refreshInFlight;
-  }
-  return authService.me();
+function clearTransitionData(queryClient) {
+  void queryClient.cancelQueries();
+  queryClient.clear();
+  LEGACY_HANDOFFS.forEach(key => localStorage.removeItem(key));
 }
 
-/*******************************************************************************
- * Function: AuthProvider
- *
- * Performs the Auth Provider operation on provider for the AuthContext module.
- ******************************************************************************/
+async function loadCurrentUser(capture) {
+  const refreshInFlight = getRefreshInFlight();
+  if (refreshInFlight?.epoch === capture.epoch) await refreshInFlight;
+  if (!isAuthorityCurrent(capture)) return null;
+  return authService.me({ isCurrent: () => isAuthorityCurrent(capture) });
+}
+
 export function AuthProvider({ children }) {
+  const queryClient = useQueryClient();
   const [user, setUser] = useState(loadStoredUser);
   const [loading, setLoading] = useState(false);
   const [authError, setAuthError] = useState("");
   const [serverUnreachable, setServerUnreachable] = useState(false);
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  const currentCapture = useMemo(() => captureAuthority(user), [user]);
 
-  // On mount, validate the stored token via /auth/me.
-  //
-  // /auth/me now goes through the same serialised refresh queue as every other
-  // request, so a 401 here has already been refreshed and retried once by the
-  // interceptor. Reaching the catch means either the refresh itself failed
-  // (a real expiry) or the server is unreachable (not an auth problem at all).
+  const applyAuthority = useCallback(nextUser => {
+    const after = transitionAuthority(nextUser);
+    if (after.changed) {
+      clearTransitionData(queryClient);
+      setAuthError("");
+      setServerUnreachable(false);
+    }
+    setUser(nextUser);
+    if (nextUser) localStorage.setItem(AUTH_STORAGE.user, JSON.stringify(nextUser));
+    else localStorage.removeItem(AUTH_STORAGE.user);
+    return after;
+  }, [queryClient]);
+
+  // Revalidate on mount and explicit reconnect only. Auth changes themselves
+  // go through the guarded login/register/refresh transitions below.
   useEffect(() => {
-    const token = localStorage.getItem(AUTH_STORAGE.token);
-    if (!token) return undefined;
+    if (!localStorage.getItem(AUTH_STORAGE.token)) return undefined;
+    const capture = captureAuthority(user);
     let cancelled = false;
-    loadCurrentUser()
-      .then((me) => {
-        if (cancelled) return;
-        setUser(me);
-        setServerUnreachable(false);
-        localStorage.setItem(AUTH_STORAGE.user, JSON.stringify(me));
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        if (isServerUnavailable(error)) {
-          // Keep the session and the screen. The server is simply down.
-          setServerUnreachable(true);
-          return;
-        }
-        // A /auth/me failure never ends the session. Its 401 has already gone
-        // through the shared refresh queue; only refreshSession itself may
-        // clear storage and dispatch auth:expired.
-      });
-    return () => {
-      cancelled = true;
-    };
+    loadCurrentUser(capture).then(me => {
+      if (!me) return;
+      if (cancelled || !isAuthorityCurrent(capture)) return;
+      applyAuthority(me);
+      setServerUnreachable(false);
+    }).catch(error => {
+      if (cancelled || !isAuthorityCurrent(capture)) return;
+      if (isServerUnavailable(error)) setServerUnreachable(true);
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reconnectNonce]);
 
-  // Listen for session events from the axios interceptor
   useEffect(() => {
-/*******************************************************************************
- * Function: handleExpired
- *
- * Handles expired for the AuthContext module.
- ******************************************************************************/
-    const handleExpired = () => setUser(null);
-/*******************************************************************************
- * Function: handleUnreachable
- *
- * Handles unreachable for the AuthContext module.
- ******************************************************************************/
+    const handleExpired = () => {
+      beginAuthorityTransition();
+      clearStoredSession();
+      clearTransitionData(queryClient);
+      setUser(null);
+      setAuthError("");
+      setServerUnreachable(false);
+    };
     const handleUnreachable = () => setServerUnreachable(true);
     window.addEventListener("auth:expired", handleExpired);
     window.addEventListener("auth:unreachable", handleUnreachable);
@@ -96,125 +89,86 @@ export function AuthProvider({ children }) {
       window.removeEventListener("auth:expired", handleExpired);
       window.removeEventListener("auth:unreachable", handleUnreachable);
     };
-  }, []);
+  }, [queryClient]);
 
-  // Re-runs the /auth/me probe. On success the banner clears and the user is
-  // back where they were, with no re-authentication.
-/*******************************************************************************
- * Function: retryConnection
- *
- * Performs the retry Connection operation on connection for the AuthContext module.
- ******************************************************************************/
-  const retryConnection = useCallback(() => {
-    setReconnectNonce((value) => value + 1);
-  }, []);
+  const retryConnection = useCallback(() => setReconnectNonce(value => value + 1), []);
 
-/*******************************************************************************
- * Function: login
- *
- * Performs the login operation on the application for the AuthContext module.
- ******************************************************************************/
-  const login = useCallback(async (credentials) => {
+  const login = useCallback(async credentials => {
+    const fence = beginAuthorityTransition();
+    clearStoredSession();
+    clearTransitionData(queryClient);
+    setUser(null);
     setLoading(true);
     setAuthError("");
     try {
-      const session = await authService.login(credentials);
-      setUser(session.user ?? session);
+      const session = await authService.login(credentials, { isCurrent: () => isAuthorityCurrent(fence) });
+      if (!isAuthorityCurrent(fence)) throw staleAuthorityError();
+      applyAuthority(session.user ?? session);
+      setServerUnreachable(false);
+      setLoading(false);
       return session;
     } catch (err) {
-      const msg = err?.response?.data?.message ?? "Login failed. Please check your credentials.";
-      setAuthError(msg);
+      if (isAuthorityCurrent(fence)) setAuthError(err?.response?.data?.message ?? "Login failed. Please check your credentials.");
       throw err;
     } finally {
-      setLoading(false);
+      if (isAuthorityCurrent(fence)) setLoading(false);
     }
-  }, []);
+  }, [applyAuthority, queryClient]);
 
-/*******************************************************************************
- * Function: register
- *
- * Performs the register operation on the application for the AuthContext module.
- ******************************************************************************/
-  const register = useCallback(async (payload) => {
+  const register = useCallback(async payload => {
+    const fence = beginAuthorityTransition();
+    clearStoredSession();
+    clearTransitionData(queryClient);
+    setUser(null);
     setLoading(true);
     setAuthError("");
     try {
-      const session = await authService.register(payload);
-      setUser(session.user ?? session);
+      const session = await authService.register(payload, { isCurrent: () => isAuthorityCurrent(fence) });
+      if (!isAuthorityCurrent(fence)) throw staleAuthorityError();
+      applyAuthority(session.user ?? session);
+      setServerUnreachable(false);
+      setLoading(false);
       return session;
     } catch (err) {
-      const msg = err?.response?.data?.message ?? "Registration failed. Please try again.";
-      setAuthError(msg);
+      if (isAuthorityCurrent(fence)) setAuthError(err?.response?.data?.message ?? "Registration failed. Please try again.");
       throw err;
     } finally {
-      setLoading(false);
+      if (isAuthorityCurrent(fence)) setLoading(false);
     }
-  }, []);
+  }, [applyAuthority, queryClient]);
 
-/*******************************************************************************
- * Function: logout
- *
- * Performs the logout operation on the application for the AuthContext module.
- ******************************************************************************/
   const logout = useCallback(async () => {
-    await authService.logout();
+    if (!isAuthorityCurrent(currentCapture)) throw staleAuthorityError();
+    const accessToken = localStorage.getItem(AUTH_STORAGE.token);
+    const refreshToken = localStorage.getItem(AUTH_STORAGE.refresh);
+    const fence = beginAuthorityTransition();
+    clearStoredSession();
+    clearTransitionData(queryClient);
     setUser(null);
     setAuthError("");
-  }, []);
+    setLoading(false);
+    await authService.logout({ isCurrent: () => isAuthorityCurrent(fence), accessToken, refreshToken });
+  }, [currentCapture, queryClient]);
 
-/*******************************************************************************
- * Function: refreshUser
- *
- * Refreshes user for the AuthContext module.
- ******************************************************************************/
   const refreshUser = useCallback(async () => {
-    const me = await authService.me();
-    setUser(me);
-    localStorage.setItem("workflow.user", JSON.stringify(me));
+    const fence = currentCapture;
+    const me = await authService.me({ isCurrent: () => isAuthorityCurrent(fence) });
+    if (!isAuthorityCurrent(fence)) throw staleAuthorityError();
+    applyAuthority(me);
     return me;
-  }, []);
+  }, [applyAuthority, currentCapture]);
 
-/*******************************************************************************
- * Function: clearError
- *
- * Clears error for the AuthContext module.
- ******************************************************************************/
   const clearError = useCallback(() => setAuthError(""), []);
-
-/*******************************************************************************
- * Function: value
- *
- * Performs the value operation on the application for the AuthContext module.
- ******************************************************************************/
-  const value = useMemo(
-    () => ({
-      user,
-      isAuthenticated: Boolean(user),
-      loading,
-      authError,
-      serverUnreachable,
-      retryConnection,
-      login,
-      register,
-      logout,
-      refreshUser,
-      clearError,
-    }),
-    [user, loading, authError, serverUnreachable, retryConnection, login, register, logout, refreshUser, clearError]
-  );
+  const value = useMemo(() => ({
+    user, isAuthenticated: Boolean(user), loading, authError, serverUnreachable,
+    retryConnection, login, register, logout, refreshUser, clearError,
+  }), [user, loading, authError, serverUnreachable, retryConnection, login, register, logout, refreshUser, clearError]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-/*******************************************************************************
- * Function: useAuthContext
- *
- * Provides auth context for the AuthContext module.
- ******************************************************************************/
 export function useAuthContext() {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error("useAuthContext must be used within AuthProvider");
-  }
+  if (!context) throw new Error("useAuthContext must be used within AuthProvider");
   return context;
 }
