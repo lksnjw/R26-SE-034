@@ -1,10 +1,11 @@
 import { appConfig } from "../config/app";
+import { apiClient } from "../config/axios";
 
-const BASE = `${appConfig.apiBaseUrl}/pipeline`;
+const BASE = "/pipeline";
 const TERMINAL_JOB_STATES = new Set(["succeeded", "failed", "partial", "interrupted"]);
 
 function requireGovernedBackendContract() {
-  if (!appConfig.pipelineUploadEnabled) throw { error: { code: "PIPELINE_UNAVAILABLE", message: "Pipeline uploads are unavailable until an authenticated, audited backend/ERPBridge contract is implemented and reviewed." } };
+  if (!appConfig.pipelineUploadEnabled) throw { error: { code: "PIPELINE_UNAVAILABLE", message: "Pipeline uploads are disabled for this frontend build." } };
 }
 
 /*******************************************************************************
@@ -14,10 +15,19 @@ function requireGovernedBackendContract() {
  * ({ error: { code, message, request_id, details } }) on a non-2xx status,
  * instead of a generic fetch/HTTP error.
  ******************************************************************************/
-async function parseJsonResponse(response) {
-  const result = await response.json().catch(() => null);
-  if (!response.ok) throw result ?? { error: { code: "UNKNOWN", message: `Request failed with status ${response.status}` } };
-  return result;
+async function backendRequest(request) {
+  try {
+    return (await request).data;
+  } catch (cause) {
+    const body = cause?.response?.data;
+    if (body?.error) throw body;
+    throw {
+      error: {
+        code: body?.meta?.code ?? (cause?.response?.status ? `HTTP_${cause.response.status}` : "PIPELINE_UNREACHABLE"),
+        message: body?.message ?? "The data pipeline could not be reached through the application backend.",
+      },
+    };
+  }
 }
 
 export const pipelineService = {
@@ -32,8 +42,7 @@ export const pipelineService = {
     requireGovernedBackendContract();
     const payload = new FormData();
     payload.append("file", file);
-    const response = await fetch(`${BASE}/v1/files/csv`, { method: "POST", body: payload });
-    return parseJsonResponse(response);
+    return backendRequest(apiClient.post(`${BASE}/v1/files/csv`, payload, { headers: { "Content-Type": "multipart/form-data" } }));
   },
 
 /*******************************************************************************
@@ -50,8 +59,7 @@ export const pipelineService = {
     for (const [name, value] of Object.entries(metadata)) {
       if (value !== undefined && value !== null && value !== "") payload.append(name, value);
     }
-    const response = await fetch(`${BASE}/v1/files/documents`, { method: "POST", body: payload });
-    return parseJsonResponse(response);
+    return backendRequest(apiClient.post(`${BASE}/v1/files/documents`, payload, { headers: { "Content-Type": "multipart/form-data" } }));
   },
 
 /*******************************************************************************
@@ -59,10 +67,9 @@ export const pipelineService = {
  *
  * Fetches the current status of a schema-indexing or document-indexing job.
  ******************************************************************************/
-  async getJob(jobId) {
+  async getJob(jobId, { signal } = {}) {
     requireGovernedBackendContract();
-    const response = await fetch(`${BASE}/v1/jobs/${encodeURIComponent(jobId)}`);
-    return parseJsonResponse(response);
+    return backendRequest(apiClient.get(`${BASE}/v1/jobs/${encodeURIComponent(jobId)}`, { signal }));
   },
 
 /*******************************************************************************
@@ -75,7 +82,7 @@ export const pipelineService = {
   async waitForJob(jobId, { intervalMs = 1500, onTick, signal } = {}) {
     for (;;) {
       if (signal?.aborted) throw new DOMException("Polling aborted", "AbortError");
-      const job = await this.getJob(jobId);
+      const job = await this.getJob(jobId, { signal });
       onTick?.(job);
       if (TERMINAL_JOB_STATES.has(job.status)) return job;
       await new Promise((resolve) => setTimeout(resolve, intervalMs));

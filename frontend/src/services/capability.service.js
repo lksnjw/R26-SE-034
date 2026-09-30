@@ -20,6 +20,7 @@ export const capabilityService = {
     return value;
   },
   async discover(connectionId) { return unwrap(await apiClient.post("/registry/capabilities/discovery", {}, { params: { connectionId } })); },
+  async import(_id, body, connectionId) { return unwrap(await apiClient.post("/registry/capabilities/import", body, { params: { connectionId } })); },
   async review(id, body, connectionId) { return unwrap(await apiClient.post(`/registry/capabilities/${encodeURIComponent(id)}/review`, body, { params: { connectionId } })); },
   async disable(id, body, connectionId) { return unwrap(await apiClient.post(`/registry/capabilities/${encodeURIComponent(id)}/disable`, body, { params: { connectionId } })); },
 };

@@ -1,11 +1,18 @@
-import { apiClient } from "../config/axios";
+import { apiClient, clearStoredSession } from "../config/axios";
+import { currentAuthorityEpoch, staleAuthorityError } from "../utils/authAuthority";
+
+function authorityGuard(isCurrent) {
+  const epoch = currentAuthorityEpoch();
+  return () => epoch === currentAuthorityEpoch() && (!isCurrent || isCurrent());
+}
 
 /*******************************************************************************
  * Function: persistSession
  *
  * Performs the persist Session operation on session for the auth service module.
  ******************************************************************************/
-function persistSession(session) {
+function persistSession(session, isCurrent = () => true) {
+  if (!isCurrent()) throw staleAuthorityError();
   if (session?.accessToken) {
     localStorage.setItem("workflow.authToken", session.accessToken);
   }
@@ -24,9 +31,10 @@ export const authService = {
  *
  * Performs the login operation on the application for the auth service module.
  ******************************************************************************/
-  async login(credentials) {
+  async login(credentials, { isCurrent } = {}) {
+    const current = authorityGuard(isCurrent);
     const response = await apiClient.post("/auth/login", credentials);
-    return persistSession(response.data.data);
+    return persistSession(response.data.data, current);
   },
 
 /*******************************************************************************
@@ -34,9 +42,10 @@ export const authService = {
  *
  * Performs the register operation on the application for the auth service module.
  ******************************************************************************/
-  async register(payload) {
+  async register(payload, { isCurrent } = {}) {
+    const current = authorityGuard(isCurrent);
     const response = await apiClient.post("/auth/register", payload);
-    return persistSession(response.data.data);
+    return persistSession(response.data.data, current);
   },
 
 /*******************************************************************************
@@ -44,8 +53,11 @@ export const authService = {
  *
  * Performs the me operation on the application for the auth service module.
  ******************************************************************************/
-  async me() {
+  async me({ isCurrent } = {}) {
+    const current = authorityGuard(isCurrent);
+    if (!current()) throw staleAuthorityError();
     const response = await apiClient.get("/auth/me");
+    if (!current()) throw staleAuthorityError();
     return response.data.data;
   },
 
@@ -54,10 +66,11 @@ export const authService = {
  *
  * Refreshes the application for the auth service module.
  ******************************************************************************/
-  async refresh() {
+  async refresh({ isCurrent } = {}) {
+    const current = authorityGuard(isCurrent);
     const refreshToken = localStorage.getItem("workflow.refreshToken");
     const response = await apiClient.post("/auth/refresh", { refreshToken });
-    return persistSession(response.data.data);
+    return persistSession(response.data.data, current);
   },
 
 /*******************************************************************************
@@ -95,12 +108,13 @@ export const authService = {
  *
  * Performs the logout operation on the application for the auth service module.
  ******************************************************************************/
-  async logout() {
-    const refreshToken = localStorage.getItem("workflow.refreshToken");
-    await apiClient.post("/auth/logout", { refreshToken }).catch(() => null);
-    localStorage.removeItem("workflow.authToken");
-    localStorage.removeItem("workflow.refreshToken");
-    localStorage.removeItem("workflow.user");
+  async logout({ isCurrent = () => true, accessToken, refreshToken } = {}) {
+    const current = authorityGuard(isCurrent);
+    const capturedRefresh = refreshToken ?? localStorage.getItem("workflow.refreshToken");
+    await apiClient.post("/auth/logout", { refreshToken: capturedRefresh }, accessToken ? {
+      headers: { Authorization: `Bearer ${accessToken}` }, _authTokenOverride: true,
+    } : {}).catch(() => null);
+    if (current()) clearStoredSession();
   },
 
 /*******************************************************************************

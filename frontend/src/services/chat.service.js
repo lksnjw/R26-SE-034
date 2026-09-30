@@ -1,4 +1,5 @@
 import { apiClient } from "../config/axios";
+import { appConfig } from "../config/app";
 
 export const chatService = {
   async capabilities() {
@@ -9,12 +10,13 @@ export const chatService = {
     const response = await apiClient.get("/chat/models");
     return response.data.data;
   },
-  async operations(sessionId) {
-    const response = await apiClient.get(`/chat/sessions/${sessionId}/operations`);
+  async operations(sessionId, options = {}) {
+    const response = await apiClient.get(`/chat/sessions/${sessionId}/operations`, options);
     return response.data.data ?? [];
   },
   async operation(id, after = 0, options = {}) {
-    const response = await apiClient.get(`/chat/operations/${id}`, { params: { after }, ...options });
+    const { waitMs, ...requestOptions } = options;
+    const response = await apiClient.get(`/chat/operations/${id}`, { params: { after, ...(waitMs === undefined ? {} : { waitMs }) }, ...requestOptions });
     return response.data.data;
   },
   async cancelOperation(id) {
@@ -26,8 +28,8 @@ export const chatService = {
  *
  * Lists sessions for the chat service module.
  ******************************************************************************/
-  async listSessions() {
-    const response = await apiClient.get("/chat/sessions");
+  async listSessions(options = {}) {
+    const response = await apiClient.get("/chat/sessions", options);
     return response.data.data ?? [];
   },
 
@@ -36,8 +38,8 @@ export const chatService = {
  *
  * Creates session for the chat service module.
  ******************************************************************************/
-  async createSession(title = "Workflow conversation") {
-    const response = await apiClient.post("/chat/sessions", { title });
+  async createSession(title = "Workflow conversation", options = {}) {
+    const response = await apiClient.post("/chat/sessions", { title, ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}) });
     return response.data.data;
   },
 
@@ -48,11 +50,11 @@ export const chatService = {
  * most recent `limit` messages; pass `before` (a message id) to page
  * further back in history instead of loading the whole conversation.
  ******************************************************************************/
-  async getSession(sessionId, { limit, before } = {}) {
+  async getSession(sessionId, { limit, before, signal } = {}) {
     const params = {};
     if (limit) params.limit = limit;
     if (before) params.before = before;
-    const response = await apiClient.get(`/chat/sessions/${sessionId}`, { params });
+    const response = await apiClient.get(`/chat/sessions/${sessionId}`, { params, signal });
     return response.data.data;
   },
 
@@ -93,7 +95,7 @@ export const chatService = {
     if (options.emailDeliveryCommand) payload.emailDeliveryCommand = options.emailDeliveryCommand;
     // Read loops can use multiple provider turns. Draft edits themselves do
     // not invoke a provider or dispatch an ERP/email operation.
-    const response = await apiClient.post(`/chat/sessions/${sessionId}/messages`, payload, { timeout: options.delivery === "async-chat" ? 30000 : 300000 });
+    const response = await apiClient.post(`/chat/sessions/${sessionId}/messages`, payload, { timeout: options.delivery === "async-chat" ? appConfig.apiRequestTimeoutMs : 300000 });
     return response.data.data;
   },
 };
