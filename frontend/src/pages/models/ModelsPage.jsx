@@ -158,8 +158,12 @@ function ModelsPage() {
     setTestingId(provider.id);
     try {
       const result = await settingsService.testProvider(provider.id);
-      setTestResults((current) => ({ ...current, [provider.id]: result.message }));
-      notify(result.message, result.ok ? "success" : "error");
+      const succeeded = result?.ok === true;
+      const message = typeof result?.message === "string" && result.message.trim()
+        ? result.message
+        : succeeded ? "Provider connection test succeeded." : "Provider connection test failed.";
+      setTestResults((current) => ({ ...current, [provider.id]: message }));
+      notify(message, succeeded ? "success" : "error");
     } catch (error) {
       const message = apiErrorMessage(error, "Provider connection test failed.");
       setTestResults((current) => ({ ...current, [provider.id]: message }));

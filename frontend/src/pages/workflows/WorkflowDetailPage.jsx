@@ -14,6 +14,8 @@ import WorkflowSchedulePanel from "../../components/workflows/WorkflowSchedulePa
 import WorkflowRunReceipt from "../../components/workflows/WorkflowRunReceipt";
 import { useWorkflowDetailRun } from "../../hooks/useWorkflowDetailRun";
 import RunAdmissionRecoveryPanel from "../../components/executions/RunAdmissionRecoveryPanel";
+import { useNavigate } from "react-router-dom";
+import { saveWorkflowForChatEdit } from "../../utils/workflowCanvas.utils";
 
 /*******************************************************************************
  * Function: WorkflowDetailPage
@@ -22,8 +24,10 @@ import RunAdmissionRecoveryPanel from "../../components/executions/RunAdmissionR
  ******************************************************************************/
 function WorkflowDetailPage() {
   const { selectedWorkflowId, navigateTo } = useRoute();
+  const navigate = useNavigate();
   const { has, actorId } = usePermissions();
-	const canWrite = has("workflow:write");
+  const canWrite = has("workflow:write");
+  const canEditInChat = canWrite && has("chat:use");
   const canRun = has("workflow:run") || has("workflow:run_own");
   const { data: workflow, isLoading, error, refetch } = useWorkflow(selectedWorkflowId);
   const hasPendingGenerationApproval = Boolean(workflow?.pendingGenerationApproval?.steps?.length);
@@ -64,7 +68,13 @@ function WorkflowDetailPage() {
               )}
             </Button>
           ) : null}
-          {canWrite ? <Button variant="secondary" onClick={() => navigateTo("workflows", "builder")}>Edit in builder</Button> : null}
+          {canEditInChat ? <Button variant="secondary" onClick={() => {
+            // Resolve the current server revision in the chat workspace. Never
+            // copy cached YAML into a second draft or publish/run on navigation.
+            saveWorkflowForChatEdit({ workflowId: workflow.id, workflowName: workflow.name });
+              navigate(`/chat?new=1&creation=${crypto.randomUUID()}&workflow=${encodeURIComponent(workflow.id)}`);
+          }}>Edit in chat</Button> : null}
+          {canWrite ? <Button variant="secondary" onClick={() => navigateTo("workflows", "builder")}>Preview canvas</Button> : null}
           <WorkflowActions workflow={workflow} onChanged={refetch} />
         </div>
       </div>
@@ -99,7 +109,7 @@ function WorkflowDetailPage() {
 
       {/* Schedule section — keyed by workflow id so its local edit state resets to
           the freshly-loaded trigger whenever the user switches or reloads a workflow. */}
-      {canWrite ? <WorkflowSchedulePanel key={workflow.id} workflow={workflow} actorId={actorId} /> : null}
+      {canWrite ? <section id="schedule" className="scroll-mt-6"><WorkflowSchedulePanel key={workflow.id} workflow={workflow} actorId={actorId} /></section> : null}
 
       {canWrite ? <WorkflowAssignments workflow={workflow} onChanged={refetch} /> : null}
       {!canWrite ? (

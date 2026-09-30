@@ -1,6 +1,5 @@
-import { useState } from "react";
 import Card from "../../components/shared/ui/Card";
-import Toggle from "../../components/shared/ui/Toggle";
+import PolicyChecksPanel from "../../components/settings/PolicyChecksPanel";
 import ApiKeyCard from "../../components/settings/ApiKeyCard";
 import IntegrationCard from "../../components/settings/IntegrationCard";
 import McpConnectionPanel from "../../components/settings/McpConnectionPanel";
@@ -9,8 +8,6 @@ import LlmModelSelector from "../../components/settings/LlmModelSelector";
 import WebhookForm from "../../components/settings/WebhookForm";
 import { EmptyState, ErrorState, LoadingState } from "../../components/shared/ResourceState";
 import { useSettings } from "../../hooks/useSettings";
-import { useNotifications } from "../../context/NotificationContext";
-import { settingsService } from "../../services/settings.service";
 
 /*******************************************************************************
  * Function: SettingsPage
@@ -40,7 +37,7 @@ function SettingsPage({ view = "general" }) {
       {view === "general" ? (
         <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
           <div className="space-y-4">
-            <PolicyCheckerCard enabled={settings.rbac?.enabled === true} onChanged={reload} />
+            <PolicyChecksPanel rbac={settings.rbac} onChanged={reload} />
             <RuntimeApprovalPolicyPanel />
             <SettingsValues title="General runtime" values={settings.general} />
           </div>
@@ -94,47 +91,6 @@ function SettingsPage({ view = "general" }) {
         </Card>
       ) : null}
     </div>
-  );
-}
-
-/*******************************************************************************
- * Function: PolicyCheckerCard
- *
- * Toggles the runtime Policy Checker (state.settings.rbac.enabled) — when on,
- * chat, workflow generation, and workflow runs are gated by role/ownership
- * checks and the ERP Bridge's advisory policy-gate tools. Mandatory actor,
- * registry, approval and dispatch authorization cannot be disabled here.
- ******************************************************************************/
-function PolicyCheckerCard({ enabled, onChanged }) {
-  const [saving, setSaving] = useState(false);
-  const { notify } = useNotifications();
-
-  const handleToggle = async (next) => {
-    setSaving(true);
-    try {
-      await settingsService.update({ rbac: { enabled: next } });
-      await onChanged?.();
-      notify(next ? "Policy checker turned on." : "Policy checker turned off.", "success");
-    } catch (error) {
-      notify(error?.response?.data?.message || "Could not update the policy checker.", "error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Card>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="section-title">Policy Checker</h2>
-          <p className="mt-2 max-w-md text-sm leading-6 text-gray-500 dark:text-gray-400">
-            Controls additional advisory policy checks. Mandatory role, registry, approval, and
-            dispatch authorization remain enforced whether this toggle is on or off.
-          </p>
-        </div>
-        <Toggle checked={enabled} onChange={saving ? undefined : handleToggle} label={saving ? "Saving…" : enabled ? "On" : "Off"} />
-      </div>
-    </Card>
   );
 }
 
