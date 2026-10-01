@@ -1,0 +1,31 @@
+apiVersion: erpbridge.io/v1
+kind: MCPTool
+metadata:
+  name: discover_indexed_erp_sources
+  version: 1.0.0
+  module: data_transformation
+spec:
+  description:
+    short: "Discover the live indexed source systems, entities and supported search filters."
+    whenToUse: ["Before retrieval when the upload source system or entity is unknown"]
+    whenNotToUse: ["Does not return person records or document text"]
+    examples: ["Which source system and entity can I use for employee document retrieval?"]
+  annotations: {title: "Discover indexed ERP sources", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true}
+  inputSchema: {type: object, properties: {}}
+  outputSchema:
+    type: object
+    properties:
+      available_search: {type: array, items: {type: object}}
+      identity_filters: {type: array, items: {type: object}}
+      control_parameters: {type: array, items: {type: string}}
+      qdrant_indexes_verified: {type: boolean}
+    required: [available_search, identity_filters]
+  execution: {type: http, method: GET, endpoint: /v1/search}
+  security:
+    authType: api-key
+    authHeader: X-API-Key
+    credentialRef: ERP_DATA_TRANSFORMATION_API_KEY
+    credentialSource: env
+    dataClass: restricted
+    allowedRoles: [platform_admin, workflow_builder, client]
+  cache: {enabled: false, ttlSeconds: 0, isReadOnly: true, flushOn: []}

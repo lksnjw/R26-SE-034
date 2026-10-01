@@ -1,0 +1,82 @@
+apiVersion: erpbridge.io/v1
+kind: MCPTool
+metadata:
+  name: get_indexed_representation
+  version: 1.0.0
+  module: data_transformation
+spec:
+  description:
+    short: "Resolve one reviewed search hit into the bounded text extracted for the agent."
+    whenToUse:
+      - "After search_indexed_erp_data returns the representation_id of the relevant hit"
+      - "Read indexed text extracted from a PDF or image for an authorized user"
+    whenNotToUse:
+      - "Do not guess a representation ID"
+      - "Do not use before a scoped search has selected the relevant person or record"
+    examples:
+      - "Open the highest-scoring birth-certificate result returned by the indexed ERP search"
+  annotations:
+    title: "Get indexed representation"
+    readOnlyHint: true
+    destructiveHint: false
+    idempotentHint: true
+    openWorldHint: true
+  rateLimit:
+    requestsPerSecond: 5
+    burst: 10
+  concurrency:
+    limit: 4
+    perPrincipal: true
+  inputSchema:
+    type: object
+    properties:
+      representation_id:
+        type: string
+        description: "Exact representation_id returned by search_indexed_erp_data."
+    required: [representation_id]
+  outputSchema:
+    type: object
+    properties:
+      representation_id:
+        type: string
+      entity_type:
+        type: [string, "null"]
+      content_kind:
+        type: [string, "null"]
+      text:
+        type: [string, "null"]
+      canonical_record_id:
+        type: [string, "null"]
+      source_system_id:
+        type: [string, "null"]
+      source_entity:
+        type: [string, "null"]
+      record_key:
+        type: [string, "null"]
+      business_key_name:
+        type: [string, "null"]
+      business_key_value:
+        type: [string, "null"]
+      document_type:
+        type: [string, "null"]
+      sensitivity:
+        type: [string, "null"]
+  execution:
+    type: http
+    method: GET
+    endpoint: /v1/representations/{representation_id}
+    parameterLocations:
+      representation_id: path
+  security:
+    authType: api-key
+    authHeader: X-API-Key
+    credentialRef: ERP_DATA_TRANSFORMATION_API_KEY
+    credentialSource: env
+    dataClass: restricted
+    allowedRoles: [platform_admin, workflow_builder, client]
+  cache:
+    enabled: false
+    ttlSeconds: 0
+    isReadOnly: true
+    flushOn: []
+

@@ -1,0 +1,36 @@
+# ERPBridge is its own deployment/project. It reaches the separately published
+# pipeline API over HTTP; PostgreSQL and Qdrant remain private to the pipeline.
+services:
+  erpbridge-server:
+    build:
+      context: ../../ERPBridge
+      dockerfile_inline: |
+        FROM golang:1.26.2-alpine AS builder
+        WORKDIR /src
+        ENV GOMAXPROCS=2 CGO_ENABLED=0
+        COPY go.mod go.sum ./
+        RUN --mount=type=cache,target=/go/pkg/mod go mod download
+        COPY . .
+        RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build go build -mod=readonly -p=2 -o /erpbridge-server ./services/erpbridge-server
+        FROM alpine:3.23
+        RUN apk add --no-cache ca-certificates
+        WORKDIR /app
+        COPY --from=builder /erpbridge-server /app/erpbridge-server
+        CMD ["/app/erpbridge-server"]
+    ports: ["127.0.0.1:18080:8080"]
+    environment:
+      BASE_URL: http://127.0.0.1:18080
+      DATABASE_PATH: /app/data/erpbridge.db
+      API_AUTH_TOKEN: ${PIPELINE_QA_BRIDGE_TOKEN:?launcher required}
+      ERP_DATA_TRANSFORMATION_API_KEY: ${ERP_API_KEY:?launcher required}
+      INSECURE_AUTH_ALLOWED_HOSTS: host.docker.internal:8000
+      MCP_ENABLE_TEST_TOOLS: "false"
+      LOG_LEVEL: warn
+    volumes: ["erpbridge-data:/app/data"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/mcp/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+volumes:
+  erpbridge-data:
