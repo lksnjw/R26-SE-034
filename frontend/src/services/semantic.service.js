@@ -33,6 +33,6 @@ export const semanticService = {
  * Performs the rebuild operation on the application for the semantic service module.
  ******************************************************************************/
   async rebuild() {
-    return unwrap(await apiClient.post("/semantic-index/rebuild"), {});
+    return unwrap(await apiClient.post("/semantic-index/rebuild", {}), {});
   },
 };

@@ -67,7 +67,7 @@ export const settingsService = {
  * Performs the activate Provider operation on provider for the settings service module.
  ******************************************************************************/
   async activateProvider(id) {
-    return unwrap(await apiClient.post(`/providers/${encodeURIComponent(id)}/activate`), {});
+    return unwrap(await apiClient.post(`/providers/${encodeURIComponent(id)}/activate`, {}), {});
   },
 /*******************************************************************************
  * Function: testProvider
@@ -75,6 +75,6 @@ export const settingsService = {
  * Performs the test Provider operation on provider for the settings service module.
  ******************************************************************************/
   async testProvider(id) {
-    return unwrap(await apiClient.post(`/providers/${encodeURIComponent(id)}/test`), {});
+    return unwrap(await apiClient.post(`/providers/${encodeURIComponent(id)}/test`, {}), {});
   },
 };

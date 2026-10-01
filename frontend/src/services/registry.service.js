@@ -36,7 +36,7 @@ export const registryService = {
  * Performs the regenerate Context operation on context for the registry service module.
  ******************************************************************************/
   async regenerateContext() {
-    return unwrap(await apiClient.post("/registry/context/regenerate"), {});
+    return unwrap(await apiClient.post("/registry/context/regenerate", {}), {});
   },
 /*******************************************************************************
  * Function: contextHistory
