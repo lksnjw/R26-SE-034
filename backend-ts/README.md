@@ -80,7 +80,7 @@ document. Read the complete [cutover contract and operator sequence](../docs/FIR
 
 Existing `postgres` / `postgres-records` drivers and data remain available for regression/explicit migration, using `DATABASE_URL` and `STORAGE_ENCRYPTION_KEY`. Legacy `STORAGE_DRIVER=firestore` is still the unqualified aggregate/mirror adapter; it must not be substituted for verified execution storage. No driver selection implicitly imports or resets data, creates a cloud project or completes production qualification. Runtime registry files are created under `configs/runtime/` from the frozen copies stored in this folder's parity fixtures.
 
-Supported published read workflows can use `mode: "async-read"` with a 16–128 character idempotency key. `READ_WORKER_CONCURRENCY` defaults to 2 (1–8), `READ_WORKER_PER_ACTOR` to 1 (1–worker count), and `READ_WORKER_LEASE_MS` to 30000 (5000–300000). Independent principals share bounded fair slots; actions inside a workflow remain ordered. Authenticated private leases are renewed and checked at SDK entry. Interrupted/expired/uncertain jobs require recovery, not automatic replay. This is exclusive-writer local concurrency, not distributed failover or full collection/effect/schedule support. See [worker behavior and verification](../docs/FAIR_READ_WORKERS_AND_SDK_LEASE_FENCES_2026-10-06.md).
+Supported published read workflows can use `mode: "async-read"` with a 16–128 character idempotency key. `BACKEND_WORKER_CONCURRENCY` defaults to 2 (1–8) and controls the bounded in-process pool used by read, operation, and readback jobs; the legacy `READ_WORKER_CONCURRENCY` name remains compatible. `READ_WORKER_PER_ACTOR` defaults to 1 (1–worker count), and `READ_WORKER_LEASE_MS` to 30000 (5000–300000). Independent principals share bounded fair slots; actions inside a workflow remain ordered. Authenticated private leases are renewed and checked at SDK entry. Interrupted/expired/uncertain jobs require recovery, not automatic replay. Do not wrap the standalone host or Firebase Functions in `node:cluster`: the qualified storage adapters intentionally use exclusive writer ownership. Firebase scales through its own instances and task queues. See [worker behavior and verification](../docs/FAIR_READ_WORKERS_AND_SDK_LEASE_FENCES_2026-10-06.md).
 
 For the OpenRouter demo path, configure the OpenAI-compatible provider with a pinned model ID:
 
@@ -144,6 +144,28 @@ to eight entries with exactly one primary are accepted. Mixing the catalog with
 legacy single-connection values is rejected.
 
 See [ERPBridge integration](docs/ERPBRIDGE_INTEGRATION.md) for the role matrix, token rotation, deployment checks, and audit boundary.
+
+## ERP data-transformation uploads
+
+The frontend never receives the data-transformation service key. Configure the
+trusted application backend with the pipeline's service origin and matching
+`ERP_API_KEY`; authenticated requests under `/api/pipeline/v1/*` require the
+`pipeline:upload` role permission and are audited before bytes leave this
+application.
+
+```powershell
+$env:PIPELINE_API_BASE_URL = "http://127.0.0.1:8000"
+$env:PIPELINE_API_KEY = "[REDACTED]"
+$env:PIPELINE_TIMEOUT_MS = "180000"
+npm run dev
+```
+
+Outside development, `PIPELINE_API_BASE_URL` must be a credential-free HTTPS
+service origin. Uploads accept one bounded multipart file. Document identity
+metadata is forwarded, while audit records keep only hashes and non-secret
+classification fields. Chat retrieval is a different route: reviewed read-only
+tools call the pipeline through ERPBridge, not through these upload endpoints.
+See [the full pipeline integration runbook](../docs/DATA_TRANSFORMATION_PIPELINE_INTEGRATION_2026-10-14.md).
 
 ## Verify
 
