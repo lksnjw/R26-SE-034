@@ -1,6 +1,8 @@
 
 # ERP agent workspace frontend
 
+Product wording: use “Workflow assistant” and neutral task language throughout the interface, including accessibility labels, progress, nodes, schedules and approvals. Do not expose internal agent harness names in user-facing copy. Backend engine implementation names belong in technical documentation only.
+
 The current workspace puts chat on the left and saved workflows on the right, stacking on narrow screens. Select a supported node or collection to propose edits in chat, review readable changes, then explicitly apply to a draft. Publication and execution are separate. Collection forms use Source list / Maximum items / Collected item; compiler issues remain visible rather than implying readiness.
 
 Saved undo/redo and **Edit history** use server revision identities and survive browser reopening. Inspect historical settings/paths/nodes in a readable preview, then explicitly restore as a new draft. Memory-only deployments disclose server-restart data loss. Pending selected-node refresh keeps text and blocks Send instead of dropping into general chat.
