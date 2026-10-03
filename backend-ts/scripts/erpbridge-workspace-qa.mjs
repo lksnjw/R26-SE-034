@@ -108,7 +108,15 @@ export function qaProviderConfiguration(createdAt, modelReadFixture = false) {
     egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://fixture.invalid", runtimeAnalysisDataClasses: modelReadFixture ? ["internal"] : [], runtimeAgentDataClasses: modelReadFixture ? ["internal"] : [], interactiveDataClasses: ["restricted"], reviewedAt: createdAt, reviewedBy: { id: "qa", name: "LOCAL synthetic-only fixture review" } } };
 }
 
-export async function createQaWorkspace({ modelReadFixture = false } = {}) {
+export function assertRealProviderQaConfiguration(environment) {
+  if (environment.LCWE_REAL_MODEL_QA !== "synthetic-docker-only" ||
+      environment.GENERATION_BASE_URL !== "https://openrouter.ai/api/v1" || !environment.GENERATION_API_KEY?.trim() ||
+      environment.GENERATION_MODEL_PRIMARY !== "deepseek/deepseek-v4.1-flash")
+    throw new Error("Real-model QA requires explicit synthetic-only scope and the owner-selected OpenRouter model; credentials suppressed");
+}
+
+export async function createQaWorkspace({ modelReadFixture = false, realProvider = false } = {}) {
+  if (realProvider) assertRealProviderQaConfiguration(process.env);
   const token = await readQaBridgeToken();
   const response = await fetch(`${qaBaseURL}/apis/erpbridge.io/v1/tools?name=qa_list_departments&version=1.0.0`, {
     headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(15_000) });
@@ -143,15 +151,27 @@ export async function createQaWorkspace({ modelReadFixture = false } = {}) {
     const observed = await observeCapabilities({ repository, registries, session: runtime.session, user }), observation = observed.observations[0];
     await reviewCapability({ repository, registries, session: runtime.session, user, capabilityId: observation.capabilityId, body: {
       observationId: observation.id, contractHash: observation.contractHash, decisionKey: "explicit-local-workspace-read-review", effectClass: "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Operator-started LOCAL literal Department GET review; no product registry admission" } });
-    const providerRuntime = new ProviderRuntime(repository, executor, async (url, init) => {
+    const providerDiagnostics = [];
+    const providerRuntime = new ProviderRuntime(repository, executor, realProvider ? async (url, init) => {
+      if (String(url) !== "https://openrouter.ai/api/v1/chat/completions") throw new Error("Real-model QA refused another provider destination");
+      const response = await fetch(url, init);
+      const request = JSON.parse(String(init.body));
+      if (request.messages[0]?.content.includes("WORKFLOW DRAFT SYNTHESIS")) {
+        const body = await response.clone().json().catch(() => ({}));
+        const text = body.choices?.[0]?.message?.content;
+        providerDiagnostics.push({ status: response.status, finishReason: body.choices?.[0]?.finish_reason,
+          candidateText: typeof text === "string" && !text.includes(process.env.GENERATION_API_KEY) ? text.slice(0, 6000) : "Response text unavailable", errorCode: body.error?.code });
+      }
+      return response;
+    } : async (url, init) => {
       if (String(url) !== "https://fixture.invalid/v1/chat/completions") throw new Error("Local fixture cannot contact another provider");
       return Response.json(qaPlanningResponse(JSON.parse(String(init.body)), modelReadFixture));
     });
-    providerRuntime.activate(qaProviderConfiguration(createdAt, modelReadFixture));
-    const services = { config, repository, registries, validator, executor, providerRuntime, ...(modelReadFixture ? { synthesis: new SynthesisService(providerRuntime, registries, validator) } : {}), mcpConnectionRuntime: runtime, get erpbridgeSession() { return runtime.session; } };
+    if (!realProvider) providerRuntime.activate(qaProviderConfiguration(createdAt, modelReadFixture));
+    const services = { config, repository, registries, validator, executor, providerRuntime, ...(modelReadFixture || realProvider ? { synthesis: new SynthesisService(providerRuntime, registries, validator) } : {}), mcpConnectionRuntime: runtime, get erpbridgeSession() { return runtime.session; } };
     app = await buildApp(services);
     const close = async () => { await app.close(); await runtime.stop(); await repository.close(); for (const file of files) await unlink(file); await rmdir(directory); };
-    return { app, repository, services, close };
+    return { app, repository, services, close, providerDiagnostics };
   } catch (error) {
     await app?.close(); await runtime?.stop(); await repository.close();
     for (const file of files) await unlink(file).catch(cause => { if (cause.code !== "ENOENT") throw cause; }); await rmdir(directory);
