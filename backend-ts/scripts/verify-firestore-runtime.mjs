@@ -4,6 +4,8 @@ import { verifyFirestoreProtectedWorker } from "./firestore-protected-worker.mjs
 import { verifyFirestoreProtectedAnalysis } from "./firestore-protected-analysis.mjs";
 import { verifyFirestoreProtectedAgent } from "./firestore-protected-agent.mjs";
 import { verifyFirestoreProtectedApprovalWait } from "./firestore-protected-approval-wait.mjs";
+import { verifyFirestoreProtectedEffect } from "./firestore-protected-effect.mjs";
+import { verifyFirestoreProtectedReport } from "./firestore-protected-report.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import jwt from "jsonwebtoken";
@@ -55,7 +57,7 @@ const config = loadConfig({ APP_ENV: "test", STORAGE_DRIVER: "firestore-records"
 // Only this guarded, explicitly selected worker campaign uses the supported
 // five-second lease to qualify natural expiry without long production waits.
 const protectedAgentMode = process.argv.includes("--protected-agent-only") || process.argv.includes("--protected-agent-driver-only");
-if (process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only") || protectedAgentMode) config.readWorkerLeaseMs = 5000;
+if (process.argv.includes("--protected-worker-only") || process.argv.includes("--protected-analysis-only") || process.argv.includes("--protected-effect-only") || process.argv.includes("--protected-report-only") || protectedAgentMode) config.readWorkerLeaseMs = 5000;
 const codec = new FirestoreRecordCodec(key, namespace), log = value => console.log(`PASS: ${value}`);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const ownedBarriers = [];
@@ -298,7 +300,15 @@ try {
   for (const observation of observations) await reviewCapability({ repository, registries, session, user: actor, capabilityId: observation.capabilityId, body: {
     observationId: observation.id, contractHash: observation.contractHash, decisionKey: "firestore-runtime-reviewed-fixture", effectClass: [operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? "notification" : "read", riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Synthetic SDK qualification only",
     ...([operationTool.tool_id, emailTool.tool_id].includes(observation.toolId) ? { requireIndependentApproval: true } : {}) } });
-  if (process.argv.includes("--protected-approval-wait-only")) {
+  if (process.argv.includes("--protected-report-only")) {
+    await verifyFirestoreProtectedReport({ repository: () => repository, services: () => services,
+      restart: async () => { await stop(); await start(await openApplicationRepository(config)); },
+      tool: reportTool, calls, models, reports, operations, emails, waitFor, log });
+  } else if (process.argv.includes("--protected-effect-only")) {
+    await verifyFirestoreProtectedEffect({ repository: () => repository, services: () => services, request,
+      restart: async () => { await stop(); await start(await openApplicationRepository(config)); },
+      tool: operationTool, calls, models, operations, emails, waitFor, log });
+  } else if (process.argv.includes("--protected-approval-wait-only")) {
     await verifyFirestoreProtectedApprovalWait({ repository: () => repository, services: () => services, request,
       restart: async () => { await stop(); await start(await openApplicationRepository(config)); },
       tool: operationTool, calls, models, operations, emails, log });
