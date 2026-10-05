@@ -17,7 +17,7 @@ routes.push(...[
   "/api/settings/runtime-approval-policy",
   "/api/chat/models",
   "/api/chat/capabilities",
-  "/api/registry/capabilities", "/api/registry/capabilities/discovery", "/api/registry/capabilities/:id/review", "/api/registry/capabilities/:id/disable",
+  "/api/registry/capabilities", "/api/registry/capabilities/discovery", "/api/registry/capabilities/import", "/api/registry/capabilities/:id/review", "/api/registry/capabilities/:id/disable",
   "/api/settings/mcp-connections", "/api/settings/mcp-connections/:id/connect", "/api/settings/mcp-connections/:id/disconnect", "/api/settings/mcp-connections/:id/test",
   "/api/chat/sessions/:id/operations", "/api/chat/operations/:id", "/api/chat/operations/:id/cancel",
 ].map((path) => ({ method: /\/(readiness|events|models|operations|capabilities|mcp-connections)$/.test(path) || path === "/api/chat/operations/:id" || path === "/api/execution-reviews" || path === "/api/settings/runtime-approval-policy" ? "GET" : "POST", path })));
@@ -29,6 +29,12 @@ routes.push({ method: "GET", path: "/api/executions/:id/report-page-resolutions"
 routes.push({ method: "GET", path: "/api/workflows/:id/schedule" }, { method: "PUT", path: "/api/workflows/:id/schedule" });
 routes.push({ method: "GET", path: "/api/workflows/:id/run-receipts/:key" });
 routes.push({ method: "GET", path: "/api/dashboard/tasks" });
+routes.push(
+  { method: "GET", path: "/api/pipeline/v1/health/ready" },
+  { method: "POST", path: "/api/pipeline/v1/files/csv" },
+  { method: "POST", path: "/api/pipeline/v1/files/documents" },
+  { method: "GET", path: "/api/pipeline/v1/jobs/:id" },
+);
 const content = `// Generated from frozen Go routes plus named product extensions. Do not hand-edit.\n` +
   `export const routeTable = ${JSON.stringify(routes, null, 2)} as const;\n` +
   `export type RouteDefinition = (typeof routeTable)[number];\n`;
