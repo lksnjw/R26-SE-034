@@ -17,6 +17,7 @@ import { ProtectedContinuationCodec } from "../src/runner/protected-continuation
 import { RUNTIME_AGENT_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
 import type { QueryTurnResult } from "../src/analysisprovider/query-types.js";
 import { ProtectedInvocationLedger } from "../src/runner/protected-invocation-ledger.js";
+import { captureProviderContinuation } from "../src/analysisprovider/provider-continuation.js";
 
 /** Pure original-identity/dialogue DATA fixture, NOT an admitted v9 job,
  * genuine provider response, broker dispatch or confirmed ERP result. */
@@ -93,6 +94,33 @@ test("canonical storage retains exact string message hashes and all private norm
   if (before.kind !== "MODEL") throw new Error("Model expected");
   expect(before.arguments.messages[1]!.content).not.toContain("<system>");
   expect(before.arguments.messages[3]!.content).not.toContain("<system>");
+});
+
+test("private signed continuation survives canonical runtime/Firestore layouts and is bound to original ACK", () => {
+  const f = fixture(), turn = toolsTurn();
+  turn.providerContinuationSecret = captureProviderContinuation({ reasoning_details: [
+    { type: "reasoning.text", text: "private-protected-marker", signature: "opaque==", index: 0 },
+    { type: "reasoning.encrypted", data: "encrypted==", index: 1 },
+  ] }, "fixture-model", "https://model.example.invalid/v1");
+  const key = f.acknowledgeModel(turn); f.acknowledgeTool(); const before = f.next(), state = initialState(); state.executions.run = f.execution();
+  expect(before.kind).toBe("MODEL");
+  if (before.kind !== "MODEL") throw new Error("Expected second model round");
+  expect(before.arguments.messages[2]!.providerContinuationSecret).toEqual(turn.providerContinuationSecret);
+  for (const [split, assemble] of [[splitRuntimeState, assembleRuntimeState], [splitFirestoreState, assembleFirestoreState]] as const) {
+    const opened = assemble(JSON.parse(canonicalJSONBytes(split(state)).toString("utf8"))).executions.run!;
+    expect(nextProtectedAgent(f.context, opened.protectedAgentSecret!, opened.protectedInvocationSecret!, 1002)).toEqual(before);
+    expect(JSON.stringify(withoutSecretFields(opened))).not.toMatch(/private-protected-marker|reasoning_details|providerContinuationSecret/);
+  }
+  f.records.turns[key]!.turn.providerContinuationSecret!.reasoning_details!.reverse();
+  expect(() => f.next()).toThrow(/acknowledgement|acknowledged/);
+});
+
+test("private continuation cannot change a reviewed model or attach unauthenticated data to a final ACK", () => {
+  const f = fixture(), turn = toolsTurn();
+  turn.providerContinuationSecret = captureProviderContinuation({}, "different-model", "https://model.example.invalid/v1");
+  expect(() => protectedAgentTurnOutput(f.context.node, "fixture-model", turn, 0)).toThrow(/continuation/);
+  const final = finalTurn(); final.providerContinuationSecret = captureProviderContinuation({}, "fixture-model", "https://model.example.invalid/v1");
+  expect(() => protectedAgentTurnOutput(f.context.node, "fixture-model", final, 0)).toThrow(/continuation/);
 });
 
 test.each(["model", "tool"])("entered unacknowledged %s requires recovery even after deadline", phase => {

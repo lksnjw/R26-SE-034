@@ -7,7 +7,8 @@ import { toolSchema } from "../src/registry/schemas.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { Executor } from "../src/runner/executor.js";
 import { createErpbridgeMcpSession, ErpbridgeMcpToolError } from "../src/tools/erpbridge-mcp-client.js";
-import { acknowledgedReadToolFailure, dispatchReadTool } from "../src/tools/read-tool-broker.js";
+import { acknowledgedReadToolFailure, observedReadPolicyFailure, dispatchReadTool } from "../src/tools/read-tool-broker.js";
+import * as optionalPolicy from "../src/governance/optional-policy.js";
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import type { ToolDefinition } from "../src/registry/schemas.js";
 import { stringify } from "yaml";
@@ -52,6 +53,32 @@ test("approved read consumes real capability and injects only backend-mapped rol
   await expect(dispatchReadTool(s.services, "builder", "finance.read", args)).resolves.toMatchObject({ structuredContent: { id: "invoice-1" } });
   expect(s.callTool).toHaveBeenCalledExactlyOnceWith("finance.read", { id: "invoice-1", role: "workflow_builder" });
   expect(args).toEqual({ id: "invoice-1" });
+});
+
+test.each([
+  { decision: "deny" as const, source: "local_model" as const },
+  { decision: "review" as const, source: "local_model" as const },
+  { decision: "deny" as const, source: "local_model" as const, failureCode: "LOCAL_POLICY_RESPONSE_INVALID" as const },
+])("broker policy receipt retains only allowlisted cause before SDK entry: $decision $failureCode", async outcome => {
+  const s = await setup(), args = { id: "fixture" }, beforeDispatch = vi.fn(async () => {}), secret = "RAW_SECRET_SENTINEL";
+  const policy = vi.spyOn(optionalPolicy, "evaluateOptionalPolicy").mockResolvedValue({ ...outcome, reason: secret, model: secret, policyVersion: secret });
+  try {
+    const error = await dispatchReadTool(s.services, "builder", "finance.read", args, { beforeDispatch }).catch(error => error);
+    const context = { repository: s.services.repository, actorId: "builder", toolName: "finance.read", args };
+    expect(observedReadPolicyFailure(error, context)).toEqual(outcome);
+    expect(JSON.stringify(observedReadPolicyFailure(error, context))).not.toContain(secret);
+    expect(String(error)).not.toContain(secret);
+    expect(acknowledgedReadToolFailure(error)).toBeUndefined();
+    expect(s.callTool).not.toHaveBeenCalled(); expect(beforeDispatch).not.toHaveBeenCalled(); expect(policy).toHaveBeenCalledOnce();
+    expect(observedReadPolicyFailure(Object.assign(new Error(secret), { receipt: outcome }), context)).toBeUndefined();
+    expect(observedReadPolicyFailure(JSON.parse(JSON.stringify(error)), context)).toBeUndefined();
+    expect(observedReadPolicyFailure(error, { ...context, repository: new Repository(null) })).toBeUndefined();
+    expect(observedReadPolicyFailure(error, { ...context, actorId: "other" })).toBeUndefined();
+    expect(observedReadPolicyFailure(error, { ...context, toolName: "other" })).toBeUndefined();
+    expect(observedReadPolicyFailure(error, { ...context, args: { id: "different" } })).toBeUndefined();
+    Object.assign(observedReadPolicyFailure(error, context)!, { reason: secret, decision: "allow" });
+    expect(observedReadPolicyFailure(error, context)).toEqual(outcome);
+  } finally { policy.mockRestore(); await s.services.erpbridgeSession.close(); await s.services.repository.close(); }
 });
 
 test("only the exact governed SDK response supplies an immutable acknowledged read failure", async () => {
