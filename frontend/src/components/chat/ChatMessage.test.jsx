@@ -7,6 +7,41 @@ jest.unstable_mockModule("@xyflow/react", () => ({ MarkerType: { ArrowClosed: "a
 const { default: ChatMessage } = await import("./ChatMessage");
 afterEach(cleanup);
 
+test.each([
+  ["deny", "LOCAL_POLICY_RESPONSE_INVALID", "Check failed"], ["deny", "LOCAL_POLICY_PROVIDER_FAILED", "Check failed"],
+  ["deny", undefined, "Denied"], ["review", undefined, "Needs review"],
+])("policy %s with failure %s shows truthful status %s", (decision, failureCode, label) => {
+  const { container } = render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Request stopped.", artifacts: { intent: "POLICY_DENIAL", policyCheck: {
+    source: "local_model", decision, failureCode, reason: "Nothing was approved.",
+  } } }} /></MemoryRouter>);
+  expect(screen.getByRole("status").textContent).toBe(`Policy check · Local JSON / model · ${label}`);
+  expect(container.querySelector("pre")).toBeNull(); expect(container.textContent).not.toContain("LOCAL_POLICY_");
+});
+
+test("policy decision is readable, identifies local fallback and never renders raw JSON", () => {
+  const { container } = render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Request reviewed.", artifacts: { policyCheck: {
+    source: "local_model", decision: "allow", fallbackUsed: true, reason: "Read-only request is permitted.", policyVersion: "1.0.0",
+  } } }} /></MemoryRouter>);
+  expect(screen.getByRole("status").textContent).toBe("Policy check · Local JSON / model · Allowed · Fallback used");
+  expect(screen.getByText("Read-only request is permitted.")).toBeTruthy(); expect(container.querySelector("pre")).toBeNull();
+});
+
+test("backup model is disclosed as routing metadata, not a fabricated ERP result", () => {
+  const { container } = render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Confirmed invoice read.", artifacts: {
+    intent: "QUERY", modelRouting: { requestedModel: "primary", model: "backup", fallbackUsed: true },
+  } }} /></MemoryRouter>);
+  expect(screen.getByRole("status").textContent).toBe("Answered with backup model · backup");
+  expect(container.querySelector("pre")).toBeNull();
+  expect(container.textContent).not.toMatch(/Email sent|ERP change made|primary.*succeeded/);
+});
+
+test("normal selected-model answers do not show a backup notice", () => {
+  render(<MemoryRouter><ChatMessage message={{ role: "assistant", text: "Read answer.", artifacts: {
+    intent: "QUERY", modelRouting: { requestedModel: "primary", model: "primary", fallbackUsed: false },
+  } }} /></MemoryRouter>);
+  expect(screen.queryByText(/Answered with backup model/)).toBeNull();
+});
+
 test.each(["PROPOSED", "APPLIED", "DISCARDED"])("protected chat %s exposes readable mappings without claiming they are run answers", status => {
   const output = { schema: { type: "string" }, success: { kind: "literal", value: "Explicit body mapping" }, handled: { kind: "ref", source: "nodeOutput", nodeId: "guard", path: ["error", "code"] } };
   const proposal = { nodeId: "guard", status, appliedVersion: 2, before: { output }, after: { output, body: { nodes: [{ nodeId: "unrelated_body" }] } }, command: { type: "updateProtected", nodeId: "guard", patch: { output } } };
