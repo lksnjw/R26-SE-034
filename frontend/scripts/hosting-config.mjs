@@ -1,6 +1,6 @@
 import { createAppConfig, validateEndpoint } from "../src/config/endpoints.js";
 
-export const PUBLIC_KEYS = new Set(["VITE_APP_NAME", "VITE_API_BASE_URL", "VITE_WS_BASE_URL", "VITE_ANALYTICS_ENABLED"]);
+export const PUBLIC_KEYS = new Set(["VITE_APP_NAME", "VITE_API_BASE_URL", "VITE_WS_BASE_URL", "VITE_ANALYTICS_ENABLED", "VITE_API_REQUEST_TIMEOUT_MS"]);
 const ICON_ORIGINS = ["https://api.iconify.design", "https://api.simplesvg.com", "https://api.unisvg.com"];
 
 export function hostingBindings(env) {

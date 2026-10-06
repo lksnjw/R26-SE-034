@@ -22,6 +22,8 @@ import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-c
 import { applyWorkflowCommand, workflowCommandSchema } from "../src/workflows/commands.ts";
 import { canonicalJSONBytes, resolvedParameterHashBytes } from "../src/core/canonical-json.ts";
 import { protectedSimulationSource, protectedSimulationRead } from "../tests/fixtures/protected-simulation.js";
+import { WORKSPACE_QUERY_SYSTEM_PROMPT } from "../src/prompts/contracts.ts";
+import { SynthesisService } from "../src/synthesis/service.ts";
 
 const fixtureWorker = process.env.WORKSPACE_QA_READ_STATE === "worker";
 const collectionCanvas = process.env.WORKSPACE_QA_CANVAS === "collection";
@@ -33,6 +35,9 @@ const unknownOperation = process.env.WORKSPACE_QA_OPERATION_OUTCOME === "unknown
 const readbackFixture = process.env.WORKSPACE_QA_READBACK === "1";
 const statusOutcome = process.env.WORKSPACE_QA_STATUS_OUTCOME || "ABSENT";
 const queryDelay = Number(process.env.WORKSPACE_QA_QUERY_DELAY_MS || 0);
+const modelFallbackFixture = process.env.WORKSPACE_QA_MODEL_FALLBACK === "1";
+if (modelFallbackFixture && (!fixtureWorker || collectionCanvas || protectedCanvas || approvalFixture || operationFixture))
+  throw new Error("Model-fallback UI QA requires only the isolated synthetic read-worker fixture");
 if (readbackFixture && (!unknownOperation || !["APPLIED", "ABSENT", "PENDING"].includes(statusOutcome) || !Number.isSafeInteger(queryDelay) || queryDelay < 0 || queryDelay > 8000)) throw new Error("Status-query QA requires the isolated unknown operation and a bounded synthetic result/delay");
 if (unknownOperation && !operationFixture) throw new Error("Unknown-outcome QA requires the isolated normal operation fixture");
 if (operationFixture && (approvalFixture || collectionCanvas || fixtureWorker)) throw new Error("Operation QA is an isolated synthetic normal-worker mode; do not combine fixture modes");
@@ -155,8 +160,25 @@ if (approvalFixture) {
 }
 const validator = new RegistryValidator(registries, repository);
 const executor = new Executor(new ToolRegistry(), validator);
+let fixtureModelRequests = 0, fixtureSDKReads = 0;
 const providerRuntime = new ProviderRuntime(repository, executor, async (_url, init) => {
   const request = JSON.parse(String(init.body));
+  if (modelFallbackFixture && request.messages[0]?.content === WORKSPACE_QUERY_SYSTEM_PROMPT) {
+    console.log(`LOCAL fallback fixture model request ${++fixtureModelRequests}: ${request.model}`);
+    if (request.model === "fixture-only") return new Response("", { status: 503 });
+    if (request.model !== "fixture-backup") throw new Error("Unexpected synthetic backup model");
+    const read = request.messages.some(message => message.role === "tool");
+    const assistant = request.messages.find(message => message.role === "assistant" && message.tool_calls);
+    if (read && JSON.stringify(assistant?.reasoning_details) !== JSON.stringify([{ type: "reasoning.encrypted", data: "LOCAL-private-continuation-fixture" }]))
+      throw new Error("Synthetic same-model continuation was not preserved");
+    return Response.json({ choices: [{ finish_reason: read ? "stop" : "tool_calls", message: read ? {
+      content: "LOCAL synthetic invoice read completed. This is not live ERP data.\n\n| Invoice | Total | Currency |\n| --- | ---: | --- |\n| FIXTURE-001 | 12,500 | LKR |\n\nNo email was sent or schedule activated.",
+    } : { content: null, reasoning_details: [{ type: "reasoning.encrypted", data: "LOCAL-private-continuation-fixture" }],
+      tool_calls: [{ id: "local-fallback-read", type: "function", function: { name: "demo.echo", arguments: JSON.stringify({ value: "LOCAL synthetic invoice FIXTURE-001: LKR 12500" }) } }],
+    } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
+  }
+  if (modelFallbackFixture && request.messages[0]?.content.includes("WORKFLOW DRAFT SYNTHESIS"))
+    return Response.json({ choices: [{ finish_reason: "stop", message: { content: yaml } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
   const collectionPatch = request.messages[0].content.includes("ONE SELECTED COLLECTION PATCH");
   const protectedPatch = request.messages[0].content.includes("ONE SELECTED PROTECTED GROUP PATCH");
   let patch = collectionPatch ? { maxItems: 2 } : { description: "Invoice step reviewed by local fixture agent" };
@@ -168,7 +190,8 @@ const providerRuntime = new ProviderRuntime(repository, executor, async (_url, i
   }
   return Response.json({ choices: [{ message: { content: JSON.stringify(patch) } }] });
 });
-providerRuntime.activate({ id: "qa-fixture", name: "Local fixture", type: "openai_compatible", baseURL: "https://fixture.invalid/v1", apiKey: "fixture-no-network", model: "fixture-only", temperature: 0, timeoutMs: 1000,
+providerRuntime.activate({ id: "qa-fixture", name: "Local fixture", type: "openai_compatible", baseURL: "https://fixture.invalid/v1", apiKey: "fixture-no-network", model: "fixture-only",
+  ...(modelFallbackFixture ? { fallbackModel: "fixture-backup" } : {}), temperature: 0, timeoutMs: 1000,
   // Explicit synthetic fixture review; production and runtime egress remain denied.
   egressPolicy: { profile: "model-egress-policy/v1", approvedOrigin: "https://fixture.invalid", runtimeAnalysisDataClasses: [], runtimeAgentDataClasses: [], interactiveDataClasses: ["restricted"],
     reviewedAt: createdAt, reviewedBy: { id: "qa", name: "Local QA fixture only" } } });
@@ -183,8 +206,11 @@ const erpbridgeSession = operationFixture ? await createErpbridgeMcpSession({ ba
     } } }) : fixtureWorker ? await createErpbridgeMcpSession({ baseURL: "https://fixture.invalid", token: "fixture-only", timeoutMs: 1000, validator,
   sdkClient: { connect: async () => {}, close: async () => {}, listTools: async () => [{ name: "demo.echo", inputSchema: registries.snapshot().tools[0].input_schema }],
     callTool: async (_name, args) => {
+      if (modelFallbackFixture) console.log(`LOCAL fallback fixture SDK read ${++fixtureSDKReads}`);
       const delay = Number(process.env.WORKSPACE_QA_READ_DELAY_MS || 30000);
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.min(60000, Math.max(1000, Number.isFinite(delay) ? delay : 30000))));
+      // The fallback acceptance fixture confirms an immediate synthetic read.
+      // Other modes retain their intentional delayed/uncertain-outcome behavior.
+      if (!modelFallbackFixture) await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.min(60000, Math.max(1000, Number.isFinite(delay) ? delay : 30000))));
       return { content: [{ type: "text", text: "Synthetic SDK echo only — not ERP data." }], structuredContent: { value: args.value, synthetic_fixture: true } };
     } } }) : undefined;
 if (operationFixture) {
@@ -193,7 +219,9 @@ if (operationFixture) {
     body: { observationId: observation.id, contractHash: observation.contractHash, decisionKey: `qa-review-${observation.toolId}`, effectClass: observation.toolId === "QA-OPERATION" ? "notification" : "read",
       riskClass: "low", dataClass: "internal", retryPolicy: "never", note: "Explicit LOCAL synthetic contract review", ...(observation.toolId === "QA-OPERATION" ? { requireIndependentApproval: true } : {}) } });
 }
-const app = await buildApp({ config, repository, registries, validator, executor, providerRuntime, ...(erpbridgeSession ? { erpbridgeSession } : {}) });
+const app = await buildApp({ config, repository, registries, validator, executor, providerRuntime,
+  ...(modelFallbackFixture ? { synthesis: new SynthesisService(providerRuntime, registries, validator) } : {}),
+  ...(erpbridgeSession ? { erpbridgeSession } : {}) });
 await app.listen({ host: "127.0.0.1", port: 8081 });
 console.log("LOCAL UI fixture at 127.0.0.1:8081; qa@example.test / Local-QA-only-2026!; memory-only; no ERP/provider network.");
 let stopping;
