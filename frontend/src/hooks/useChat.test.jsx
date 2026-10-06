@@ -5,6 +5,7 @@ import { TextEncoder } from "node:util";
 import { jest, expect, test, beforeEach, afterEach } from "@jest/globals";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
+import { transitionAuthority } from "../utils/authAuthority";
 const user = { id: "owner", role: "Operator", permissions: ["chat:use"] };
 const service = { capabilities: jest.fn(), getSession: jest.fn(), operations: jest.fn(), operation: jest.fn(), sendMessage: jest.fn(), cancelOperation: jest.fn() };
 jest.unstable_mockModule("../context/AuthContext", () => ({ useAuthContext: () => ({ user }) }));
@@ -14,6 +15,7 @@ const op = (status = "RUNNING") => ({ id: "job", sessionId: "chat", userMessageI
 let client;
 function wrapper({ children }) { return <QueryClientProvider client={client}>{children}</QueryClientProvider>; }
 beforeEach(() => {
+  transitionAuthority(user);
   Object.defineProperty(globalThis, "crypto", { configurable: true, value: webcrypto }); globalThis.TextEncoder = TextEncoder;
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   service.getSession.mockResolvedValue({ id: "chat", messages: [] }); service.operations.mockResolvedValue([]);
@@ -49,6 +51,16 @@ test("saved terminal answers refresh history and cancellation is never a message
   service.getSession.mockResolvedValue({ id: "chat", messages: [{ id: "answer", role: "assistant", text: "Saved answer" }] });
   act(() => result.current.cancelOperation()); await waitFor(() => expect(result.current.messages[0]?.id).toBe("answer"));
   expect(service.cancelOperation).toHaveBeenCalledWith("job"); expect(service.sendMessage).not.toHaveBeenCalled(); expect(result.current.loading).toBe(false);
+});
+test("saved terminal answers reconcile into chat without a manual progress refresh", async () => {
+  const terminal = { ...op("ANSWERED"), assistantMessageId: "answer" };
+  service.operations.mockResolvedValue([terminal]);
+  service.operation.mockResolvedValue({ operation: terminal, events: [], nextCursor: 0, hasMore: false });
+  service.getSession.mockResolvedValueOnce({ id: "chat", messages: [] }).mockResolvedValue({ id: "chat", messages: [{ id: "answer", operationId: "job", role: "assistant", text: "Saved answer" }] });
+  const { result } = renderHook(() => useChat("chat"), { wrapper });
+  await waitFor(() => expect(result.current.messages[0]?.text).toBe("Saved answer"));
+  expect(service.getSession.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(service.sendMessage).not.toHaveBeenCalled();
 });
 test("local revision-bound email edits do not enter the external-processing queue", async () => {
   service.sendMessage.mockResolvedValue({ assistantMessage: { id: "draft", role: "assistant", text: "Draft not sent" } });
