@@ -48,3 +48,19 @@ test("duplicate remote names fail closed and missing session does not contaminat
   const bridge = session(async () => [{ name: "finance.read", inputSchema: schema }, { name: "finance.read", inputSchema: schema }]);
   await expect(discoverTools(bridge, registry())).rejects.toThrow("ERPBridge tool discovery failed");
 });
+
+test("a 128-tool ERP catalog remains exact, complete and cached without broadening authority", async () => {
+  const tools = Array.from({ length: 128 }, (_, index) => toolSchema.parse({ ...tool,
+    tool_id: `read-${String(index + 1).padStart(3, "0")}`,
+    name: `read_${String(index + 1).padStart(3, "0")}`,
+    mcp_tool_name: `finance.read_${String(index + 1).padStart(3, "0")}`,
+  }));
+  const listTools = vi.fn(async () => tools.map(value => ({ name: value.mcp_tool_name, inputSchema: schema })));
+  const bridge = session(listTools), catalog = registry(tools, "registry-128");
+  const discovered = await discoverTools(bridge, catalog);
+  expect(discovered).toHaveLength(128);
+  expect(new Set(discovered.map(value => value.tool_id)).size).toBe(128);
+  expect(discovered.map(value => value.tool_id)).toEqual(tools.map(value => value.tool_id));
+  expect(await discoverTools(bridge, catalog)).toEqual(discovered);
+  expect(listTools).toHaveBeenCalledTimes(1);
+});

@@ -4,10 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 
-const catalog = jest.fn(), discover = jest.fn(), review = jest.fn(), disable = jest.fn();
+const catalog = jest.fn(), discover = jest.fn(), review = jest.fn(), disable = jest.fn(), importReview = jest.fn();
 let role = "Platform Admin", permissions = new Set(["registry:read", "registry:write"]);
 jest.unstable_mockModule("../../hooks/usePermissions", () => ({ usePermissions: () => ({ actorId: "admin-fixture", role, has: (value) => permissions.has(value) }) }));
-jest.unstable_mockModule("../../services/capability.service", () => ({ capabilityService: { catalog, discover, review, disable } }));
+jest.unstable_mockModule("../../services/capability.service", () => ({ capabilityService: { catalog, discover, review, disable, import: importReview } }));
 const { default: Panel } = await import("./CapabilityReviewPanel.jsx");
 const entry = () => ({ capabilityId: "cap-fixture", effectiveState: "REVIEW_REQUIRED", reviewEligible: true, reviewReason: null, admission: null, revision: null,
   observation: { id: "obs-fixture", connectionId: "finance", toolId: "TOOL-1", contractHash: `sha256:${"a".repeat(64)}`, discoveredAt: "2026-10-05T01:00:00.000Z",
@@ -19,8 +19,63 @@ let clients = [];
 function mount() { const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } } }); clients.push(client); return render(<QueryClientProvider client={client}><Panel /></QueryClientProvider>); }
 async function select() { fireEvent.click(await screen.findByRole("button", { name: /Read invoices/ })); }
 function confirm() { const sensitivity = screen.getByRole("combobox", { name: "Reviewed data sensitivity" }); if (!sensitivity.value) fireEvent.change(sensitivity, { target: { value: "internal" } }); fireEvent.change(screen.getByLabelText("Capability decision note"), { target: { value: "Exact read contract reviewed" } }); fireEvent.click(screen.getByRole("checkbox")); }
+const remoteItem = () => ({ remoteName: "unknown.lookup.rev_MS4wLjA", remoteHash: `sha256:${"d".repeat(64)}`, importable: true, reason: "NO_LOCAL_REVIEW_CONTRACT", authorityGranted: false,
+  definition: { name: "discovered.finance.lookup_abc", display_name: "New Department lookup", mcp_tool_name: "unknown.lookup", connection_id: "finance", description: "Untrusted tool description",
+    input_schema: { type: "object", properties: {} }, bridge_contract: { resource_version: "1.0.0", remote_roles: [], output_schema: { type: "object", properties: { count: { type: "integer" } } } } } });
+function importReceipt(body) { return { remoteHash: body.remoteHash, admission: { capabilityId: "cap-new", state: "AVAILABLE", version: 1 },
+  revision: { capabilityId: "cap-new", connectionId: "finance", definition: { ...remoteItem().definition, allowed_roles: body.allowedRoles, is_read_only: true, risk_level: "low", side_effects: [] },
+    policy: { effectClass: body.effectClass, riskClass: body.riskClass, dataClass: body.dataClass, retryPolicy: body.retryPolicy, note: body.note } } }; }
+async function openImport() {
+  catalog.mockResolvedValue(page(entry(), { roleOptions: [{ id: "admin", name: "Platform Admin" }] }));
+  discover.mockResolvedValue({ connectionId: "finance", authorityGranted: false, blockedCount: 0, unreviewedInventory: [remoteItem()] });
+  const view = mount(), refresh = await screen.findByRole("button", { name: "Refresh discovery" });
+  await waitFor(() => expect(refresh.disabled).toBe(false)); fireEvent.click(refresh);
+  await screen.findByText(/Discovery saved; no tool enabled/); fireEvent.click(screen.getByText("Unmapped remote tools (1)"));
+  fireEvent.click(await screen.findByRole("button", { name: `Inspect New Department lookup · ${remoteItem().remoteName}` }));
+  fireEvent.change(screen.getByLabelText("Discovered tool effect"), { target: { value: "read" } });
+  fireEvent.change(screen.getByLabelText("Discovered tool sensitivity"), { target: { value: "internal" } });
+  fireEvent.click(screen.getByLabelText("Platform Admin"));
+  fireEvent.change(screen.getByLabelText("Discovered tool review note"), { target: { value: "Explicit new contract review" } });
+  fireEvent.click(screen.getByLabelText("Confirm discovered contract review")); return view;
+}
+test("new discovery review uses the selected connection and clears only an exact acknowledged request", async () => {
+  importReview.mockImplementationOnce(async (_id, body) => importReceipt(body)); await openImport();
+  fireEvent.click(screen.getByRole("button", { name: "Review and add tool" }));
+  await screen.findByText(/Discovered-tool review acknowledged/); expect(importReview).toHaveBeenCalledTimes(1);
+  expect(importReview.mock.calls[0]).toEqual([remoteItem().remoteName, expect.objectContaining({ remoteHash: remoteItem().remoteHash, allowedRoles: ["Platform Admin"], confirmed: true, effectClass: "read" }), "finance"]);
+  expect(sessionStorage.length).toBe(0); expect(review).not.toHaveBeenCalled();
+});
+
+test("same friendly names retain distinct exact selectors and identify an unpinned alias before inspection", async () => {
+  const exact = remoteItem(), alias = { ...remoteItem(), remoteName: "unknown.lookup", importable: false,
+    definition: { ...remoteItem().definition, bridge_contract: undefined } };
+  discover.mockResolvedValue({ connectionId: "finance", authorityGranted: false, blockedCount: 0, unreviewedInventory: [alias, exact] });
+  mount(); const refresh = await screen.findByRole("button", { name: "Refresh discovery" });
+  await waitFor(() => expect(refresh.disabled).toBe(false)); fireEvent.click(refresh);
+  await screen.findByText(/Discovery saved; no tool enabled/); fireEvent.click(screen.getByText("Unmapped remote tools (2)"));
+  expect(screen.getByText("Version not pinned · Not eligible for import")).toBeTruthy();
+  expect(screen.getByText("Version 1.0.0")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Inspect New Department lookup · unknown.lookup", exact: true })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: `Inspect New Department lookup · ${exact.remoteName}`, exact: true }));
+  expect(screen.getByRole("form", { name: "Review discovered tool" })).toBeTruthy();
+  expect(importReview).not.toHaveBeenCalled();
+});
+test("unconfirmed import survives remount and retries the original exact decision, not a fresh review key", async () => {
+  importReview.mockRejectedValueOnce(new Error("Acknowledgement unknown")); const view = await openImport();
+  fireEvent.click(screen.getByRole("button", { name: "Review and add tool" })); await screen.findByRole("alert");
+  const original = importReview.mock.calls[0]; expect(sessionStorage.length).toBe(1); view.unmount(); mount();
+  const retry = await screen.findByRole("button", { name: "Retry exact decision" });
+  importReview.mockImplementationOnce(async (_id, body) => importReceipt(body)); fireEvent.click(retry);
+  await screen.findByText(/Discovered-tool review acknowledged/); expect(importReview.mock.calls[1]).toEqual(original); expect(sessionStorage.length).toBe(0);
+});
+test("mismatched import acknowledgement remains unconfirmed and cannot enable a tool from a success label", async () => {
+  importReview.mockImplementationOnce(async (_id, body) => ({ ...importReceipt(body), remoteHash: `sha256:${"e".repeat(64)}` })); await openImport();
+  fireEvent.click(screen.getByRole("button", { name: "Review and add tool" })); await screen.findByRole("alert");
+  expect(screen.getByText("Unconfirmed import decision")).not.toBeNull(); expect(sessionStorage.length).toBe(1);
+  expect(screen.queryByText(/Discovered-tool review acknowledged/)).toBeNull();
+});
 beforeEach(() => { sessionStorage.clear(); catalog.mockResolvedValue(page()); role = "Platform Admin"; permissions = new Set(["registry:read", "registry:write"]); });
-afterEach(() => { cleanup(); for (const client of clients) client.clear(); clients = []; for (const mock of [catalog, discover, review, disable]) mock.mockReset(); jest.restoreAllMocks(); });
+afterEach(() => { cleanup(); for (const client of clients) client.clear(); clients = []; for (const mock of [catalog, discover, review, disable, importReview]) mock.mockReset(); jest.restoreAllMocks(); });
 
 test("formatted inspection requires a note and explicit confirmation; discovery cannot auto-review", async () => {
   mount(); await select();
