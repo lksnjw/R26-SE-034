@@ -36,6 +36,46 @@ async function open(props = {}) {
 }
 async function selectNode() { fireEvent.click(screen.getByRole("button", { name: /01 first/ })); }
 
+test("historical publication with invalid current source shows blocked and cannot republish", async () => {
+  workflowService.readiness.mockResolvedValue({ ...record, published: true, validation: { passed: false, errors: ["Duplicate node ID"] }, compilation: { state: "BLOCKED" } });
+  await open();
+  expect(screen.getByText("Published · blocked")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Republish reviewed draft" }).disabled).toBe(true);
+  expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test("a 101-step generated workflow stays selectable and revision-bound in the frontend editor", async () => {
+  const steps = Array.from({ length: 101 }, (_, index) => {
+    const ordinal = String(index + 1).padStart(3, "0");
+    return { id: `scale_${ordinal}`, action: `qa_scale_read_${ordinal}`, description: `Scale ERP read ${ordinal}`, parameters: {} };
+  });
+  const largeYaml = `name: Large ERP workflow\ntrigger:\n  type: manual\nsteps:\n${steps.map(step => `  - id: ${step.id}\n    action: ${step.action}\n    description: ${step.description}\n    parameters: {}`).join("\n")}\n`;
+  workflowService.readiness.mockResolvedValue({ ...record, name: "Large ERP workflow", yaml: largeYaml,
+    authoring: { profile: "read-authoring/v1", connectionId: "erpbridge-default", connectionChoices: [{ id: "erpbridge-default", primary: true }],
+      nodes: steps.map(step => ({ nodeId: step.id, effectClass: "read", actions: [step.action], inputSchema: { type: "object", properties: {} }, dataSources: [] })) } });
+  const context = jest.fn();
+  render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit onNodeContext={context} />);
+  const rendered = await screen.findAllByRole("button", { name: /Scale ERP read/ });
+  expect(rendered).toHaveLength(101);
+  fireEvent.click(screen.getByRole("button", { name: /101 Scale ERP read 101/ }));
+  expect(context).toHaveBeenLastCalledWith(expect.objectContaining({ workflowId: "report", nodeId: "scale_101", version: 1, contentHash: record.contentHash, pending: false }));
+  expect(screen.getByRole("complementary", { name: "Selected node details" })).toBeTruthy();
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
+});
+
+test.each([undefined, { structuredContent: { value: "confirmed result" } }])("a stale running timeline does not contradict an acknowledged node answer %j", async output => {
+  executionService.list.mockResolvedValue([{ id: "saved-run", workflowId: "report", status: "DONE", startedAt: "2026-10-11T00:00:00Z", workflowSnapshot: { yaml }, stepOutputs: output === undefined ? {} : { first: output } }]);
+  executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "RUNNING", phase: "DISPATCH_INTENT" }]);
+  await open();
+  if (output === undefined) {
+    await screen.findByText("Read dispatch recorded · waiting for a saved answer");
+    expect(screen.queryByText(/Node answer/)).toBeNull();
+  } else {
+    await screen.findByText(/Node answer/);
+    expect(screen.queryByText("Read dispatch recorded · waiting for a saved answer")).toBeNull();
+  }
+});
+
 function protectedRecord(profile = "protected-operation-v1") {
   const flow = { kind: "sequence", nodes: [{ kind: "protect", id: "group", onError: { code: "ERP_RESOURCE_NOT_FOUND" }, body: { kind: "sequence", nodes: [{ kind: "action", nodeId: "first" }] }, handler: { kind: "sequence", nodes: [{ kind: "action", nodeId: "last" }] }, output: { schema: { type: "string" }, success: { kind: "literal", value: "found" }, handled: { kind: "literal", value: "fallback" } } }] };
   return { ...record, yaml: `${yaml}metadata:\n  controlFlow: ${JSON.stringify({ schemaVersion: "read-control-flow/v4", root: flow })}\n`, executionProfile: profile, operation_job_admission: "operation-job/v1", authoring: { profile: "read-authoring/v1", executionProfile: profile, controlFlow: flow, nodes: [] } };
@@ -297,7 +337,6 @@ test("analysis node chat remains revision-scoped and runtime output is shown as 
   ]);
   render(<WorkflowWorkspaceEditor workflowId="report" sessionId="chat" canEdit />);
   fireEvent.click(await screen.findByRole("button", { name: /Summarise invoices/ }));
-  fireEvent.click(screen.getByText(/Structured analysis answer/));
   expect(screen.getByText("Invoices total LKR 125,000")).toBeTruthy(); expect(screen.getByText("Yes")).toBeTruthy();
   fireEvent.change(screen.getByRole("textbox", { name: "Selected node prompt" }), { target: { value: "Use a shorter summary" } });
   fireEvent.click(screen.getByRole("button", { name: "Propose change" }));
@@ -351,7 +390,7 @@ test("selected bounded agent has typed allow-list, completion and budget editing
   fireEvent.change(screen.getByRole("spinbutton", { name: "Agent maximum tool calls" }), { target: { value: "2" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview agent edit" }));
   expect(workflowService.command).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByText(/Agent structured answer/)); expect(screen.getByText("Two confirmed invoices")).toBeTruthy(); expect(screen.getAllByText("Yes").length).toBeGreaterThan(0);
+  expect(screen.getByText("Two confirmed invoices")).toBeTruthy(); expect(screen.getAllByText("Yes").length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
   await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", expect.objectContaining({ version: 1 }), expect.objectContaining({
     type: "updateAgent", nodeId: "research", patch: expect.objectContaining({ allowed_actions: ["demo.echo"], completion_predicate: { path: ["complete"], equals: true }, max_rounds: 2, max_tool_calls: 2, max_concurrency: 1 }) })));
@@ -536,7 +575,7 @@ test("a failed run retrieves actual partial node outputs and does not silently p
   workflowService.run.mockRejectedValue({ response: { data: { message: "Second node failed", meta: { executionId: "run-failed" } } } });
   executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "DONE" }, { nodeId: "last", status: "FAILED" }]);
   await open(); fireEvent.click(screen.getByRole("button", { name: "Run published version" }));
-  await screen.findByText("Node answer · run run-failed");
+  fireEvent.click(await screen.findByText("Node answer · run run-failed"));
   expect(screen.getByText(/real answer/)).toBeTruthy();
   expect(screen.getByText("Value")).toBeTruthy();
   expect(screen.getByText("Node answer · run run-failed").parentElement.querySelector("pre")).toBeNull();
@@ -547,7 +586,7 @@ test("a failed run retrieves actual partial node outputs and does not silently p
 test("known failed-node response is readable beside the node and is not called a successful answer", async () => {
   executionService.list.mockResolvedValue([{ id: "run-failure", workflowId: "report", startedAt: "2026-10-05T00:00:00Z", status: "FAILED", workflowSnapshot: { yaml }, stepOutputs: {} }]);
   executionService.getTimeline.mockResolvedValue([{ nodeId: "first", status: "FAILED", output: { content: [{ type: "text", text: "Rate limit reached" }], isError: true, _meta: { "com.erpbridge/error": { type: "rate_limit", retryable: true } } } }]);
-  await open(); await screen.findByText("Node failure response · run run-failure");
+  await open(); fireEvent.click(await screen.findByText("Node failure response · run run-failure"));
   expect(screen.getByText("The tool reported an error.")).toBeTruthy(); expect(screen.getByText("Rate limit reached")).toBeTruthy();
   expect(screen.queryByText("Node answer · run run-failure")).toBeNull(); expect(workflowService.run).not.toHaveBeenCalled();
 });
@@ -619,6 +658,7 @@ test("recovered runs show readable saved answers and unknown nodes, never a fres
   workflowService.readiness.mockResolvedValue({ ...record, published: true, can_attempt_run: true });
   await open({ canControl: true });
   await screen.findByText(/Outcome unknown · the read may have reached ERP/);
+  fireEvent.click(screen.getByText("Node answer · run run-recovery"));
   expect(screen.getByText("retained answer")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Run published version" }).disabled).toBe(true);
   expect(screen.queryByRole("button", { name: "Request cancellation" })).toBeNull();
@@ -736,8 +776,8 @@ test("workspace renders confirmed branch scopes, selectable action nodes and tru
   executionService.list.mockResolvedValue([{ id: "branch-run", workflowId: "report", startedAt: "2026-10-05T00:00:00Z", status: "DONE", workflowSnapshot: { yaml }, readProgress: { decisions: { gate: { status: "DONE", selected: "then" } } }, stepOutputs: { first: { structuredContent: { value: "selected answer" } } } }]);
   executionService.getTimeline.mockResolvedValue([{ nodeId: "gate", status: "DONE", outcome: "CONDITION_SELECTED" }, { nodeId: "first", status: "DONE" }, { nodeId: "last", status: "SKIPPED" }]);
   await open(); await screen.findByText("If yes · Selected");
-  expect(screen.getByText(/another branch was selected.*no answer/)).toBeTruthy(); expect(screen.getByText("selected answer")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: /first demo.echo/ })); expect(screen.getByRole("textbox", { name: "Node label" })).toBeTruthy();
+  expect(screen.getByText(/another branch was selected.*no answer/)).toBeTruthy(); fireEvent.click(screen.getByText("Node answer · run branch-run")); expect(screen.getByText("selected answer")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /first ERP step/ })); expect(screen.getByRole("textbox", { name: "Node label" })).toBeTruthy();
   expect(workflowService.run).not.toHaveBeenCalled();
 });
 
@@ -852,7 +892,20 @@ test("adding an action into an explicit branch submits its destination instead o
   fireEvent.change(screen.getByRole("textbox", { name: "New node tool" }), { target: { value: "demo.echo" } });
   fireEvent.change(screen.getByRole("combobox", { name: "New node destination" }), { target: { value: "gate:else" } });
   fireEvent.click(screen.getByRole("button", { name: "Add draft node" }));
+  expect(workflowService.command).not.toHaveBeenCalled();
+  expect(screen.getByText(/Local preview only · not saved to the database/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Apply to draft" }));
   await waitFor(() => expect(workflowService.command).toHaveBeenCalledWith("report", recordExpect(), { type: "addNode", node: { id: "more", action: "demo.echo", parameters: {} }, beforeNodeId: null, destination: { conditionId: "gate", branch: "else" } }));
+});
+
+test("discarding a local added-node preview does not save, publish or run anything", async () => {
+  await open(); fireEvent.click(screen.getByRole("button", { name: "Add node" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "New node ID" }), { target: { value: "local" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "New node tool" }), { target: { value: "demo.echo" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add draft node" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Node change preview" })).toBeNull());
+  expect(workflowService.command).not.toHaveBeenCalled(); expect(workflowService.publish).not.toHaveBeenCalled(); expect(workflowService.run).not.toHaveBeenCalled();
 });
 const recordExpect = () => expect.objectContaining({ version: 1, contentHash: record.contentHash });
 

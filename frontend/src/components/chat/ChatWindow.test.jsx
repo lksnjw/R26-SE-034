@@ -9,6 +9,15 @@ jest.unstable_mockModule("../../utils/workflowCanvas.utils", () => ({ peekWorkfl
 const { default: ChatWindow } = await import("./ChatWindow");
 afterEach(() => { cleanup(); sessionStorage.clear(); });
 
+test("shows immediate thinking feedback before the saved operation arrives", async () => {
+  render(<ChatWindow messages={[]} loading draftStorageKey="thinking.chat" />);
+  await screen.findByRole("combobox", { name: "Requested model" });
+  expect(screen.getByRole("status", { name: "Thinking…" })).toBeTruthy();
+  expect(screen.getByText("Sending your request securely…")).toBeTruthy();
+  expect(screen.getByText("Working")).toBeTruthy();
+  expect(screen.queryByText("What would you like to do?")).toBeNull();
+});
+
 test("unsupported selected-group chat retains text and cannot become an unscoped request", async () => {
   const onSend = jest.fn(); render(<ChatWindow messages={[]} onSend={onSend} nodeContext={{ nodeId: "group", version: 1, unavailableReason: "Use protected output settings or select a child node." }} draftStorageKey="scope.protected" />);
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Edit the handler" } });
@@ -34,7 +43,7 @@ test("keeps unsent draft across leaving and returning to workspace", () => {
   view.unmount();
   render(<ChatWindow messages={[]} draftStorageKey="draft.account.session" />);
   expect(screen.getByRole("textbox").value).toBe("Draft report");
-  expect(screen.queryByText("Ready")).toBeNull();
+  expect(screen.getByText("Ready")).toBeTruthy();
 });
 
 test("failed request keeps draft and successful send clears it", async () => {
