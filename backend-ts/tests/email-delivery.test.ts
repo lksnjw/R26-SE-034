@@ -21,7 +21,7 @@ import { recurringAnalysisTools, reportAnalysis } from "./fixtures/recurring-ana
 import { bridgeTransportSchema, exactBridgeName } from "../src/tools/erpbridge-contract.js";
 import { RECURRING_DECISION_REQUIREMENT } from "../src/delivery/recurring-decision-scopes.js";
 import { recurringCrossJoinWorkflow, recurringJoinWorkflow } from "./fixtures/recurring-join-workflow.js";
-import { RELATED_KEY_CANDIDATE_SYSTEM_PROMPT } from "../src/prompts/contracts.js";
+import { systemInstructionsFor } from "../src/prompts/contracts.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -68,6 +68,23 @@ test.each([
 ])("direct delivery request remains explicit: %s", (text) => { expect(classifyIntent(text)).toBe("EMAIL_DELIVERY"); });
 test.each(["Send invoice details to my manager every day", "Email the weekly report to manager@example.test"])("recurring delivery becomes workflow design, never a one-off send: %s", (text) => { expect(classifyIntent(text)).toBe("ACTION"); });
 test.each(["How would you email the manager?", "What happened to the email?", "Do not send email; list invoices", "Check if the email was sent"])("informational or negated request is not delivery authority: %s", (text) => { expect(classifyIntent(text)).not.toBe("EMAIL_DELIVERY"); });
+test.each([
+  "Query the synthetic Departments using the available reviewed ERPBridge tool. Return the actual Department names and count. Do not create or change ERP records or send email.",
+  "List departments; do not create records or send email",
+  "List departments and don't change anything or forward the report",
+  "Query departments without changing ERP records or sending email",
+  "List departments. Never change records or deliver email",
+])("coordinated delivery prohibition stays a read query: %s", text => {
+  expect(deliveryIntent(text)).toBeNull(); expect(classifyIntent(text)).toBe("QUERY");
+});
+test.each([
+  "Do not change ERP records. Send the report to manager@example.test",
+  "Do not change ERP records; email the report to manager@example.test",
+  "Do not change ERP records, but send the report to manager@example.test",
+])("a separate explicit delivery clause still prepares review only: %s", text => {
+  expect(deliveryIntent(text)).toMatchObject({ requestedAddresses: ["manager@example.test"] });
+  expect(classifyIntent(text)).toBe("EMAIL_DELIVERY");
+});
 test("explicit canvas generation stays a workflow proposal, not a delivery attempt", () => { expect(classifyIntent("Create a workflow to get invoices and email the manager daily")).toBe("ACTION"); });
 test("person or multiple-address request never guesses or silently picks a recipient", () => {
   for (const text of ["Send an email to my manager", "Email this to a@example.test and b@example.test"]) {
@@ -171,7 +188,7 @@ test("connected recurring request saves exact useful capability steps without ru
   expect(workflows[0]).toMatchObject({ yaml: candidate.yaml, steps: 3, publishedVersion: 0, draftVersion: 1, canRun: false, trigger: { type: "manual" } });
   expect(state.schedules).toEqual({}); expect(state.executions).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
   const providerBody = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-  expect(providerBody.messages[0].content).toContain("prompt/candidate/v18");
+  expect(providerBody.messages[0].content).toContain("prompt/candidate/v20");
   const context = JSON.parse(providerBody.messages[1].content).SERVER_DERIVED_CONTEXT_JSON;
   expect(context.automation_request).toEqual(recurringAutomationCandidateContext(candidate.request).automation_request);
 });
@@ -212,7 +229,7 @@ test.each([false, true].flatMap(analysis => [false, true].map(async => [analysis
     expect(messages.at(-1).text).toContain("have not been published, scheduled or executed");
     expect(state.executions).toEqual({}); expect(state.schedules).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
     const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body));
-    expect(body.messages[0].content).toContain("prompt/candidate/v18"); expect(body.messages[0].content).not.toContain(candidate.text);
+    expect(body.messages[0].content).toContain("prompt/candidate/v20"); expect(body.messages[0].content).not.toContain(candidate.text);
     expect(JSON.parse(body.messages[1].content).SERVER_DERIVED_CONTEXT_JSON.automation_request.decision_request.originalRequest).toBe(candidate.text);
     if (asynchronous) {
       const replay = await s.send(candidate.text, extra); expect(replay.statusCode).toBe(202); expect(replay.json().data.operation.id).toBe(response.json().data.operation.id);
@@ -242,7 +259,7 @@ test.each(["reports", "branch-analysis", "joined-analysis", "cross-join-keys"].f
     expect(readiness.statusCode, readiness.body).toBe(200); expect(readiness.json().data.can_attempt_run).toBe(false);
     expect((await s.app.inject({ method: "POST", url: "/api/workflows/" + workflow.id + "/publish", headers: s.headers, payload: {} })).statusCode).toBe(422);
     expect(state.executions).toEqual({}); expect(state.schedules).toEqual({}); expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
-    const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toBe(RELATED_KEY_CANDIDATE_SYSTEM_PROMPT);
+    const body = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)); expect(body.messages[0].content).toBe(systemInstructionsFor("prompt/candidate/v20"));
     expect(body.messages[0].content).not.toContain(candidate.text);
     expect(JSON.parse(body.messages[1].content).SERVER_DERIVED_CONTEXT_JSON.automation_request.decision_request.originalRequest).toBe(candidate.text);
     if (asynchronous) {
