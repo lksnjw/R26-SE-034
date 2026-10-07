@@ -2,13 +2,21 @@ import { describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { compileReadWorkflow } from "../src/workflows/compiled-read.js";
 // @ts-expect-error Local JavaScript operator entrypoint has no declarations
-import { qaWorkflowBlueprint, qaModelReadBlueprint, qaPlanningResponse, qaProviderConfiguration } from "../scripts/erpbridge-workspace-qa.mjs";
+import { qaWorkflowBlueprint, qaModelReadBlueprint, qaPlanningResponse, qaProviderConfiguration, assertRealProviderQaConfiguration } from "../scripts/erpbridge-workspace-qa.mjs";
 // @ts-expect-error Local JavaScript operator entrypoint has no declarations
 import { qaReadTool } from "../scripts/seed-erpbridge-qa-read.mjs";
 // @ts-expect-error Local JavaScript operator entrypoint has no declarations
 import { qaReviewedDefinition } from "../scripts/qualify-erpbridge-qa-read.mjs";
 
 describe("isolated Docker QA workspace", () => {
+  it("requires exact explicit synthetic-only scope, model and destination before real-provider access", () => {
+    const valid = { LCWE_REAL_MODEL_QA: "synthetic-docker-only", GENERATION_BASE_URL: "https://openrouter.ai/api/v1", GENERATION_API_KEY: "unit-secret-not-a-credential", GENERATION_MODEL_PRIMARY: "deepseek/deepseek-v4.1-flash" };
+    expect(() => assertRealProviderQaConfiguration(valid)).not.toThrow();
+    for (const patch of [{ LCWE_REAL_MODEL_QA: undefined }, { LCWE_REAL_MODEL_QA: "production" }, { GENERATION_BASE_URL: "https://unreviewed.invalid/v1" }, { GENERATION_API_KEY: " " }, { GENERATION_MODEL_PRIMARY: "another-model" }]) {
+      const error = (() => { try { assertRealProviderQaConfiguration({ ...valid, ...patch }); } catch (value) { return value as Error; } })();
+      expect(error?.message).toMatch(/explicit synthetic-only/); expect(error?.message).not.toContain(valid.GENERATION_API_KEY);
+    }
+  });
   it("compiles a typed decision, one Yes-only synthetic GET and an empty No answer", () => {
     const resource = qaReadTool(); resource.metadata.resourceDigest = "a".repeat(64);
     resource.spec.execution.approvedOrigins = ["http://mock-erp:8081"];

@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 // Local operator scripts are deliberately outside the production bundle.
 // @ts-expect-error JavaScript operator entrypoint has no declaration file
-import { qaEnvironment, qaMode, assertEmptyQaProject, assertQaBridgeContainer, dockerFailureCategory, qaCompose, qaProject, qaRegistryPaths } from "../scripts/erpbridge-docker-qa.mjs";
+import { qaEnvironment, qaMode, qaProjectName, assertEmptyQaProject, assertQaResourceNamesAvailable, assertQaBridgeContainer, dockerFailureCategory, runDockerCommand, qaCompose, qaProject, qaRegistryPaths } from "../scripts/erpbridge-docker-qa.mjs";
+import { execFileSync } from "node:child_process";
 // @ts-expect-error JavaScript operator script has no declaration file
 import { qaReadTool } from "../scripts/seed-erpbridge-qa-read.mjs";
 // @ts-expect-error JavaScript operator script has no declaration file
@@ -66,6 +67,46 @@ describe("isolated Docker ERPBridge qualification", () => {
     expect(a.LCWE_QA_BRIDGE_TOKEN).not.toBe(b.LCWE_QA_BRIDGE_TOKEN);
     expect(a.PATH).toBe("fixture");
   });
+  it("selects only the fixed QA project or an explicit bounded fresh-run namespace", () => {
+    expect(qaProjectName()).toBe("lcwe-erpbridge-qa");
+    expect(qaProjectName({ LCWE_QA_RUN_ID: "20261010b1" })).toBe("lcwe-erpbridge-qa-20261010b1");
+    expect(qaProjectName({ LCWE_QA_RUN_ID: "read-2" })).toBe("lcwe-erpbridge-qa-read-2");
+    expect(qaProjectName({ LCWE_QA_RUN_ID: "x".repeat(24) })).toBe(`lcwe-erpbridge-qa-${"x".repeat(24)}`);
+    for (const runId of ["", " ", "Upper", "x".repeat(25), "-first", "last-", "../old", "prod_name", "a\nb", "a\n", "a\r\n", "a.b", null, 1]) {
+      expect(() => qaProjectName({ LCWE_QA_RUN_ID: runId })).toThrow(/LCWE_QA_RUN_ID/);
+      expect(() => qaEnvironment({ LCWE_QA_RUN_ID: runId })).toThrow(/LCWE_QA_RUN_ID/);
+    }
+  });
+  it("shares the selected project with every imported QA helper", () => {
+    const result = execFileSync(process.execPath, ["--import", "tsx/esm", "--input-type=module", "--eval",
+      `const qa = await import("./scripts/erpbridge-docker-qa.mjs");
+       await import("./scripts/seed-erpbridge-qa-read.mjs");
+       await import("./scripts/qualify-erpbridge-qa-read.mjs");
+       await import("./scripts/erpbridge-workspace-qa.mjs");
+       const container = { Config: { Labels: { "com.docker.compose.project": qa.qaProject, "com.docker.compose.service": "erpbridge-server" }, Env: ["ERP_BASE_URL=http://mock-erp:8081", "API_AUTH_TOKEN=" + "a".repeat(64)] }, NetworkSettings: { Ports: { "8080/tcp": [{ HostIp: "127.0.0.1", HostPort: "18080" }] } } };
+       if (qa.assertQaBridgeContainer(container) !== "a".repeat(64)) throw new Error("Selected QA validation failed");
+       container.Config.Labels["com.docker.compose.project"] = "lcwe-erpbridge-qa";
+       try { qa.assertQaBridgeContainer(container); throw new Error("Old project was accepted"); }
+       catch (error) { if (!/refusing discovery/.test(error.message)) throw error; }
+       console.log(qa.qaProject);`],
+    // This fresh process loads the TypeScript application graph, not a network
+    // call. Give cold startup its own bounded budget under the full regression.
+    { cwd: new URL("..", import.meta.url), env: { ...process.env, LCWE_QA_RUN_ID: "test-fresh" }, encoding: "utf8", windowsHide: true, timeout: 15_000 });
+    expect(result.trim()).toBe("lcwe-erpbridge-qa-test-fresh");
+  }, 20_000);
+  it("preserves base volumes while refusing exact selected resource-name collisions regardless of labels", () => {
+    const base = { containers: "", volumes: "lcwe-erpbridge-qa_erpbridge-data\nlcwe-erpbridge-qa_mockerp-data\nlcwe-erpbridge-qa_redis-data\n", networks: "bridge\nhost\nnone\n" };
+    const project = qaProjectName({ LCWE_QA_RUN_ID: "fresh" });
+    expect(() => assertQaResourceNamesAvailable(base, project)).not.toThrow();
+    expect(() => assertQaResourceNamesAvailable(base)).toThrow(/refusing/);
+    for (const volume of ["erpbridge-data", "mockerp-data", "redis-data"])
+      expect(() => assertQaResourceNamesAvailable({ ...base, volumes: `${base.volumes}${project}_${volume}\r\n` }, project)).toThrow(/refusing/);
+    for (const service of ["erpbridge-server", "mock-erp", "redis"])
+      expect(() => assertQaResourceNamesAvailable({ ...base, containers: `${project}-${service}-1\n` }, project)).toThrow(/refusing/);
+    expect(() => assertQaResourceNamesAvailable({ ...base, networks: `${project}_default\n` }, project)).toThrow(/refusing/);
+    expect(() => assertQaResourceNamesAvailable({ ...base, volumes: `${project}-other_erpbridge-data` }, project)).not.toThrow();
+    expect(() => assertEmptyQaProject("", `${project}_redis-data`)).toThrow(/refusing/);
+  });
   it("refuses retained project data and ambiguous operator commands", () => {
     expect(() => assertEmptyQaProject("", "")).not.toThrow();
     expect(() => assertEmptyQaProject("container", "")).toThrow(/refusing/);
@@ -86,6 +127,50 @@ describe("isolated Docker ERPBridge qualification", () => {
     expect(dockerFailureCategory("arbitrary sensitive output")).toBe("Docker command failed");
     expect(dockerFailureCategory("no space left on device")).toBe("Docker resource shortage");
     expect(dockerFailureCategory("container is unhealthy")).toBe("service health check failed");
+  });
+  it("clears a successful Windows command timer without terminating any process", async () => {
+    vi.useFakeTimers();
+    try {
+      let finish: any;
+      const execute = vi.fn((_command: string, _args: string[], _options: any, callback: any) => { finish = callback; return { pid: 4242, exitCode: null, signalCode: null }; });
+      const result = runDockerCommand(["info"], {}, 50, execute, "win32");
+      finish(null, "linux");
+      expect(await result).toBe("linux");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0]?.[2].timeout).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+  it.each([false, true])("terminates only the owned Windows tree and reports cleanup confirmation truthfully (kill failure %s)", async killFailed => {
+    vi.useFakeTimers();
+    try {
+      let finishDocker: any, finishKill: any;
+      const execute = vi.fn((command: string, _args: string[], _options: any, callback: any) => {
+        if (command === "docker") finishDocker = callback; else finishKill = callback;
+        return { pid: command === "docker" ? 4242 : 4243, exitCode: null, signalCode: null };
+      });
+      const result = runDockerCommand(["compose", "up"], {}, 50, execute, "win32");
+      await vi.advanceTimersByTimeAsync(50);
+      expect(execute.mock.calls[1]?.[0]).toBe("taskkill");
+      expect(execute.mock.calls[1]?.[1]).toEqual(["/PID", "4242", "/T", "/F"]);
+      expect(execute.mock.calls[1]?.[2].timeout).toBe(10_000);
+      const rejected = expect(result).rejects.toThrow(killFailed ? /cleanup was not confirmed/ : /process tree was terminated/);
+      finishDocker(new Error("sensitive upstream output"));
+      finishKill(killFailed ? new Error("sensitive taskkill output") : null);
+      await rejected;
+      await expect(result).rejects.not.toThrow(/sensitive/);
+    } finally { vi.useRealTimers(); }
+  });
+  it("does not target a PID once its owned child is known to have exited", async () => {
+    vi.useFakeTimers();
+    try {
+      const execute = vi.fn(() => ({ pid: 4242, exitCode: 0, signalCode: null }));
+      const result = runDockerCommand(["compose", "up"], {}, 50, execute, "win32");
+      const rejected = expect(result).rejects.toThrow(/cleanup was not confirmed/);
+      await vi.advanceTimersByTimeAsync(50);
+      await rejected;
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
   });
   it("refuses to use credentials from unrelated, external-ERP or exposed containers", () => {
     const container = { Config: { Labels: { "com.docker.compose.project": qaProject, "com.docker.compose.service": "erpbridge-server" }, Env: ["ERP_BASE_URL=http://mock-erp:8081", `API_AUTH_TOKEN=${"a".repeat(64)}`] }, NetworkSettings: { Ports: { "8080/tcp": [{ HostIp: "127.0.0.1", HostPort: "18080" }] } } };
