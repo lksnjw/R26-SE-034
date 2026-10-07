@@ -14,6 +14,7 @@ describe("permission constants", () => {
       "execution:read_own",
       "execution:approve",
       "execution:reconcile",
+      "pipeline:upload",
       "settings:manage",
       "provider:manage",
       "registry:read",

@@ -9,6 +9,7 @@ test("admin navigation shows every group", () => {
     "workflow:read",
     "workflow:write",
     "workflow:run",
+    "pipeline:upload",
     "settings:manage",
     "provider:manage",
     "registry:read",
@@ -39,7 +40,7 @@ test("client navigation contains only chat, owned workflows and executions, and 
 
   const visible = filterNavigationGroups(NAVIGATION_GROUPS, allow(permissions), "role_client");
   expect(visible.map((group) => group.label).sort()).toEqual(
-    ["Chat", "Company", "My Workflows", "My Executions", "Profile"].sort()
+    ["Chat", "Company", "Data Ingestion", "My Workflows", "My Executions", "Profile"].sort()
   );
 });
 
