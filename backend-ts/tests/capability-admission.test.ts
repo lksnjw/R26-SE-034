@@ -423,7 +423,7 @@ test("queued run retains its compiled publication and stops before dispatch if i
   const admitted = await w.run({ mode: "async-read", idempotencyKey: "compiled_queue_request_0001" }); expect(admitted.statusCode, admitted.body).toBe(202); const id = admitted.json().data.id;
   await s.review({ decisionKey: "review-fixture-key-0002" }); expect((await w.publish()).json().data.version).toBe(2);
   kick.mockRestore(); queue.kick(); await vi.waitFor(async () => expect((await s.repository.snapshot()).executions[id]?.status).toBe("FAILED"));
-  expect((await s.repository.snapshot()).executions[id]?.failure).toMatchObject({ failureCategory: "READ_JOB_PREPARATION_FAILED", toolWasCalled: false }); expect(s.sdk.callTool).not.toHaveBeenCalled();
+  expect((await s.repository.snapshot()).executions[id]?.failure).toMatchObject({ failureCategory: "READ_JOB_PREPARATION_FAILED", toolWasCalled: false, preparationStage: "PUBLICATION" }); expect(s.sdk.callTool).not.toHaveBeenCalled();
 });
 
 test("modern discovery is not permission; explicit saved review enables one exact governed read and warm discovery never grants from cache", async () => {
