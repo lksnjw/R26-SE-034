@@ -169,6 +169,55 @@ test("generation fallback stays on its captured provider even when admin activat
   expect(Object.values((await s.repository.snapshot()).invocationProvenance).map((entry) => entry.fallbackUsed)).toEqual([false, true]);
 });
 
+test.each(["Show me invoices", "Execute the read operation"])("%s switches only model inference after a confirmed read, without replaying ERP", async content => {
+  const s = await setup(), original = s.fetchImplementation.getMockImplementation()!;
+  s.fetchImplementation.mockImplementation(async (...args) => {
+    const body = JSON.parse(String(args[1]?.body));
+    if (body.model === "model-b" && body.messages.some((message: any) => message.role === "tool")) return new Response("", { status: 503 });
+    const response = await original(...args), decoded: any = await response.json();
+    if (decoded.choices[0].finish_reason === "tool_calls") decoded.choices[0].message.reasoning_details = [{ type: "reasoning.encrypted", data: "private-continuation-marker", id: "signature-one" }];
+    return Response.json(decoded);
+  });
+  const result = await s.send(content, { model: "model-b" }); expect(result.statusCode, result.body).toBe(200);
+  expect(s.fetchImplementation.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).model)).toEqual(["model-b", "model-b", "model-c"]);
+  expect(s.callTool).toHaveBeenCalledTimes(1);
+  const selectedWire = JSON.parse(String(s.fetchImplementation.mock.calls[1]![1]?.body));
+  expect(selectedWire.messages.find((message: any) => message.role === "assistant").reasoning_details[0].data).toBe("private-continuation-marker");
+  const backupWire = JSON.parse(String(s.fetchImplementation.mock.calls[2]![1]?.body));
+  expect(backupWire.messages.find((message: any) => message.role === "assistant")).not.toHaveProperty("reasoning_details");
+  expect(backupWire.messages.some((message: any) => message.role === "tool")).toBe(true);
+  expect(result.json().data.modelBinding).toMatchObject({ requestedModel: "model-b", model: "model-c", fallbackUsed: true });
+  expect(result.json().data.assistantMessage.artifacts.modelRouting).toEqual({ requestedModel: "model-b", model: "model-c", fallbackUsed: true });
+  const state = await s.repository.snapshot();
+  expect(state.chats[s.sessionId]!.selectedModel).toBe("model-b"); expect(state.chats[s.sessionId]!.messages.at(-1)!.modelBinding).toMatchObject({ model: "model-c" });
+  expect(JSON.stringify(state.chats)).not.toMatch(/private-continuation-marker|providerContinuationSecret/);
+  expect(s.runtime.binding!.model).toBe("model-a");
+});
+
+test("initial failover stays with backup for subsequent rounds but not the next user request", async () => {
+  const s = await setup(), original = s.fetchImplementation.getMockImplementation()!;
+  s.fetchImplementation.mockResolvedValueOnce(new Response("", { status: 503 })).mockImplementation(original);
+  const result = await s.send("Show me invoices", { model: "model-b" }); expect(result.statusCode, result.body).toBe(200);
+  expect(s.fetchImplementation.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).model)).toEqual(["model-b", "model-c", "model-c"]);
+  expect(s.callTool).toHaveBeenCalledTimes(1); expect(result.json().data.usage.measured).toBe(false);
+  s.fetchImplementation.mockClear();
+  expect((await s.send("Show me invoices")).statusCode).toBe(200);
+  expect(s.fetchImplementation.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).model)).toEqual(["model-b", "model-b"]);
+});
+
+test("query fallback captures endpoint, credential and revision despite admin reactivation", async () => {
+  const s = await setup(), original = s.fetchImplementation.getMockImplementation()!;
+  s.fetchImplementation.mockImplementationOnce(async () => {
+    s.runtime.activate({ ...configuration, baseURL: "https://new.example.invalid/v1", apiKey: "new-key", model: "model-d", fallbackModel: "model-e",
+      egressPolicy: { ...configuration.egressPolicy!, approvedOrigin: "https://new.example.invalid" } });
+    return new Response("", { status: 503 });
+  }).mockImplementation(original);
+  expect((await s.send("Show me invoices", { model: "model-b" })).statusCode).toBe(200);
+  expect(s.fetchImplementation.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).model)).toEqual(["model-b", "model-c", "model-c"]);
+  expect(s.fetchImplementation.mock.calls.every(([url, init]) => url === configuration.baseURL + "/chat/completions" && (init?.headers as any).authorization === "Bearer fixture-old-key")).toBe(true);
+  expect(new Set(Object.values((await s.repository.snapshot()).invocationProvenance).map(row => row.configurationRevision)).size).toBe(1);
+});
+
 test("stored active config wins at restart, and snapshot does not mutate executor defaults", async () => {
   const s = await setup();
   await s.repository.mutate((state) => { state.providers.saved = { id: "saved", name: "Saved", type: "openai_compatible", baseUrl: configuration.baseURL, apiKey: "saved-key", model: "saved-model", additionalModels: ["saved-extra"], active: true }; });
