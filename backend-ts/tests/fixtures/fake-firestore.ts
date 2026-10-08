@@ -1,4 +1,29 @@
+import { EventEmitter } from "node:events";
 export const clone = (value: any) => value && { ...value, payload: Buffer.isBuffer(value.payload) ? Buffer.from(value.payload) : value.payload };
+/** Public GAPIC surface only; shared by cancellation authority/task fixtures. */
+export class FakeStopClient {
+  static hold = false;
+  static onRead: ((request: any, stream: ReturnType<FakeStopClient["batchGetDocuments"]>, client: FakeStopClient) => boolean) | undefined;
+  static instances: FakeStopClient[] = [];
+  closed = false; calls = 0; cancels = 0;
+  locationsClient = { initialize: async () => ({}), close: async () => {} };
+  constructor(readonly database: Database, readonly settings: any) { FakeStopClient.instances.push(this); }
+  async initialize() { return {}; }
+  async close() { this.closed = true; }
+  batchGetDocuments(request: any, _options: any) {
+    this.calls++; const stream = Object.assign(new EventEmitter(), { cancel: () => {
+      this.cancels++; queueMicrotask(() => { stream.emit("status", { code: 1 }); stream.emit("close"); });
+    } });
+    if (FakeStopClient.onRead?.(request, stream, this)) return stream;
+    queueMicrotask(() => {
+      if (FakeStopClient.hold) return;
+      const name = request.documents[0], path = name.split("/documents/")[1], document = this.database.documents.get(path);
+      stream.emit("data", document ? { found: { name, fields: { profile: { stringValue: document.profile }, payload: { bytesValue: document.payload } } } } : { missing: name });
+      stream.emit("status", { code: 0 }); stream.emit("end");
+    });
+    return stream;
+  }
+}
 export class Database {
   documents = new Map<string, any>(); serverTime = Date.now(); version = 0; callbacks = 0; invocations = 0;
   fault: "retry" | "before-commit" | "after-commit" | null = null;

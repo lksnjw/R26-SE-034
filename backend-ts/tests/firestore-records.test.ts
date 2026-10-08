@@ -9,6 +9,7 @@ import { Database, FakeClient } from "./fixtures/fake-firestore.js";
 import { loadConfig } from "../src/config/config.js";
 import { openApplicationRepository } from "../src/storage/open-repository.js";
 import { AESGCMCodec } from "../src/storage/aes-gcm.js";
+import { FirestoreOwnershipFailure, FirestoreWriterOwnership } from "../src/storage/firestore-writer-ownership.js";
 
 const runtime = vi.hoisted(() => ({ db: null as any, clients: [] as any[] }));
 vi.mock("@google-cloud/firestore", () => ({ Firestore: class { constructor(settings: any) { const client = new FakeClient(runtime.db, settings); runtime.clients.push(client); return client; } } }));
@@ -28,6 +29,26 @@ test("writer startup preserves a safe diagnostic cause without exposing raw SDK 
   expect(first.records.writerFailureReason).toBeNull(); await first.close();
   db.fault = "before-commit";
   await expect(open()).rejects.toMatchObject({ cause: { reason: "UNCONFIRMED" } });
+});
+
+test.each(["WRITER_HELD", "WRITER_HANDOFF"] as const)("confirmed %s startup drains its SDK client before exposing a retryable category", async reason => {
+  await open(); let finish!: () => void, settled = false;
+  const acquisition = reason === "WRITER_HANDOFF" ? vi.spyOn(FirestoreWriterOwnership.prototype, "acquire").mockRejectedValueOnce(new FirestoreOwnershipFailure(reason)) : undefined;
+  const termination = vi.spyOn(FakeClient.prototype, "terminate").mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  try {
+    const pending = open().catch(error => { settled = true; return error; });
+    await vi.waitFor(() => expect(termination).toHaveBeenCalledOnce()); expect(settled).toBe(false);
+    finish(); expect(await pending).toMatchObject({ cause: { reason } });
+  } finally { termination.mockRestore(); acquisition?.mockRestore(); }
+});
+
+test.each(["WRITER_HELD", "WRITER_HANDOFF"] as const)("failed %s client disposal cannot expose retryable admission", async reason => {
+  await open();
+  const acquisition = reason === "WRITER_HANDOFF" ? vi.spyOn(FirestoreWriterOwnership.prototype, "acquire").mockRejectedValueOnce(new FirestoreOwnershipFailure(reason)) : undefined;
+  const termination = vi.spyOn(FakeClient.prototype, "terminate").mockRejectedValueOnce(new Error("Private disposal diagnostic"));
+  try {
+    await expect(open()).rejects.toMatchObject({ cause: { reason: "UNCONFIRMED" } });
+  } finally { termination.mockRestore(); acquisition?.mockRestore(); }
 });
 const run = (id: string): Execution => ({ id, workflowId: "flow", workflowName: "Read", status: "RUNNING", startedAt: "2026-10-06T00:00:00Z", completedAt: null, durationMs: 0,
   tokens: { input: 0, output: 0, total: 0 }, costUsd: 0, startedBy: { id: "owner", name: "Owner" }, stepOutputs: {} });

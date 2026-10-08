@@ -10,6 +10,7 @@ const clock = { sample: () => ({ wall, monotonic }) };
 const owner = (selected = codec, duration: number = B.duration) => new FirestoreWriterOwnership(new FakeClient(db, { projectId: scope.projectId, databaseId: scope.databaseId }) as unknown as Firestore, selected, duration, clock);
 const tick = (ms: number) => { wall += ms; monotonic += ms; db.serverTime += ms; };
 const lease = (storage: FirestoreWriterOwnership) => codec.decodeHead(db.documents.get(storage.path)) as any;
+const copyDocuments = () => new Map([...db.documents].map(([path, value]) => [path, clone(value)]));
 beforeEach(() => { db = new Database(); db.serverTime = 1_000_000; wall = 100_000_000; monotonic = 1_000; });
 
 test("server-time scoped encrypted ownership is acquired without relying on matching host wall time", async () => {
@@ -23,6 +24,7 @@ test("two independent clients cannot both acquire an active namespace", async ()
   const results = await Promise.allSettled([first.acquire(), second.acquire()]);
   expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
   const winner = results[0]!.status === "fulfilled" ? first : second, loser = winner === first ? second : first;
+  expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { reason: "WRITER_HELD" } });
   winner.assertActive(); expect(() => loser.assertActive()).toThrow("fenced"); expect(lease(winner).generation).toBe(1);
 });
 
@@ -38,6 +40,18 @@ test.each(["before-commit", "after-commit"] as const)("%s acquisition uncertaint
   await expect(storage.acquire()).rejects.toThrow("fenced"); expect(() => storage.assertActive()).toThrow("fenced");
   await expect(storage.renew()).rejects.toThrow("fenced"); await storage.close();
   expect(db.documents.has(storage.path)).toBe(fault === "after-commit");
+});
+
+test("a replayed acquisition callback cannot mistake its own unacknowledged lease for a competing writer", async () => {
+  const storage = owner(), original = storage.db.runTransaction.bind(storage.db);
+  storage.db.runTransaction = (async (callback: any, options: any) => {
+    const result = await original(callback, options);
+    if (!options.readOnly) return original(callback, options); // Simulate a lost own-commit acknowledgement followed by callback replay.
+    return result;
+  }) as any;
+  await expect(storage.acquire()).rejects.toMatchObject({ reason: "ANCHOR_CHANGED" });
+  expect(() => storage.assertActive()).toThrow(); expect(storage.failureReason).not.toBe("WRITER_HELD");
+  const saved = clone(db.documents.get(storage.path)); await storage.close(); expect(db.documents.get(storage.path)).toEqual(saved);
 });
 
 test.each(["before-commit", "after-commit"] as const)("%s renewal uncertainty fences old cached authority and preserves the remote result", async fault => {
@@ -205,6 +219,115 @@ test("a competing live writer reports held without exposing or changing its iden
   await second.close(); first.assertActive(); await first.close(); expect(first.failureReason).toBeNull();
 });
 
+test.each(["empty", "released", "expired-held"])("a completed other-writer handoff after the %s observation denies this stale proposal without treating it as corrupt authority", async initial => {
+  if (initial === "released") { const previous = owner(); await previous.acquire(); await previous.close(); }
+  if (initial === "expired-held") { const previous = owner(); await previous.acquire(); tick(B.duration); }
+  const contender = owner(), other = owner(), original = contender.db.runTransaction.bind(contender.db);
+  let afterHandoff: Map<string, any> | undefined, writes = 0;
+  contender.db.runTransaction = (async (callback: any, options: any) => {
+    const result = await original(callback, options);
+    if (options.readOnly) {
+      await other.acquire(); tick(1); await other.close();
+      afterHandoff = copyDocuments(); writes = db.writes.length;
+    }
+    return result;
+  }) as any;
+  await expect(contender.acquire()).rejects.toMatchObject({ reason: "WRITER_HANDOFF" });
+  expect(contender.generation).toBeNull(); expect(() => contender.assertActive()).toThrow();
+  expect(db.documents).toEqual(afterHandoff); expect(db.writes).toHaveLength(writes);
+  await contender.close(); expect(db.documents).toEqual(afterHandoff);
+  const fresh = owner(); await fresh.acquire();
+  expect(fresh.generation).toBe(initial === "empty" ? 2 : 3); fresh.assertActive(); await fresh.close();
+});
+
+test.each([["released", "WRITER_HANDOFF"], ["expired-held", "WRITER_HANDOFF"], ["empty", "ANCHOR_CHANGED"]])("a preobserved other-writer proposal with a %s predecessor returns %s without granting stale authority", async (initial, reason) => {
+  if (initial !== "empty") {
+    const previous = owner(); await previous.acquire();
+    if (initial === "released") await previous.close(); else tick(B.duration);
+  }
+  const contender = owner(), other = owner(), otherOriginal = other.db.runTransaction.bind(other.db);
+  let observed!: () => void, resume!: () => void;
+  const observedOther = new Promise<void>(resolve => { observed = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  other.db.runTransaction = (async (callback: any, options: any) => {
+    const result = await otherOriginal(callback, options);
+    if (options.readOnly) { observed(); await gate; }
+    return result;
+  }) as any;
+  const acquiringOther = other.acquire(); await observedOther;
+  tick(1); const contenderObservedAt = db.serverTime;
+  const original = contender.db.runTransaction.bind(contender.db);
+  let afterHandoff: Map<string, any> | undefined, writes = 0;
+  contender.db.runTransaction = (async (callback: any, options: any) => {
+    const result = await original(callback, options);
+    if (options.readOnly) {
+      resume(); await acquiringOther; other.assertActive();
+      expect(lease(other).acquiredAt).toBeLessThan(contenderObservedAt);
+      tick(1); await other.close();
+      expect(lease(other).issuedAt).toBeGreaterThan(contenderObservedAt);
+      afterHandoff = copyDocuments(); writes = db.writes.length;
+    }
+    return result;
+  }) as any;
+  await expect(contender.acquire()).rejects.toMatchObject({ reason });
+  expect(contender.failureReason).toBe(reason); expect(contender.generation).toBeNull();
+  expect(() => contender.assertActive()).toThrow(); expect(db.documents).toEqual(afterHandoff); expect(db.writes).toHaveLength(writes);
+  await expect(contender.acquire()).rejects.toMatchObject({ reason });
+  await contender.close(); expect(db.documents).toEqual(afterHandoff); expect(db.writes).toHaveLength(writes);
+  const fresh = owner(); await fresh.acquire();
+  expect(fresh.generation).toBe(initial === "empty" ? 2 : 3); fresh.assertActive(); await fresh.close();
+});
+
+test.each([
+  ["anchor-mismatch", "released"], ["regressed-generation", "released"], ["future-time", "released"],
+  ["regressed-server-time", "released"], ["expired-held", "released"], ["release-without-sequence", "released"],
+  ["acquisition-before-prior-end", "released"], ["acquisition-before-prior-end", "expired-held"], ["release-before-observation", "released"],
+])("a changed acquisition observation with %s and a %s predecessor is not retryable admission", async (damage, initial) => {
+  const previous = owner(); await previous.acquire();
+  if (initial === "released") { tick(1); await previous.close(); } else tick(B.duration);
+  const priorEnd = initial === "released" ? lease(previous).issuedAt : lease(previous).expiresAt;
+  tick(10); const observedAt = db.serverTime;
+  const contender = owner(), other = owner(), original = contender.db.runTransaction.bind(contender.db);
+  let saved: Map<string, any> | undefined, writes = 0;
+  contender.db.runTransaction = (async (callback: any, options: any) => {
+    const result = await original(callback, options);
+    if (options.readOnly) {
+      await other.acquire(); await other.close();
+      const value = lease(other), anchor = codec.decodeHead(db.documents.get(other.anchorPath)) as any;
+      if (damage === "anchor-mismatch") anchor.ownerId = "f".repeat(32);
+      if (damage === "regressed-generation") { value.generation = 1; anchor.generation = 1; }
+      if (damage === "future-time") { value.issuedAt = db.serverTime + 1; value.expiresAt = value.issuedAt; }
+      if (damage === "expired-held") { value.state = "HELD"; value.expiresAt = value.issuedAt + value.duration; tick(value.duration); }
+      if (damage === "release-without-sequence") value.sequence = 1;
+      if (damage === "acquisition-before-prior-end") value.acquiredAt = priorEnd - 1;
+      if (damage === "release-before-observation") { value.acquiredAt = priorEnd; value.issuedAt = observedAt - 1; value.expiresAt = value.issuedAt; }
+      if (damage === "regressed-server-time") { value.acquiredAt = priorEnd; value.issuedAt = priorEnd; value.expiresAt = priorEnd; db.serverTime = observedAt - 1; }
+      db.documents.set(other.path, codec.encodeHead(value)); db.documents.set(other.anchorPath, codec.encodeHead(anchor));
+      saved = copyDocuments(); writes = db.writes.length;
+    }
+    return result;
+  }) as any;
+  await expect(contender.acquire()).rejects.toMatchObject({ reason: "ANCHOR_CHANGED" });
+  expect(contender.generation).toBeNull(); expect(db.documents).toEqual(saved); expect(db.writes).toHaveLength(writes);
+  await contender.close(); expect(db.documents).toEqual(saved); expect(db.writes).toHaveLength(writes);
+});
+
+test("a released own unacknowledged acquisition is not a retryable other-writer handoff", async () => {
+  const contender = owner(), original = contender.db.runTransaction.bind(contender.db);
+  contender.db.runTransaction = (async (callback: any, options: any) => {
+    const result = await original(callback, options);
+    if (!options.readOnly) {
+      const value = lease(contender);
+      db.documents.set(contender.path, codec.encodeHead({ ...value, sequence: 2, state: "RELEASED", expiresAt: value.issuedAt }));
+      return original(callback, options);
+    }
+    return result;
+  }) as any;
+  await expect(contender.acquire()).rejects.toMatchObject({ reason: "ANCHOR_CHANGED" });
+  expect(contender.generation).toBeNull(); expect(() => contender.assertActive()).toThrow();
+  const saved = copyDocuments(); await contender.close(); expect(db.documents).toEqual(saved);
+});
+
 test.each(["wall-backward", "monotonic-backward", "wall-jump", "nan"])("%s clock uncertainty latches denial without relying on timers", async mode => {
   const storage = owner(); await storage.acquire(); tick(100);
   if (mode === "wall-backward") wall -= 200;
@@ -216,7 +339,7 @@ test.each(["wall-backward", "monotonic-backward", "wall-jump", "nan"])("%s clock
 
 test("late acquisition acknowledgement cannot grant a fresh lease deadline", async () => {
   const storage = owner(), original = storage.db.runTransaction.bind(storage.db);
-  storage.db.runTransaction = (async (callback: any, options: any) => { const result = await original(callback, options); tick(B.duration); return result; }) as any;
+  storage.db.runTransaction = (async (callback: any, options: any) => { const result = await original(callback, options); if (!options.readOnly) tick(B.duration); return result; }) as any;
   await expect(storage.acquire()).rejects.toThrow(); expect(() => storage.assertActive()).toThrow(); expect(lease(storage).state).toBe("HELD");
 });
 
