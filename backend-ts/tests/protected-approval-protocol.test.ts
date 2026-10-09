@@ -181,7 +181,7 @@ test("approval artifacts require their ledger and bind the authenticated private
 });
 test("historical semantic replay rejects a rehashed foreign point/node, not just malformed hashes", () => {
   const f = fixture(), run = f.execution(); run.workflowSnapshot = { input: f.input } as never;
-  const plan = { machine: f.plan, ir: { root: { nodes: [f.node] } } } as never;
+  const plan = { machine: f.plan, ir: { root: { nodes: [f.node] }, contracts: {} } } as never;
   expect(() => assertProtectedApprovalHistory(plan, run)).not.toThrow();
   const row = run.protectedApprovalSecret!.records["approval-A"]!; row.binding.pointHash = `sha256:${"e".repeat(64)}`; row.reviewHash = protectedApprovalReviewHash(row);
   expect(() => assertProtectedApprovalRecords(run.protectedApprovalSecret, run.protectedInvocationSecret!)).not.toThrow();
