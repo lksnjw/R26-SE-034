@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { isMcpConfigured, loadConfig } from "../src/config/config.js";
+import { isMcpConfigured, loadConfig, parseAdditionalModelIds } from "../src/config/config.js";
 
 const erpbridgeEnvironment = {
   APP_ENV: "test",
@@ -20,6 +20,34 @@ const productionEnvironment = {
     { id: "finance", baseURL: "https://erpbridge.example.com", tokenEnv: "FINANCE_ERP_TOKEN", roleMap: { "Platform Admin": "finance_admin" } },
   ]), ERPBRIDGE_PRIMARY_CONNECTION_ID: "finance", FINANCE_ERP_TOKEN: "production-secret-reference-value", CORS_ORIGINS: "https://workspace.example.com",
 };
+
+test("additional environment models retain exact Qwen IDs without changing primary or backup", () => {
+  const config = loadConfig({ APP_ENV: "test", GENERATION_BASE_URL: "https://openrouter.ai/api/v1", GENERATION_API_KEY: "fixture-only",
+    GENERATION_MODEL_PRIMARY: "deepseek/deepseek-v4.1-flash", GENERATION_MODEL_FALLBACK: "owner-backup",
+    GENERATION_ADDITIONAL_MODELS: " qwen/qwen3.7-plus, qwen/qwen3.8-flash,qwen/qwen3.7-plus " });
+  expect(config).toMatchObject({ generationModelPrimary: "deepseek/deepseek-v4.1-flash", generationModelFallback: "owner-backup",
+    generationAdditionalModels: ["qwen/qwen3.7-plus", "qwen/qwen3.8-flash"] });
+  expect(parseAdditionalModelIds(undefined)).toEqual([]); expect(parseAdditionalModelIds(" ")).toEqual([]);
+});
+
+test.each(["model:latest", "one,,two", "one,", "bad model", "a".repeat(257), Array.from({ length: 65 }, (_, index) => `model-${index}`).join(","), "a".repeat(16449)])(
+  "additional environment models reject unsafe or unbounded catalog %#", value => {
+    expect(() => parseAdditionalModelIds(value)).toThrow(/GENERATION_ADDITIONAL_MODELS/);
+  });
+
+test("additional choices do not manufacture an unconfigured provider", () => {
+  expect(() => loadConfig({ GENERATION_ADDITIONAL_MODELS: "qwen/qwen3.8-flash" })).toThrow(/GENERATION_BASE_URL/);
+  expect(loadConfig({}).generationAdditionalModels).toEqual([]);
+});
+
+test("Functions admission waits longer by default and accepts a bounded explicit demo budget", () => {
+  expect(loadConfig({}).functionsWriterAdmissionTimeoutMs).toBe(30_000);
+  expect(loadConfig({ FUNCTIONS_WRITER_ADMISSION_TIMEOUT_MS: "60000" }).functionsWriterAdmissionTimeoutMs).toBe(60_000);
+  expect(loadConfig({ FUNCTIONS_WRITER_ADMISSION_TIMEOUT_MS: "5000" }).functionsWriterAdmissionTimeoutMs).toBe(5000);
+});
+test.each(["0", "999", "60001", "1.5", "NaN", "Infinity", "-1"])("rejects unsafe admission wait %s", value => {
+  expect(() => loadConfig({ FUNCTIONS_WRITER_ADMISSION_TIMEOUT_MS: value })).toThrow(/FUNCTIONS_WRITER_ADMISSION_TIMEOUT_MS/);
+});
 test("normalized Firestore requires an explicit namespace and one valid private-input/record key; defaults stay memory", () => {
   expect(loadConfig(firestoreRecordsEnvironment)).toMatchObject({ storageDriver: "firestore-records", firestoreProjectId: "demo-lcwe-records", firestoreDatabaseId: "(default)", firestoreWorkspaceId: "fixture_workspace" });
   expect(loadConfig({}).storageDriver).toBe("memory"); expect(loadConfig({ STORAGE_DRIVER: "firestore", FIRESTORE_PROJECT_ID: "demo-lcwe-records" }).storageDriver).toBe("firestore");
@@ -32,6 +60,15 @@ test.each([{ FIRESTORE_WORKSPACE_ID: "workspace/escape" }, { FIRESTORE_DATABASE_
 });
 
 describe("production release configuration", () => {
+  test("external bootstrap avoids distributing administrator passwords without weakening runtime checks", () => {
+    const env = { ...productionEnvironment }; delete (env as Record<string, unknown>).PLATFORM_ADMIN_PASSWORD;
+    delete (env as Record<string, unknown>).PLATFORM_ADMIN_EMAIL;
+    expect(loadConfig(env, process.cwd(), { administratorBootstrap: "external" }).environment).toBe("production");
+    expect(() => loadConfig(env)).toThrow(/PLATFORM_ADMIN_PASSWORD/);
+    for (const patch of [{ JWT_SECRET: "short" }, { STORAGE_DRIVER: "memory" }, { MCP_MODE: "mock" }, { FIRESTORE_KEY_FILE: "key.json" }])
+      expect(() => loadConfig({ ...env, ...patch }, process.cwd(), { administratorBootstrap: "external" })).toThrow();
+    expect(() => loadConfig(env, process.cwd(), { administratorBootstrap: "request-controlled" as never })).toThrow("bootstrap policy");
+  });
   test("accepts the selected Firestore and modern ERPBridge release boundary without legacy MCP_BASE_URL", () => {
     const config = loadConfig(productionEnvironment);
     expect(config).toMatchObject({ environment: "production", storageDriver: "firestore-records", mcpTransport: "erpbridge-mcp", corsOrigins: ["https://workspace.example.com"] });
@@ -64,15 +101,20 @@ describe("production release configuration", () => {
 });
 
 describe("workflow transport configuration", () => {
-  test("defaults to two read workers, one per principal, with a bounded renewable lease", () => {
+  test("defaults to two backend job workers, one per principal, with a bounded renewable lease", () => {
     expect(loadConfig({})).toMatchObject({ readWorkerConcurrency: 2, readWorkerPerActor: 1, readWorkerLeaseMs: 30_000 });
+    expect(loadConfig({ BACKEND_WORKER_CONCURRENCY: "4", READ_WORKER_PER_ACTOR: "2" })).toMatchObject({ readWorkerConcurrency: 4, readWorkerPerActor: 2 });
     expect(loadConfig({ READ_WORKER_CONCURRENCY: "8", READ_WORKER_PER_ACTOR: "2", READ_WORKER_LEASE_MS: "5000" })).toMatchObject({ readWorkerConcurrency: 8, readWorkerPerActor: 2, readWorkerLeaseMs: 5000 });
   });
   test.each([
+    { BACKEND_WORKER_CONCURRENCY: "0" }, { BACKEND_WORKER_CONCURRENCY: "9" }, { BACKEND_WORKER_CONCURRENCY: "1.5" },
     { READ_WORKER_CONCURRENCY: "0" }, { READ_WORKER_CONCURRENCY: "9" }, { READ_WORKER_CONCURRENCY: "1.5" },
     { READ_WORKER_PER_ACTOR: "0" }, { READ_WORKER_PER_ACTOR: "3" }, { READ_WORKER_PER_ACTOR: "NaN" },
     { READ_WORKER_LEASE_MS: "4999" }, { READ_WORKER_LEASE_MS: "300001" }, { READ_WORKER_LEASE_MS: "5000.5" },
   ])("rejects invalid read worker bounds %j", environment => { expect(() => loadConfig(environment)).toThrow(); });
+  test("rejects conflicting current and legacy worker settings", () => {
+    expect(() => loadConfig({ BACKEND_WORKER_CONCURRENCY: "4", READ_WORKER_CONCURRENCY: "2" })).toThrow(/must match/);
+  });
   test("keeps the bridge-v1 transport as the default", () => {
     expect(loadConfig({}).mcpTransport).toBe("bridge-v1");
   });
@@ -203,5 +245,39 @@ describe("workflow transport configuration", () => {
   });
   test.each(["Admin", "role with spaces", "1role", "a".repeat(65), "role/escape"])("rejects invalid verified bridge role %s", (role) => {
     expect(() => loadConfig({ ...erpbridgeEnvironment, ERPBRIDGE_ROLE_MAP: JSON.stringify({ Client: role }) })).toThrow(/role format/);
+  });
+});
+
+describe("data-transformation pipeline gateway configuration", () => {
+  test("loads a server-only pipeline origin, credential, and bounded timeout", () => {
+    expect(loadConfig({
+      APP_ENV: "development",
+      PIPELINE_API_BASE_URL: "http://localhost:8000",
+      PIPELINE_API_KEY: "pipeline-service-secret",
+      PIPELINE_TIMEOUT_MS: "45000",
+    })).toMatchObject({
+      pipelineAPIBaseURL: "http://localhost:8000",
+      pipelineAPIKey: "pipeline-service-secret",
+      pipelineTimeoutMs: 45000,
+    });
+  });
+
+  test.each([
+    { PIPELINE_API_BASE_URL: "http://localhost:8000" },
+    { PIPELINE_API_KEY: "pipeline-service-secret" },
+  ])("requires the pipeline endpoint and credential together %#", environment => {
+    expect(() => loadConfig(environment)).toThrow(/configured together/);
+  });
+
+  test.each(["999", "300001", "1.5", "NaN"])("rejects an unsafe pipeline timeout: %s", value => {
+    expect(() => loadConfig({ PIPELINE_TIMEOUT_MS: value })).toThrow(/PIPELINE_TIMEOUT_MS/);
+  });
+
+  test("requires HTTPS for the production pipeline service", () => {
+    expect(() => loadConfig({
+      ...productionEnvironment,
+      PIPELINE_API_BASE_URL: "http://pipeline.example.test",
+      PIPELINE_API_KEY: "pipeline-service-secret",
+    })).toThrow(/HTTPS/);
   });
 });

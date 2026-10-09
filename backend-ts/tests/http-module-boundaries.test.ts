@@ -99,7 +99,8 @@ describe("HTTP responsibility boundaries", () => {
     expect(chat).toContain("export async function processStoredChat");
     expect(chat).toContain('from "./chat-sessions.js"');
     expect(chat).toContain('from "./chat-artifacts.js"');
-    expect(chat).toContain('from "./chat-feasibility.js"');
+    expect(chat).toContain('from "../../governance/optional-policy.js"');
+    expect(chat).not.toMatch(/function\s+(?:checkRemote|checkLocal|evaluateOptionalPolicy)\b/);
     expect(chat).not.toMatch(/function\s+(?:listChats|createChat|getChat|updateChat|deleteChat|trimRedundantRetrieval)\b/);
     expect(chat).not.toMatch(/function\s+(?:compactWorkflowArtifacts|pickArtifactRecords|buildCapabilitiesResponse)\b/);
     expect(chat).not.toMatch(/function\s+(?:loadWorkflowsCatalog|checkFeasibility|keywordScore)\b/);
