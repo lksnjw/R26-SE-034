@@ -142,7 +142,9 @@ describe("complete HTTP route graph", () => {
       "GET /api/settings/runtime-approval-policy",
       "GET /api/chat/models",
       "GET /api/chat/capabilities",
-      "GET /api/registry/capabilities", "POST /api/registry/capabilities/discovery", "POST /api/registry/capabilities/:id/review", "POST /api/registry/capabilities/:id/disable",
+      "GET /api/pipeline/v1/health/ready", "GET /api/pipeline/v1/jobs/:id",
+      "POST /api/pipeline/v1/files/csv", "POST /api/pipeline/v1/files/documents",
+      "GET /api/registry/capabilities", "POST /api/registry/capabilities/discovery", "POST /api/registry/capabilities/import", "POST /api/registry/capabilities/:id/review", "POST /api/registry/capabilities/:id/disable",
       "GET /api/settings/mcp-connections", "POST /api/settings/mcp-connections/:id/connect", "POST /api/settings/mcp-connections/:id/disconnect", "POST /api/settings/mcp-connections/:id/test",
       "GET /api/chat/sessions/:id/operations", "GET /api/chat/operations/:id", "POST /api/chat/operations/:id/cancel",
     ].sort());

@@ -17,6 +17,7 @@ import { Executor } from "../src/runner/executor.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { stringify } from "yaml";
 import { prepareReadPublication } from "../src/workflows/read-compilation-lifecycle.js";
+import { bindExecutionHost } from "../src/runner/execution-host.js";
 
 const runtimes: { stop(): Promise<unknown> }[] = [], apps: { close(): Promise<unknown> }[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); await Promise.all(runtimes.splice(0).map(runtime => runtime.stop())); vi.restoreAllMocks(); });
@@ -29,8 +30,9 @@ class Persistence implements PersistenceBackend {
 }
 function config() { return loadConfig({ APP_ENV: "test", JWT_SECRET: "mcp-runtime-test-secret-at-least-32-bytes", STORAGE_DRIVER: "memory", MCP_MODE: "remote", MCP_TRANSPORT: "erpbridge-mcp",
   ERPBRIDGE_BASE_URL: "https://fixture.example.test", ERPBRIDGE_MCP_TOKEN: "fixture-private-credential", ERPBRIDGE_ROLE_MAP: '{"Platform Admin":"fixture_reader"}', MCP_TIMEOUT_MS: "1000" }); }
-async function setup(persistence: PersistenceBackend | null = null) {
+async function setup(persistence: PersistenceBackend | null = null, host: "resident-server" | "bounded-invocation" = "resident-server") {
   const repository = await Repository.open(persistence), timestamp = new Date().toISOString();
+  bindExecutionHost(repository, host);
   await repository.mutate(state => { for (const [id, roleId] of [["admin", "role_admin"], ["builder", "role_builder"]]) state.users[id!] = { id: id!, roleId: roleId!, name: id!, email: `${id}@example.test`, status: "Active", initials: "A", departmentId: null, lastLoginAt: null, createdAt: timestamp, permissionOverrides: [] }; });
   const registries = await RegistryService.load(resolve("tests/fixtures/chat-read-tools.json"), resolve("tests/fixtures/rules.json"));
   const original = registries.snapshot(), tool = toolSchema.parse({ ...original.tools[0], bridge_contract: { profile: "toolplane-v1", resource_version: "1.0.0", resource_digest: "a".repeat(64), remote_roles: [] } });
@@ -53,12 +55,101 @@ async function setup(persistence: PersistenceBackend | null = null) {
   return { repository, registries, validator, options, runtime, admin, builder, services, factory, sdkClients, sdk, tool, command, connect, review };
 }
 
+test("bounded reopen preserves an unresolved original MCP connect claim and its enabled revision", async () => {
+  const storage = new Persistence(), s = await setup(storage, "bounded-invocation");
+  let enter!: () => void, finish!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { finish = resolve; });
+  s.factory.mockImplementationOnce(async options => { enter(); await held; return createErpbridgeMcpSession({ ...options, sdkClient: s.sdk() }); });
+  const pending = s.connect().then(value => ({ value }), error => ({ error }));
+  let reopened: Repository | undefined;
+  try {
+    await entered;
+    const original = await s.repository.snapshot();
+    reopened = await Repository.open(storage); bindExecutionHost(reopened, "bounded-invocation");
+    const second = await McpConnectionRuntime.open({ ...s.options, repository: reopened, validator: new RegistryValidator(s.registries, reopened) }); runtimes.push(second);
+    const saved = await reopened.snapshot();
+    expect(saved.mcpConnectionOperations).toEqual(original.mcpConnectionOperations);
+    expect(saved.mcpConnections).toEqual(original.mcpConnections);
+    expect(second.session).toBeUndefined();
+  } finally { finish(); await pending; await reopened?.close(); }
+});
+
+test.each(["connect", "test"] as const)("bounded %s reopen keeps original receipt, rejects competing work and disconnect fences its late completion", async action => {
+  const storage = new Persistence(), s = await setup(storage, "bounded-invocation");
+  if (action === "test") await s.connect();
+  const revision = action === "test" ? 2 : 1, requestId = `bounded_${action}_original_request_0001`;
+  let enter!: () => void, finish!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { finish = resolve; });
+  s.factory.mockImplementationOnce(async options => { enter(); await held; return createErpbridgeMcpSession({ ...options, sdkClient: s.sdk() }); });
+  const pending = s.command(action, revision, requestId).then(value => ({ value }), error => ({ error }));
+  let reopened: Repository | undefined;
+  try {
+    await entered; const original = await s.repository.snapshot();
+    await s.runtime.stop(); await s.repository.close();
+    reopened = await Repository.open(storage); bindExecutionHost(reopened, "bounded-invocation");
+    const runtime = await McpConnectionRuntime.open({ ...s.options, repository: reopened, validator: new RegistryValidator(s.registries, reopened) }); runtimes.push(runtime);
+    const state = await reopened.snapshot(), record = state.mcpConnections["erpbridge-default"]!;
+    expect(state.mcpConnectionOperations).toEqual(original.mcpConnectionOperations);
+    expect(state.mcpConnections).toEqual(original.mcpConnections);
+    expect(Boolean(runtime.session)).toBe(action === "test");
+    const calls = s.factory.mock.calls.length;
+    const duplicate = await runtime.command(action, s.admin, { baseRevision: revision, requestId });
+    expect(duplicate.operation.state).toBe("RUNNING"); expect(duplicate.connection.operationInProgress).toBe(true);
+    expect(duplicate.connection.supports.connect).toBe(false); expect(s.factory).toHaveBeenCalledTimes(calls);
+    for (const conflicting of ["test", "connect"] as const) await expect(runtime.command(conflicting, s.admin,
+      { baseRevision: record.revision, requestId: `bounded_${conflicting}_competing_request_0001` })).rejects.toMatchObject({ status: 409, meta: { code: "MCP_OPERATION_IN_PROGRESS" } });
+    const disconnected = await runtime.command("disconnect", s.admin, { baseRevision: record.revision, requestId: "bounded_disconnect_supersedes_0001" });
+    expect(disconnected.connection).toMatchObject({ revision: Number(record.revision) + 1, desiredEnabled: false, initialized: false });
+    finish(); expect(await pending).toHaveProperty("error");
+    const final = await reopened.snapshot();
+    expect(Object.values(final.mcpConnectionOperations).find(operation => operation.requestId === requestId)).toMatchObject({ state: "INTERRUPTED", reason: "MCP_OPERATION_INTERRUPTED" });
+    expect(final.mcpConnections["erpbridge-default"]).toMatchObject({ revision: Number(record.revision) + 1, desiredEnabled: false });
+  } finally { finish(); await pending; await reopened?.close(); }
+});
+
+test("bounded enabled restores create independent owned sessions and configuration rotation prevents restoration", async () => {
+  const storage = new Persistence(), s = await setup(storage, "bounded-invocation"); await s.connect();
+  await s.runtime.stop(); await s.repository.close();
+  for (let index = 0; index < 2; index++) {
+    const repository = await Repository.open(storage); bindExecutionHost(repository, "bounded-invocation");
+    const runtime = await McpConnectionRuntime.open({ ...s.options, repository, validator: new RegistryValidator(s.registries, repository) });
+    const client = s.sdkClients.at(-1)!;
+    expect(runtime.session).toBeDefined(); expect(client.close).not.toHaveBeenCalled();
+    const closing = vi.spyOn(repository, "close").mockImplementation(async () => { expect(client.close).toHaveBeenCalledOnce(); });
+    await runtime.stop(); await repository.close(); closing.mockRestore(); await repository.close();
+  }
+  expect(s.factory).toHaveBeenCalledTimes(3);
+  const repository = await Repository.open(storage); bindExecutionHost(repository, "bounded-invocation");
+  const rotated = await McpConnectionRuntime.open({ ...s.options, repository, validator: new RegistryValidator(s.registries, repository), config: { ...s.options.config, erpbridgeMcpToken: "rotated-fixture-secret" } });
+  try { expect(rotated.session).toBeUndefined(); expect(s.factory).toHaveBeenCalledTimes(3);
+    expect((await rotated.status(s.admin)).connections[0]).toMatchObject({ revision: 3, desiredEnabled: false });
+  } finally { await rotated.stop(); await repository.close(); }
+});
+
+test("bounded MCP cleanup failure rejects its owned runtime while resident disposal remains best effort", async () => {
+  const s = await setup(null, "bounded-invocation"); await s.connect();
+  s.sdkClients[0]!.close.mockRejectedValueOnce(new Error("synthetic disposal failed"));
+  await expect(s.runtime.stop()).rejects.toThrow("synthetic disposal failed");
+  runtimes.splice(runtimes.indexOf(s.runtime), 1); await s.repository.close();
+  const resident = await setup(); await resident.connect(); resident.sdkClients[0]!.close.mockRejectedValueOnce(new Error("resident disposal failed"));
+  await expect(resident.runtime.stop()).resolves.toBeUndefined();
+});
+
 test("real runtime connect initializes/discovers without a business call or granting authority; explicit review enables the actual broker", async () => {
   const s = await setup(); expect(s.runtime.session).toBeUndefined(); expect((await s.runtime.status(s.admin)).connections[0]).toMatchObject({ state: "DISCONNECTED", revision: 1, desiredEnabled: false });
   const result = await s.connect(); expect(result.operation).toMatchObject({ state: "DONE", discoveryCount: 1 }); expect(result.connection).toMatchObject({ state: "CONNECTED", revision: 2, initialized: true });
   expect(s.factory).toHaveBeenCalledOnce(); expect(s.sdkClients[0]!.callTool).not.toHaveBeenCalled(); expect(Object.keys((await s.repository.snapshot()).capabilityAdmissions)).toHaveLength(0);
   await expect(dispatchReadTool(s.services, "admin", s.tool.name, { value: "fixture" })).rejects.toThrow(/admitted/);
   await s.review(); expect((await dispatchReadTool(s.services, "admin", s.tool.name, { value: "fixture" })).content).toEqual([{ type: "text", text: "Confirmed fixture result" }]); expect(s.sdkClients[0]!.callTool).toHaveBeenCalledOnce();
+});
+
+test("stop drains an invalidated session disposal exactly once before returning", async () => {
+  const s = await setup(); await s.connect(); const client = s.sdkClients[0]!;
+  let finish!: () => void, settled = false;
+  client.close.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  const stopping = s.runtime.stop().then(() => { settled = true; });
+  await vi.waitFor(() => expect(client.close).toHaveBeenCalledOnce()); expect(settled).toBe(false);
+  finish(); await stopping; await s.runtime.stop(); expect(client.close).toHaveBeenCalledOnce();
 });
 
 test("bounded manager owns independent revisioned connections and dispatches only through an immutable reviewed node connection", async () => {
