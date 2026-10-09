@@ -13,6 +13,12 @@ test("explicit cloud and demo bindings are different release classes", () => {
   assert.equal(hostingBindings(local).config.pipelineUploadEnabled, false);
   assert.equal(hostingBindings({ ...cloud, VITE_SENTRY_DSN: "" }).publicEnv.VITE_SENTRY_DSN, undefined);
 });
+test("the reviewed public timeout reaches hosting configuration without permitting unlimited waits", () => {
+  const bindings = hostingBindings({ ...cloud, VITE_API_REQUEST_TIMEOUT_MS: "120000" });
+  assert.equal(bindings.publicEnv.VITE_API_REQUEST_TIMEOUT_MS, "120000");
+  assert.equal(bindings.config.apiRequestTimeoutMs, 120000);
+  for (const value of ["0", "600000", "NaN"]) assert.throws(() => hostingBindings({ ...cloud, VITE_API_REQUEST_TIMEOUT_MS: value }));
+});
 for (const [name, patch] of Object.entries({ missingProject: { LCWE_FIREBASE_PROJECT_ID: "" }, missingApi: { VITE_API_BASE_URL: undefined }, missingWs: { VITE_WS_BASE_URL: undefined }, insecureApi: { VITE_API_BASE_URL: "http://backend.example.test/api" }, loopbackCloud: { VITE_API_BASE_URL: "http://127.0.0.1:8081/api" }, token: { VITE_WS_BASE_URL: "wss://backend.example.test/ws?secret=one" }, publicSecret: { VITE_ERP_API_KEY: "private" }, demoCloud: { LCWE_FIREBASE_PROJECT_ID: "demo-lcwe-hosting" }, wrongPath: { VITE_API_BASE_URL: "https://backend.example.test" } }))
   test(`${name} fails before build or network access`, () => assert.throws(() => hostingBindings({ ...cloud, ...patch })));
 test("emulator builds cannot use any remote backend or real Firebase project", () => {

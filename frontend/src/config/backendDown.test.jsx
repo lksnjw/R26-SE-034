@@ -2,12 +2,19 @@
 
 import { afterEach, expect, jest, test } from "@jest/globals";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import axios from "axios";
 import { apiClient, isServerUnavailable } from "./axios";
 
 const originalClientAdapter = apiClient.defaults.adapter;
 const originalAxiosAdapter = axios.defaults.adapter;
+let queryClient;
+
+function renderWithAuth(children) {
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return render(<QueryClientProvider client={queryClient}><AuthProvider>{children}</AuthProvider></QueryClientProvider>);
+}
 
 function networkError(config) {
   const error = new Error("Network Error");
@@ -24,6 +31,7 @@ afterEach(() => {
   axios.defaults.adapter = originalAxiosAdapter;
   localStorage.clear();
   cleanup();
+  queryClient?.clear();
 });
 
 const { AuthProvider, useAuthContext } = await import("../context/AuthContext");
@@ -48,11 +56,7 @@ test("a connection error keeps the session and shows the unreachable banner, not
   apiClient.defaults.adapter = networkError;
   axios.defaults.adapter = networkError;
 
-  render(
-    <AuthProvider>
-      <Probe />
-    </AuthProvider>,
-  );
+  renderWithAuth(<Probe />);
 
   await waitFor(() => expect(screen.getByTestId("unreachable").textContent).toBe("true"));
 
@@ -76,11 +80,7 @@ test("Retry restores the screen once the backend is back, with no re-authenticat
   apiClient.defaults.adapter = networkError;
   axios.defaults.adapter = networkError;
 
-  render(
-    <AuthProvider>
-      <Probe />
-    </AuthProvider>,
-  );
+  renderWithAuth(<Probe />);
   await waitFor(() => expect(screen.getByTestId("unreachable").textContent).toBe("true"));
 
   // Backend comes back.
@@ -125,4 +125,30 @@ test("isServerUnavailable covers no-response failures but not HTTP responses", (
   expect(isServerUnavailable({ response: { status: 503 } })).toBe(false);
   expect(isServerUnavailable({ response: { status: 401 } })).toBe(false);
   expect(isServerUnavailable({ response: { status: 403 } })).toBe(false);
+});
+
+test("aborting a progress poll during navigation is not a server outage or session expiry", async () => {
+  localStorage.setItem("workflow.authToken", "tok"); localStorage.setItem("workflow.refreshToken", "ref");
+  const unreachable = jest.fn(), expired = jest.fn(), controller = new AbortController();
+  window.addEventListener("auth:unreachable", unreachable); window.addEventListener("auth:expired", expired);
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  apiClient.defaults.adapter = config => new Promise((resolve, reject) => {
+    config.signal.addEventListener("abort", () => reject(new axios.CanceledError("navigation", config, {})), { once: true }); entered();
+  });
+  const request = apiClient.get("/executions/original/events", { signal: controller.signal });
+  const rejected = expect(request).rejects.toMatchObject({ code: "ERR_CANCELED" });
+  try {
+    await started; controller.abort(); await rejected;
+    expect(unreachable).not.toHaveBeenCalled(); expect(expired).not.toHaveBeenCalled();
+    expect(localStorage.getItem("workflow.authToken")).toBe("tok"); expect(localStorage.getItem("workflow.refreshToken")).toBe("ref");
+  } finally { controller.abort(); window.removeEventListener("auth:unreachable", unreachable); window.removeEventListener("auth:expired", expired); }
+});
+
+test("Axios and DOM cancellation are excluded without hiding real timeout or network failures", () => {
+  expect(isServerUnavailable(new axios.CanceledError("cancelled", {}, {}))).toBe(false);
+  expect(isServerUnavailable({ code: "ERR_CANCELED", request: {} })).toBe(false);
+  expect(isServerUnavailable({ name: "AbortError", request: {} })).toBe(false);
+  expect(isServerUnavailable({ code: "ECONNABORTED", request: {} })).toBe(true);
+  expect(isServerUnavailable({ code: "ERR_NETWORK", request: {} })).toBe(true);
 });

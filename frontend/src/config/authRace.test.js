@@ -2,21 +2,27 @@
 
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import axios from "axios";
 import React from "react";
-import { apiClient, isNetworkError } from "./axios";
+import { apiClient, clearStoredSession, getRefreshInFlight, isNetworkError, refreshSession } from "./axios";
 import { AuthProvider, useAuthContext } from "../context/AuthContext";
+import { captureAuthority, currentAuthorityEpoch, isAuthorityCurrent, transitionAuthority } from "../utils/authAuthority";
+import { authService } from "../services/auth.service";
 
 // Stub at the adapter layer so the real interceptors under test still run.
 function ok(config, data) {
   return Promise.resolve({ data, status: 200, statusText: "OK", headers: {}, config, request: {} });
 }
 function httpError(config, status, data = {}) {
+  return Promise.reject(httpErrorValue(config, status, data));
+}
+function httpErrorValue(config, status, data = {}) {
   const error = new Error(`Request failed with status code ${status}`);
   error.config = config;
   error.request = {};
   error.response = { data, status, statusText: String(status), headers: {}, config, request: {} };
-  return Promise.reject(error);
+  return error;
 }
 function networkError(config) {
   const error = new Error("Network Error");
@@ -30,6 +36,11 @@ function seedSession() {
   localStorage.setItem("workflow.authToken", "expired-access");
   localStorage.setItem("workflow.refreshToken", "good-refresh-0");
   localStorage.setItem("workflow.user", JSON.stringify({ id: "usr_1" }));
+}
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
 }
 
 const originalClientAdapter = apiClient.defaults.adapter;
@@ -86,7 +97,8 @@ test("concurrent 401s on /auth/me and another request survive a successful refre
       return httpError(config, 401);
     };
 
-    render(React.createElement(AuthProvider, null, React.createElement(AuthStateProbe)));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(React.createElement(QueryClientProvider, { client: queryClient }, React.createElement(AuthProvider, null, React.createElement(AuthStateProbe))));
     const notifications = await apiClient.get("/notifications");
     await waitFor(() => expect(retried).toEqual(new Set(["/auth/me", "/notifications"])));
 
@@ -99,6 +111,7 @@ test("concurrent 401s on /auth/me and another request survive a successful refre
     expect(localStorage.getItem("workflow.refreshToken")).toBe(`good-refresh-${i + 1}`);
     expect(localStorage.getItem("workflow.user")).not.toBeNull();
     cleanup();
+    queryClient.clear();
   }
 });
 
@@ -157,4 +170,133 @@ test("isNetworkError distinguishes a transport failure from an HTTP status", () 
   expect(isNetworkError({ request: {}, message: "Network Error" })).toBe(true);
   expect(isNetworkError({ code: "ECONNABORTED", message: "timeout" })).toBe(true);
   expect(isNetworkError({ response: { status: 401 } })).toBe(false);
+});
+
+test("an old A 401 is rejected before refresh or replay with B credentials", async () => {
+  transitionAuthority({ id: "actor-a", role: "Operator", permissions: ["chat:use"] });
+  localStorage.setItem("workflow.authToken", "token-a");
+  localStorage.setItem("workflow.refreshToken", "refresh-a");
+  let sentConfig;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const gate = deferred();
+  let calls = 0, refreshCalls = 0;
+  apiClient.defaults.adapter = config => { calls += 1; sentConfig = config; markStarted(); return gate.promise; };
+  axios.defaults.adapter = config => { refreshCalls += 1; return httpError(config, 401); };
+  const pending = apiClient.get("/private-chat");
+  await started;
+  transitionAuthority({ id: "actor-b", role: "Operator", permissions: ["chat:use"] });
+  localStorage.setItem("workflow.authToken", "token-b");
+  localStorage.setItem("workflow.refreshToken", "refresh-b");
+  gate.reject(httpErrorValue(sentConfig, 401));
+  await expect(pending).rejects.toMatchObject({ response: { status: 401 } });
+  expect(authHeader(sentConfig)).toBe("Bearer token-a");
+  expect(calls).toBe(1);
+  expect(refreshCalls).toBe(0);
+  expect(localStorage.getItem("workflow.authToken")).toBe("token-b");
+});
+
+test("a held A refresh success or failure cannot change B credentials or emit B expiry", async () => {
+  for (const failRefresh of [false, true]) {
+    localStorage.clear();
+    transitionAuthority({ id: "actor-a", role: "Operator", permissions: ["chat:use"] });
+    localStorage.setItem("workflow.authToken", "token-a");
+    localStorage.setItem("workflow.refreshToken", "refresh-a");
+    let markRefresh;
+    const refreshStarted = new Promise(resolve => { markRefresh = resolve; });
+    const refreshGate = deferred();
+    apiClient.defaults.adapter = config => httpError(config, 401);
+    axios.defaults.adapter = config => { markRefresh(config); return refreshGate.promise; };
+    const expired = jest.fn();
+    window.addEventListener("auth:expired", expired);
+    const pending = apiClient.get("/private-chat");
+    const refreshConfig = await refreshStarted;
+    transitionAuthority({ id: "actor-b", role: "Operator", permissions: ["chat:use"] });
+    localStorage.setItem("workflow.authToken", "token-b");
+    localStorage.setItem("workflow.refreshToken", "refresh-b");
+    if (failRefresh) refreshGate.reject(httpErrorValue(refreshConfig, 401));
+    else refreshGate.resolve({ data: { data: { accessToken: "late-a", refreshToken: "late-refresh-a" } }, status: 200, statusText: "OK", headers: {}, config: refreshConfig, request: {} });
+    await expect(pending).rejects.toBeDefined();
+    expect(localStorage.getItem("workflow.authToken")).toBe("token-b");
+    expect(localStorage.getItem("workflow.refreshToken")).toBe("refresh-b");
+    expect(expired).not.toHaveBeenCalled();
+    window.removeEventListener("auth:expired", expired);
+  }
+});
+
+test("a late successful A login cannot persist credentials after B replaces it", async () => {
+  transitionAuthority({ id: "actor-a", role: "Operator", permissions: ["chat:use"] });
+  let sentConfig;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const gate = deferred();
+  apiClient.defaults.adapter = config => { sentConfig = config; markStarted(); return gate.promise; };
+  const pending = authService.login({ email: "a@example.test" });
+  await started;
+  transitionAuthority({ id: "actor-b", role: "Operator", permissions: ["chat:use"] });
+  localStorage.setItem("workflow.authToken", "token-b");
+  localStorage.setItem("workflow.refreshToken", "refresh-b");
+  localStorage.setItem("workflow.user", JSON.stringify({ id: "actor-b" }));
+  gate.resolve({ data: { data: { accessToken: "late-a", refreshToken: "late-refresh-a", user: { id: "actor-a" } } }, status: 200, statusText: "OK", headers: {}, config: sentConfig, request: {} });
+  await expect(pending).rejects.toMatchObject({ code: "ERR_STALE_AUTHORITY" });
+  expect(localStorage.getItem("workflow.authToken")).toBe("token-b");
+  expect(localStorage.getItem("workflow.refreshToken")).toBe("refresh-b");
+  expect(JSON.parse(localStorage.getItem("workflow.user"))).toEqual({ id: "actor-b" });
+});
+
+test("a delayed logout revocation cannot clear B and uses only A's captured credential", async () => {
+  const epochA = transitionAuthority({ id: "actor-a", role: "Operator", permissions: ["chat:use"] }).epoch;
+  localStorage.setItem("workflow.authToken", "token-a");
+  localStorage.setItem("workflow.refreshToken", "refresh-a");
+  const captureA = captureAuthority({ id: "actor-a", role: "Operator", permissions: ["chat:use"] });
+  let sentConfig;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const gate = deferred();
+  apiClient.defaults.adapter = config => { sentConfig = config; markStarted(); return gate.promise; };
+  clearStoredSession();
+  const pending = authService.logout({ isCurrent: () => isAuthorityCurrent(captureA), accessToken: "token-a", refreshToken: "refresh-a" });
+  await started;
+  transitionAuthority({ id: "actor-b", role: "Operator", permissions: ["chat:use"] });
+  localStorage.setItem("workflow.authToken", "token-b");
+  localStorage.setItem("workflow.refreshToken", "refresh-b");
+  localStorage.setItem("workflow.user", JSON.stringify({ id: "actor-b" }));
+  gate.resolve({ data: { data: { loggedOut: true } }, status: 200, statusText: "OK", headers: {}, config: sentConfig, request: {} });
+  await pending;
+  expect(authHeader(sentConfig)).toBe("Bearer token-a");
+  expect(JSON.parse(sentConfig.data).refreshToken).toBe("refresh-a");
+  expect(localStorage.getItem("workflow.authToken")).toBe("token-b");
+  expect(localStorage.getItem("workflow.refreshToken")).toBe("refresh-b");
+  expect(JSON.parse(localStorage.getItem("workflow.user"))).toEqual({ id: "actor-b" });
+  expect(currentAuthorityEpoch()).toBeGreaterThan(epochA);
+});
+
+test("an older refresh finally cannot clear a newer account's shared refresh promise", async () => {
+  const userA = { id: "actor-a", role: "Operator", permissions: ["chat:use"] };
+  const userB = { id: "actor-b", role: "Operator", permissions: ["chat:use"] };
+  const epochA = transitionAuthority(userA).epoch;
+  localStorage.setItem("workflow.refreshToken", "refresh-a");
+  const gates = new Map();
+  const configs = [];
+  axios.defaults.adapter = config => {
+    const refreshToken = JSON.parse(config.data).refreshToken;
+    const gate = deferred();
+    gates.set(refreshToken, gate);
+    configs.push(config);
+    return gate.promise;
+  };
+  const refreshA = refreshSession(epochA);
+  await waitFor(() => expect(configs).toHaveLength(1));
+  const epochB = transitionAuthority(userB).epoch;
+  localStorage.setItem("workflow.refreshToken", "refresh-b");
+  const refreshB = refreshSession(epochB);
+  await waitFor(() => expect(configs).toHaveLength(2));
+  gates.get("refresh-a").reject(httpErrorValue(configs[0], 401));
+  await expect(refreshA).rejects.toBeDefined();
+  expect(getRefreshInFlight()).toBe(refreshB);
+  gates.get("refresh-b").resolve({ data: { data: { accessToken: "token-b2", refreshToken: "refresh-b2" } }, status: 200, statusText: "OK", headers: {}, config: configs[1], request: {} });
+  await expect(refreshB).resolves.toBe("token-b2");
+  expect(localStorage.getItem("workflow.authToken")).toBe("token-b2");
+  expect(localStorage.getItem("workflow.refreshToken")).toBe("refresh-b2");
+  expect(currentAuthorityEpoch()).toBe(epochB);
 });
