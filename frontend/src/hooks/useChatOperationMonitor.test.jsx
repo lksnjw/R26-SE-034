@@ -22,6 +22,13 @@ test("held read does not overlap; cleanup aborts the read without replay", async
   expect(chatService.operation).toHaveBeenCalledTimes(1); const signal = chatService.operation.mock.calls[0][2].signal;
   unmount(); expect(signal.aborted).toBe(true); resolve(page([event(1)])); await flush(); expect(result.current.operation).toBeNull(); expect(chatService.sendMessage).not.toHaveBeenCalled();
 });
+test("uses one abortable server-held progress read instead of freezing or overlapping requests", async () => {
+  let resolve; chatService.operation.mockImplementation(() => new Promise(done => { resolve = done; }));
+  const { unmount } = renderHook(() => useChatOperationMonitor("job", { waitMs: 25000 })); await flush(); await tick(30000);
+  expect(chatService.operation).toHaveBeenCalledTimes(1);
+  expect(chatService.operation.mock.calls[0][2]).toMatchObject({ waitMs: 25000 });
+  unmount(); resolve(page([event(1)]));
+});
 test("gaps reset only the read cursor and reconnect beyond three network failures", async () => {
   chatService.operation.mockResolvedValueOnce(page([event(1)])).mockResolvedValueOnce(page([event(3)])).mockRejectedValue(new Error("offline"));
   const { result } = renderHook(() => useChatOperationMonitor("job")); await flush(); await tick(); expect(result.current.cursor).toBe(0); expect(result.current.reconnecting).toBe(true);
