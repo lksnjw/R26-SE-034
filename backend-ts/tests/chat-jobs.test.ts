@@ -16,6 +16,8 @@ import { workflowContentHash, parseWorkflowYAMLStrict } from "../src/parser/work
 import { stringify } from "yaml";
 import type { Workflow } from "../src/models/schemas.js";
 import { AESGCMCodec } from "../src/storage/aes-gcm.js";
+import * as optionalPolicy from "../src/governance/optional-policy.js";
+import { dispatchReadTool } from "../src/tools/read-tool-broker.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); });
@@ -75,6 +77,40 @@ async function nodeSetup(options: Parameters<typeof setup>[0] = {}) {
   s.fetchImplementation.mockImplementation(async () => Response.json({ choices: [{ message: { content: '{"description":"Proposed label"}' } }] }));
   return { ...s, nodeContext };
 }
+
+test("queued read uses saved publication/run facts rather than old chat and re-samples state after model wait", async () => {
+  const s = await setup(), timestamp = "2026-10-12T08:00:00.000Z";
+  await s.repository.mutate(state => {
+    state.workflows.report = { id: "report", name: "Report", description: "Read", owner: { id: "owner", name: "owner" }, assignedUserIds: [], status: "PENDING", trigger: { type: "manual" }, steps: 1,
+      successRate: 0, lastRunAt: timestamp, publishedVersion: 2, draftVersion: 3, tags: [], domainTags: [], canRun: true, createdAt: timestamp, updatedAt: timestamp, yaml, archived: false, chatSessionId: s.sessionId };
+    state.versions.report = [{ version: 2, artifactState: "PUBLISHED", yaml }, { version: 3, artifactState: "DRAFT", yaml }];
+    state.executions.prior_run = { id: "prior_run", workflowId: "report", workflowName: "Report", status: "DONE", startedAt: timestamp, completedAt: timestamp, durationMs: 1,
+      tokens: { input: 0, output: 0, total: 0 }, costUsd: 0, startedBy: { id: "owner", name: "owner" },
+      workflowSnapshot: { version: 2, yaml, contentHash: workflowContentHash(yaml), registryHash: "fixture", input: {}, executionProfile: "sequential-read-v1" } };
+    state.chats[s.sessionId]!.messages.push({ id: "historical_message", role: "assistant", text: "Workflow draft saved. Not published or executed." });
+    state.chats[s.sessionId]!.messageCount = 1;
+  });
+  const original = s.fetchImplementation.getMockImplementation()!;
+  s.fetchImplementation.mockImplementation(async (url, init) => {
+    const request = JSON.parse(String(init?.body));
+    if (request.messages.some((message: any) => message.role === "tool")) await s.repository.mutate(state => {
+      state.workflows.report!.draftVersion = 4;
+      state.executions.current_run = { ...state.executions.prior_run!, id: "current_run", status: "RUNNING", startedAt: "2026-10-12T08:01:00.000Z", completedAt: null };
+    });
+    return original(url, init);
+  });
+  const admitted = (await s.send("List the invoices. Do not create or change ERP records or send email.")).json().data;
+  expect((await s.terminal(admitted.operation.id)).status).toBe("ANSWERED");
+  const request = JSON.parse(String(s.fetchImplementation.mock.calls[0]![1]?.body)), latestUser = request.messages.findLast((message: any) => message.role === "user");
+  expect(request.messages[0].content).toContain("prompt/query/v4");
+  expect(JSON.parse(latestUser.content).CURRENT_WORKSPACE_STATUS_JSON.workflows).toEqual([{ id: "report", draftVersion: 3, publishedVersion: 2,
+    latestRun: { id: "prior_run", status: "DONE", publishedVersion: 2 } }]);
+  const saved = await s.repository.snapshot(), answer = saved.chats[s.sessionId]!.messages.at(-1)!;
+  expect(answer.text).toContain("draft v4; published v2; latest recorded run current_run: RUNNING (published v2)");
+  expect((answer.artifacts as any).workspaceStatus.workflows[0]).toMatchObject({ draftVersion: 4, publishedVersion: 2, latestRun: { id: "current_run", status: "RUNNING" } });
+  expect(s.callTool).toHaveBeenCalledTimes(1); expect(saved.emailDeliveryAdmissions).toEqual({});
+  expect(saved.chats[s.sessionId]!.messages.some(message => (message.artifacts as any)?.emailDraft)).toBe(false);
+});
 
 const protectedChatOutput = { schema: { type: "string" }, success: { kind: "ref", source: "nodeOutput", nodeId: "echo", path: ["structuredContent", "value"] }, handled: { kind: "ref", source: "nodeOutput", nodeId: "guard", path: ["error", "code"] } };
 async function protectedChatSetup(output: unknown = { output: protectedChatOutput }, options: Parameters<typeof setup>[0] = {}) {
@@ -508,6 +544,33 @@ test("queued snapshot does not adopt later administration model/endpoint/credent
   expect(Object.values((await s.repository.snapshot()).invocationProvenance).every(entry => entry.configurationRevision === admitted.modelBinding.configurationRevision)).toBe(true);
 });
 
+test.each(["initial", "summary"])("saved queued chat %s failover preserves model selection, confirmed read and original duplicate receipt", async phase => {
+  const persistence = new Persistence(), s = await setup({ persistence }), original = s.fetchImplementation.getMockImplementation()!;
+  s.runtime.activate({ ...s.runtime.configuration!, fallbackModel: "model-c" });
+  s.fetchImplementation.mockImplementation(async (...args) => {
+    const input = JSON.parse(String(args[1]?.body)), hasRead = input.messages.some((message: any) => message.role === "tool");
+    if (input.model === "model-b" && (phase === "initial" || hasRead)) return new Response("", { status: 503 });
+    const response = await original(...args), decoded: any = await response.json();
+    if (decoded.choices[0].finish_reason === "tool_calls") decoded.choices[0].message.reasoning_details = [{ type: "reasoning.encrypted", data: "private-queued-continuation-marker" }];
+    return Response.json(decoded);
+  });
+  const request = await s.send("Show me invoices", { model: "model-b" }); expect(request.statusCode, request.body).toBe(202);
+  const id = request.json().data.operation.id; expect((await s.terminal(id)).status).toBe("ANSWERED");
+  expect(s.callTool).toHaveBeenCalledTimes(1);
+  expect(s.fetchImplementation.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).model)).toEqual(phase === "initial" ? ["model-b", "model-c", "model-c"] : ["model-b", "model-b", "model-c"]);
+  const opened = await Repository.open(persistence);
+  try {
+    const state = await opened.snapshot(), op = state.chatOperations[id]!, chat = state.chats[s.sessionId]!;
+    expect(op).toMatchObject({ status: "ANSWERED", modelBinding: { model: "model-b" }, attempts: [{ status: "DONE" }] });
+    expect(chat.selectedModel).toBe("model-b");
+    expect(chat.messages.at(-1)).toMatchObject({ modelBinding: { requestedModel: "model-b", model: "model-c", fallbackUsed: true },
+      artifacts: { modelRouting: { requestedModel: "model-b", model: "model-c", fallbackUsed: true } } });
+    expect(JSON.stringify(chat)).not.toMatch(/private-queued-continuation-marker|providerContinuationSecret|private-fixture-key|private-remote-secret/);
+  } finally { await opened.close(); }
+  expect((await s.send("Show me invoices", { model: "model-b" })).json().data.operation.id).toBe(id);
+  expect(s.callTool).toHaveBeenCalledTimes(1); expect(s.fetchImplementation).toHaveBeenCalledTimes(3);
+});
+
 test("queued cancellation makes zero external calls, and other accounts cannot see or cancel it", async () => {
   const s = await setup(); const kick = vi.spyOn(chatJobQueue(s.services), "kick").mockImplementation(() => {});
   const id = (await s.send()).json().data.operation.id;
@@ -545,6 +608,44 @@ test("known MCP failure and unconfirmed timeout remain distinct", async () => {
     }
     expect(s.callTool).toHaveBeenCalledOnce();
   }
+});
+
+test.each([
+  { decision: "deny" as const, source: "local_model" as const },
+  { decision: "review" as const, source: "local_model" as const },
+  { decision: "deny" as const, source: "local_model" as const, failureCode: "LOCAL_POLICY_RESPONSE_INVALID" as const },
+])("saved policy failure receipt survives fresh storage readback: $decision $failureCode", async outcome => {
+  const persistence = new Persistence(), s = await setup({ persistence }), secret = "RAW_SECRET_SENTINEL";
+  const policy = vi.spyOn(optionalPolicy, "evaluateOptionalPolicy")
+    .mockResolvedValueOnce({ decision: "allow", source: "local_model", reason: "Synthetic chat preflight" })
+    .mockResolvedValueOnce({ ...outcome, reason: secret, model: secret });
+  try {
+    const id = (await s.send()).json().data.operation.id, final = await s.terminal(id);
+    expect(final.attempts).toHaveLength(1);
+    expect(final.attempts[0]).toMatchObject({ status: "FAILED", output: outcome });
+    const visible = (await s.get(id)).json().data.operation;
+    expect(visible.attempts[0].output).toEqual(outcome);
+    expect(JSON.stringify(visible)).not.toContain(secret);
+    expect(s.callTool).not.toHaveBeenCalled(); expect(s.fetchImplementation).toHaveBeenCalledOnce(); expect(policy).toHaveBeenCalledTimes(2);
+    expect((await s.repository.snapshot()).chatOperationEvents[id]!.some(event => event.type === "tool.dispatch_intent")).toBe(false);
+    await s.app.close(); apps.splice(apps.indexOf(s.app), 1);
+    const fresh = await Repository.open(persistence);
+    try { expect((await fresh.snapshot()).chatOperations[id]!.attempts[0]!.output).toEqual(outcome); } finally { await fresh.close(); }
+  } finally { policy.mockRestore(); }
+});
+
+test("an older authentic policy error cannot settle a newly entered SDK attempt", async () => {
+  const s = await setup(), policy = vi.spyOn(optionalPolicy, "evaluateOptionalPolicy")
+    .mockResolvedValueOnce({ decision: "deny", source: "local_model", reason: "RAW_SECRET_SENTINEL" });
+  let oldError: unknown;
+  try { oldError = await dispatchReadTool(s.services, "owner", "demo.echo", { value: "fixture" }).catch(error => error); }
+  finally { policy.mockRestore(); }
+  expect(s.callTool).not.toHaveBeenCalled();
+  s.callTool.mockRejectedValueOnce(oldError);
+  const id = (await s.send()).json().data.operation.id, final = await s.terminal(id);
+  expect(final.status).toBe("RECOVERY_REQUIRED");
+  expect(final.attempts[0]).toMatchObject({ status: "UNKNOWN" }); expect(final.attempts[0]!.output).toBeUndefined();
+  expect(s.callTool).toHaveBeenCalledOnce(); expect(s.fetchImplementation).toHaveBeenCalledOnce();
 });
 
 test("saved chat does not trust a thrown public MCP error as an acknowledged answer or failure receipt", async () => {
