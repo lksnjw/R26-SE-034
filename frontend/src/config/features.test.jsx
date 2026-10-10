@@ -7,7 +7,6 @@ import { features } from "./features";
 import { appRouteObjects, protectedRouteDefinitions } from "./router.jsx";
 
 const disabledPaths = [
-  "/datafeed/upload",
   "/datafeed",
   "/datafeed/metrics",
   "/datafeed/configuration",
@@ -21,13 +20,20 @@ test("feature flags are explicit booleans with incomplete groups disabled", () =
   expect(Object.values(features).every((value) => typeof value === "boolean")).toBe(true);
   expect(features).toMatchObject({
     datafeed: false,
-    pipelineUpload: false,
+    pipelineUpload: true,
     registrySearch: false,
     registryImport: false,
     registryContext: false,
     mcpBridge: false,
     semanticSearch: false,
   });
+});
+
+test("the governed pipeline upload and indexed chat routes are registered", () => {
+  const registeredPaths = new Set(protectedRouteDefinitions.map((route) => route.path));
+  expect(registeredPaths.has("/datafeed/upload")).toBe(true);
+  expect(registeredPaths.has("/datafeed/chat")).toBe(true);
+  expect(registeredPaths.has("/datafeed/chat/:sessionId")).toBe(true);
 });
 
 test("disabled feature routes are unregistered and fall through to not found", () => {
