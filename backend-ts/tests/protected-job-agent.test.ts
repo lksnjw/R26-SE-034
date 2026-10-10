@@ -56,6 +56,32 @@ test.each(["model", "tool"])("clean yield after confirmed agent %s resumes witho
   const result = await runProtectedOperation(s.services, id); expect(result.status, JSON.stringify(result)).toBe("DONE");
   expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledTimes(2);
 });
+
+test.each(["model", "tool"])("private model continuation survives clean yield after %s without exposing reasoning or replaying SDK calls", async phase => {
+  const s = await setup(), original = s.modelFetch.getMockImplementation()!, details = [{ type: "reasoning.encrypted", data: "private-resume-marker==", signature: "signed==" }];
+  s.modelFetch.mockImplementation((async (...args: any[]) => {
+    const data = JSON.parse(String(args[1]?.body));
+    if (data.messages.some((row: any) => row.role === "tool")) {
+      expect(data.messages.find((row: any) => row.role === "assistant").reasoning_details).toEqual(details);
+      expect(JSON.stringify(data)).not.toContain("providerContinuationSecret");
+    }
+    const response = await (original as any)(...args), decoded = await response.json();
+    if (decoded.choices[0].finish_reason === "tool_calls") decoded.choices[0].message.reasoning_details = details;
+    return Response.json(decoded);
+  }) as any);
+  const id = String((await s.admit(["one"])).execution.id), cp = (await ProtectedJobCheckpoints.claim(s.services, id))!;
+  try {
+    await cp.initialize();
+    for (;;) { const point = (await cp.next())!; if (point.nodeId === "body_next") break; if (point.kind === "action") await cp.executeAction(); else await cp.advanceControl(point); }
+    await cp.executeAgentBoundary(); if (phase === "tool") await cp.executeAgentBoundary(); await cp.yield();
+  } finally { cp.close(); }
+  const saved = (await s.repository.snapshot()).executions[id]!.protectedAgentSecret!;
+  expect(Object.values(saved.turns)[0]!.turn.providerContinuationSecret!.reasoning_details).toEqual(details);
+  const result = await runProtectedOperation(s.services, id); expect(result.status, JSON.stringify(result)).toBe("DONE");
+  expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledTimes(2);
+  expect(JSON.stringify(result)).not.toMatch(/private-resume-marker|providerContinuationSecret|reasoning_details/);
+  await runProtectedOperation(s.services, id); expect(s.sdk.callTool).toHaveBeenCalledTimes(2); expect(s.modelFetch).toHaveBeenCalledTimes(2);
+});
 test.each(["unknown-tool", "bad-args", "bad-second-call", "unmeasured", "unsafe-usage", "invalid-json", "unmet-completion", "model-error"])("%s cannot become a successful agent answer or ERP handler", async kind => {
   const s = await setup();
   s.modelFetch.mockImplementation((async () => {
