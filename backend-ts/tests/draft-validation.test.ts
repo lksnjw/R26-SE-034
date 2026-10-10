@@ -41,3 +41,19 @@ test("ordinary drafts retain existing generic validation rather than fabricating
   const value = source(); delete value.metadata; value.steps[0].parameters.value = "fixture";
   expect(validate(value)).toEqual(validator.validatePlan("Draft", stringify(value), "Platform Admin"));
 });
+
+test.each(["literal-type", "duplicate-id"])("flat draft %s cannot receive a passing preview", damage => {
+  const value = source(); delete value.metadata; value.steps[0].parameters.value = "fixture";
+  if (damage === "literal-type") value.steps[0].parameters.value = 42;
+  else value.steps.push({ ...structuredClone(value.steps[0]) });
+  const result = validate(value);
+  expect(result.passed).toBe(false);
+  expect(result.failed_rules).toContain("WORKSPACE_READ_COMPILATION");
+  expect(result.metadata.workspace_compilation).toMatchObject({ issues: expect.arrayContaining([expect.any(String)]) });
+});
+
+test("100 unique flat read nodes remain valid", () => {
+  const value = source(); delete value.metadata;
+  value.steps = Array.from({length: 100}, (_, index) => ({id: `read_${index + 1}`, action: "demo.echo", parameters: {value: "fixture"}}));
+  expect(validate(value)).toMatchObject({passed: true, step_count: 100});
+});

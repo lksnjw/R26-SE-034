@@ -227,11 +227,13 @@ test.each([undefined, "async-read"])("a legacy published collection cannot run i
   expect(s.callTool).not.toHaveBeenCalled(); expect(s.listTools).not.toHaveBeenCalled(); expect(s.queryWithTools).not.toHaveBeenCalled(); expect((await s.repository.snapshot()).executions).toEqual({});
 });
 
-test("publishing a collection saves a design but cannot claim executable readiness or compile a live artifact", async () => {
+test("an unsupported collection remains saved as a draft but cannot publish an executable artifact", async () => {
   const s = await setup({ provider: true }); await s.seed(collectionYAML(), false);
   const result = await s.app.inject({ method: "POST", url: "/api/workflows/read/publish", headers: s.headers, payload: {} });
-  expect(result.statusCode, result.body).toBe(200); expect(result.json().data.executionReadiness).toBe("UNSUPPORTED_PROFILE");
-  const state = await s.repository.snapshot(); expect(state.workflows.read!.canRun).toBe(false); expect(state.versions.read!.at(-1)!.compiledRead).toBeUndefined();
+  expect(result.statusCode, result.body).toBe(422); expect(result.json().meta.code).toBe("UNSUPPORTED_PUBLICATION_PROFILE");
+  const state = await s.repository.snapshot(); expect(state.workflows.read!.canRun).toBe(false);
+  expect(state.workflows.read!.yaml).toBe(collectionYAML());
+  expect(state.versions.read!.some(version => version.artifactState === "PUBLISHED" || version.compiledRead)).toBe(false);
   expect(s.listTools).not.toHaveBeenCalled();
   const readiness = await s.app.inject({ method: "GET", url: "/api/workflows/read/readiness", headers: s.headers });
   expect(readiness.json().data.authoring.executionProfile).toBe("collection-simulation-only");
@@ -953,6 +955,8 @@ test.each(["disabled", "role", "assignment", "registry", "publication", "ciphert
   });
   kick.mockRestore(); queue.kick(); const item = await waitForTerminal(s.repository, admitted.id);
   expect(item).toMatchObject({ status: "FAILED", failure: { failureCategory: "READ_JOB_PREPARATION_FAILED", toolWasCalled: false } }); expect(s.callTool).not.toHaveBeenCalled();
+  expect(item.failure?.preparationStage).toBe(change === "ciphertext" ? "PRIVATE_INPUT" :
+    ["endpoint", "credential", "role-map"].includes(change) ? "AUTHORITY_AND_CONNECTION" : "PUBLICATION");
 });
 
 test("queued worker executes pinned published source even if a different draft is edited later", async () => {
