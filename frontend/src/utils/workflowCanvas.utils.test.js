@@ -110,3 +110,16 @@ test("bounded collections and typed returns render as explicit structural nodes"
     expect.objectContaining({ source: "item", target: "result", label: "Collection complete" }),
   ]));
 });
+
+test("a generated 101-step ERP workflow projects every editable node without truncation", () => {
+  const steps = Array.from({ length: 101 }, (_, index) => {
+    const ordinal = String(index + 1).padStart(3, "0");
+    return { id: `scale_${ordinal}`, action: `qa_scale_read_${ordinal}`, description: `Scale ERP read ${ordinal}`, parameters: {} };
+  });
+  const canvas = workflowYamlToCanvas(dump({ name: "Large ERP workflow", trigger: { type: "manual" }, steps }));
+  expect(canvas.nodes).toHaveLength(101); expect(canvas.edges).toHaveLength(100);
+  expect(canvas.nodes[0]).toMatchObject({ id: "scale_001", data: { action: "qa_scale_read_001" } });
+  expect(canvas.nodes[100]).toMatchObject({ id: "scale_101", data: { action: "qa_scale_read_101" } });
+  expect(new Set(canvas.nodes.map(node => node.id)).size).toBe(101);
+  expect(canvas.edges[99]).toMatchObject({ source: "scale_100", target: "scale_101" });
+});

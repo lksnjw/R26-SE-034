@@ -131,7 +131,7 @@ test("scoped node edit preserves unrelated nodes and control flow and creates a 
   const s = await setup(); const response = await s.edit({ type: "updateNode", nodeId: "first", patch: { parameters: { value: "edited" } } });
   expect(response.statusCode, response.body).toBe(200);
   const record = response.json().data;
-  expect(record).toMatchObject({ version: 2, publishedVersion: 1, canRun: false, validation: { passed: true } });
+  expect(record).toMatchObject({ version: 2, publishedVersion: 1, canRun: false, validation: { passed: false } });
   const next = parseWorkflowYAMLStrict(record.yaml);
   expect(next.steps[0]).toEqual({ ...blueprint.steps[0], parameters: { value: "edited" } });
   expect(next.steps.slice(1)).toEqual(blueprint.steps.slice(1));
@@ -362,7 +362,8 @@ test("legacy source replacement and version restore now record history and clear
   const state = await s.repository.snapshot(), baseline = state.versions.report!.find(value => value.change && (value.change as any).type === "baseline")!;
   expect(state.workflows.report).toMatchObject({ draftVersion: 2, canRun: false });
   const restored = await s.app.inject({ method: "POST", url: `/api/workflows/report/restore/${baseline.id}`, headers: s.headers(), payload: { baseVersion: 2, baseHash: workflowContentHash(updatedSource) } });
-  expect(restored.statusCode, restored.body).toBe(200); expect(restored.json().data).toMatchObject({ draftVersion: 3, canRun: false, publishedVersion: 1 });
+  expect(restored.statusCode, restored.body).toBe(200); expect(restored.json().data).toMatchObject({ draftVersion: 3, canRun: false, publishedVersion: 1, validation: { passed: false } });
+  expect(restored.json().message).toContain("blocked draft");
   expect((await s.repository.snapshot()).versions.report!.at(-1)?.change).toEqual({ type: "restoreVersion", sourceVersionId: baseline.id });
   expect((await s.repository.snapshot()).workflows.report!.yaml).toBe(yaml);
   expect(s.fetchImplementation).not.toHaveBeenCalled();
@@ -618,7 +619,7 @@ test("model wait does not block concurrent revisioned edits; stale proposal is r
 test("readiness separates validation, supported semantics, publication and disconnected bridge", async () => {
   const s = await setup(); const response = await s.app.inject({ method: "GET", url: "/api/workflows/report/readiness", headers: s.headers() });
   expect(response.statusCode).toBe(200);
-  expect(response.json().data).toMatchObject({ published: true, bridge: "not_connected", can_attempt_run: false, validation: { passed: true } });
+  expect(response.json().data).toMatchObject({ published: true, bridge: "not_connected", can_attempt_run: false, validation: { passed: false } });
   expect(response.json().data.issues.length).toBeGreaterThan(0);
   expect(s.fetchImplementation).not.toHaveBeenCalled();
 });
