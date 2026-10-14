@@ -142,7 +142,7 @@ steps:
 		AppName:                            "test",
 		APIBasePath:                        "/api",
 		JWTSecret:                          "secret",
-		AllowDevAuth:                       true,
+		AllowPublicRegistration:            true,
 		TokenTTL:                           time.Hour,
 		SemanticSearchMode:                 "external_embedding",
 		SemanticSearchURL:                  searchServer.URL,
@@ -157,18 +157,38 @@ steps:
 		GeminiAPIKey:                       "test-key",
 	}
 	store := repository.NewStore()
+	if created, bootstrapErr := store.BootstrapPlatformAdmin("integration@example.test", "correct-horse-battery-staple"); bootstrapErr != nil || !created {
+		t.Fatalf("bootstrap integration administrator: created=%t err=%v", created, bootstrapErr)
+	}
 	synth := synthesizer.NewServiceWithProvider("", "", false, "gemini", "test-key", "gemini-test")
 	synth.Gemini.BaseURL = geminiServer.URL
 	validator := workflowvalidator.NewWorkflowValidator()
-	registryValidator := workflowvalidator.NewRegistryValidator(bundle.Tools, bundle.Rules)
+	registryValidator := workflowvalidator.NewRegistryValidator(bundle.Tools, bundle.Rules, store)
 	search := semanticsearch.NewServiceFromDataset(bundle, cfg.SemanticSearchMode, cfg.SemanticSearchURL, cfg.SemanticSearchAllowLexicalFallback)
 	orch := orchestrator.NewChatOrchestrator(search, synth, registryValidator)
-	exec := runner.NewExecutor(tools.NewRegistry(nil), zap.NewNop())
+	exec := runner.NewExecutor(tools.NewRegistry(nil), registryValidator, zap.NewNop())
 	healer := healing.NewHealer(synth)
 	handler := handlers.New(cfg, store, synth, validator, bundle, registryValidator, search, orch, exec, healer, zap.NewNop())
 
 	app := fiber.New()
 	routes.Register(app, handler)
+	registrationBody, _ := json.Marshal(map[string]interface{}{
+		"email": "integration@example.test", "password": "correct-horse-battery-staple",
+	})
+	registrationRequest := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(registrationBody))
+	registrationRequest.Header.Set("Content-Type", "application/json")
+	registrationResponse, err := app.Test(registrationRequest)
+	if err != nil || registrationResponse.StatusCode != http.StatusOK {
+		t.Fatalf("login test user: status=%d err=%v", registrationResponse.StatusCode, err)
+	}
+	var registrationPayload struct {
+		Data struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(registrationResponse.Body).Decode(&registrationPayload); err != nil || registrationPayload.Data.AccessToken == "" {
+		t.Fatalf("decode registration session: %v", err)
+	}
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"content":             "Create a purchase order for 150 laptops from vendor V-882 and send it for approval.",
@@ -176,7 +196,7 @@ steps:
 		"generate_candidates": "3",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/chat/sessions/chat_test/messages", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer local-dev-token")
+	req.Header.Set("Authorization", "Bearer "+registrationPayload.Data.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
 	if err != nil {
@@ -219,5 +239,16 @@ func loadConfigBundle(t *testing.T) *coreregistry.Bundle {
 	if err != nil {
 		t.Fatalf("load fixture bundle: %v", err)
 	}
+	retainImplementedRuleFamilies(bundle)
 	return bundle
+}
+
+func retainImplementedRuleFamilies(bundle *coreregistry.Bundle) {
+	rules := []coreregistry.Rule{}
+	for _, rule := range bundle.Rules.GetAllRules() {
+		if workflowvalidator.ClassifyRuleFamily(rule.RuleType) == workflowvalidator.RuleFamilyEvaluated {
+			rules = append(rules, rule)
+		}
+	}
+	bundle.Rules.ReplaceAll(rules, bundle.Rules.Version()+"-implemented-only")
 }

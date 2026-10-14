@@ -7,6 +7,7 @@ export default [
   {
     ignores: [
       "dist",
+      ".hosting",
       "node_modules",
       ".npm-cache",
       ".npm-appdata",
@@ -35,6 +36,14 @@ export default [
       ...reactHooks.configs.recommended.rules,
       "no-unused-vars": ["warn", { varsIgnorePattern: "^[A-Z_]" }],
       "react-refresh/only-export-components": "off",
+    },
+  },
+  {
+    // Root-level tooling config files run in Node, not the browser (e.g.
+    // vite.config.js uses process.cwd() to load .env.local server-side).
+    files: ["*.config.js"],
+    languageOptions: {
+      globals: globals.node,
     },
   },
 ];

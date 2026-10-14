@@ -1,0 +1,12 @@
+{
+  "firestore": {
+    "rules": "tests/fixtures/firestore-private.rules"
+  },
+  "emulators": {
+    "firestore": { "host": "127.0.0.1", "port": 23671, "websocketPort": 23674 },
+    "hub": { "host": "127.0.0.1", "port": 23672 },
+    "logging": { "host": "127.0.0.1", "port": 23673 },
+    "ui": { "enabled": false },
+    "singleProjectMode": true
+  }
+}

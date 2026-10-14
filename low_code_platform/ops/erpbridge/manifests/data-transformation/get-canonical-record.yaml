@@ -1,0 +1,67 @@
+apiVersion: erpbridge.io/v1
+kind: MCPTool
+metadata:
+  name: get_canonical_erp_record
+  version: 1.0.0
+  module: data_transformation
+spec:
+  description:
+    short: "Resolve one canonical ERP record selected by the indexed search."
+    whenToUse:
+      - "After search_indexed_erp_data returns a canonical_record_id for the intended record"
+    whenNotToUse:
+      - "Do not use for document text; resolve its representation instead"
+      - "Do not guess or construct a canonical record ID"
+    examples:
+      - "Return the canonical employee record selected by the scoped search"
+  annotations:
+    title: "Get canonical ERP record"
+    readOnlyHint: true
+    destructiveHint: false
+    idempotentHint: true
+    openWorldHint: true
+  rateLimit:
+    requestsPerSecond: 5
+    burst: 10
+  concurrency:
+    limit: 4
+    perPrincipal: true
+  inputSchema:
+    type: object
+    properties:
+      record_id:
+        type: string
+        description: "Exact canonical_record_id returned by search_indexed_erp_data."
+    required: [record_id]
+  outputSchema:
+    type: object
+    properties:
+      record_id:
+        type: string
+      entity_type:
+        type: [string, "null"]
+      source_system_id:
+        type: [string, "null"]
+      content_hash:
+        type: [string, "null"]
+      data:
+        type: object
+  execution:
+    type: http
+    method: GET
+    endpoint: /v1/records/{record_id}
+    parameterLocations:
+      record_id: path
+  security:
+    authType: api-key
+    authHeader: X-API-Key
+    credentialRef: ERP_DATA_TRANSFORMATION_API_KEY
+    credentialSource: env
+    dataClass: restricted
+    allowedRoles: [platform_admin, workflow_builder, client]
+  cache:
+    enabled: false
+    ttlSeconds: 0
+    isReadOnly: true
+    flushOn: []
+

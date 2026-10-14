@@ -1,0 +1,104 @@
+/** @jest-environment jsdom */
+
+import { afterEach, expect, jest, test } from "@jest/globals";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import React from "react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { executionService } from "../services/execution.service";
+
+let permissions = null;
+afterEach(() => { cleanup(); permissions = null; jest.restoreAllMocks(); useExecution.mockClear(); });
+
+const useExecution = jest.fn((executionId) => ({
+  execution: {
+    id: executionId,
+    workflowName: "Deep-link workflow",
+    status: "DONE",
+    started: "2026-07-25 10:00",
+    duration: "12ms",
+    tokens: "0",
+    cost: "$0.00",
+  },
+  logs: [],
+  timeline: [],
+  healingReport: null,
+  loading: false,
+  error: null,
+  reload: jest.fn(),
+}));
+
+jest.unstable_mockModule("../hooks/useExecution", () => ({
+  useExecution,
+  default: useExecution,
+}));
+
+jest.unstable_mockModule("../hooks/usePermissions", () => ({
+  default: () => ({ hasAny: required => permissions === null || required.some(key => permissions.has(key)) }),
+}));
+
+const { ProtectedScreen, protectedRouteDefinitions } = await import("./router.jsx");
+
+test("routes.deeplink.test", async () => {
+  const definition = protectedRouteDefinitions.find((route) => route.id === "executions.detail");
+
+  render(
+    <MemoryRouter initialEntries={["/executions/run-deep-link"]}>
+      <Routes>
+        <Route path={definition.path} element={<ProtectedScreen definition={definition} />} />
+      </Routes>
+    </MemoryRouter>
+  );
+
+  // Cold lazy-module transformation is not a product latency benchmark.
+  expect(await screen.findByRole("heading", { name: "Deep-link workflow" }, { timeout: 5000 })).not.toBeNull();
+  await waitFor(() => expect(useExecution).toHaveBeenCalledWith("run-deep-link"));
+  cleanup();
+});
+
+test("review-only detail deep link redirects to scoped approval without opening the full-run hook", async () => {
+  permissions = new Set(["execution:approve"]);
+  const definition = protectedRouteDefinitions.find(route => route.id === "executions.detail");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  const review = jest.spyOn(executionService, "getApproval").mockResolvedValue({ id: "run-review", workflowName: "Minimal review", status: "AWAITING_APPROVAL",
+    runtimeApproval: { id: "review", version: 1, reviewHash: `sha256:${"a".repeat(64)}`, state: "PENDING", arguments: { recipient: "manager@example.test" }, toolName: "Fixture review", remoteToolName: "fixture.review", canDecide: true, canResume: false } });
+  function Location() { const location = useLocation(); return <output>{location.pathname}{location.search}</output>; }
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/executions/run-review"]}><Location /><Routes>
+    <Route path={definition.path} element={<ProtectedScreen definition={definition} />} />
+  </Routes></MemoryRouter></QueryClientProvider>);
+  await screen.findByRole("heading", { name: "Review transaction" });
+  expect(screen.getByText("/executions/run-review?view=approval")).toBeTruthy(); expect(review).toHaveBeenCalledWith("run-review");
+  expect(useExecution).not.toHaveBeenCalled(); cleanup(); client.clear();
+});
+test("review-only authority does not open run history or logs", async () => {
+  permissions = new Set(["execution:approve"]);
+  for (const id of ["executions.history", "executions.live"]) {
+    const definition = protectedRouteDefinitions.find(route => route.id === id);
+    render(<ProtectedScreen definition={definition} />); await screen.findByText("Access denied"); cleanup();
+  }
+  expect(useExecution).not.toHaveBeenCalled();
+});
+
+test("reconciliation-only deep link opens exact evidence without opening the full run hook", async () => {
+  permissions = new Set(["execution:reconcile"]);
+  const definition = protectedRouteDefinitions.find(route => route.id === "executions.detail");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  const load = jest.spyOn(executionService, "getReconciliation").mockResolvedValue({ id: "run-recovery", workflowName: "Minimum recovery", status: "RECONCILIATION_REQUIRED", operationReconciliation: {
+    profile: "operation-reconciliation/v1", intentId: "intent", version: 1, factsHash: `sha256:${"a".repeat(64)}`, state: "OPEN", arguments: { recipient: "manager@example.test" }, history: [], canRecord: true, canResume: false, noReplay: true, toolName: "Email", remoteToolName: "mail.send__1.0.0" } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/executions/run-recovery"]}><Routes><Route path={definition.path} element={<ProtectedScreen definition={definition} />} /></Routes></MemoryRouter></QueryClientProvider>);
+  await screen.findByRole("heading", { name: "Reconcile operation" }); expect(load).toHaveBeenCalledWith("run-recovery"); expect(useExecution).not.toHaveBeenCalled();
+  cleanup(); client.clear();
+});
+test("historical approval deep links load their exact saved decision, not the latest approval or full execution", async () => {
+  permissions = new Set(["execution:approve"]);
+  const definition = protectedRouteDefinitions.find(route => route.id === "executions.detail");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  const load = jest.spyOn(executionService, "getApproval").mockResolvedValue({ id: "run-history", workflowName: "Historical exact approval", status: "AWAITING_APPROVAL", runtimeApproval: {
+    profile: "runtime-approval/v1", id: "earlier", version: 3, reviewHash: `sha256:${"a".repeat(64)}`, state: "CONSUMED", arguments: { recipient: "earlier-manager@example.test" },
+    toolName: "Send earlier report", remoteToolName: "fixture.send", canDecide: false, canResume: false, decision: { outcome: "APPROVED", actorId: "reviewer", decidedAt: "2026-10-06T10:00:00.000Z" } } });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/executions/run-history?view=approval&approvalId=earlier"]}><Routes>
+    <Route path={definition.path} element={<ProtectedScreen definition={definition} />} /></Routes></MemoryRouter></QueryClientProvider>);
+  await screen.findByRole("heading", { name: "Review transaction" }); expect(load).toHaveBeenCalledWith("run-history", "earlier");
+  expect(screen.getByText("earlier-manager@example.test")).toBeTruthy(); expect(screen.queryByRole("checkbox")).toBeNull(); expect(useExecution).not.toHaveBeenCalled();
+  cleanup(); client.clear();
+});

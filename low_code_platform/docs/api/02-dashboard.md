@@ -1,5 +1,7 @@
 # Dashboard API
 
+Current product addition, 2026-10-08: the new frontend task dashboard uses only `GET /api/dashboard/tasks` with required `month` (`YYYY-MM`, 2000–2100) and valid IANA `timezone`. See [personal task/dashboard contract](../PERSONAL_TASK_DASHBOARD_2026-10-08.md) for the minimal `personal-task-dashboard/v1` profile, personal scope, mandatory permissions, clipping and authority-failure behavior. The older aggregate-metric examples below are legacy contracts, not the source of current personal dashboard counts or proof of live system health.
+
 Base path: `/api/dashboard`
 
 ## Endpoints

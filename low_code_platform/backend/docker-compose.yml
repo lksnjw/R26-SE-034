@@ -6,24 +6,61 @@ services:
       POSTGRES_PASSWORD: workflow
       POSTGRES_DB: workflow
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workflow -d workflow"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   backend:
     build: .
     env_file:
       - .env.example
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_ENV: ${APP_ENV:-development}
+      FRONTEND_URL: ${FRONTEND_URL:-http://127.0.0.1:5173}
+      JWT_SECRET: ${JWT_SECRET:-change-me-before-production}
+      ALLOW_PUBLIC_REGISTRATION: ${ALLOW_PUBLIC_REGISTRATION:-true}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      MCP_MODE: ${MCP_MODE:-remote}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-memory}
+      STORAGE_ENCRYPTION_KEY: ${STORAGE_ENCRYPTION_KEY:-}
+      DATABASE_URL: postgres://workflow:workflow@postgres:5432/workflow?sslmode=disable
+      TOOL_REGISTRY_PATH: /app/configs/runtime/all_tools_master_registry.json
+      RULE_REGISTRY_PATH: /app/configs/runtime/all_rules_master_registry.json
+      RUNTIME_REGISTRY_SEED: ${RUNTIME_REGISTRY_SEED:-copy}
+      FROZEN_EVAL_REGISTRY_DIR: /opt/agentic-orchestrator/configs/registries
+      SEED_SAMPLE_DATA: ${SEED_SAMPLE_DATA:-false}
+      SAMPLE_TOOL_SEED_PATH: /app/configs/seed/sample_tools.json
+      SAMPLE_RULE_SEED_PATH: /app/configs/seed/sample_rules.json
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - registry_data:/app/configs/runtime
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  frontend:
+    build: ../frontend
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      backend:
+        condition: service_started
 
 volumes:
   postgres_data:
+  registry_data:

@@ -8,6 +8,18 @@ type SettingsBundle struct {
 	RBAC    map[string]interface{} `json:"rbac"`
 }
 
+type ProviderConfig struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Type        string    `json:"type"`
+	BaseURL     string    `json:"baseUrl,omitempty"`
+	Model       string    `json:"model"`
+	Temperature float64   `json:"temperature"`
+	APIKey      string    `json:"-"`
+	Active      bool      `json:"active"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
 type Integration struct {
 	ID           string                 `json:"id"`
 	Name         string                 `json:"name"`
@@ -31,6 +43,7 @@ type Webhook struct {
 
 type ChatSession struct {
 	ID           string    `json:"id"`
+	OwnerID      string    `json:"ownerId"`
 	Title        string    `json:"title"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`

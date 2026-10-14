@@ -1,19 +1,42 @@
 import { Icon } from "@iconify/react";
-import { NAVIGATION_GROUPS, getNavigationGroup } from "../../constants/navigation";
+import { NAVIGATION_GROUPS, filterNavigationGroups } from "../../constants/navigation";
 import { useRoute } from "../../context/RouteContext";
+import usePermissions from "../../hooks/usePermissions";
+import { BrandMark } from "../brand/BrandLogo";
 
+/*******************************************************************************
+ * Function: Sidebar
+ *
+ * Performs the Sidebar operation on the application for the Sidebar module.
+ ******************************************************************************/
 function Sidebar({ isCollapsed, onToggle }) {
   const { activeMain, activeSub, navigateTo, setActiveSub } = useRoute();
-  const activeGroup = getNavigationGroup(activeMain);
+  const { hasAny, roleId } = usePermissions();
+  const visibleGroups = filterNavigationGroups(NAVIGATION_GROUPS, hasAny, roleId);
+/*******************************************************************************
+ * Function: activeGroup
+ *
+ * Performs the active Group operation on group for the Sidebar module.
+ ******************************************************************************/
+  const activeGroup = visibleGroups.find((group) => group.id === activeMain) ?? visibleGroups[0];
 
   return (
     <aside className="hidden h-screen shrink-0 md:flex">
       <div className="relative z-[100] flex w-16 flex-col border-r border-gray-200 bg-white dark:border-darkBackgroundVery dark:bg-darkBackground">
-        <div className="flex shrink-0 items-center justify-center p-4">
+        <div className="flex shrink-0 flex-col items-center gap-2 border-b border-gray-100 px-2 py-3 dark:border-gray-800">
+          <button
+            type="button"
+            onClick={() => navigateTo("chat", "home")}
+            className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 dark:ring-offset-darkBackground"
+            aria-label="Open Agentic workspace"
+            title="Agentic workspace"
+          >
+            <BrandMark size={28} className="h-7 w-7" />
+          </button>
           <button
             type="button"
             onClick={onToggle}
-            className={`flex h-8 w-8 items-center justify-center text-gray-400 transition-all duration-200 hover:text-primary ${
+            className={`flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-all duration-200 hover:bg-gray-50 hover:text-primary dark:hover:bg-gray-900 ${
               isCollapsed ? "rotate-0" : "rotate-180"
             }`}
             aria-label="Toggle sidebar"
@@ -23,7 +46,7 @@ function Sidebar({ isCollapsed, onToggle }) {
         </div>
 
         <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 scrollbar-hide">
-          {NAVIGATION_GROUPS.map((item) => (
+          {visibleGroups.map((item) => (
             <button
               key={item.id}
               type="button"
@@ -54,7 +77,7 @@ function Sidebar({ isCollapsed, onToggle }) {
           isCollapsed ? "w-0" : "w-64"
         }`}
       >
-        {!isCollapsed && (
+        {!isCollapsed && activeGroup && (
           <div className="flex h-full w-64 flex-col">
             <div className="border-b border-gray-200 p-4 dark:border-darkBackgroundVery">
               <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">

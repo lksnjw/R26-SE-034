@@ -1,5 +1,10 @@
 import ExecutionStatus from "./ExecutionStatus";
 
+/*******************************************************************************
+ * Function: ExecutionRow
+ *
+ * Performs the Execution Row operation on row for the ExecutionRow module.
+ ******************************************************************************/
 function ExecutionRow({ run }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-xl bg-backgroundLight p-3 dark:bg-darkBackgroundVery">
@@ -7,7 +12,7 @@ function ExecutionRow({ run }) {
         <p className="font-semibold text-gray-950 dark:text-white">{run.workflow}</p>
         <p className="text-xs text-gray-500">{run.id}</p>
       </div>
-      <ExecutionStatus status={run.status} />
+      <ExecutionStatus status={run.status} failure={run.failure} />
     </div>
   );
 }

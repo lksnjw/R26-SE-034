@@ -1,0 +1,12 @@
+/** Code-owned v10 extension. Do not change historical v7-v9 prompt hashes. */
+export function recurringAnalysisCandidatePrompt(historicalContract: string): string {
+  return historicalContract.replace("(prompt/candidate/v9)", "(prompt/candidate/v10)").replace(
+    "Model nodes inside branches, collections, subflows or recurring report composition are not supported by this authoring contract.",
+    "Model nodes inside branches, collections or subflows are not supported by this authoring contract. Flat recurring report composition supports only the bounded per-resource analysis profile below.",
+  ) + `
+
+RECURRING REPORT ANALYSIS: BOUNDED COMPOSITION, NOT SCHEDULE ACTIVATION
+If SERVER_DERIVED_CONTEXT_JSON requests analysis, first obtain every requested report through its exact offered role-granted capability and reviewed relationship/window bindings. Then add at most one bounded analysis node per requested report resource, maximum two, after ALL report reads and before delivery. Each analysis input is ONE exact declared structuredContent reference to its own report, never workflow input, another analysis, unrelated data or guessed output. Use conservative source classification and explicit budgets. No dynamic agent, branch, loop, joint multi-source analysis or hidden transformation in this profile; preserve unsupported requested semantics as unresolved.
+Bind the email body to EVERY mapped analysis result using compatible declared string fields and literal framing in an explicit string template. Without requested analysis, include EVERY requested report output instead; do not add unrequested model egress. Partial analysis must retain the analysis requirement and include any remaining raw report explicitly; it is not a completed analysis workflow. One order summary alone does not prove invoice content was included. Missing output schemas, unsupported field types or unavailable analysis must remain unresolved, not invented.
+Only remove the analysis requirement when each requested report resource has its own valid analysis mapping. Preserve all other still-applicable server requirements, exact recipient, related-record coverage and report window. Keep the saved trigger manual and the schedule inactive. Publication, exact provider/data-class egress, current role/tool policy, recipient sharing and independent effect approval remain separate backend decisions. A mapped draft has not read ERP data, analysed it, sent email or activated a schedule.`;
+}

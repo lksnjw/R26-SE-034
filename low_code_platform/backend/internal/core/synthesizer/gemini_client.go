@@ -12,15 +12,16 @@ import (
 )
 
 type GeminiClient struct {
-	APIKey  string
-	Model   string
-	BaseURL string
-	HTTP    *http.Client
+	APIKey      string
+	Model       string
+	BaseURL     string
+	Temperature float64
+	HTTP        *http.Client
 }
 
 func NewGeminiClient(apiKey, model string) *GeminiClient {
 	if strings.TrimSpace(model) == "" {
-		model = "gemini-1.5-flash"
+		model = "gemini-2.5-flash"
 	}
 	return &GeminiClient{
 		APIKey:  strings.TrimSpace(apiKey),
@@ -31,8 +32,13 @@ func NewGeminiClient(apiKey, model string) *GeminiClient {
 }
 
 func (c *GeminiClient) Generate(ctx context.Context, prompt, overrideModel string) (string, error) {
+	text, _, err := c.generateWithUsage(ctx, prompt, overrideModel)
+	return text, err
+}
+
+func (c *GeminiClient) generateWithUsage(ctx context.Context, prompt, overrideModel string) (string, providerUsage, error) {
 	if c == nil || c.APIKey == "" {
-		return "", fmt.Errorf("gemini api key is not configured")
+		return "", providerUsage{}, fmt.Errorf("gemini api key is not configured")
 	}
 	model := c.Model
 	if strings.TrimSpace(overrideModel) != "" {
@@ -49,25 +55,34 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt, overrideModel strin
 			},
 		},
 		"generationConfig": map[string]interface{}{
-			"temperature":     0.1,
+			"temperature":     c.Temperature,
 			"topP":            0.8,
 			"maxOutputTokens": 8192,
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("encode gemini request: %w", err)
+		return "", providerUsage{}, fmt.Errorf("encode gemini request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/models/%s:generateContent?key=%s", strings.TrimRight(c.BaseURL, "/"), url.PathEscape(model), url.QueryEscape(c.APIKey))
+	endpoint := fmt.Sprintf("%s/models/%s:generateContent", strings.TrimRight(c.BaseURL, "/"), url.PathEscape(model))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("create gemini request: %w", err)
+		return "", providerUsage{}, fmt.Errorf("create gemini request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", c.APIKey)
 
-	resp, err := c.HTTP.Do(req)
+	httpClient := c.HTTP
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 60 * time.Second}
+	}
+	noRedirectClient := *httpClient
+	noRedirectClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("call gemini: %w", err)
+		return "", providerUsage{}, fmt.Errorf("gemini request failed")
 	}
 	defer resp.Body.Close()
 
@@ -83,25 +98,39 @@ func (c *GeminiClient) Generate(ctx context.Context, prompt, overrideModel strin
 			Message string `json:"message"`
 			Status  string `json:"status"`
 		} `json:"error"`
+		UsageMetadata *struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+		} `json:"usageMetadata"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", fmt.Errorf("decode gemini response: %w", err)
+		return "", providerUsage{}, fmt.Errorf("decode gemini response: %w", err)
 	}
 	if resp.StatusCode >= 400 || payload.Error.Message != "" {
 		if payload.Error.Message == "" {
 			payload.Error.Message = resp.Status
 		}
-		return "", fmt.Errorf("gemini returned %d: %s", resp.StatusCode, payload.Error.Message)
+		return "", providerUsage{}, fmt.Errorf("gemini returned HTTP %d", resp.StatusCode)
+	}
+
+	usage := providerUsage{Temperature: c.Temperature}
+	if payload.UsageMetadata != nil {
+		usage = providerUsage{
+			InputTokens:  payload.UsageMetadata.PromptTokenCount,
+			OutputTokens: payload.UsageMetadata.CandidatesTokenCount,
+			Measured:     true,
+			Temperature:  c.Temperature,
+		}
 	}
 
 	for _, candidate := range payload.Candidates {
 		for _, part := range candidate.Content.Parts {
 			if strings.TrimSpace(part.Text) != "" {
-				return strings.TrimSpace(stripMarkdownFence(part.Text)), nil
+				return strings.TrimSpace(stripMarkdownFence(part.Text)), usage, nil
 			}
 		}
 	}
-	return "", fmt.Errorf("gemini returned no text candidates")
+	return "", providerUsage{}, fmt.Errorf("gemini returned no text candidates")
 }
 
 func stripMarkdownFence(value string) string {

@@ -1,5 +1,5 @@
 import { Icon } from "@iconify/react";
-import { STATUS_META } from "../../constants/workflowStatus";
+import { isGovernanceBlock, statusMetaFor } from "../../constants/workflowStatus";
 
 const icons = {
   RUNNING: "mdi:play-circle-outline",
@@ -7,14 +7,31 @@ const icons = {
   FAILED: "mdi:alert-circle-outline",
   HEALING: "mdi:shield-refresh-outline",
   PENDING: "mdi:clock-outline",
+  AWAITING_APPROVAL: "mdi:account-check-outline",
+  CANCELLED: "mdi:stop-circle-outline",
+  RECOVERY_REQUIRED: "mdi:help-circle-outline",
+  RECONCILIATION_REQUIRED: "mdi:help-circle-outline",
+  RECONCILED: "mdi:clipboard-check-outline",
+  UNKNOWN: "mdi:help-circle-outline",
 };
 
-function ExecutionStatus({ status }) {
-  const meta = STATUS_META[status] ?? STATUS_META.PENDING;
+/*******************************************************************************
+ * Function: ExecutionStatus
+ *
+ * Performs the Execution Status operation on status for the ExecutionStatus module.
+ ******************************************************************************/
+function ExecutionStatus({ status, failure }) {
+  const blocked = status === "FAILED" && isGovernanceBlock(failure);
+  const meta = statusMetaFor(status, failure);
+  const icon = blocked ? "mdi:shield-alert-outline" : icons[status] ?? "mdi:help-circle-outline";
 
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${meta.color}`}>
-      <Icon icon={icons[status] ?? icons.PENDING} className="h-4 w-4" />
+    <span
+      data-testid="execution-status"
+      data-blocked={blocked ? "true" : "false"}
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${meta.color}`}
+    >
+      <Icon icon={icon} className="h-4 w-4" />
       {meta.label}
     </span>
   );

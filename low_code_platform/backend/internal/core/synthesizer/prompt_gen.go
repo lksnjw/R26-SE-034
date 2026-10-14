@@ -1,43 +1,20 @@
 package synthesizer
 
 import (
+	"encoding/json"
 	"fmt"
-	"strings"
 )
 
-type PromptBuilder struct {
-	SkillCatalog []string
-}
+type PromptBuilder struct{}
 
-func NewPromptBuilder() PromptBuilder {
-	return PromptBuilder{
-		SkillCatalog: []string{
-			"fetch_attendance",
-			"create_leave",
-			"classify_invoice",
-			"policy_check",
-			"refresh_connector",
-			"notify_finance",
-			"create_invoice",
-			"fetch_supplier",
-			"send_webhook",
-		},
-	}
-}
+const workflowSchemaAndExamples = `WORKFLOW YAML CONTRACT:
+- Emit YAML only. Do not emit prose or markdown fences.
+- The top-level fields are exactly: name, description, trigger, steps, metadata.
+- Each step may contain only: id, type, action, parameters, condition, onError, retryCount, description.
+- Use only tool names listed under EXECUTABLE TOOLS or RETRIEVED FOCUS.
+- Include every required parameter listed for each selected tool.
 
-func (b PromptBuilder) Build(userPrompt, mode string, context map[string]interface{}) string {
-	if mode == "" {
-		mode = "balanced"
-	}
-
-	return fmt.Sprintf(`You are the Agentic Workflow Engine synthesis agent.
-
-Return ONLY valid YAML. Do not use markdown fences. Do not explain.
-
-Allowed actions:
-%s
-
-Required YAML schema:
+Required YAML shape:
 name: string
 description: string
 trigger:
@@ -46,60 +23,91 @@ trigger:
   config: object
 steps:
   - id: string
-    action: string
+    type: tool
+    action: exact.registered.tool.name
     parameters: object
-    retryCount: number
+    condition: string
     onError: string
+    retryCount: number
+    description: string
+metadata: object
+
+STATIC EXAMPLE 1 - valid single-step shape:
+name: echo_request
+description: Echo a supplied message and amount.
+trigger:
+  type: manual
+  displayName: Manual Trigger
+  config: {}
+steps:
+  - id: echo_request
+    type: tool
+    action: demo.echo
+    parameters:
+      message: "{{input.message}}"
+      amount: "{{input.amount}}"
+    onError: stop
+    retryCount: 1
+    description: Echo the supplied values.
+
+STATIC EXAMPLE 2 - valid step-output reference shape:
+name: classify_and_notify
+description: Classify an invoice and pass the result to a later notification step.
+trigger:
+  type: manual
+  displayName: Manual Trigger
+  config: {}
+steps:
+  - id: classify_invoice_step
+    type: tool
+    action: classify_invoice
+    parameters:
+      invoiceId: "{{input.invoice_id}}"
+    onError: stop
+    retryCount: 1
+    description: Classify the requested invoice.
+  - id: notify_finance_step
+    type: tool
+    action: notify_finance
+    parameters:
+      message: "Invoice classification: {{classify_invoice_step.classification}}"
+    onError: stop
+    retryCount: 1
+    description: Notify finance with the classification.
+
+The examples demonstrate schema and reference syntax only. Never copy an example action unless that exact name is present in the request's executable-tool allowlist.`
+
+func NewPromptBuilder() PromptBuilder {
+	return PromptBuilder{}
+}
+
+func (b PromptBuilder) Build(userPrompt, mode string, context map[string]interface{}) string {
+	if mode == "" {
+		mode = "balanced"
+	}
+	contextJSON, _ := json.MarshalIndent(context, "", "  ")
+	return fmt.Sprintf(`SYSTEM:
+You are the Agentic Workflow Engine synthesis agent.
+
+%s
 
 Governance:
 - Never invent direct ERP database access.
 - Use MCP bridge actions only.
-- Include policy_check before production writes.
-- Include retryCount on external connector calls.
+- Follow the governance rules in RETRIEVED FOCUS.
 
 Mode: %s
-Context: %+v
-User request: %s
-`, "- "+strings.Join(b.SkillCatalog, "\n- "), mode, context, userPrompt)
+
+RETRIEVED FOCUS:
+%s
+
+USER REQUEST:
+%s
+`, workflowSchemaAndExamples, mode, string(contextJSON), redactPromptText(userPrompt))
 }
 
-func FallbackYAML(userPrompt string) string {
-	title := "generated_workflow"
-	if strings.Contains(strings.ToLower(userPrompt), "leave") {
-		title = "leave_approval_workflow"
-	}
-	if strings.Contains(strings.ToLower(userPrompt), "invoice") {
-		title = "invoice_exception_resolver"
-	}
-
-	return fmt.Sprintf(`name: %s
-description: Generated from natural language by the Agentic Orchestrator.
-trigger:
-  type: user.requested
-  displayName: Natural language request
-  config:
-    source: frontend
-steps:
-  - id: classify_intent
-    action: classify_invoice
-    parameters:
-      prompt: %q
-    retryCount: 1
-  - id: policy_guardrail
-    action: policy_check
-    parameters:
-      intent: "{{classify_intent.intent}}"
-    retryCount: 1
-  - id: execute_mcp_action
-    action: fetch_attendance
-    parameters:
-      employeeId: "{{input.employeeId}}"
-    retryCount: 2
-    onError: self_heal
-  - id: notify_owner
-    action: notify_finance
-    parameters:
-      message: Workflow completed safely
-    retryCount: 1
-`, title, userPrompt)
+func (b PromptBuilder) BuildWithRegistryContext(userPrompt, mode string, context map[string]interface{}, _ string) string {
+	// Generated registry Markdown is intentionally not inserted here. Workflow
+	// generation is grounded by the bounded retrieved focus supplied per request.
+	return b.Build(userPrompt, mode, context)
 }

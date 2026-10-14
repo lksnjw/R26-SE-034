@@ -15,6 +15,7 @@ import (
 	"github.com/sanjeewa/agentic-orchestrator/internal/core/semanticsearch"
 	"github.com/sanjeewa/agentic-orchestrator/internal/core/synthesizer"
 	workflowvalidator "github.com/sanjeewa/agentic-orchestrator/internal/core/validator"
+	"github.com/sanjeewa/agentic-orchestrator/internal/repository"
 	"go.uber.org/zap"
 )
 
@@ -143,7 +144,7 @@ steps:
   - id: step_1
     action: procurement.create_purchase_order
 `
-	candidates := synthesizer.ParseCandidateResponse(raw, "gemini-1.5-flash", false)
+	candidates := synthesizer.ParseCandidateResponse(raw, "gemini-2.5-flash", false)
 	if len(candidates) != 2 {
 		t.Fatalf("expected 2 candidates, got %d", len(candidates))
 	}
@@ -327,7 +328,7 @@ steps:
     parameters: {}
 `)
 	defer closeFn()
-	validator := workflowvalidator.NewRegistryValidator(tools, rules)
+	validator := workflowvalidator.NewRegistryValidator(tools, rules, repository.NewStore())
 	orch := orchestrator.NewChatOrchestrator(search, generator, validator)
 
 	response, err := orch.HandleChatMessage(context.Background(), orchestrator.ChatRequest{
@@ -374,8 +375,7 @@ steps:
 
 func newRegistryValidator(t *testing.T) *workflowvalidator.RegistryValidator {
 	t.Helper()
-	bundle := loadRegistryFixture(t)
-	return workflowvalidator.NewRegistryValidator(bundle.Tools, bundle.Rules)
+	return newImplementedRuleRegistryValidator(t)
 }
 
 func loadRegistryFixture(t *testing.T) *coreregistry.Bundle {

@@ -1,7 +1,12 @@
-import { STATUS_META } from "../../constants/workflowStatus";
+import { statusMetaFor } from "../../constants/workflowStatus";
 
+/*******************************************************************************
+ * Function: WorkflowBadge
+ *
+ * Performs the Workflow Badge operation on badge for the WorkflowBadge module.
+ ******************************************************************************/
 function WorkflowBadge({ status }) {
-  const meta = STATUS_META[status] ?? STATUS_META.PENDING;
+  const meta = statusMetaFor(status);
 
   return <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${meta.color}`}>{meta.label}</span>;
 }

@@ -1,6 +1,9 @@
 import { MarkerType } from "@xyflow/react";
+import { readCanvasBlueprint } from "./builderSerialization";
+import { projectStructuredControlFlow } from "./structuredCanvasProjection";
 
 const CANVAS_WORKFLOW_KEY = "workflow.pendingCanvasWorkflow";
+const CHAT_EDIT_KEY = "workflow.pendingChatEdit";
 
 const actionMeta = {
   "procurement.validate_vendor": {
@@ -35,10 +38,69 @@ const actionMeta = {
   },
 };
 
+/*******************************************************************************
+ * Function: saveWorkflowForCanvas
+ *
+ * Saves workflow for canvas for the workflowCanvas utils module.
+ ******************************************************************************/
 export function saveWorkflowForCanvas(payload) {
   localStorage.setItem(CANVAS_WORKFLOW_KEY, JSON.stringify(payload));
 }
 
+/*******************************************************************************
+ * Function: takeWorkflowForCanvas
+ *
+ * Performs the take Workflow For Canvas operation on workflow for canvas for the workflowCanvas utils module.
+ ******************************************************************************/
+// ── Chat-edit round-trip helpers ─────────────────────────────────────────────
+// saveWorkflowForChatEdit: called from canvas when user clicks "Edit in Chat"
+// payload: { yaml, workflowId, workflowName }
+/*******************************************************************************
+ * Function: saveWorkflowForChatEdit
+ *
+ * Saves workflow for chat edit for the workflowCanvas utils module.
+ ******************************************************************************/
+export function saveWorkflowForChatEdit(payload) {
+  localStorage.setItem(CHAT_EDIT_KEY, JSON.stringify(payload));
+}
+
+/*******************************************************************************
+ * Function: takeWorkflowForChatEdit
+ *
+ * Performs the take Workflow For Chat Edit operation on workflow for chat edit for the workflowCanvas utils module.
+ ******************************************************************************/
+export function takeWorkflowForChatEdit() {
+  const raw = localStorage.getItem(CHAT_EDIT_KEY);
+  if (!raw) return null;
+  localStorage.removeItem(CHAT_EDIT_KEY);
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+/*******************************************************************************
+ * Function: peekWorkflowForChatEdit
+ *
+ * Performs the peek Workflow For Chat Edit operation on workflow for chat edit for the workflowCanvas utils module.
+ ******************************************************************************/
+export function peekWorkflowForChatEdit() {
+  const raw = localStorage.getItem(CHAT_EDIT_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+/*******************************************************************************
+ * Function: clearWorkflowForChatEdit
+ *
+ * Clears workflow for chat edit for the workflowCanvas utils module.
+ ******************************************************************************/
+export function clearWorkflowForChatEdit() {
+  localStorage.removeItem(CHAT_EDIT_KEY);
+}
+
+/*******************************************************************************
+ * Function: takeWorkflowForCanvas
+ *
+ * Performs the take Workflow For Canvas operation on workflow for canvas for the workflowCanvas utils module.
+ ******************************************************************************/
 export function takeWorkflowForCanvas() {
   const raw = localStorage.getItem(CANVAS_WORKFLOW_KEY);
   if (!raw) return null;
@@ -51,72 +113,52 @@ export function takeWorkflowForCanvas() {
   }
 }
 
-export function parseWorkflowYaml(yaml = "") {
-  const lines = yaml.split(/\r?\n/);
-  const workflow = { name: "", description: "", steps: [] };
-  let inSteps = false;
-  let currentStep = null;
-  let inParameters = false;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    if (!inSteps && line.startsWith("name:")) {
-      workflow.name = cleanYamlValue(line.slice(5));
-      continue;
-    }
-    if (!inSteps && line.startsWith("description:")) {
-      workflow.description = cleanYamlValue(line.slice(12));
-      continue;
-    }
-    if (line === "steps:") {
-      inSteps = true;
-      continue;
-    }
-    if (!inSteps) continue;
-
-    if (line.startsWith("- id:")) {
-      currentStep = {
-        id: cleanYamlValue(line.slice(5)),
-        action: "",
-        description: "",
-        parameters: {},
-      };
-      workflow.steps.push(currentStep);
-      inParameters = false;
-      continue;
-    }
-    if (!currentStep) continue;
-
-    if (line.startsWith("action:")) {
-      currentStep.action = cleanYamlValue(line.slice(7));
-      continue;
-    }
-    if (line.startsWith("description:")) {
-      currentStep.description = cleanYamlValue(line.slice(12));
-      continue;
-    }
-    if (line.startsWith("parameters:")) {
-      inParameters = true;
-      continue;
-    }
-    if (line.includes(":") && !line.startsWith("retryCount:") && !line.startsWith("onError:")) {
-      const [rawKey, ...rawValue] = line.split(":");
-      const key = rawKey.trim();
-      const value = cleanYamlValue(rawValue.join(":"));
-
-      if (inParameters) {
-        currentStep.parameters[key] = coerceYamlValue(value);
-      }
-    }
-  }
-
-  return workflow;
+export function peekWorkflowForCanvas() {
+  try { return JSON.parse(localStorage.getItem(CANVAS_WORKFLOW_KEY) || "null"); } catch { return null; }
 }
 
+export function clearWorkflowForCanvas(expected) {
+  try {
+    if (JSON.stringify(peekWorkflowForCanvas()) === JSON.stringify(expected)) localStorage.removeItem(CANVAS_WORKFLOW_KEY);
+  } catch { /* Disabled storage must not break a read-only preview. */ }
+}
+
+/*******************************************************************************
+ * Function: parseWorkflowYaml
+ *
+ * Parses workflow yaml for the workflowCanvas utils module.
+ ******************************************************************************/
+export function parseWorkflowYaml(yaml = "") {
+  return readCanvasBlueprint(yaml);
+}
+
+/*******************************************************************************
+ * Function: workflowYamlToCanvas
+ *
+ * Performs the workflow Yaml To Canvas operation on yaml to canvas for the workflowCanvas utils module.
+ ******************************************************************************/
 export function workflowYamlToCanvas(yaml, metadata = {}) {
   const workflow = parseWorkflowYaml(yaml);
+  const structured = projectStructuredControlFlow(workflow, MarkerType.ArrowClosed);
+  if (structured) return {
+    ...structured,
+    workflow: {
+      id: metadata.workflowId ?? null,
+      name: workflow.name || metadata.name || "Generated workflow",
+      description: workflow.description || metadata.description || "",
+      yaml,
+      canvasProfile: structured.profile,
+      candidateId: metadata.candidateId,
+      chatSessionId: metadata.chatSessionId,
+      chatMessageId: metadata.chatMessageId,
+      traceId: metadata.traceId,
+    },
+  };
+/*******************************************************************************
+ * Function: nodes
+ *
+ * Performs the nodes operation on the application for the workflowCanvas utils module.
+ ******************************************************************************/
   const nodes = workflow.steps.map((step, index) => {
     const meta = actionMeta[step.action] ?? {};
     return {
@@ -124,18 +166,24 @@ export function workflowYamlToCanvas(yaml, metadata = {}) {
       type: "erpTool",
       position: { x: 120 + index * 330, y: index % 2 === 0 ? 160 : 330 },
       data: {
-        label: meta.label ?? humanizeAction(step.action),
-        action: step.action,
-        description: step.description || humanizeAction(step.action),
+        label: meta.label ?? (step.description?.trim() || humanizeAction(step.action ?? step.kind)),
+        action: step.action ?? step.kind ?? "Unsupported node",
+        description: step.description ?? "",
+        source: step,
         iconKey: meta.iconKey ?? "Database",
         role: meta.role ?? "system",
         status: "idle",
         tone: meta.tone ?? "blue",
-        parameters: step.parameters,
+        parameters: step.parameters ?? {},
       },
     };
   });
 
+/*******************************************************************************
+ * Function: edges
+ *
+ * Performs the edges operation on the application for the workflowCanvas utils module.
+ ******************************************************************************/
   const edges = nodes.slice(1).map((node, index) => ({
     id: `edge-${nodes[index].id}-${node.id}`,
     source: nodes[index].id,
@@ -149,25 +197,43 @@ export function workflowYamlToCanvas(yaml, metadata = {}) {
     nodes,
     edges,
     workflow: {
+      id: metadata.workflowId ?? null,
       name: workflow.name || metadata.name || "Generated workflow",
       description: workflow.description || metadata.description || "",
       yaml,
       candidateId: metadata.candidateId,
+      chatSessionId: metadata.chatSessionId,
+      chatMessageId: metadata.chatMessageId,
+      traceId: metadata.traceId,
     },
   };
 }
 
-function cleanYamlValue(value = "") {
-  return value.trim().replace(/^["']|["']$/g, "");
+/*******************************************************************************
+ * Function: workflowCreationPayload
+ *
+ * Performs the workflow Creation Payload operation on creation payload for the workflowCanvas utils module.
+ ******************************************************************************/
+export function workflowCreationPayload(workflow, yaml) {
+  return {
+    name: workflow.name,
+    description: workflow.description,
+    yaml,
+    ...(workflow.chatSessionId && workflow.chatMessageId
+      ? {
+          chatSessionId: workflow.chatSessionId,
+          chatMessageId: workflow.chatMessageId,
+        }
+      : {}),
+    ...(workflow.traceId ? { traceId: workflow.traceId } : {}),
+  };
 }
 
-function coerceYamlValue(value) {
-  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
-  if (value === "true") return true;
-  if (value === "false") return false;
-  return value;
-}
-
+/*******************************************************************************
+ * Function: humanizeAction
+ *
+ * Provides a readable display label without changing executable tool names.
+ ******************************************************************************/
 function humanizeAction(action = "") {
   return action
     .split(".")

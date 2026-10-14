@@ -1,18 +1,31 @@
 import { useState, useRef } from "react";
 import { Icon } from "@iconify/react";
+import { useQuery } from "@tanstack/react-query";
 import Breadcrumb from "./Breadcrumb";
 import CommandPalette from "./CommandPalette";
 import { appConfig } from "../../config/app";
 import { useTheme } from "../../context/ThemeContext";
-import { useNotifications } from "../../context/NotificationContext";
+import NotificationsMenu from "./NotificationsMenu";
 import { useAuthContext } from "../../context/AuthContext";
 import { useClickOutside } from "../../hooks/useClickOutside";
+import { apiClient } from "../../config/axios";
+import { BrandMark } from "../brand/BrandLogo";
 
+/*******************************************************************************
+ * Function: UserMenu
+ *
+ * Performs the User Menu operation on menu for the Topbar module.
+ ******************************************************************************/
 function UserMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useClickOutside(ref, () => setOpen(false));
 
+/*******************************************************************************
+ * Function: initials
+ *
+ * Performs the initials operation on the application for the Topbar module.
+ ******************************************************************************/
   const initials = user?.name
     ? user.name
         .split(" ")
@@ -87,17 +100,34 @@ function UserMenu({ user, onLogout }) {
   );
 }
 
+/*******************************************************************************
+ * Function: Topbar
+ *
+ * Performs the Topbar operation on the application for the Topbar module.
+ ******************************************************************************/
 function Topbar() {
   const { isDarkMode, toggleTheme } = useTheme();
-  const { notify } = useNotifications();
   const { user, logout } = useAuthContext();
+/*******************************************************************************
+ * Function: environmentQuery
+ *
+ * Performs the environment Query operation on query for the Topbar module.
+ ******************************************************************************/
+  const environmentQuery = useQuery({
+    queryKey: ["runtime-environment"],
+    queryFn: async () => (await apiClient.get("/health")).data?.data ?? {},
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+  const environment = environmentQuery.data?.environment;
+  const mockERP = environmentQuery.data?.mcpBackend === "mock-erp";
 
   return (
     <header className="flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3 transition-colors duration-200 dark:border-darkBackgroundVery dark:bg-darkBackground sm:px-6">
       <div className="min-w-0 flex-1 sm:flex-none">
         <div className="flex items-center gap-4">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-panel">
-            <Icon icon="tabler:git-branch" className="h-5 w-5" />
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-white">
+            <BrandMark size={27} />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -107,6 +137,18 @@ function Topbar() {
               <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-darkBackgroundVery dark:bg-darkBackgroundVery dark:text-gray-300">
                 v{appConfig.version}
               </span>
+              {environment ? (
+                <span
+                  data-testid="environment-badge"
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ${
+                    mockERP
+                      ? "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
+                      : "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"
+                  }`}
+                >
+                  {environment}{mockERP ? " · Mock ERP" : ""}
+                </span>
+              ) : null}
             </div>
             <Breadcrumb />
           </div>
@@ -127,17 +169,7 @@ function Topbar() {
             className="h-5 w-5"
           />
         </button>
-        <button
-          type="button"
-          className="icon-button relative hidden sm:flex"
-          aria-label="Notifications"
-          onClick={() => notify("No critical alerts. Live log stream is healthy.")}
-        >
-          <Icon icon="mdi:bell-outline" className="h-5 w-5" />
-          <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border-2 border-white bg-red-500 text-[10px] font-bold text-white dark:border-gray-900">
-            3
-          </span>
-        </button>
+        <NotificationsMenu user={user} />
 
         <UserMenu user={user} onLogout={logout} />
       </div>

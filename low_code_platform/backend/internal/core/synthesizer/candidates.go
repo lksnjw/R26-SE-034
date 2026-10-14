@@ -2,14 +2,36 @@ package synthesizer
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/sanjeewa/agentic-orchestrator/internal/core/registry"
 )
+
+const (
+	candidatePromptTemplateVersion = "prompt/candidate/v1"
+	maxPromptTools            = 10
+	maxPromptRules            = 15
+	maxPromptGlobalRules      = 8
+	maxPromptTemplates        = 5
+	maxPromptExamples         = 3
+	maxPromptDescriptionRunes = 600
+	maxPromptInstructionRunes = 600
+	maxRepairErrors           = 12
+	maxRepairErrorRunes       = 500
+	maxRejectedYAMLRunes      = 8000
+)
+
+type CandidateRepairFeedback struct {
+	RejectedYAML     string
+	ValidationErrors []string
+}
 
 type CandidateGenerationRequest struct {
 	Prompt             string
@@ -24,6 +46,8 @@ type CandidateGenerationRequest struct {
 	GlobalRules        []registry.Rule
 	Templates          []registry.ProcessTemplate
 	Examples           []registry.FewShotExample
+	RegistryContext    string
+	Repair             *CandidateRepairFeedback
 }
 
 type WorkflowCandidate struct {
@@ -41,27 +65,42 @@ func (s *Service) GenerateCandidates(ctx context.Context, req CandidateGeneratio
 	if req.CandidateCount > 5 {
 		req.CandidateCount = 5
 	}
-
+	if req.Repair != nil {
+		req.CandidateCount = 1
+	}
+	req = boundCandidateRequest(req)
 	prompt := s.Prompt.BuildCandidatePrompt(req)
-	raw, provider, err := s.generate(ctx, prompt, req.Model)
+	promptDigest := sha256.Sum256([]byte(prompt))
+	promptSHA256 := "sha256:" + hex.EncodeToString(promptDigest[:])
+	raw, provider, model, usage, err := s.generateWithUsage(ctx, prompt, req.Model)
 	if err != nil {
 		return nil, err
 	}
-	candidates := ParseCandidateResponse(raw, s.modelName(provider), false)
+	toolCount, ruleCount := promptContextCounts(req)
+	s.logPromptUsage("workflow_candidate_generation", provider, model, usage, len(prompt), toolCount, ruleCount)
+	candidates := ParseCandidateResponse(raw, model, false)
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("gemini returned no parseable YAML candidates")
 	}
-	return limitCandidates(candidates, req.CandidateCount), nil
-}
-
-func (s *Service) modelName(provider string) string {
-	if strings.EqualFold(provider, "gemini") && s.Gemini != nil {
-		return s.Gemini.Model
+	candidates = limitCandidates(candidates, req.CandidateCount)
+	for index := range candidates {
+		if candidates[index].GenerationMetadata == nil {
+			candidates[index].GenerationMetadata = map[string]interface{}{}
+		}
+		candidates[index].GenerationMetadata["inputTokens"] = usage.InputTokens
+		candidates[index].GenerationMetadata["outputTokens"] = usage.OutputTokens
+		candidates[index].GenerationMetadata["costUsd"] = 0.0
+		candidates[index].GenerationMetadata["measured"] = usage.Measured
+		candidates[index].GenerationMetadata["temperature"] = usage.Temperature
+		candidates[index].GenerationMetadata["provider"] = provider
+		candidates[index].GenerationMetadata["model"] = model
+		candidates[index].GenerationMetadata["promptToolCount"] = toolCount
+		candidates[index].GenerationMetadata["promptRuleCount"] = ruleCount
+		candidates[index].GenerationMetadata["promptTemplateVersion"] = candidatePromptTemplateVersion
+		candidates[index].GenerationMetadata["promptSha256"] = promptSHA256
+		candidates[index].GenerationMetadata["generationAttempt"] = generationAttempt(req)
 	}
-	if s.Ollama != nil {
-		return s.Ollama.Model
-	}
-	return provider
+	return candidates, nil
 }
 
 func (b PromptBuilder) BuildCandidatePrompt(req CandidateGenerationRequest) string {
@@ -85,23 +124,20 @@ func (b PromptBuilder) BuildCandidatePrompt(req CandidateGenerationRequest) stri
 
 	ruleSummaries := make([]map[string]interface{}, 0, len(req.Rules)+len(req.GlobalRules))
 	for _, rule := range append(req.Rules, req.GlobalRules...) {
-		ruleSummaries = append(ruleSummaries, map[string]interface{}{
-			"rule_id":                rule.RuleID,
-			"rule_name":              rule.RuleName,
-			"description":            rule.Description,
-			"applies_to_tools":       rule.AppliesToTools,
-			"enforcement_action":     rule.EnforcementAction,
-			"severity":               rule.Severity,
-			"llm_prompt_instruction": rule.LLMPromptInstruction,
-		})
+		ruleSummaries = append(ruleSummaries, promptRuleSummary(rule))
+	}
+	templateSummaries := make([]map[string]interface{}, 0, len(req.Templates))
+	for _, template := range req.Templates {
+		templateSummaries = append(templateSummaries, promptTemplateSummary(template))
 	}
 
 	executableJSON, _ := json.MarshalIndent(executableSummaries, "", "  ")
 	missingSchemaJSON, _ := json.MarshalIndent(missingSchemaSummaries, "", "  ")
 	futureJSON, _ := json.MarshalIndent(futureSummaries, "", "  ")
 	rulesJSON, _ := json.MarshalIndent(ruleSummaries, "", "  ")
-	templateJSON, _ := json.MarshalIndent(limitTemplates(req.Templates, 5), "", "  ")
-	examples := buildFewShotExamples(req.Examples, executableTools, 5)
+	templateJSON, _ := json.MarshalIndent(templateSummaries, "", "  ")
+	examples := buildFewShotExamples(req.Examples, executableTools, maxPromptExamples)
+	repairSection := buildRepairSection(req.Repair)
 
 	return fmt.Sprintf(`SYSTEM:
 You are an enterprise YAML workflow blueprint generator for a legacy ERP orchestration system.
@@ -115,6 +151,7 @@ The Go backend validator is the only authority for validation and execution elig
 
 STRICT RULES:
 - Only tools listed under EXECUTABLE TOOLS may appear in steps.action.
+- use only these tool names; do not invent tools; include every required parameter.
 - Tools listed under MISSING SCHEMA TOOLS must not appear in steps.action.
 - Tools listed under FUTURE CAPABILITIES must not appear in steps.action.
 - Do not invent actions, tool names, parameters, approvals, or audit tools.
@@ -130,11 +167,30 @@ STRICT RULES:
 - If a required parameter is unknown, use a safe placeholder like "{{input.vendor_id}}" instead of inventing confidential data.
 - If EXECUTABLE TOOLS is empty, generate a capability-request workflow only when capability.create_capability_request is in EXECUTABLE TOOLS; otherwise generate no executable business workflow.
 
-USER ROLE:
 %s
 
-USER REQUEST:
-%s
+RETURN FORMAT:
+--- candidate_1 ---
+name: ...
+description: ...
+trigger:
+  type: manual
+  displayName: Manual Trigger
+  config: {}
+steps:
+  - id: step_1
+    type: tool
+    action: exact.registered.tool
+    description: ...
+    parameters: {}
+    condition: ""
+    retryCount: 1
+    onError: stop
+
+--- candidate_2 ---
+...
+
+RETRIEVED FOCUS:
 
 EXECUTABLE TOOLS:
 Only these tools may be used in steps.action.
@@ -157,40 +213,30 @@ RELEVANT PROCESS TEMPLATES:
 FEW-SHOT EXAMPLES:
 %s
 
-OUTPUT YAML SCHEMA FOR EACH CANDIDATE:
-name: string
-description: string
-trigger:
-  type: string
-  displayName: string
-  config: object
-steps:
-  - id: string
-    action: string
-    parameters: object
-    retryCount: number
-    onError: string
-    description: string
+%s
 
-RETURN FORMAT:
---- candidate_1 ---
-name: ...
-description: ...
-trigger:
-  type: manual
-  displayName: Manual Trigger
-  config: {}
-steps:
-  - id: step_1
-    action: exact.registered.tool
-    description: ...
-    parameters: {}
-    retryCount: 1
-    onError: stop
+USER ROLE:
+%s
 
---- candidate_2 ---
-...
-`, req.CandidateCount, req.UserRole, redactPromptText(req.Prompt), string(executableJSON), string(missingSchemaJSON), string(futureJSON), string(rulesJSON), string(templateJSON), examples)
+USER REQUEST:
+%s
+`, req.CandidateCount, workflowSchemaAndExamples, string(executableJSON), string(missingSchemaJSON), string(futureJSON), string(rulesJSON), string(templateJSON), examples, repairSection, req.UserRole, redactPromptText(req.Prompt))
+}
+
+func toolDomains(tools []registry.Tool) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, tool := range tools {
+		domain := strings.TrimSpace(tool.Module)
+		key := strings.ToLower(domain)
+		if domain == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, domain)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
+	return out
 }
 
 func ParseCandidateResponse(raw, model string, fallback bool) []WorkflowCandidate {
@@ -271,16 +317,162 @@ func limitTemplates(templates []registry.ProcessTemplate, max int) []registry.Pr
 	return templates[:max]
 }
 
+func boundCandidateRequest(req CandidateGenerationRequest) CandidateGenerationRequest {
+	remainingTools := maxPromptTools
+	req.Tools = limitTools(uniqueTools(req.Tools), remainingTools)
+	remainingTools -= len(req.Tools)
+	req.MissingSchemaTools = limitTools(uniqueTools(req.MissingSchemaTools), remainingTools)
+	remainingTools -= len(req.MissingSchemaTools)
+	req.FutureCapabilities = limitTools(uniqueTools(req.FutureCapabilities), remainingTools)
+	req.GlobalRules = limitRules(uniqueRules(req.GlobalRules), maxPromptGlobalRules)
+	req.Rules = limitRules(uniqueRules(req.Rules), maxPromptRules-len(req.GlobalRules))
+	req.Templates = limitTemplates(req.Templates, maxPromptTemplates)
+	if len(req.Examples) > maxPromptExamples {
+		req.Examples = req.Examples[:maxPromptExamples]
+	}
+	// The generated Markdown contains the full registry when no domain is
+	// selected. Candidate generation uses only the bounded retrieved objects.
+	req.RegistryContext = ""
+	if req.Repair != nil {
+		repair := &CandidateRepairFeedback{
+			RejectedYAML: truncateRunes(redactPromptText(req.Repair.RejectedYAML), maxRejectedYAMLRunes),
+		}
+		seen := map[string]bool{}
+		for _, item := range req.Repair.ValidationErrors {
+			item = truncateRunes(redactPromptText(strings.TrimSpace(item)), maxRepairErrorRunes)
+			if item == "" || seen[item] {
+				continue
+			}
+			seen[item] = true
+			repair.ValidationErrors = append(repair.ValidationErrors, item)
+			if len(repair.ValidationErrors) == maxRepairErrors {
+				break
+			}
+		}
+		req.Repair = repair
+	}
+	return req
+}
+
+func promptContextCounts(req CandidateGenerationRequest) (int, int) {
+	executable, missing, future := splitPromptTools(req)
+	return len(executable) + len(missing) + len(future), len(req.Rules) + len(req.GlobalRules)
+}
+
+func generationAttempt(req CandidateGenerationRequest) string {
+	if req.Repair != nil {
+		return "repair"
+	}
+	return "initial"
+}
+
+func buildRepairSection(repair *CandidateRepairFeedback) string {
+	if repair == nil {
+		return "GENERATION ATTEMPT:\nInitial generation."
+	}
+	var b strings.Builder
+	b.WriteString("GENERATION ATTEMPT:\nThis is the single bounded repair attempt. Correct the rejected candidate using every specific validator error below. Do not repeat an invalid field or tool.\n\nREJECTED CANDIDATE YAML:\n")
+	b.WriteString(repair.RejectedYAML)
+	b.WriteString("\n\nVALIDATOR ERRORS:\n")
+	if len(repair.ValidationErrors) == 0 {
+		b.WriteString("- The candidate did not pass the full registry gate.\n")
+	} else {
+		for _, item := range repair.ValidationErrors {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+	}
+	b.WriteString("\nReturn exactly one corrected candidate and no explanation.")
+	return b.String()
+}
+
+func limitTools(items []registry.Tool, max int) []registry.Tool {
+	if max <= 0 {
+		return nil
+	}
+	if len(items) <= max {
+		return items
+	}
+	return items[:max]
+}
+
+func uniqueRules(items []registry.Rule) []registry.Rule {
+	seen := map[string]bool{}
+	out := make([]registry.Rule, 0, len(items))
+	for _, item := range items {
+		key := strings.ToLower(strings.TrimSpace(item.RuleID))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func limitRules(items []registry.Rule, max int) []registry.Rule {
+	if max <= 0 {
+		return nil
+	}
+	if len(items) <= max {
+		return items
+	}
+	return items[:max]
+}
+
+func limitStrings(items []string, max int) []string {
+	if max <= 0 {
+		return nil
+	}
+	if len(items) <= max {
+		return append([]string(nil), items...)
+	}
+	return append([]string(nil), items[:max]...)
+}
+
+func truncateRunes(value string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	return string(runes[:max])
+}
+
 func promptToolSummary(tool registry.Tool) map[string]interface{} {
 	return map[string]interface{}{
 		"name":                tool.Name,
-		"description":         tool.Description,
-		"required_parameters": tool.RequiredParameters,
-		"optional_parameters": tool.OptionalParameters,
-		"allowed_roles":       tool.AllowedRoles,
+		"description":         truncateRunes(tool.Description, maxPromptDescriptionRunes),
+		"required_parameters": append([]string(nil), tool.RequiredParameters...),
+		"optional_parameters": limitStrings(tool.OptionalParameters, 20),
+		"allowed_roles":       limitStrings(tool.AllowedRoles, 20),
 		"risk_level":          tool.RiskLevel,
 		"status":              tool.Status,
-		"current_gaps":        tool.CurrentGaps,
+		"current_gaps":        limitStrings(tool.CurrentGaps, 10),
+	}
+}
+
+func promptRuleSummary(rule registry.Rule) map[string]interface{} {
+	return map[string]interface{}{
+		"rule_id":                rule.RuleID,
+		"rule_name":              truncateRunes(rule.RuleName, maxPromptDescriptionRunes),
+		"description":            truncateRunes(rule.Description, maxPromptDescriptionRunes),
+		"applies_to_tools":       limitStrings(rule.AppliesToTools, maxPromptTools),
+		"enforcement_action":     rule.EnforcementAction,
+		"severity":               rule.Severity,
+		"llm_prompt_instruction": truncateRunes(rule.LLMPromptInstruction, maxPromptInstructionRunes),
+	}
+}
+
+func promptTemplateSummary(template registry.ProcessTemplate) map[string]interface{} {
+	return map[string]interface{}{
+		"template_id":      template.TemplateID,
+		"template_name":    truncateRunes(template.TemplateName, maxPromptDescriptionRunes),
+		"description":      truncateRunes(template.Description, maxPromptDescriptionRunes),
+		"required_tools":   limitStrings(template.RequiredTools, maxPromptTools),
+		"required_rules":   limitStrings(template.RequiredRules, maxPromptRules),
+		"validation_focus": limitStrings(template.ValidationFocus, 10),
 	}
 }
 
@@ -337,14 +529,14 @@ func buildFewShotExamples(examples []registry.FewShotExample, tools []registry.T
 	var b strings.Builder
 	for index, example := range selected {
 		fmt.Fprintf(&b, "Example %d - Valid executable workflow:\n", index+1)
-		fmt.Fprintf(&b, "User request:\n%s\n\n", redactPromptText(example.UserRequest))
+		fmt.Fprintf(&b, "User request:\n%s\n\n", truncateRunes(redactPromptText(example.UserRequest), maxPromptDescriptionRunes))
 		fmt.Fprintf(&b, "User role:\n%s\n\n", firstNonEmpty(example.UserRole, "authenticated_user"))
 		fmt.Fprintf(&b, "Available executable tools:\n")
-		for _, tool := range example.ExpectedTools {
+		for _, tool := range limitStrings(example.ExpectedTools, maxPromptTools) {
 			fmt.Fprintf(&b, "- %s\n", tool)
 		}
 		fmt.Fprintf(&b, "\nRelevant rules:\n")
-		for _, rule := range example.ExpectedRules {
+		for _, rule := range limitStrings(example.ExpectedRules, maxPromptRules) {
 			fmt.Fprintf(&b, "- %s\n", rule)
 		}
 		fmt.Fprintf(&b, "\nExpected YAML shape:\n")
@@ -354,17 +546,19 @@ func buildFewShotExamples(examples []registry.FewShotExample, tools []registry.T
 		for stepIndex, toolName := range example.ExpectedTools {
 			tool := toolLookup[strings.ToLower(toolName)]
 			fmt.Fprintf(&b, "  - id: step_%d\n", stepIndex+1)
+			fmt.Fprintf(&b, "    type: tool\n")
 			fmt.Fprintf(&b, "    action: %s\n", toolName)
 			fmt.Fprintf(&b, "    description: %q\n", "Execute "+toolName)
-			fmt.Fprintf(&b, "    parameters:\n")
+			fmt.Fprintf(&b, "    parameters:")
 			if len(tool.RequiredParameters) == 0 {
-				fmt.Fprintf(&b, "      request: %q\n", example.UserRequest)
+				fmt.Fprintf(&b, " {}\n")
 			} else {
+				fmt.Fprintf(&b, "\n")
 				for _, param := range tool.RequiredParameters {
 					fmt.Fprintf(&b, "      %s: %s\n", param, yamlScalar(exampleValueForParam(example.UserRequest, param)))
 				}
 			}
-			fmt.Fprintf(&b, "    retryCount: 1\n    onError: stop\n")
+			fmt.Fprintf(&b, "    condition: \"\"\n    retryCount: 1\n    onError: stop\n")
 		}
 		fmt.Fprintf(&b, "\nWhy it is valid:\nAll steps use executable tools from the provided allowlist, required parameters are present, and relevant rules are represented without inventing unavailable capabilities.\n\n")
 	}
@@ -437,147 +631,9 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func buildFallbackCandidates(req CandidateGenerationRequest, model string, cause error) []WorkflowCandidate {
-	if req.CandidateCount <= 0 {
-		req.CandidateCount = 5
-	}
-	selected := chooseFallbackTools(req.Tools)
-	if len(selected) == 0 {
-		selected = []registry.Tool{{
-			Name:               "capability.create_capability_request",
-			RequiredParameters: []string{"requested_capability", "business_reason"},
-			RiskLevel:          "low",
-		}}
-	}
-
-	out := make([]WorkflowCandidate, 0, req.CandidateCount)
-	for i := 1; i <= req.CandidateCount; i++ {
-		out = append(out, WorkflowCandidate{
-			CandidateID: fmt.Sprintf("candidate_%d", i),
-			RawYAML:     fallbackCandidateYAML(req, selected, i),
-			ModelName:   model,
-			GenerationMetadata: map[string]interface{}{
-				"fallback": true,
-				"format":   "deterministic",
-				"error":    errorText(cause),
-			},
-		})
-	}
-	return out
-}
-
-func chooseFallbackTools(tools []registry.Tool) []registry.Tool {
-	out := []registry.Tool{}
-	names := map[string]bool{}
-	preferred := []string{
-		"policy.check_policy_limit",
-		"procurement.validate_vendor",
-		"procurement.create_purchase_order",
-		"approval.request_human_approval",
-		"audit.write_audit_log",
-	}
-	for _, name := range preferred {
-		for _, tool := range tools {
-			if !isExecutableTool(tool) {
-				continue
-			}
-			if strings.EqualFold(tool.Name, name) && !names[strings.ToLower(tool.Name)] {
-				out = append(out, tool)
-				names[strings.ToLower(tool.Name)] = true
-			}
-		}
-	}
-	if len(out) > 0 {
-		return out
-	}
-	for _, tool := range tools {
-		if !isExecutableTool(tool) {
-			continue
-		}
-		if !names[strings.ToLower(tool.Name)] {
-			out = append(out, tool)
-			names[strings.ToLower(tool.Name)] = true
-		}
-		if len(out) == 4 {
-			break
-		}
-	}
-	return out
-}
-
 func isExecutableTool(tool registry.Tool) bool {
 	status := strings.ToLower(strings.TrimSpace(tool.Status))
 	return status == "" || status == "active_mcp_schema_present"
-}
-
-func fallbackCandidateYAML(req CandidateGenerationRequest, tools []registry.Tool, index int) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "name: chat_generated_workflow_%d\n", index)
-	fmt.Fprintf(&b, "description: Generated workflow candidate for the chat request.\n")
-	fmt.Fprintf(&b, "trigger:\n  type: user.requested\n  displayName: Chat request\n  config:\n    mode: %s\n", req.Mode)
-	fmt.Fprintf(&b, "steps:\n")
-	for stepIndex, tool := range tools {
-		fmt.Fprintf(&b, "  - id: step_%d_%s\n", stepIndex+1, safeID(tool.Name))
-		fmt.Fprintf(&b, "    action: %s\n", tool.Name)
-		fmt.Fprintf(&b, "    parameters:\n")
-		params := fallbackParams(req.Prompt, tool)
-		if len(params) == 0 {
-			fmt.Fprintf(&b, "      request: %q\n", req.Prompt)
-		} else {
-			for _, param := range tool.RequiredParameters {
-				fmt.Fprintf(&b, "      %s: %s\n", param, yamlScalar(params[param]))
-			}
-		}
-		fmt.Fprintf(&b, "    retryCount: 1\n")
-		fmt.Fprintf(&b, "    onError: self_heal\n")
-		fmt.Fprintf(&b, "    description: %q\n", "Execute "+tool.DisplayName)
-	}
-	return b.String()
-}
-
-func fallbackParams(prompt string, tool registry.Tool) map[string]interface{} {
-	params := map[string]interface{}{}
-	vendor := firstMatch(prompt, `(?i)\bV[-_ ]?\d+\b`)
-	quantity := firstNumber(prompt)
-	item := "requested_item"
-	if strings.Contains(strings.ToLower(prompt), "laptop") {
-		item = "laptops"
-	}
-	for _, param := range tool.RequiredParameters {
-		switch strings.ToLower(param) {
-		case "vendor_id":
-			if vendor == "" {
-				vendor = "{{input.vendor_id}}"
-			}
-			params[param] = strings.ReplaceAll(vendor, " ", "-")
-		case "item_id", "item_code":
-			params[param] = item
-		case "quantity", "received_quantity":
-			if quantity == 0 {
-				quantity = 1
-			}
-			params[param] = quantity
-		case "policy_domain":
-			params[param] = tool.Module
-		case "approval_reason":
-			params[param] = "Policy threshold or risk control required."
-		case "approver_role":
-			params[param] = "manager"
-		case "event_type":
-			params[param] = "workflow.generated"
-		case "actor_role":
-			params[param] = "{{input.user_role}}"
-		case "decision":
-			params[param] = "candidate_selected"
-		case "requested_capability":
-			params[param] = "missing_workflow_tool"
-		case "business_reason":
-			params[param] = prompt
-		default:
-			params[param] = "{{input." + param + "}}"
-		}
-	}
-	return params
 }
 
 func firstMatch(value, pattern string) string {
@@ -620,13 +676,6 @@ func limitCandidates(candidates []WorkflowCandidate, max int) []WorkflowCandidat
 		return candidates
 	}
 	return candidates[:max]
-}
-
-func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 func redactPromptText(value string) string {

@@ -2,6 +2,11 @@ import ChatSessionItem from "./ChatSessionItem";
 import Button from "../shared/ui/Button";
 import { Icon } from "@iconify/react";
 
+/*******************************************************************************
+ * Function: ChatHistory
+ *
+ * Performs the Chat History operation on history for the ChatHistory module.
+ ******************************************************************************/
 function ChatHistory({
   sessions,
   activeSessionId,
@@ -11,6 +16,7 @@ function ChatHistory({
   onRename,
   loading,
   error,
+  onRetry,
 }) {
   return (
     <aside className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-darkBackground">
@@ -27,7 +33,12 @@ function ChatHistory({
         </button>
       </div>
 
-      {error ? <p className="mt-3 text-xs font-medium text-red-600">{error}</p> : null}
+      {error ? (
+        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+          <p className="font-semibold">Could not load chat sessions.</p>
+          {onRetry ? <button type="button" onClick={onRetry} className="mt-2 font-bold underline">Try again</button> : null}
+        </div>
+      ) : null}
 
       <div className="mt-4 space-y-1.5">
         {loading ? (
