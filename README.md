@@ -8,7 +8,7 @@ workflow automation without invasive changes to the ERP core.
 
 <p align="center">
   <a href="https://lksnjw.github.io/r26-se-034-research-website/dist/index.html">
-    <img src="./docs/assets/research-website-preview.png" width="100%" alt="Preview of the R26-SE-034 research website home page">
+    <img src="./docs/assets/ai-erp-integration-hero.png" width="100%" alt="Conceptual visual of governed AI, secure middleware, low-code workflows, and semantic data connected around a traditional ERP">
   </a>
 </p>
 
@@ -441,6 +441,16 @@ not inferred from the older Go experiment table.
 | ERPBridge portal | [Open Toolplane](https://toolplane.nimendra.online/) |
 | Local workflow demo launcher | [`scripts/start-mock-demo.ps1`](./low_code_platform/scripts/start-mock-demo.ps1) |
 | Policy-gate demo | [`src/static/demo.html`](./FineTuneModel/Rag/rag-system/src/static/demo.html) |
+
+### Live website preview
+
+<p align="center">
+  <a href="https://lksnjw.github.io/r26-se-034-research-website/dist/index.html">
+    <img src="./docs/assets/research-website-preview.png" width="100%" alt="Preview of the R26-SE-034 research website home page">
+  </a>
+</p>
+
+[Open the live research website](https://lksnjw.github.io/r26-se-034-research-website/dist/index.html)
 
 ### System architecture
 
