@@ -1,0 +1,142 @@
+ERP document 'travel_claim_policy.pdf' is categorized as policy_document. The source format is pdf. Extracted content: Travel Claim and Expense Submission Policy
+Document ID: FIN-TRV-POL-2026-001
+Department: Finance Operations
+Process Area: Travel Permit and Expense Claims
+Version: 1.0
+Effective Date: 01 January 2026
+Document Owner: Finance Control Unit
+1. Purpose
+This policy defines the required procedure for submitting, reviewing, approving, and
+reimbursing employee travel-related expenses. The policy applies to all employees who
+travel for official business purposes and submit claims through the organization’s ERP-
+based travel and finance process.
+The objective of this policy is to ensure that all travel claims are accurate, properly
+supported by evidence, approved by the correct authority, and recorded in the finance
+system before reimbursement is made.
+2. Scope
+This policy applies to the following travel-related expense categories:
+- Domestic business travel
+- International business travel
+- Prepaid travel expenses
+- Accommodation expenses
+- Meal allowances
+- Local transport and taxi charges
+- Air tickets, train tickets, and bus tickets
+- Visa, permit, and official travel documentation costs
+- Other approved business travel expenses
+This policy does not apply to personal travel, non-business expenses, entertainment
+expenses without approval, or expenses that are not supported by valid documentation.
+3. Travel Request Requirement
+Before an employee begins official travel, a travel permit or travel request must be created
+in the ERP system. The request must include:
+- Employee name and employee ID
+- Department or cost center
+- Travel destination
+- Travel purpose
+- Start date and end date
+- Estimated travel cost
+- Budget number or project code
+- Required approval authority
+Travel expenses submitted without a valid travel request or travel permit may be rejected
+unless exceptional approval is provided by the Finance Manager.
+4. Claim Submission Rules
+Employees must submit travel claims within 14 calendar days after completing the travel.
+Late submissions require a justification and may require additional approval.
+Each travel claim must include:
+- Claim reference number
+- Related travel permit number
+- Employee ID
+- Expense date
+- Expense category
+- Claimed amount
+- Currency
+- Receipt or invoice reference
+- Business justification
+- Cost center or budget code
+Claims must be submitted through the ERP system. Email-based or paper-based
+submissions are not accepted unless the ERP system is temporarily unavailable.
+5. Supporting Documents
+The following supporting documents are required:
+- Hotel invoice for accommodation claims
+- Transport receipt for taxi, train, bus, or parking claims
+- Air ticket invoice and boarding pass for flight claims
+- Meal receipt if actual meal cost is claimed
+- Visa or permit receipt where applicable
+- Approved travel permit for all travel-related claims
+Scanned documents must be clear and readable. If the receipt is unclear, incomplete, or
+missing, the Finance Officer may request clarification or reject the claim.
+6. Approval Workflow
+The standard approval workflow is as follows:
+Step 1: Employee submits travel claim.
+Step 2: Line Manager reviews business purpose and confirms travel relevance.
+Step 3: Budget Owner verifies budget availability.
+Step 4: Finance Officer validates receipts, amounts, tax details, and policy compliance.
+Step 5: Finance Manager approves reimbursement.
+Step 6: Payment Officer schedules payment.
+Claims below LKR 25,000 may be approved by the Line Manager and Finance Officer.
+Claims between LKR 25,000 and LKR 100,000 require Budget Owner approval. Claims
+above LKR 100,000 require Finance Manager approval.
+7. Reimbursable Expenses
+The following expenses may be reimbursed if approved and supported by valid
+documentation:
+- Accommodation within approved rate limits
+- Transportation directly related to business travel
+- Meals within the daily allowance limit
+- Official communication charges during travel
+- Visa and permit processing fees
+- Conference or business meeting registration fees
+- Approved emergency travel expenses
+8. Non-Reimbursable Expenses
+The following expenses are not reimbursable:
+- Personal shopping
+- Alcohol and tobacco
+- Fines and penalties
+- Entertainment without prior approval
+- Expenses incurred by family members
+- Luxury upgrades not approved in advance
+- Duplicate claims
+- Expenses without valid receipts
+9. Currency Conversion
+For foreign currency claims, the ERP system must record both the original currency amount
+and the converted local currency amount. The exchange rate must be based on the
+organization’s approved finance rate for the transaction date or the bank card settlement
+rate where evidence is provided.
+10. Duplicate Claim Control
+The ERP system must check for duplicate claims using:
+- Employee ID
+- Receipt number
+- Expense date
+- Vendor name
+- Claimed amount
+- Travel permit number
+If a possible duplicate is detected, the claim must be flagged for manual finance review.
+11. Payment Processing
+Approved travel claims are transferred to the reimbursement queue. Payments are
+normally processed within 7 working days after final approval. Delays may occur if
+supporting documents are incomplete or if the claim requires additional verification.
+12. Audit and Compliance
+Finance Operations may audit travel claims at any time. Employees must retain original
+receipts for at least 6 months after reimbursement. Fraudulent claims may result in
+disciplinary action and recovery of paid amounts.
+13. ERP Data Requirements
+The ERP system must store the following data for each travel claim:
+- Case ID
+- Claim ID
+- Employee ID
+- Department
+- Cost center
+- Travel permit reference
+- Activity history
+- Approval timestamps
+- Claimed amount
+- Approved amount
+- Rejected amount, if applicable
+- Payment status
+- Document references
+- Audit notes
+14. Policy Exception Handling
+Any exception to this policy must be recorded in the ERP system with justification and
+approval from the Finance Manager. Exceptions must not be handled outside the system.
+15. Review Cycle
+This policy must be reviewed annually by the Finance Control Unit and updated when there
+are changes to travel, reimbursement, tax, or internal control requirements.

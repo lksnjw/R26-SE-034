@@ -1,0 +1,22 @@
+# ── Core LangChain stack ────────────────────────────────────────────────────
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-ollama>=0.2.0          # ChatOllama + OllamaEmbeddings (MODEL_PROVIDER=ollama)
+langchain-openai>=0.2.0          # OpenAI-compatible client (MODEL_PROVIDER=openrouter)
+langchain-qdrant>=0.2.0          # QdrantVectorStore (plug-in when ready)
+langchain-text-splitters>=0.3.0  # RecursiveCharacterTextSplitter
+
+# ── Vector DB client ─────────────────────────────────────────────────────────
+qdrant-client>=1.12.0
+
+# ── API layer ────────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+mcp>=2.1.0                       # MCP server mounted at /mcp (tool: check_policy)
+
+# ── Config / validation ──────────────────────────────────────────────────────
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+python-dotenv>=1.0.0
+pyyaml>=6.0                      # policy front-matter parsing

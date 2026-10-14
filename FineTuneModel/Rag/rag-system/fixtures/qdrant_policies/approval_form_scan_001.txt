@@ -1,0 +1,36 @@
+ERP document 'approval_form_scan_001.png' is categorized as approval_form. The source format is image. Extracted content: Cae —
+a) NATIONAL FINANCE CORPORATION Form No 2 FIN-APP-FRM-O1
+(PVT) LTD. FINANCE APPROVAL FORM Nersioni) eget
+Effective Date : 01-01-2026
+This form is used to record approvals for finance-related requests, declarations, travel, and payments.
+1, REQUEST DETAILS
+Request Type O Domestic Declaration M Travel Claim Gi Payment Request O Others (Specify)
+Request ID / Case ID TRC-2026-05-00187
+Employee Name Mr. Chaminda Perera
+Employee ID EMP-07145 Department Operations
+Cost Center CC-OPS-02 Budget Number BUD-2026-TRAVEL-02
+Purpose / Description Official visit to Jaffna Branch for client meeting and project review.
+Travel Date (From - To) 28 Apr 2026 — 01 May 2026 Destination Jaffna
+Total Claimed Amount (LKR) 32,450.00 Currency LKR
+Documents Attached Receipts, Hotel Invoice, Transport Receipts, Travel Permit (TP-2026-04-0156)
+2. APPROVAL WORKFLOW
+Level Role / Approver Name Decision Comments Date & Time Signature
+(Approve / Reject / Return)
+a Immediate Supervisor Ms. Nadeesha Silva Business purpose 02-05-2026
+Approved is valid. 09:15 AM
+2) Budget Owner Mr. Kasun Perera Budget available. 02-05-2026 Pp —
+Ap i moved 10:05 AM aA
+3 Finance Officer Ms. Dilini Fernando Documents verified. 02-05-2026
+Approved Amounts are in eo [pee
+policy limits. ATR
+4 Finance Manager Mr. Sampath De Silva Approved. 02-05-2026
+ERP MEES 02:30 PM
+5 Payment Officer Ms. Shalini Wijesinghe 5 Payment will be a au
+Pending processed.
+6 Finance Director Mr. Rohan Weerasinghe - © 3
+3._ FINAL STATUS
+Overall Status M Approved [Rejected [Returned [1 Cancelled Approval Date 02-05-2026
+Remarks
+Note: This form is a system generated record and is valid without a physical signature.
+FINANCE.
+OPERATIONS

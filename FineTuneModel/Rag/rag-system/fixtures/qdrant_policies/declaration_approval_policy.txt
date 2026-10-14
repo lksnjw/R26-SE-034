@@ -1,0 +1,167 @@
+ERP document 'declaration_approval_policy.pdf' is categorized as policy_document. The source format is pdf. Extracted content: Declaration Submission and Approval Policy
+Document ID: FIN-DEC-POL-2026-002
+Department: Finance and Compliance
+Process Area: Domestic and International Declarations
+Version: 1.0
+Effective Date: 01 January 2026
+Document Owner: Compliance and Finance Governance Unit
+1. Purpose
+This policy defines the standard process for creating, reviewing, approving, rejecting, and
+archiving finance-related declarations within the ERP system. Declarations are used to
+formally record financial commitments, payment requests, budget usage, travel-related
+approvals, and compliance-sensitive business events.
+The purpose of this policy is to ensure that all declarations are processed consistently,
+approved by authorized personnel, and traceable through the ERP workflow.
+2. Scope
+This policy applies to:
+- Domestic declarations
+- International declarations
+- Travel-related declarations
+- Prepaid cost declarations
+- Budget allocation declarations
+- Payment request declarations
+- Finance approval declarations
+This policy applies to all employees, supervisors, budget owners, finance officers, and
+compliance reviewers involved in declaration workflows.
+3. Declaration Creation
+A declaration must be created in the ERP system when an employee or department
+requests official finance approval for a business activity. The declaration must include the
+following minimum information:
+- Declaration case ID
+- Requesting employee or department
+- Declaration type
+- Business purpose
+- Budget number
+- Cost center
+- Estimated or actual amount
+- Currency
+- Required approval level
+- Supporting document reference
+- Submission timestamp
+Incomplete declarations must not be submitted for approval.
+4. Domestic Declaration Rules
+Domestic declarations relate to transactions, payments, or business activities within the
+local country. These may include local travel, local supplier payments, domestic
+procurement, internal expense claims, and local project-related finance approvals.
+Domestic declarations must include:
+- Local budget number
+- Local supplier or employee reference, if applicable
+- Local currency amount
+- Department approval
+- Finance validation before payment
+5. International Declaration Rules
+International declarations relate to transactions or business activities involving foreign
+travel, overseas vendors, international payments, foreign currency expenses, or cross-
+border compliance requirements.
+International declarations must include:
+- Foreign currency amount
+- Exchange rate source
+- Country of transaction
+- International supplier or travel reference
+- Compliance review where required
+- Finance Manager approval for high-value transactions
+Declarations involving foreign currency must be reviewed for exchange rate accuracy and
+supporting documentation.
+6. Approval Workflow
+The standard declaration approval workflow is:
+Step 1: Employee or requester creates declaration.
+Step 2: Employee submits declaration for review.
+Step 3: Supervisor validates business purpose.
+Step 4: Budget Owner confirms budget availability.
+Step 5: Finance Officer validates amount, currency, documents, and accounting details.
+Step 6: Compliance Officer reviews the declaration if the transaction is sensitive or
+international.
+Step 7: Finance Manager gives final approval if required.
+Step 8: Declaration is marked approved, rejected, or returned for correction.
+7. Approval Thresholds
+The following approval thresholds apply unless a stricter department rule exists:
+- Up to LKR 10,000: Supervisor approval and Finance Officer validation
+- LKR 10,001 to LKR 50,000: Budget Owner approval required
+- LKR 50,001 to LKR 250,000: Finance Manager approval required
+- Above LKR 250,000: Senior Finance approval and compliance review required
+- Any international declaration: Finance validation required
+- Any high-risk declaration: Compliance review required
+8. Rejection and Rework
+A declaration may be rejected or returned for correction if:
+- Mandatory fields are missing
+- Budget number is invalid
+- Amount does not match supporting documents
+- Supporting documents are unclear or missing
+- Approval authority is incorrect
+- Duplicate declaration is detected
+- Business justification is insufficient
+- Compliance risk is identified
+Returned declarations must be corrected by the requester and resubmitted through the
+ERP system.
+9. Duplicate Declaration Control
+The ERP system must check for possible duplicate declarations using:
+- Case ID
+- Employee ID
+- Budget number
+- Amount
+- Vendor or claimant name
+- Submission date
+- Supporting document reference
+Possible duplicate declarations must be flagged and reviewed before approval.
+10. Required Audit Trail
+Every declaration must maintain a complete audit trail including:
+- Created timestamp
+- Submitted timestamp
+- Reviewer name or role
+- Approval or rejection timestamp
+- Activity name
+- Approval comments
+- Rework comments
+- Final status
+- Payment reference, if applicable
+Manual approval outside the ERP system is not considered valid unless entered into the
+ERP system afterward with proper justification.
+11. Status Definitions
+The following statuses must be used consistently:
+- Draft: Declaration is created but not submitted.
+- Submitted: Declaration is awaiting review.
+- Under Review: Declaration is being checked by supervisor, budget owner, finance, or
+compliance.
+- Returned: Declaration requires correction.
+- Approved: Declaration has received required approvals.
+- Rejected: Declaration is not accepted.
+- Payment Requested: Declaration has moved to payment processing.
+- Completed: Declaration process is fully closed.
+12. Linkage with Other ERP Records
+A declaration may be linked to:
+- Travel permits
+- Prepaid travel cost records
+- Employee expense claims
+- Supplier invoices
+- Payment records
+- Budget allocation records
+- Scanned supporting documents
+The ERP system must preserve these relationships to support traceability, audit, and AI-
+based retrieval.
+13. Compliance Requirements
+International declarations, high-value declarations, and declarations involving sensitive
+cost centers must be reviewed for compliance. Finance and compliance teams must
+ensure that declarations follow internal control procedures, tax requirements, and anti-
+fraud controls.
+14. Data Retention
+Declaration records and supporting documents must be retained for at least 7 years or
+according to the organization’s finance data retention policy. The ERP system must support
+retrieval of historical declaration records for audit, reporting, and investigation.
+15. ERP Data Requirements
+Each declaration record must contain:
+- Case ID
+- Declaration type
+- Process type
+- Activity sequence
+- Employee or requester
+- Role
+- Budget number
+- Amount
+- Currency
+- Approval status
+- Supporting document IDs
+- Event timestamps
+- Rejection or rework reason, if applicable
+- Linked payment request
+16. Review Cycle
+This policy must be reviewed annually by the Finance and Compliance Governance Unit.
