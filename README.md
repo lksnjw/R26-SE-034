@@ -116,14 +116,13 @@ and any required independent approval remain separate control points.
 
 ## Repository structure
 
-The integrated research architecture contains **four research streams**, while
-this repository currently stores **three top-level code folders**. The data
-pipeline is represented by its research documents, website section, integration
-configuration, and ERPBridge tool manifests; a fourth top-level pipeline source
-folder is not present in this repository.
+The integrated repository stores all **four research streams** as separate
+top-level component folders. Each component also retains a dedicated branch and
+its original Git history.
 
 ```text
 R26-SE-034/
+├── DATA_TRANSFORM/       # ERP-aware transformation, retrieval, sync, and evidence
 ├── ERPBridge/            # Standardised MCP middleware and mock ERP
 ├── FineTuneModel/        # Fine-tuning experiments and finance policy/RAG gate
 ├── low_code_platform/    # Workflow UI, orchestration backends, tests, and evidence
@@ -135,6 +134,7 @@ R26-SE-034/
 | [`ERPBridge/`](./ERPBridge) | [`ERPBridge`](https://github.com/lksnjw/R26-SE-034/tree/ERPBridge/ERPBridge) | Standardised middleware and secure MCP boundary |
 | [`FineTuneModel/`](./FineTuneModel) | [`FineTuneModel`](https://github.com/lksnjw/R26-SE-034/tree/FineTuneModel/FineTuneModel) | ERP-domain model experiments and policy governance |
 | [`low_code_platform/`](./low_code_platform) | [`low_code_platform`](https://github.com/lksnjw/R26-SE-034/tree/low_code_platform/low_code_platform) | Agentic low-code workflow automation engine |
+| [`DATA_TRANSFORM/`](./DATA_TRANSFORM) | [`DATA_TRANSFORM`](https://github.com/lksnjw/R26-SE-034/tree/DATA_TRANSFORM/DATA_TRANSFORM) | ERP-aware ingestion, transformation, semantic retrieval, and synchronisation |
 
 The branch histories are joined on `main` through merge commits. Existing
 component commits remain in the ancestry instead of being flattened into one
@@ -216,13 +216,20 @@ cleaned, transformed, embedded, synchronised, and retrieved without replacing
 the original database. Its role in the integrated design is to provide governed
 business context to the policy and workflow layers.
 
-Resources available here:
+Key areas:
 
-- [Data-pipeline contribution on the research website](https://lksnjw.github.io/r26-se-034-research-website/dist/index.html#data-contribution).
-- [Individual proposal](https://drive.google.com/file/d/1XO6spCzW8c2Prn1gd_OuDCihMID6i0xr/view?usp=sharing).
-- [Researcher GitHub profile](https://github.com/DishaniS).
+- [`DATA_TRANSFORM/README.md`](./DATA_TRANSFORM/README.md) — complete architecture, setup, API, evaluation, and limitation guide.
+- [`src/erp_pipeline/`](./DATA_TRANSFORM/src/erp_pipeline) — connectors, discovery, ingestion, mapping, transformation, orchestration, storage, sync, retrieval, and verification modules.
+- [`frontend/`](./DATA_TRANSFORM/frontend) — React/Vite upload demonstration client.
+- [`tests/`](./DATA_TRANSFORM/tests) — unit, boundary, integration, and live-environment test suites.
+- [`artifacts/`](./DATA_TRANSFORM/artifacts) — tracked evaluation and contract evidence.
+- [`ERP_DATA_TRANSFORMATION_PIPELINE_ARCHITECTURE.md`](./DATA_TRANSFORM/docs/ERP_DATA_TRANSFORMATION_PIPELINE_ARCHITECTURE.md) — component architecture.
+- [`ERP_DATA_TRANSFORMATION_PIPELINE_INTEGRATION_GUIDE.md`](./DATA_TRANSFORM/docs/ERP_DATA_TRANSFORMATION_PIPELINE_INTEGRATION_GUIDE.md) — group integration guide.
 - [`data-transformation` ERPBridge manifests](./low_code_platform/ops/erpbridge/manifests/data-transformation) for discovery, canonical-record, indexed-representation, retrieval, and search operations.
 - [`backend-ts` pipeline configuration](./low_code_platform/backend-ts/src/config/config.ts) and [`pipeline` route policy](./low_code_platform/backend-ts/src/http/route-policy.ts).
+- [Data-pipeline contribution on the research website](https://lksnjw.github.io/r26-se-034-research-website/dist/index.html#data-contribution).
+- [Individual proposal](https://drive.google.com/file/d/1XO6spCzW8c2Prn1gd_OuDCihMID6i0xr/view?usp=sharing).
+- [Original component repository](https://github.com/DishaniS/erp-data-transformation-pipeline).
 
 ## Technology and tools
 
@@ -236,6 +243,7 @@ Resources available here:
 | Mock ERP | Python, FastAPI, OpenAPI, `uv`, Docker | [`mock-erp/`](./ERPBridge/mock-erp) |
 | Model adaptation | Python, Transformers, PEFT, LoRA/QLoRA, bitsandbytes, Accelerate, PyTorch, SentencePiece, Safetensors | [`FineTuneModel/requirements.txt`](./FineTuneModel/requirements.txt) |
 | Policy retrieval | FastAPI, LangChain, Qdrant, Ollama/OpenAI-compatible clients, embeddings, structured policy documents | [`rag-system/requirements.txt`](./FineTuneModel/Rag/rag-system/requirements.txt) |
+| ERP data transformation | Python 3.11+, FastAPI, Pydantic, SQLAlchemy, PostgreSQL, MongoDB/MySQL/SQL Server connectors, Qdrant, Sentence Transformers, PyMuPDF, Tesseract OCR, React, Vite, Docker Compose | [`DATA_TRANSFORM/requirements.txt`](./DATA_TRANSFORM/requirements.txt), [`pyproject.toml`](./DATA_TRANSFORM/pyproject.toml), and [`frontend/package.json`](./DATA_TRANSFORM/frontend/package.json) |
 | Data and contracts | YAML, JSON, JSON Schema, JSONL, CSV, OpenAPI, vector embeddings, hybrid storage | [Repository datasets](./low_code_platform/datasets) |
 | Developer and QA tooling | Git/GitHub, GitHub Actions, Docker, Postman, ESLint, TypeScript compiler, Go tests, Vitest, Jest | Component manifests and workflows |
 
@@ -272,6 +280,40 @@ Default local endpoints from the component documentation:
 
 See the [ERPBridge onboarding guide](./ERPBridge/docs/onboarding.md) before
 registering APIs or generating/applying tool schemas.
+
+### ERP-aware data-transformation pipeline
+
+Requirements: Python 3.11+, PostgreSQL, Node.js/npm for the frontend, and
+optional Qdrant/Tesseract/ODBC dependencies for the corresponding features.
+
+```powershell
+Set-Location DATA_TRANSFORM
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -e .
+Copy-Item .env.example .env
+```
+
+After configuring a reachable pipeline PostgreSQL database, start the API with
+`python -m erp_pipeline.api`. Swagger is available at
+`http://127.0.0.1:8000/docs`. The optional upload client can be started in a
+second terminal:
+
+```powershell
+Set-Location DATA_TRANSFORM/frontend
+npm ci
+Copy-Item .env.example .env
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. The component README documents the minimal
+upload-only configuration, full runtime, BPI 2020 demonstration, credentials,
+and current runtime limitations. A tracked
+[`docker-compose.yml`](./DATA_TRANSFORM/docker-compose.yml) and
+[`env` template](./DATA_TRANSFORM/.env.compose.example) provide the optional
+container stack; configure its required secrets before starting it.
 
 ### Safe low-code demonstration
 
@@ -346,6 +388,8 @@ all provider/Qdrant credentials out of Git.
 | [`low_code_platform/CURRENT_STATE.md`](./low_code_platform/CURRENT_STATE.md) | Concise current implementation and invariant state. |
 | [`low_code_platform/FINAL_STATUS.md`](./low_code_platform/FINAL_STATUS.md) | Consolidated status and evidence index. |
 | [`low_code_platform/CODEBASE_REPORT.md`](./low_code_platform/CODEBASE_REPORT.md) | Codebase-level report. |
+| [`DATA_TRANSFORM/README.md`](./DATA_TRANSFORM/README.md) | Data-pipeline architecture, setup, API, evaluation, and limitations. |
+| [`DATA_TRANSFORM/docs/ERP_DATA_TRANSFORMATION_PIPELINE_CURRENT_STATUS.md`](./DATA_TRANSFORM/docs/ERP_DATA_TRANSFORMATION_PIPELINE_CURRENT_STATUS.md) | Concise component status and qualification boundary. |
 
 ### Architecture, integration, and operations
 
@@ -362,6 +406,8 @@ all provider/Qdrant credentials out of Git.
 | [`low_code_platform/docs/FIREBASE_STORAGE_AND_INTEGRATION_PLAN_2026-10-06.md`](./low_code_platform/docs/FIREBASE_STORAGE_AND_INTEGRATION_PLAN_2026-10-06.md) | Firebase storage and integration plan. |
 | [`FineTuneModel/Rag/rag-system/docs/API_USAGE.md`](./FineTuneModel/Rag/rag-system/docs/API_USAGE.md) | Policy service API examples. |
 | [`FineTuneModel/Rag/rag-system/docs/DEPLOYMENT.md`](./FineTuneModel/Rag/rag-system/docs/DEPLOYMENT.md) | Policy-gate deployment guidance. |
+| [`DATA_TRANSFORM/docs/ERP_DATA_TRANSFORMATION_PIPELINE_ARCHITECTURE.md`](./DATA_TRANSFORM/docs/ERP_DATA_TRANSFORMATION_PIPELINE_ARCHITECTURE.md) | ERP data-pipeline architecture and responsibility boundaries. |
+| [`DATA_TRANSFORM/docs/ERP_DATA_TRANSFORMATION_PIPELINE_INTEGRATION_GUIDE.md`](./DATA_TRANSFORM/docs/ERP_DATA_TRANSFORMATION_PIPELINE_INTEGRATION_GUIDE.md) | Integration contract and group handoff guidance. |
 
 ### Important implementation paths
 
@@ -376,6 +422,8 @@ all provider/Qdrant credentials out of Git.
 | [`low_code_platform/backend-ts/src/storage/`](./low_code_platform/backend-ts/src/storage) | Durable storage adapters and Firestore integration. |
 | [`FineTuneModel/Rag/rag-system/src/core/policy/`](./FineTuneModel/Rag/rag-system/src/core/policy) | Retrieval, deterministic rule engine, judge, and policy gate. |
 | [`ERPBridge/internal/mcp/`](./ERPBridge/internal/mcp) | MCP transport, registry, security, and invocation logic. |
+| [`DATA_TRANSFORM/src/erp_pipeline/`](./DATA_TRANSFORM/src/erp_pipeline) | ERP connectors, canonical transformation, orchestration, storage, retrieval, sync, and verification. |
+| [`DATA_TRANSFORM/frontend/`](./DATA_TRANSFORM/frontend) | Data and document upload demonstration client. |
 
 ## Evaluation evidence and claim boundaries
 
@@ -427,7 +475,6 @@ not inferred from the older Go experiment table.
 - The interactive agent path admits reviewed read-only tools; consequential effects require separate governed operation paths and applicable approval/recovery controls.
 - Website-level evaluation summaries and targets should be reconciled with the repository’s raw result files before being quoted as measured outcomes.
 - Google Drive/Slides links depend on their owner-configured sharing permissions.
-- The public architecture includes four research streams, but this repository currently contains three top-level component code folders.
 
 ## Video, diagrams, charts, and website assets
 
@@ -561,6 +608,8 @@ For research enquiries, use the [website contact section](https://lksnjw.github.
 | ERPBridge component branch | [Browse `ERPBridge`](https://github.com/lksnjw/R26-SE-034/tree/ERPBridge) |
 | FineTuneModel component branch | [Browse `FineTuneModel`](https://github.com/lksnjw/R26-SE-034/tree/FineTuneModel) |
 | Low-code component branch | [Browse `low_code_platform`](https://github.com/lksnjw/R26-SE-034/tree/low_code_platform) |
+| Data-transformation component branch | [Browse `DATA_TRANSFORM`](https://github.com/lksnjw/R26-SE-034/tree/DATA_TRANSFORM) |
+| Original data-transformation repository | [github.com/DishaniS/erp-data-transformation-pipeline](https://github.com/DishaniS/erp-data-transformation-pipeline) |
 | Research website source | [github.com/lksnjw/r26-se-034-research-website](https://github.com/lksnjw/r26-se-034-research-website) |
 | Research website deployment | [GitHub Pages](https://lksnjw.github.io/r26-se-034-research-website/dist/index.html) |
 
