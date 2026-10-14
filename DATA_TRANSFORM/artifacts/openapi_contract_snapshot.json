@@ -1,0 +1,4343 @@
+{
+  "components": {
+    "schemas": {
+      "ApiSpecUploadResponse": {
+        "properties": {
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "endpoints_called": {
+            "default": 0,
+            "title": "Endpoints Called",
+            "type": "integer"
+          },
+          "entities_count": {
+            "default": 0,
+            "title": "Entities Count",
+            "type": "integer"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "operations_count": {
+            "default": 0,
+            "title": "Operations Count",
+            "type": "integer"
+          },
+          "schema_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Id"
+          },
+          "spec_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spec Format"
+          },
+          "spec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spec Id"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "upload_id",
+          "filename",
+          "content_hash"
+        ],
+        "title": "ApiSpecUploadResponse",
+        "type": "object"
+      },
+      "AvailableSearchEntityResponse": {
+        "description": "One discovered ``(source_system_id, source_entity)`` and its fields.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "entity_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Kind"
+          },
+          "fields": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AvailableSearchFieldResponse"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "searchable": {
+            "default": true,
+            "title": "Searchable",
+            "type": "boolean"
+          },
+          "source_entity": {
+            "title": "Source Entity",
+            "type": "string"
+          },
+          "source_system_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source System Id"
+          }
+        },
+        "required": [
+          "source_entity"
+        ],
+        "title": "AvailableSearchEntityResponse",
+        "type": "object"
+      },
+      "AvailableSearchFieldResponse": {
+        "description": "One field of one discovered entity, as ``GET /v1/search`` reports it\nwhen called with no query.",
+        "properties": {
+          "business_key": {
+            "default": false,
+            "title": "Business Key",
+            "type": "boolean"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "example_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Example Value"
+          },
+          "filterable": {
+            "default": true,
+            "title": "Filterable",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "AvailableSearchFieldResponse",
+        "type": "object"
+      },
+      "Body_uploadCsv": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_uploadCsv",
+        "type": "object"
+      },
+      "Body_uploadDocument": {
+        "properties": {
+          "business_key_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Key Name"
+          },
+          "business_key_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Key Value"
+          },
+          "document_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Type"
+          },
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "parent_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Record Id"
+          },
+          "sensitivity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sensitivity"
+          },
+          "source_entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Entity"
+          },
+          "source_system_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source System Id"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_uploadDocument",
+        "type": "object"
+      },
+      "Body_uploadOpenApiSpec": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_uploadOpenApiSpec",
+        "type": "object"
+      },
+      "Body_uploadPostmanCollection": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_uploadPostmanCollection",
+        "type": "object"
+      },
+      "CapabilitiesResponse": {
+        "properties": {
+          "api_spec_formats": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Api Spec Formats",
+            "type": "array"
+          },
+          "api_version": {
+            "title": "Api Version",
+            "type": "string"
+          },
+          "content_kinds": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Content Kinds",
+            "type": "array"
+          },
+          "embedding_dimension": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Dimension"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
+          "engine_version": {
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "file_types": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "File Types",
+            "type": "array"
+          },
+          "incremental_sync_supported": {
+            "default": false,
+            "title": "Incremental Sync Supported",
+            "type": "boolean"
+          },
+          "integration_capabilities": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/CapabilityStatus"
+            },
+            "title": "Integration Capabilities",
+            "type": "object"
+          },
+          "job_types": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Job Types",
+            "type": "array"
+          },
+          "limitations": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "source_types": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Types",
+            "type": "array"
+          },
+          "storage_tiers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Storage Tiers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "api_version",
+          "engine_version"
+        ],
+        "title": "CapabilitiesResponse",
+        "type": "object"
+      },
+      "CapabilityStatus": {
+        "description": "One capability reported as three separate facts (Phase 11).\n\n``supported`` and ``enabled`` are deliberately not the same question.\n``supported`` says this build contains the implementation; ``enabled`` says\nTHIS deployment has it wired up. Collapsing them into a single boolean is\nhow an integration contract starts lying: remote asset fetching is\nimplemented and ships disabled, and a consumer told only \"true\" would plan\naround a feature that refuses every call it makes.\n\nA capability advertised here must have a contract test that exercises it.",
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported",
+          "enabled"
+        ],
+        "title": "CapabilityStatus",
+        "type": "object"
+      },
+      "ConnectionTestResponse": {
+        "properties": {
+          "capabilities": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "server_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Version"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source_id",
+          "source_type",
+          "success"
+        ],
+        "title": "ConnectionTestResponse",
+        "type": "object"
+      },
+      "CsvUploadResponse": {
+        "description": "The result of a CSV upload.\n\nROW COUNTS ARE TWO DIFFERENT FACTS, AND THE API SAYS WHICH IS WHICH\nSchema inference reads a BOUNDED SAMPLE of the file\n(``CsvOptions.max_rows_for_schema_inference``); it does not walk the whole\nfile, because inferring a column's type does not require doing so. Reporting\nthat sample as a total row count would be a measurement the pipeline never\ntook, so the two are separate fields and ``rows_observed`` stays ``null``\nuntil something genuinely counts every row.",
+        "properties": {
+          "columns": {
+            "default": 0,
+            "title": "Columns",
+            "type": "integer"
+          },
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "published": {
+            "default": false,
+            "title": "Published",
+            "type": "boolean"
+          },
+          "rows_observed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows Observed"
+          },
+          "rows_sampled": {
+            "default": 0,
+            "title": "Rows Sampled",
+            "type": "integer"
+          },
+          "sample_limited": {
+            "default": false,
+            "title": "Sample Limited",
+            "type": "boolean"
+          },
+          "schema_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Id"
+          },
+          "schema_index_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Index Job Id"
+          },
+          "schema_indexing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Indexing Status"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "source_system_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source System Id"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "upload_id",
+          "filename",
+          "content_hash",
+          "size_bytes"
+        ],
+        "title": "CsvUploadResponse",
+        "type": "object"
+      },
+      "DependencyHealth": {
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "configured",
+          "ready"
+        ],
+        "title": "DependencyHealth",
+        "type": "object"
+      },
+      "DiscoveryResponse": {
+        "properties": {
+          "entity_count": {
+            "title": "Entity Count",
+            "type": "integer"
+          },
+          "field_count": {
+            "title": "Field Count",
+            "type": "integer"
+          },
+          "published": {
+            "default": false,
+            "title": "Published",
+            "type": "boolean"
+          },
+          "relationship_count": {
+            "default": 0,
+            "title": "Relationship Count",
+            "type": "integer"
+          },
+          "schema_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Hash"
+          },
+          "schema_id": {
+            "title": "Schema Id",
+            "type": "string"
+          },
+          "schema_index_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Index Job Id"
+          },
+          "schema_indexing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Indexing Status"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Version"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source_id",
+          "schema_id",
+          "entity_count",
+          "field_count"
+        ],
+        "title": "DiscoveryResponse",
+        "type": "object"
+      },
+      "DocumentUploadResponse": {
+        "description": "The result of a PDF or image upload.\n\n``document_id`` is CONTENT-ADDRESSED, matching the identity\n``ai.chunking.chunk_document`` already derives, so the id returned here is\nthe same id a later chunk will carry. Uploading identical bytes twice\ntherefore yields the same document id, and editing the file yields a new\none - which is the property that makes a chunk traceable to its document.",
+        "properties": {
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "extraction_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Status"
+          },
+          "file_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Type"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "index_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Job Id"
+          },
+          "indexing_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indexing Error"
+          },
+          "indexing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indexing Status"
+          },
+          "ocr_used": {
+            "default": false,
+            "title": "Ocr Used",
+            "type": "boolean"
+          },
+          "page_count": {
+            "default": 0,
+            "title": "Page Count",
+            "type": "integer"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "upload_id",
+          "filename",
+          "content_hash",
+          "size_bytes"
+        ],
+        "title": "DocumentUploadResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "properties": {
+          "api_version": {
+            "title": "Api Version",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "api_version"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "IdentityFilterFieldResponse": {
+        "description": "One entry of the closed, entity-independent identity/provenance\nfilter set - ``source_system_id``, ``record_key``, ``sensitivity``, and\nso on. These mean the same thing for every entity, so they are listed\nonce rather than repeated under each one.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "filterable": {
+            "default": true,
+            "title": "Filterable",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description"
+        ],
+        "title": "IdentityFilterFieldResponse",
+        "type": "object"
+      },
+      "JobAcceptedResponse": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "job_type": {
+            "title": "Job Type",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "status_url": {
+            "title": "Status Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "status",
+          "job_type",
+          "created_at",
+          "status_url"
+        ],
+        "title": "JobAcceptedResponse",
+        "type": "object"
+      },
+      "JobCreateRequest": {
+        "example": {
+          "job_type": "structured_pipeline",
+          "mapping_id": "map_abc123",
+          "options": {
+            "limit": 100
+          },
+          "schema_id": "schema_abc123",
+          "source_id": "erp_finance"
+        },
+        "properties": {
+          "entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity"
+          },
+          "job_type": {
+            "$ref": "#/components/schemas/JobType"
+          },
+          "mapping_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mapping Id"
+          },
+          "options": {
+            "additionalProperties": true,
+            "title": "Options",
+            "type": "object"
+          },
+          "schema_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Id"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "upload_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Id"
+          }
+        },
+        "required": [
+          "job_type"
+        ],
+        "title": "JobCreateRequest",
+        "type": "object"
+      },
+      "JobResponse": {
+        "properties": {
+          "counters": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counters",
+            "type": "object"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Stage"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "job_type": {
+            "title": "Job Type",
+            "type": "string"
+          },
+          "outputs": {
+            "additionalProperties": true,
+            "title": "Outputs",
+            "type": "object"
+          },
+          "stages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/StageResponse"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "status_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Url"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "job_id",
+          "status",
+          "job_type",
+          "created_at"
+        ],
+        "title": "JobResponse",
+        "type": "object"
+      },
+      "JobStatus": {
+        "enum": [
+          "pending",
+          "running",
+          "succeeded",
+          "failed",
+          "partial",
+          "interrupted"
+        ],
+        "title": "JobStatus",
+        "type": "string"
+      },
+      "JobType": {
+        "description": "What the caller asked for. Determines the stage graph.",
+        "enum": [
+          "structured_pipeline",
+          "document_pipeline",
+          "incremental_sync",
+          "drift_check",
+          "api_spec_preparation",
+          "source_native_pipeline",
+          "schema_pipeline"
+        ],
+        "title": "JobType",
+        "type": "string"
+      },
+      "MappingOverrideRequest": {
+        "properties": {
+          "action": {
+            "default": "approve",
+            "description": "approve, reject, or override",
+            "pattern": "^(approve|reject|override)$",
+            "title": "Action",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "source_field": {
+            "title": "Source Field",
+            "type": "string"
+          },
+          "target_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Path"
+          }
+        },
+        "required": [
+          "source_field"
+        ],
+        "title": "MappingOverrideRequest",
+        "type": "object"
+      },
+      "MappingResponse": {
+        "properties": {
+          "ambiguities": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Ambiguities",
+            "type": "array"
+          },
+          "ambiguous_fields": {
+            "default": 0,
+            "title": "Ambiguous Fields",
+            "type": "integer"
+          },
+          "auto_approved": {
+            "default": false,
+            "title": "Auto Approved",
+            "type": "boolean"
+          },
+          "collisions": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Collisions",
+            "type": "array"
+          },
+          "decisions": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Decisions",
+            "type": "array"
+          },
+          "mapped_fields": {
+            "default": 0,
+            "title": "Mapped Fields",
+            "type": "integer"
+          },
+          "mapping_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mapping Id"
+          },
+          "review_required_fields": {
+            "default": 0,
+            "title": "Review Required Fields",
+            "type": "integer"
+          },
+          "schema_id": {
+            "title": "Schema Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_fields": {
+            "default": 0,
+            "title": "Total Fields",
+            "type": "integer"
+          },
+          "unmapped_fields": {
+            "default": 0,
+            "title": "Unmapped Fields",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_id",
+          "status"
+        ],
+        "title": "MappingResponse",
+        "type": "object"
+      },
+      "MappingSuggestRequest": {
+        "properties": {
+          "schema_id": {
+            "title": "Schema Id",
+            "type": "string"
+          },
+          "strict": {
+            "default": false,
+            "title": "Strict",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_id"
+        ],
+        "title": "MappingSuggestRequest",
+        "type": "object"
+      },
+      "MappingUpdateRequest": {
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "overrides": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MappingOverrideRequest"
+            },
+            "title": "Overrides",
+            "type": "array"
+          }
+        },
+        "title": "MappingUpdateRequest",
+        "type": "object"
+      },
+      "MappingValidationResponse": {
+        "properties": {
+          "blocking_issues": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Blocking Issues",
+            "type": "array"
+          },
+          "collisions": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Collisions",
+            "type": "array"
+          },
+          "mapping_id": {
+            "title": "Mapping Id",
+            "type": "string"
+          },
+          "required_target_coverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Target Coverage"
+          },
+          "review_required": {
+            "default": false,
+            "title": "Review Required",
+            "type": "boolean"
+          },
+          "type_conflicts": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Type Conflicts",
+            "type": "array"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mapping_id",
+          "valid"
+        ],
+        "title": "MappingValidationResponse",
+        "type": "object"
+      },
+      "ReadinessResponse": {
+        "properties": {
+          "dependencies": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DependencyHealth"
+            },
+            "title": "Dependencies",
+            "type": "array"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "ready"
+        ],
+        "title": "ReadinessResponse",
+        "type": "object"
+      },
+      "RecordResponse": {
+        "properties": {
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "entity_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Type"
+          },
+          "record_id": {
+            "title": "Record Id",
+            "type": "string"
+          },
+          "source_system_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source System Id"
+          }
+        },
+        "required": [
+          "record_id"
+        ],
+        "title": "RecordResponse",
+        "type": "object"
+      },
+      "RepresentationResponse": {
+        "description": "One stored representation, with the text a model would actually see.\n\nThis is the only place in the API that returns representation TEXT.\n``GET /v1/search`` deliberately does not: a caller picks which hit is worth\nexpanding, so ranked results stay small and extracted document content is\nexposed once rather than N times per query.\n\nNever carries a vector, and never carries the bytes the text came from.",
+        "properties": {
+          "business_key_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Key Name"
+          },
+          "business_key_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Key Value"
+          },
+          "canonical_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Record Id"
+          },
+          "chunk_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Index"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "content_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Kind"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "document_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Type"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "entity_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Kind"
+          },
+          "entity_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Type"
+          },
+          "page_end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page End"
+          },
+          "page_start": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Start"
+          },
+          "parent_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Record Id"
+          },
+          "record_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Key"
+          },
+          "representation_id": {
+            "title": "Representation Id",
+            "type": "string"
+          },
+          "schema_chunk_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Chunk Index"
+          },
+          "schema_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Id"
+          },
+          "schema_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Name"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Version"
+          },
+          "sensitivity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sensitivity"
+          },
+          "source_entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Entity"
+          },
+          "source_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Field"
+          },
+          "source_record_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Record Ids",
+            "type": "array"
+          },
+          "source_system_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source System Id"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "representation_id"
+        ],
+        "title": "RepresentationResponse",
+        "type": "object"
+      },
+      "ResponseAdaptOptions": {
+        "description": "Per-request budgets. Every field is optional and defaults to the\nengine's configured value, so a caller who does not care about budgets\nsends nothing and still gets a bounded result.",
+        "properties": {
+          "enable_erp_mapping": {
+            "default": true,
+            "title": "Enable Erp Mapping",
+            "type": "boolean"
+          },
+          "enable_relevance_selection": {
+            "default": true,
+            "title": "Enable Relevance Selection",
+            "type": "boolean"
+          },
+          "max_fields": {
+            "anyOf": [
+              {
+                "maximum": 200.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Fields"
+          },
+          "max_output_characters": {
+            "anyOf": [
+              {
+                "maximum": 200000.0,
+                "minimum": 100.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Characters"
+          },
+          "max_value_characters": {
+            "anyOf": [
+              {
+                "maximum": 50000.0,
+                "minimum": 10.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Value Characters"
+          },
+          "minimum_relevance_score": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum Relevance Score"
+          }
+        },
+        "title": "ResponseAdaptOptions",
+        "type": "object"
+      },
+      "ResponseAdaptRequest": {
+        "description": "One already-executed ERP API response, plus the question it answers.\n\nThis endpoint does NOT call an ERP system. The caller has already made the\ncall; what arrives here is what came back.",
+        "example": {
+          "body": {
+            "result": {
+              "approval_status": "A",
+              "curr": "LKR",
+              "cust_ref": "CUS-17",
+              "inv_no": "INV-204",
+              "total_amt": "45000.00"
+            },
+            "success": true
+          },
+          "content_type": "application/json",
+          "endpoint": "/api/invoices/INV-204",
+          "http_status": 200,
+          "query": "How much is invoice INV-204 for?",
+          "source_system_id": "finance_erp"
+        },
+        "properties": {
+          "asset_urls": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ResponseAssetReference"
+            },
+            "title": "Asset Urls",
+            "type": "array"
+          },
+          "body": {
+            "title": "Body"
+          },
+          "body_base64": {
+            "anyOf": [
+              {
+                "maxLength": 20000000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Base64"
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
+          "entity_hint": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Hint"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Headers",
+            "type": "object"
+          },
+          "http_status": {
+            "anyOf": [
+              {
+                "maximum": 599.0,
+                "minimum": 100.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Http Status"
+          },
+          "options": {
+            "$ref": "#/components/schemas/ResponseAdaptOptions"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "sensitivity": {
+            "$ref": "#/components/schemas/SensitivityLevel",
+            "default": "internal"
+          },
+          "source_system_id": {
+            "default": "unknown_erp",
+            "maxLength": 200,
+            "title": "Source System Id",
+            "type": "string"
+          }
+        },
+        "title": "ResponseAdaptRequest",
+        "type": "object"
+      },
+      "ResponseAdaptResponse": {
+        "description": "The adapted response.\n\n``llm_ready`` is the payload to put in front of a model. Everything else is\nevidence: what was detected, what was selected, what was dropped and why,\nand what the transformation measurably cost and saved.",
+        "properties": {
+          "assets": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Assets",
+            "type": "array"
+          },
+          "entity_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Type"
+          },
+          "llm_ready": {
+            "additionalProperties": true,
+            "title": "Llm Ready",
+            "type": "object"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          },
+          "response_type": {
+            "title": "Response Type",
+            "type": "string"
+          },
+          "success": {
+            "default": true,
+            "title": "Success",
+            "type": "boolean"
+          },
+          "transformation": {
+            "additionalProperties": true,
+            "title": "Transformation",
+            "type": "object"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "response_type"
+        ],
+        "title": "ResponseAdaptResponse",
+        "type": "object"
+      },
+      "ResponseAssetReference": {
+        "description": "A URL the ERP response referenced.\n\nFetching is refused unless the deployment explicitly enables it AND the URL\npasses the SSRF policy. A caller cannot turn fetching on from the request\nbody - that would let a remote ERP response choose what this service\nconnects to.",
+        "properties": {
+          "declared_content_type": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Declared Content Type"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "ResponseAssetReference",
+        "type": "object"
+      },
+      "SchemaEntityResponse": {
+        "description": "One source entity and its fields.",
+        "properties": {
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Kind"
+          },
+          "field_count": {
+            "default": 0,
+            "title": "Field Count",
+            "type": "integer"
+          },
+          "fields": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SchemaFieldResponse"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "normalized_name": {
+            "title": "Normalized Name",
+            "type": "string"
+          },
+          "primary_key_fields": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Primary Key Fields",
+            "type": "array"
+          },
+          "source_name": {
+            "title": "Source Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "source_name",
+          "normalized_name"
+        ],
+        "title": "SchemaEntityResponse",
+        "type": "object"
+      },
+      "SchemaFieldResponse": {
+        "description": "One source field, with BOTH of its type views.\n\nThe two type fields are not redundant and must not be collapsed:\n\n``source_data_type``      the vendor's own declaration, verbatim -\n                          ``NUMERIC(12,2)``, ``NVARCHAR``, ``ObjectId``.\n                          Precision and vendor spelling are unrecoverable\n                          once discarded, and a consumer generating typed\n                          tooling needs them.\n``normalized_data_type``  the coarse cross-source classification the\n                          mapping engine reasons about.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_array": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Array"
+          },
+          "is_primary_key": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Primary Key"
+          },
+          "is_unique": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Unique"
+          },
+          "nested_path": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nested Path"
+          },
+          "normalized_data_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalized Data Type"
+          },
+          "normalized_name": {
+            "title": "Normalized Name",
+            "type": "string"
+          },
+          "nullable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nullable"
+          },
+          "ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ordinal"
+          },
+          "required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required"
+          },
+          "semantic_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Type"
+          },
+          "source_data_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Data Type"
+          },
+          "source_name": {
+            "title": "Source Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_name",
+          "normalized_name"
+        ],
+        "title": "SchemaFieldResponse",
+        "type": "object"
+      },
+      "SchemaRelationshipResponse": {
+        "description": "One relationship between two source entities.\n\nField names mirror the ``SourceRelationship`` contract exactly\n(``from_*`` / ``to_*``) rather than being renamed in transit, so a\nconsumer reading the contract and a consumer reading this response are\nlooking at the same thing.",
+        "properties": {
+          "confidence": {
+            "default": 1.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "from_entity": {
+            "title": "From Entity",
+            "type": "string"
+          },
+          "from_fields": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "From Fields",
+            "type": "array"
+          },
+          "relationship_id": {
+            "title": "Relationship Id",
+            "type": "string"
+          },
+          "relationship_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relationship Type"
+          },
+          "to_entity": {
+            "title": "To Entity",
+            "type": "string"
+          },
+          "to_fields": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "To Fields",
+            "type": "array"
+          }
+        },
+        "required": [
+          "relationship_id",
+          "from_entity",
+          "to_entity"
+        ],
+        "title": "SchemaRelationshipResponse",
+        "type": "object"
+      },
+      "SchemaResponse": {
+        "properties": {
+          "entities": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SchemaEntityResponse"
+            },
+            "title": "Entities",
+            "type": "array"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "relationship_count": {
+            "default": 0,
+            "title": "Relationship Count",
+            "type": "integer"
+          },
+          "relationships": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SchemaRelationshipResponse"
+            },
+            "title": "Relationships",
+            "type": "array"
+          },
+          "schema_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Hash"
+          },
+          "schema_id": {
+            "title": "Schema Id",
+            "type": "string"
+          },
+          "schema_name": {
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Version"
+          },
+          "source_system_id": {
+            "title": "Source System Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_id",
+          "source_system_id",
+          "schema_name"
+        ],
+        "title": "SchemaResponse",
+        "type": "object"
+      },
+      "SearchHitResponse": {
+        "description": "One result. Deliberately has no vector field.",
+        "properties": {
+          "canonical_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Record Id"
+          },
+          "content_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Kind"
+          },
+          "entity_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Type"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "record_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Key"
+          },
+          "representation_id": {
+            "title": "Representation Id",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "source_entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Entity"
+          },
+          "source_system_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source System Id"
+          },
+          "tier": {
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "representation_id",
+          "score",
+          "tier"
+        ],
+        "title": "SearchHitResponse",
+        "type": "object"
+      },
+      "SearchMetadataResponse": {
+        "additionalProperties": false,
+        "description": "What ``GET /v1/search`` returns when called with no search parameters.\n\nThe single source of search discoverability: which systems and entities\nare known, which of their fields can be filtered, and the fixed\nidentity/provenance filters that apply everywhere. There is no separate\nmetadata or options endpoint - this shape IS ``GET /v1/search``.\n\n``extra=\"forbid\"``: the route's response model is\n``SearchMetadataResponse | SearchResponse``, and the two share no field\nnames. Forbidding extras here means a ``SearchResponse``-shaped payload\ncan never be mistaken for an all-defaults-empty metadata response -\nPydantic is forced to match it against ``SearchResponse`` instead.",
+        "properties": {
+          "available_search": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AvailableSearchEntityResponse"
+            },
+            "title": "Available Search",
+            "type": "array"
+          },
+          "control_parameters": {
+            "default": [
+              "q",
+              "limit",
+              "include_cold",
+              "employee_id"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Control Parameters",
+            "type": "array"
+          },
+          "identity_filters": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/IdentityFilterFieldResponse"
+            },
+            "title": "Identity Filters",
+            "type": "array"
+          },
+          "qdrant_indexes_verified": {
+            "default": false,
+            "title": "Qdrant Indexes Verified",
+            "type": "boolean"
+          }
+        },
+        "title": "SearchMetadataResponse",
+        "type": "object"
+      },
+      "SearchRequest": {
+        "example": {
+          "filters": {
+            "entity_type": "invoice"
+          },
+          "include_cold": false,
+          "query": "unpaid supplier invoice in euros",
+          "top_k": 10
+        },
+        "properties": {
+          "filters": {
+            "additionalProperties": true,
+            "description": "Equality filters over identity/provenance fields plus fields from the current discovered source schema. See GET /v1/search (no query parameters) for the live, discoverable set. An unsupported field is rejected, never ignored.",
+            "title": "Filters",
+            "type": "object"
+          },
+          "include_cold": {
+            "default": false,
+            "title": "Include Cold",
+            "type": "boolean"
+          },
+          "query": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "type": "object"
+      },
+      "SearchResponse": {
+        "properties": {
+          "deep_search_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deep Search Note"
+          },
+          "deep_search_used": {
+            "default": false,
+            "title": "Deep Search Used",
+            "type": "boolean"
+          },
+          "dimension": {
+            "title": "Dimension",
+            "type": "integer"
+          },
+          "filters_applied": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Filters Applied",
+            "type": "object"
+          },
+          "hits": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SearchHitResponse"
+            },
+            "title": "Hits",
+            "type": "array"
+          },
+          "include_cold": {
+            "default": false,
+            "title": "Include Cold",
+            "type": "boolean"
+          },
+          "query_model": {
+            "title": "Query Model",
+            "type": "string"
+          },
+          "tiers_searched": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Tiers Searched",
+            "type": "array"
+          },
+          "took_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Took Ms"
+          }
+        },
+        "required": [
+          "query_model",
+          "dimension"
+        ],
+        "title": "SearchResponse",
+        "type": "object"
+      },
+      "SensitivityLevel": {
+        "description": "Handling classification carried by every canonical record.",
+        "enum": [
+          "public",
+          "internal",
+          "confidential",
+          "restricted"
+        ],
+        "title": "SensitivityLevel",
+        "type": "string"
+      },
+      "SourceCreate": {
+        "description": "Register a source. Structural metadata only.",
+        "example": {
+          "credential_ref": "erp_finance_password",
+          "database": "erp_finance",
+          "host": "localhost",
+          "name": "ERP Finance (PostgreSQL)",
+          "port": 5432,
+          "source_type": "postgresql",
+          "username": "erp_reader"
+        },
+        "properties": {
+          "auth_database": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Database"
+          },
+          "credential_ref": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Name of a credential held by the configured secret provider. The password itself is never stored on the source.",
+            "title": "Credential Ref"
+          },
+          "database": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Database"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional. If supplied it is stored in the configured secret provider under credential_ref and is never persisted with the source or returned by any endpoint.",
+            "title": "Password"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65535.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "source_type": {
+            "$ref": "#/components/schemas/SourceType"
+          },
+          "ssl_enabled": {
+            "default": false,
+            "title": "Ssl Enabled",
+            "type": "boolean"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "name",
+          "source_type"
+        ],
+        "title": "SourceCreate",
+        "type": "object"
+      },
+      "SourceResponse": {
+        "description": "A registered source. There is no password field to omit.",
+        "properties": {
+          "credential_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Ref"
+          },
+          "database": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Database"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "registered_at": {
+            "title": "Registered At",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          },
+          "ssl_enabled": {
+            "default": false,
+            "title": "Ssl Enabled",
+            "type": "boolean"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "source_id",
+          "name",
+          "source_type",
+          "registered_at"
+        ],
+        "title": "SourceResponse",
+        "type": "object"
+      },
+      "SourceType": {
+        "description": "Technology a source system speaks.\n\nClosed on purpose. Supporting a new source technology always requires a\nconnector, a discovery strategy and a type-normalization table, so it is a\ndeliberate framework change and must not be expressible as a free string.\nAn unrecognized value is rejected rather than passed through.",
+        "enum": [
+          "postgresql",
+          "mysql",
+          "sql_server",
+          "mongodb",
+          "csv",
+          "pdf",
+          "image",
+          "openapi",
+          "postman"
+        ],
+        "title": "SourceType",
+        "type": "string"
+      },
+      "StageResponse": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "outputs": {
+            "additionalProperties": true,
+            "title": "Outputs",
+            "type": "object"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "stage",
+          "status"
+        ],
+        "title": "StageResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "description": "Shared service key for trusted server-to-server integration. Send it as the `X-API-Key` header. Health and documentation routes never require it.",
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "\nControl plane for the ERP-Aware Data Transformation Pipeline.\n\nThis API **orchestrates** the pipeline's existing phases - schema discovery,\nmapping, transformation, validation, incremental sync, embedding and hybrid\ntiered vector storage. It does not reimplement any of them.\n\n**Boundaries.** Uploaded OpenAPI and Postman documents are parsed as contracts;\nthe endpoints they describe are never called. No LLM is used and no generated\nanswers are produced.\n",
+    "title": "ERP-Aware Data Transformation Pipeline API",
+    "version": "1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/api-specs/openapi": {
+      "post": {
+        "description": "Parse an OpenAPI or Swagger document as a CONTRACT.\n\nThe documented endpoints are never called. ``endpoints_called`` is in the\nresponse so that boundary is visible rather than merely promised.",
+        "operationId": "uploadOpenApiSpec",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_uploadOpenApiSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiSpecUploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Openapi",
+        "tags": [
+          "api-specs"
+        ]
+      }
+    },
+    "/v1/api-specs/postman": {
+      "post": {
+        "description": "Parse a Postman collection structurally.\n\nPre-request scripts, test scripts and the collection's requests are never\nexecuted - a collection is an untrusted document, not a program to run.",
+        "operationId": "uploadPostmanCollection",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_uploadPostmanCollection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiSpecUploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Postman",
+        "tags": [
+          "api-specs"
+        ]
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Capabilities",
+        "tags": [
+          "capabilities"
+        ]
+      }
+    },
+    "/v1/files/csv": {
+      "post": {
+        "description": "Upload a CSV and infer its schema through Phase 6.\n\nReturns metadata only. The rows themselves are not echoed: an ingestion\nendpoint that replayed business data would be an accidental data-export\nendpoint.",
+        "operationId": "uploadCsv",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_uploadCsv"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CsvUploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Csv",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/v1/files/documents": {
+      "post": {
+        "description": "Upload a PDF or image, extract it, and start indexing it.\n\nEvery identity field is OPTIONAL, so a client that posts only a file - which\nis what the existing frontend does - behaves exactly as it did before, plus\nthe indexing that used to require a second call.\n\nIdentity is DECLARED, never inferred. A file named\n``EMP002_birth_certificate.jpg`` uploaded without metadata carries no\nbusiness key: see ``orchestration.document_identity`` for why a guess in\nthat field would be worse than an absence.\n\nReturns metadata only - never the extracted text, which is the document's\nentire content.",
+        "operationId": "uploadDocument",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_uploadDocument"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentUploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Document",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/v1/health/live": {
+      "get": {
+        "description": "Is the process alive?\n\nDeliberately checks nothing external. If liveness depended on Qdrant, an\noutage in a vector database would get the API process killed and restarted\n- which fixes nothing and loses in-flight jobs.",
+        "operationId": "healthLive",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health Live",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/health/ready": {
+      "get": {
+        "description": "Are the CONFIGURED dependencies usable?\n\nOnly configured dependencies count. A deployment with no vector store is\nnot unready - it simply cannot serve search, and says so.",
+        "operationId": "healthReady",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health Ready",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/jobs": {
+      "get": {
+        "operationId": "listJobs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/JobStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "job_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/JobType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Job Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/JobResponse"
+                  },
+                  "title": "Response Listjobs",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Jobs",
+        "tags": [
+          "jobs"
+        ]
+      },
+      "post": {
+        "description": "Accept a job and return immediately.\n\n202, not 200: the pipeline runs on the executor afterwards. Blocking here\nuntil embeddings finished would tie a request socket to a model run.",
+        "operationId": "createJob",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAcceptedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/v1/jobs/{job_id}": {
+      "get": {
+        "operationId": "getJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/v1/jobs/{job_id}/retry": {
+      "post": {
+        "operationId": "retryJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobAcceptedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/v1/mappings/suggest": {
+      "post": {
+        "description": "Generate a mapping through Phase 8. Ambiguous fields stay unapproved.",
+        "operationId": "suggestMapping",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MappingSuggestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MappingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest Mapping",
+        "tags": [
+          "mappings"
+        ]
+      }
+    },
+    "/v1/mappings/{mapping_id}": {
+      "put": {
+        "description": "Apply human decisions by re-running Phase 8 with overrides.\n\nOverrides are fed back through the mapping engine rather than patched into\nthe profile, so the engine's own validation still applies. A target path\nthe canonical model does not define is refused there, not here.",
+        "operationId": "updateMapping",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mapping_id",
+            "required": true,
+            "schema": {
+              "title": "Mapping Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MappingUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MappingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Mapping",
+        "tags": [
+          "mappings"
+        ]
+      }
+    },
+    "/v1/mappings/{mapping_id}/validate": {
+      "post": {
+        "description": "Ask Phase 8 whether the mapping is executable. Moves no business data.",
+        "operationId": "validateMapping",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mapping_id",
+            "required": true,
+            "schema": {
+              "title": "Mapping Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MappingValidationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Mapping",
+        "tags": [
+          "mappings"
+        ]
+      }
+    },
+    "/v1/records/{record_id}": {
+      "get": {
+        "description": "Return one canonical record. Never a vector, never a credential.",
+        "operationId": "getRecord",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "title": "Record Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Record",
+        "tags": [
+          "records"
+        ]
+      }
+    },
+    "/v1/representations/{representation_id}": {
+      "get": {
+        "description": "Resolve a search hit into the AI text it stands for.\n\nThe ``:path`` converter is required, not decorative: representation ids\ncontain colons and dots (``ai:document:erp_legacy_hr_...``), and the\ndefault converter stops at the first slash.\n\nLooks up by ``representation_id`` rather than ``document_id``, and that\nchoice is load-bearing. Two employees issued the same certificate share a\n``document_id``; resolving by it would collapse their association and hand\nback a row that belongs to whichever was written last.",
+        "operationId": "getRepresentation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "representation_id",
+            "required": true,
+            "schema": {
+              "title": "Representation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepresentationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Representation",
+        "tags": [
+          "representations"
+        ]
+      }
+    },
+    "/v1/responses/adapt": {
+      "post": {
+        "description": "Transform an already-executed ERP API response into LLM-ready context.\n\nReturns 200 even when the adaptation only partly succeeded - a refused\nasset URL or a truncating budget is reported in ``warnings`` and\n``partial``, not as an HTTP error, because the fields that DID adapt are\nstill the answer the caller needs. A 422 means the request itself could not\nbe interpreted.",
+        "operationId": "adaptResponse",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResponseAdaptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseAdaptResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Adapt Response",
+        "tags": [
+          "responses"
+        ]
+      }
+    },
+    "/v1/schemas/{schema_id}": {
+      "get": {
+        "operationId": "getSchema",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "schema_id",
+            "required": true,
+            "schema": {
+              "title": "Schema Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Schema",
+        "tags": [
+          "schemas"
+        ]
+      }
+    },
+    "/v1/search": {
+      "get": {
+        "description": "The one search endpoint: metadata when called bare, search otherwise.\n\nMode is decided by what was actually supplied, not by ``q`` alone:\n\n* No parameters (or only ``limit``/``include_cold``, which shape\n  retrieval but do not name anything to retrieve) -> the live,\n  schema-driven metadata catalog. This is the ONLY metadata surface\n  this API has; there is deliberately no separate options or schema\n  endpoint left to drift out of sync with it.\n* Any identity or dynamic filter - ``source_system_id``,\n  ``source_entity``, ``record_key``, ``employee_id``, or a schema field,\n  bare or bracketed - switches to search mode, WITH or WITHOUT ``q``:\n\n    - with ``q``: semantic ranking inside the filtered scope.\n    - without ``q``: exact identity/metadata retrieval, no ranking.\n      Supplying the full canonical identity - ``source_system_id`` +\n      ``source_entity`` + ``record_key``, whatever those are in YOUR\n      catalog - therefore returns that one record directly, with no\n      query text required. Call this endpoint bare to discover the\n      systems, entities and fields this deployment actually holds.\n\nEither way, filters are pushed into Qdrant as a server-side constraint\nBEFORE anything else runs - a ``Filter`` for semantic ranking\n(``HybridVectorStore.search``), a ``scroll`` for exact retrieval\n(``HybridVectorStore.fetch``) - so an exact-scoped call narrows the\ncandidate set itself. Neither path scans the whole collection.",
+        "operationId": "searchGet",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2000,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_system_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source System Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_entity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Entity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "employee_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Employee Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_cold",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Cold",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SearchMetadataResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SearchResponse"
+                    }
+                  ],
+                  "title": "Response Searchget"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Get",
+        "tags": [
+          "search"
+        ]
+      },
+      "post": {
+        "deprecated": true,
+        "description": "Compatibility route for existing clients; prefer ``GET /v1/search``.",
+        "operationId": "search",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Post",
+        "tags": [
+          "search"
+        ]
+      }
+    },
+    "/v1/sources": {
+      "get": {
+        "operationId": "listSources",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SourceResponse"
+                  },
+                  "title": "Response Listsources",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Sources",
+        "tags": [
+          "sources"
+        ]
+      },
+      "post": {
+        "description": "Register a source. The password, if supplied, never reaches storage.",
+        "operationId": "createSource",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Source",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/v1/sources/{source_id}": {
+      "get": {
+        "operationId": "getSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Source",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/v1/sources/{source_id}/discover": {
+      "post": {
+        "description": "Delegates to Phase 4 or Phase 5. No discovery logic lives here.",
+        "operationId": "discoverSourceSchema",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discover Source",
+        "tags": [
+          "sources"
+        ]
+      }
+    },
+    "/v1/sources/{source_id}/test": {
+      "post": {
+        "description": "Open a connection through the Phase 3 connector and report safely.",
+        "operationId": "testSourceConnection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Source",
+        "tags": [
+          "sources"
+        ]
+      }
+    }
+  }
+}
