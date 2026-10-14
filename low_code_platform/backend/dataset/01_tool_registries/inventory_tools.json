@@ -1,0 +1,6019 @@
+[
+  {
+    "tool_id": "TOOL-INV-001",
+    "name": "inventory.list_items",
+    "display_name": "List Items",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "mock_endpoint_available_schema_missing",
+    "description": "List Items capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "List Items",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/items",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.list_items_api_v1_inventory_items_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date_from": {
+          "type": "string",
+          "format": "date"
+        },
+        "date_to": {
+          "type": "string",
+          "format": "date"
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "page",
+      "page_size",
+      "status",
+      "date_from",
+      "date_to"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for list items.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.list_items only when the user intent requires list items and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "items",
+      "list",
+      "list items",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.list_items supports list items in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Mock endpoint exists in ERPBridge, but the MCP schema is not registered in the middleware schema registry."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-002",
+    "name": "inventory.get_item",
+    "display_name": "Get Item",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "mock_endpoint_available_schema_missing",
+    "description": "Get Item capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Item",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/items/{item_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.get_item_api_v1_inventory_items_item_id_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for get item.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.get_item only when the user intent requires get item and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "get",
+      "get item",
+      "inventory",
+      "inventory erp",
+      "item",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.get_item supports get item in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Mock endpoint exists in ERPBridge, but the MCP schema is not registered in the middleware schema registry."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-003",
+    "name": "inventory.check_stock_level",
+    "display_name": "Check Stock Level",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Check Stock Level capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Check Stock Level",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/check-stock-level",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.check_stock_level_api_v1_inventory_check_stock_level_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "warehouse_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id",
+        "warehouse_id",
+        "quantity"
+      ]
+    },
+    "required_parameters": [
+      "item_id",
+      "warehouse_id",
+      "quantity"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for check stock level.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided.",
+      "warehouse_id must be provided.",
+      "quantity must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.check_stock_level only when the user intent requires check stock level and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "check",
+      "check stock level",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "level",
+      "mcp",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.check_stock_level supports check stock level in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-004",
+    "name": "inventory.reserve_stock",
+    "display_name": "Reserve Stock",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Reserve Stock capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Reserve Stock",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/reserve-stock",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.reserve_stock_api_v1_inventory_reserve_stock_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "warehouse_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id",
+        "warehouse_id",
+        "quantity"
+      ]
+    },
+    "required_parameters": [
+      "item_id",
+      "warehouse_id",
+      "quantity"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for reserve stock.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided.",
+      "warehouse_id must be provided.",
+      "quantity must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.reserve_stock only when the user intent requires reserve stock and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "reserve",
+      "reserve stock",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.reserve_stock supports reserve stock in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-005",
+    "name": "inventory.release_stock_reservation",
+    "display_name": "Release Stock Reservation",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Release Stock Reservation capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Release Stock Reservation",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/release-stock-reservation/{reservation_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "inventory.release_stock_reservation_api_v1_inventory_release_stock_reservation_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "reservation_id"
+      ]
+    },
+    "required_parameters": [
+      "reservation_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for release stock reservation.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "reservation_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.release_stock_reservation only when the user intent requires release stock reservation and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "release",
+      "release stock reservation",
+      "reservation",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.release_stock_reservation supports release stock reservation in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-006",
+    "name": "inventory.update_stock_level",
+    "display_name": "Update Stock Level",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Update Stock Level capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Update Stock Level",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/update-stock-level/{item_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "inventory.update_stock_level_api_v1_inventory_update_stock_level_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "warehouse_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id",
+        "warehouse_id",
+        "quantity"
+      ]
+    },
+    "required_parameters": [
+      "item_id",
+      "warehouse_id",
+      "quantity"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for update stock level.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided.",
+      "warehouse_id must be provided.",
+      "quantity must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.update_stock_level only when the user intent requires update stock level and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "level",
+      "mcp",
+      "stock",
+      "update",
+      "update stock level",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.update_stock_level supports update stock level in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-007",
+    "name": "inventory.record_goods_receipt",
+    "display_name": "Record Goods Receipt",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Record Goods Receipt capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Record Goods Receipt",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/record-goods-receipt",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.record_goods_receipt_api_v1_inventory_record_goods_receipt_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "purchase_order_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "received_quantity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "purchase_order_id",
+        "item_id",
+        "received_quantity"
+      ]
+    },
+    "required_parameters": [
+      "purchase_order_id",
+      "item_id",
+      "received_quantity"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for record goods receipt.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "purchase_order_id must be provided.",
+      "item_id must be provided.",
+      "received_quantity must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.record_goods_receipt only when the user intent requires record goods receipt and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "goods",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "receipt",
+      "record",
+      "record goods receipt",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.record_goods_receipt supports record goods receipt in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-008",
+    "name": "inventory.verify_reorder_point",
+    "display_name": "Verify Reorder Point",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Verify Reorder Point capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Verify Reorder Point",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/verify-reorder-point",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.verify_reorder_point_api_v1_inventory_verify_reorder_point_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "warehouse_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id",
+        "warehouse_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id",
+      "warehouse_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for verify reorder point.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided.",
+      "warehouse_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.verify_reorder_point only when the user intent requires verify reorder point and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "point",
+      "reorder",
+      "validator",
+      "verify",
+      "verify reorder point",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.verify_reorder_point supports verify reorder point in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-009",
+    "name": "inventory.create_stock_alert",
+    "display_name": "Create Stock Alert",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Create Stock Alert capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Stock Alert",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/create-stock-alert",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.create_stock_alert_api_v1_inventory_create_stock_alert_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "warehouse_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "alert_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id",
+        "warehouse_id",
+        "alert_type"
+      ]
+    },
+    "required_parameters": [
+      "item_id",
+      "warehouse_id",
+      "alert_type"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for create stock alert.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided.",
+      "warehouse_id must be provided.",
+      "alert_type must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.create_stock_alert only when the user intent requires create stock alert and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "alert",
+      "bpi2019_p2p",
+      "create",
+      "create stock alert",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.create_stock_alert supports create stock alert in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-010",
+    "name": "inventory.check_warehouse_availability",
+    "display_name": "Check Warehouse Availability",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Check Warehouse Availability capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Check Warehouse Availability",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/check-warehouse-availability",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.check_warehouse_availability_api_v1_inventory_check_warehouse_availability_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "warehouse_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "warehouse_id"
+      ]
+    },
+    "required_parameters": [
+      "warehouse_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for check warehouse availability.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "warehouse_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.check_warehouse_availability only when the user intent requires check warehouse availability and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "availability",
+      "bpi2019_p2p",
+      "check",
+      "check warehouse availability",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "validator",
+      "warehouse",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.check_warehouse_availability supports check warehouse availability in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-011",
+    "name": "inventory.write_inventory_audit_log",
+    "display_name": "Write Inventory Audit Log",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Write Inventory Audit Log capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Write Inventory Audit Log",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/write-inventory-audit-log",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.write_inventory_audit_log_api_v1_inventory_write_inventory_audit_log_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor_role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id",
+        "event_type",
+        "actor_role"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id",
+      "event_type",
+      "actor_role"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for write inventory audit log.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided.",
+      "event_type must be provided.",
+      "actor_role must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.write_inventory_audit_log only when the user intent requires write inventory audit log and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "audit",
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "log",
+      "mcp",
+      "validator",
+      "workflow",
+      "write",
+      "write inventory audit log"
+    ],
+    "semantic_search_description": "inventory.write_inventory_audit_log supports write inventory audit log in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-012",
+    "name": "inventory.get_stock_reservation",
+    "display_name": "Get Stock Reservation",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Get Stock Reservation capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Stock Reservation",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/get-stock-reservation/{item_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.get_stock_reservation_api_v1_inventory_get_stock_reservation_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for get stock reservation.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.get_stock_reservation only when the user intent requires get stock reservation and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "get",
+      "get stock reservation",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "reservation",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.get_stock_reservation supports get stock reservation in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-013",
+    "name": "inventory.list_warehouses",
+    "display_name": "List Warehouses",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "List Warehouses capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "List Warehouses",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/list-warehouses",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.list_warehouses_api_v1_inventory_list_warehouses_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date_from": {
+          "type": "string",
+          "format": "date"
+        },
+        "date_to": {
+          "type": "string",
+          "format": "date"
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "page",
+      "page_size",
+      "status",
+      "date_from",
+      "date_to"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for list warehouses.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.list_warehouses only when the user intent requires list warehouses and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "list",
+      "list warehouses",
+      "mcp",
+      "validator",
+      "warehouses",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.list_warehouses supports list warehouses in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-014",
+    "name": "inventory.transfer_stock",
+    "display_name": "Transfer Stock",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Transfer Stock capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Transfer Stock",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/transfer-stock",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.transfer_stock_api_v1_inventory_transfer_stock_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for transfer stock.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.transfer_stock only when the user intent requires transfer stock and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "stock",
+      "transfer",
+      "transfer stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.transfer_stock supports transfer stock in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-015",
+    "name": "inventory.adjust_stock",
+    "display_name": "Adjust Stock",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Adjust Stock capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Adjust Stock",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/adjust-stock",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.adjust_stock_api_v1_inventory_adjust_stock_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for adjust stock.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.adjust_stock only when the user intent requires adjust stock and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "adjust",
+      "adjust stock",
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.adjust_stock supports adjust stock in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-016",
+    "name": "inventory.record_goods_issue",
+    "display_name": "Record Goods Issue",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Record Goods Issue capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Record Goods Issue",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/record-goods-issue",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.record_goods_issue_api_v1_inventory_record_goods_issue_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for record goods issue.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.record_goods_issue only when the user intent requires record goods issue and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "goods",
+      "inventory",
+      "inventory erp",
+      "issue",
+      "mcp",
+      "record",
+      "record goods issue",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.record_goods_issue supports record goods issue in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-017",
+    "name": "inventory.check_item_master",
+    "display_name": "Check Item Master",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Check Item Master capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Check Item Master",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/check-item-master",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.check_item_master_api_v1_inventory_check_item_master_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for check item master.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.check_item_master only when the user intent requires check item master and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "check",
+      "check item master",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "item",
+      "master",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.check_item_master supports check item master in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-018",
+    "name": "inventory.validate_item_active",
+    "display_name": "Validate Item Active",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Validate Item Active capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Item Active",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/validate-item-active",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.validate_item_active_api_v1_inventory_validate_item_active_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for validate item active.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.validate_item_active only when the user intent requires validate item active and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "active",
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "item",
+      "mcp",
+      "validate",
+      "validate item active",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.validate_item_active supports validate item active in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-019",
+    "name": "inventory.get_item_supplier",
+    "display_name": "Get Item Supplier",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Get Item Supplier capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Item Supplier",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/get-item-supplier/{item_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.get_item_supplier_api_v1_inventory_get_item_supplier_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for get item supplier.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.get_item_supplier only when the user intent requires get item supplier and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "get",
+      "get item supplier",
+      "inventory",
+      "inventory erp",
+      "item",
+      "mcp",
+      "supplier",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.get_item_supplier supports get item supplier in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-020",
+    "name": "inventory.get_safety_stock",
+    "display_name": "Get Safety Stock",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Get Safety Stock capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Safety Stock",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/get-safety-stock/{item_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.get_safety_stock_api_v1_inventory_get_safety_stock_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for get safety stock.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.get_safety_stock only when the user intent requires get safety stock and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "get",
+      "get safety stock",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "safety",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.get_safety_stock supports get safety stock in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-021",
+    "name": "inventory.create_cycle_count",
+    "display_name": "Create Cycle Count",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Create Cycle Count capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Cycle Count",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/create-cycle-count",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.create_cycle_count_api_v1_inventory_create_cycle_count_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for create cycle count.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.create_cycle_count only when the user intent requires create cycle count and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "count",
+      "create",
+      "create cycle count",
+      "cycle",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.create_cycle_count supports create cycle count in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-022",
+    "name": "inventory.approve_cycle_count_adjustment",
+    "display_name": "Approve Cycle Count Adjustment",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Approve Cycle Count Adjustment capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Approve Cycle Count Adjustment",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/approve-cycle-count-adjustment",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.approve_cycle_count_adjustment_api_v1_inventory_approve_cycle_count_adjustment_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approver_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_comment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "approver_id",
+      "approval_comment"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for approve cycle count adjustment.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "high",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.approve_cycle_count_adjustment only when the user intent requires approve cycle count adjustment and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "adjustment",
+      "approve",
+      "approve cycle count adjustment",
+      "bpi2019_p2p",
+      "count",
+      "cycle",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.approve_cycle_count_adjustment supports approve cycle count adjustment in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-023",
+    "name": "inventory.freeze_inventory_item",
+    "display_name": "Freeze Inventory Item",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Freeze Inventory Item capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Freeze Inventory Item",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/freeze-inventory-item/{item_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "inventory.freeze_inventory_item_api_v1_inventory_freeze_inventory_item_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for freeze inventory item.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.freeze_inventory_item only when the user intent requires freeze inventory item and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "freeze",
+      "freeze inventory item",
+      "inventory",
+      "inventory erp",
+      "item",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.freeze_inventory_item supports freeze inventory item in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-024",
+    "name": "inventory.unfreeze_inventory_item",
+    "display_name": "Unfreeze Inventory Item",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Unfreeze Inventory Item capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Unfreeze Inventory Item",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/unfreeze-inventory-item/{item_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "inventory.unfreeze_inventory_item_api_v1_inventory_unfreeze_inventory_item_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for unfreeze inventory item.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.unfreeze_inventory_item only when the user intent requires unfreeze inventory item and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "item",
+      "mcp",
+      "unfreeze",
+      "unfreeze inventory item",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.unfreeze_inventory_item supports unfreeze inventory item in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-025",
+    "name": "inventory.reconcile_inventory_balance",
+    "display_name": "Reconcile Inventory Balance",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Reconcile Inventory Balance capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Reconcile Inventory Balance",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/reconcile-inventory-balance",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.reconcile_inventory_balance_api_v1_inventory_reconcile_inventory_balance_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for reconcile inventory balance.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.reconcile_inventory_balance only when the user intent requires reconcile inventory balance and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "balance",
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "reconcile",
+      "reconcile inventory balance",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.reconcile_inventory_balance supports reconcile inventory balance in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-026",
+    "name": "inventory.forecast_stockout",
+    "display_name": "Forecast Stockout",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Forecast Stockout capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Forecast Stockout",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/forecast-stockout/{item_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.forecast_stockout_api_v1_inventory_forecast_stockout_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for forecast stockout.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.forecast_stockout only when the user intent requires forecast stockout and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "forecast",
+      "forecast stockout",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "stockout",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.forecast_stockout supports forecast stockout in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-027",
+    "name": "inventory.create_reorder_recommendation",
+    "display_name": "Create Reorder Recommendation",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Create Reorder Recommendation capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Reorder Recommendation",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/create-reorder-recommendation",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.create_reorder_recommendation_api_v1_inventory_create_reorder_recommendation_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for create reorder recommendation.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.create_reorder_recommendation only when the user intent requires create reorder recommendation and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "create",
+      "create reorder recommendation",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "recommendation",
+      "reorder",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.create_reorder_recommendation supports create reorder recommendation in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-028",
+    "name": "inventory.allocate_stock_to_order",
+    "display_name": "Allocate Stock To Order",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Allocate Stock To Order capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Allocate Stock To Order",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/allocate-stock-to-order",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.allocate_stock_to_order_api_v1_inventory_allocate_stock_to_order_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for allocate stock to order.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.allocate_stock_to_order only when the user intent requires allocate stock to order and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "allocate",
+      "allocate stock to order",
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "order",
+      "stock",
+      "to",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.allocate_stock_to_order supports allocate stock to order in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-029",
+    "name": "inventory.backorder_item",
+    "display_name": "Backorder Item",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Backorder Item capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Backorder Item",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/backorder-item",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.backorder_item_api_v1_inventory_backorder_item_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for backorder item.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.backorder_item only when the user intent requires backorder item and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "backorder",
+      "backorder item",
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "item",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.backorder_item supports backorder item in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-030",
+    "name": "inventory.fulfill_backorder",
+    "display_name": "Fulfill Backorder",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Fulfill Backorder capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Fulfill Backorder",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/fulfill-backorder",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.fulfill_backorder_api_v1_inventory_fulfill_backorder_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for fulfill backorder.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.fulfill_backorder only when the user intent requires fulfill backorder and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "backorder",
+      "bpi2019_p2p",
+      "erpbridge",
+      "fulfill",
+      "fulfill backorder",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.fulfill_backorder supports fulfill backorder in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-031",
+    "name": "inventory.check_lot_expiry",
+    "display_name": "Check Lot Expiry",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Check Lot Expiry capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Check Lot Expiry",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/check-lot-expiry",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.check_lot_expiry_api_v1_inventory_check_lot_expiry_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for check lot expiry.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.check_lot_expiry only when the user intent requires check lot expiry and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "check",
+      "check lot expiry",
+      "erpbridge",
+      "expiry",
+      "inventory",
+      "inventory erp",
+      "lot",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.check_lot_expiry supports check lot expiry in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-032",
+    "name": "inventory.record_lot_receipt",
+    "display_name": "Record Lot Receipt",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Record Lot Receipt capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Record Lot Receipt",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/record-lot-receipt",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.record_lot_receipt_api_v1_inventory_record_lot_receipt_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for record lot receipt.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.record_lot_receipt only when the user intent requires record lot receipt and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "lot",
+      "mcp",
+      "receipt",
+      "record",
+      "record lot receipt",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.record_lot_receipt supports record lot receipt in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-033",
+    "name": "inventory.quarantine_item",
+    "display_name": "Quarantine Item",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Quarantine Item capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Quarantine Item",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/quarantine-item",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.quarantine_item_api_v1_inventory_quarantine_item_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for quarantine item.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.quarantine_item only when the user intent requires quarantine item and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "item",
+      "mcp",
+      "quarantine",
+      "quarantine item",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.quarantine_item supports quarantine item in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-034",
+    "name": "inventory.release_quarantined_item",
+    "display_name": "Release Quarantined Item",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Release Quarantined Item capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Release Quarantined Item",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/release-quarantined-item/{item_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "inventory.release_quarantined_item_api_v1_inventory_release_quarantined_item_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for release quarantined item.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.release_quarantined_item only when the user intent requires release quarantined item and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "item",
+      "mcp",
+      "quarantined",
+      "release",
+      "release quarantined item",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.release_quarantined_item supports release quarantined item in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-035",
+    "name": "inventory.get_inventory_valuation",
+    "display_name": "Get Inventory Valuation",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Get Inventory Valuation capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Inventory Valuation",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/get-inventory-valuation",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.get_inventory_valuation_api_v1_inventory_get_inventory_valuation_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for get inventory valuation.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.get_inventory_valuation only when the user intent requires get inventory valuation and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "get",
+      "get inventory valuation",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "validator",
+      "valuation",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.get_inventory_valuation supports get inventory valuation in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-036",
+    "name": "inventory.validate_warehouse_role",
+    "display_name": "Validate Warehouse Role",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Validate Warehouse Role capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Warehouse Role",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/validate-warehouse-role",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.validate_warehouse_role_api_v1_inventory_validate_warehouse_role_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for validate warehouse role.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.validate_warehouse_role only when the user intent requires validate warehouse role and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "role",
+      "validate",
+      "validate warehouse role",
+      "validator",
+      "warehouse",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.validate_warehouse_role supports validate warehouse role in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-037",
+    "name": "inventory.update_reorder_point",
+    "display_name": "Update Reorder Point",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Update Reorder Point capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Update Reorder Point",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/update-reorder-point/{workflow_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "inventory.update_reorder_point_api_v1_inventory_update_reorder_point_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for update reorder point.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.update_reorder_point only when the user intent requires update reorder point and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "point",
+      "reorder",
+      "update",
+      "update reorder point",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.update_reorder_point supports update reorder point in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-038",
+    "name": "inventory.create_transfer_order",
+    "display_name": "Create Transfer Order",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Create Transfer Order capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Transfer Order",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/create-transfer-order",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.create_transfer_order_api_v1_inventory_create_transfer_order_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for create transfer order.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.create_transfer_order only when the user intent requires create transfer order and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "create",
+      "create transfer order",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "order",
+      "transfer",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.create_transfer_order supports create transfer order in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-039",
+    "name": "inventory.approve_transfer_order",
+    "display_name": "Approve Transfer Order",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Approve Transfer Order capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Approve Transfer Order",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/approve-transfer-order",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.approve_transfer_order_api_v1_inventory_approve_transfer_order_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approver_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_comment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "approver_id",
+      "approval_comment"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for approve transfer order.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "high",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.approve_transfer_order only when the user intent requires approve transfer order and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "approve",
+      "approve transfer order",
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "order",
+      "transfer",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.approve_transfer_order supports approve transfer order in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-040",
+    "name": "inventory.cancel_transfer_order",
+    "display_name": "Cancel Transfer Order",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Cancel Transfer Order capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Cancel Transfer Order",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/cancel-transfer-order/{workflow_id}",
+    "http_method": "DELETE",
+    "mcp_tool_name": "inventory.cancel_transfer_order_api_v1_inventory_cancel_transfer_order_delete",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for cancel transfer order.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.cancel_transfer_order only when the user intent requires cancel transfer order and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "cancel",
+      "cancel transfer order",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "order",
+      "transfer",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.cancel_transfer_order supports cancel transfer order in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-041",
+    "name": "inventory.get_open_stock_alerts",
+    "display_name": "Get Open Stock Alerts",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Get Open Stock Alerts capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Open Stock Alerts",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/get-open-stock-alerts/{item_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.get_open_stock_alerts_api_v1_inventory_get_open_stock_alerts_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for get open stock alerts.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.get_open_stock_alerts only when the user intent requires get open stock alerts and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "alerts",
+      "bpi2019_p2p",
+      "erpbridge",
+      "get",
+      "get open stock alerts",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "open",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.get_open_stock_alerts supports get open stock alerts in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-042",
+    "name": "inventory.close_stock_alert",
+    "display_name": "Close Stock Alert",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Close Stock Alert capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Close Stock Alert",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/close-stock-alert/{item_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "inventory.close_stock_alert_api_v1_inventory_close_stock_alert_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for close stock alert.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.close_stock_alert only when the user intent requires close stock alert and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "alert",
+      "bpi2019_p2p",
+      "close",
+      "close stock alert",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.close_stock_alert supports close stock alert in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-043",
+    "name": "inventory.validate_unit_of_measure",
+    "display_name": "Validate Unit Of Measure",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Validate Unit Of Measure capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Unit Of Measure",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/validate-unit-of-measure",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.validate_unit_of_measure_api_v1_inventory_validate_unit_of_measure_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for validate unit of measure.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.validate_unit_of_measure only when the user intent requires validate unit of measure and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "measure",
+      "of",
+      "unit",
+      "validate",
+      "validate unit of measure",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.validate_unit_of_measure supports validate unit of measure in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-044",
+    "name": "inventory.get_item_cost",
+    "display_name": "Get Item Cost",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Get Item Cost capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Item Cost",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/get-item-cost/{item_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.get_item_cost_api_v1_inventory_get_item_cost_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for get item cost.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.get_item_cost only when the user intent requires get item cost and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "cost",
+      "erpbridge",
+      "get",
+      "get item cost",
+      "inventory",
+      "inventory erp",
+      "item",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.get_item_cost supports get item cost in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-045",
+    "name": "inventory.reserve_stock_for_purchase_requisition",
+    "display_name": "Reserve Stock For Purchase Requisition",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Reserve Stock For Purchase Requisition capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Reserve Stock For Purchase Requisition",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/reserve-stock-for-purchase-requisition",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.reserve_stock_for_purchase_requisition_api_v1_inventory_reserve_stock_for_purchase_requisition_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "purchase_requisition_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "amount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_comment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "purchase_requisition_id"
+      ]
+    },
+    "required_parameters": [
+      "purchase_requisition_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "amount",
+      "currency",
+      "approval_comment"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for reserve stock for purchase requisition.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "purchase_requisition_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.reserve_stock_for_purchase_requisition only when the user intent requires reserve stock for purchase requisition and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "for",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "purchase",
+      "requisition",
+      "reserve",
+      "reserve stock for purchase requisition",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.reserve_stock_for_purchase_requisition supports reserve stock for purchase requisition in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-046",
+    "name": "inventory.release_expired_reservations",
+    "display_name": "Release Expired Reservations",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Release Expired Reservations capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Release Expired Reservations",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/release-expired-reservations",
+    "http_method": "PATCH",
+    "mcp_tool_name": "inventory.release_expired_reservations_api_v1_inventory_release_expired_reservations_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for release expired reservations.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.release_expired_reservations only when the user intent requires release expired reservations and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "expired",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "release",
+      "release expired reservations",
+      "reservations",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.release_expired_reservations supports release expired reservations in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-047",
+    "name": "inventory.record_supplier_return",
+    "display_name": "Record Supplier Return",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Record Supplier Return capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Record Supplier Return",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/record-supplier-return",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.record_supplier_return_api_v1_inventory_record_supplier_return_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "vendor_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "vendor_id"
+      ]
+    },
+    "required_parameters": [
+      "vendor_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for record supplier return.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "vendor_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.record_supplier_return only when the user intent requires record supplier return and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "record",
+      "record supplier return",
+      "return",
+      "supplier",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.record_supplier_return supports record supplier return in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-048",
+    "name": "inventory.validate_goods_receipt_against_po",
+    "display_name": "Validate Goods Receipt Against Po",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Validate Goods Receipt Against Po capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Goods Receipt Against Po",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/validate-goods-receipt-against-po",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.validate_goods_receipt_against_po_api_v1_inventory_validate_goods_receipt_against_po_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "purchase_order_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "purchase_order_id"
+      ]
+    },
+    "required_parameters": [
+      "purchase_order_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for validate goods receipt against po.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "purchase_order_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.validate_goods_receipt_against_po only when the user intent requires validate goods receipt against po and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "against",
+      "bpi2019_p2p",
+      "erpbridge",
+      "goods",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "po",
+      "receipt",
+      "validate",
+      "validate goods receipt against po",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.validate_goods_receipt_against_po supports validate goods receipt against po in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-049",
+    "name": "inventory.create_short_receipt_exception",
+    "display_name": "Create Short Receipt Exception",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Create Short Receipt Exception capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Short Receipt Exception",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/create-short-receipt-exception",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.create_short_receipt_exception_api_v1_inventory_create_short_receipt_exception_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for create short receipt exception.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.create_short_receipt_exception only when the user intent requires create short receipt exception and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "create",
+      "create short receipt exception",
+      "erpbridge",
+      "exception",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "receipt",
+      "short",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.create_short_receipt_exception supports create short receipt exception in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-050",
+    "name": "inventory.create_over_receipt_exception",
+    "display_name": "Create Over Receipt Exception",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Create Over Receipt Exception capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Over Receipt Exception",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/create-over-receipt-exception",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.create_over_receipt_exception_api_v1_inventory_create_over_receipt_exception_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for create over receipt exception.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.create_over_receipt_exception only when the user intent requires create over receipt exception and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "create",
+      "create over receipt exception",
+      "erpbridge",
+      "exception",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "over",
+      "receipt",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.create_over_receipt_exception supports create over receipt exception in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-051",
+    "name": "inventory.generate_inventory_report",
+    "display_name": "Generate Inventory Report",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Generate Inventory Report capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Generate Inventory Report",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/generate-inventory-report",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.generate_inventory_report_api_v1_inventory_generate_inventory_report_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for generate inventory report.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.generate_inventory_report only when the user intent requires generate inventory report and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "generate",
+      "generate inventory report",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "report",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.generate_inventory_report supports generate inventory report in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-052",
+    "name": "inventory.check_serial_number_required",
+    "display_name": "Check Serial Number Required",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Check Serial Number Required capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Check Serial Number Required",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/check-serial-number-required",
+    "http_method": "GET",
+    "mcp_tool_name": "inventory.check_serial_number_required_api_v1_inventory_check_serial_number_required_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for check serial number required.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.check_serial_number_required only when the user intent requires check serial number required and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "check",
+      "check serial number required",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "number",
+      "required",
+      "serial",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.check_serial_number_required supports check serial number required in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-053",
+    "name": "inventory.record_serial_numbers",
+    "display_name": "Record Serial Numbers",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Record Serial Numbers capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Record Serial Numbers",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/record-serial-numbers",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.record_serial_numbers_api_v1_inventory_record_serial_numbers_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for record serial numbers.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.record_serial_numbers only when the user intent requires record serial numbers and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "numbers",
+      "record",
+      "record serial numbers",
+      "serial",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.record_serial_numbers supports record serial numbers in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-054",
+    "name": "inventory.audit_stock_movement",
+    "display_name": "Audit Stock Movement",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Audit Stock Movement capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Audit Stock Movement",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/audit-stock-movement",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.audit_stock_movement_api_v1_inventory_audit_stock_movement_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "item_id"
+      ]
+    },
+    "required_parameters": [
+      "item_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for audit stock movement.",
+    "allowed_roles": [
+      "inv_viewer",
+      "inv_editor",
+      "procurement_officer",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_viewer",
+      "recommended_key_ref": "inv-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: inv_viewer, inv_editor, procurement_officer, auditor, admin.",
+      "item_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.audit_stock_movement only when the user intent requires audit stock movement and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "audit",
+      "audit stock movement",
+      "bpi2019_p2p",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "movement",
+      "stock",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.audit_stock_movement supports audit stock movement in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-INV-055",
+    "name": "inventory.create_inventory_capability_request",
+    "display_name": "Create Inventory Capability Request",
+    "erp_system": "Inventory ERP",
+    "module": "inventory",
+    "status": "recommended_future_capability",
+    "description": "Create Inventory Capability Request capability for Inventory ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Inventory Capability Request",
+    "bpi_process_alignment": [
+      "BPI2019_P2P"
+    ],
+    "endpoint": "/api/v1/inventory/create-inventory-capability-request",
+    "http_method": "POST",
+    "mcp_tool_name": "inventory.create_inventory_capability_request_api_v1_inventory_create_inventory_capability_request_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured inventory result data, decision metadata, and trace identifiers for create inventory capability request.",
+    "allowed_roles": [
+      "inv_editor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "inv_editor",
+      "recommended_key_ref": "inv-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "inventory",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update inventory business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: inv_editor, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use inventory.create_inventory_capability_request only when the user intent requires create inventory capability request and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2019_p2p",
+      "capability",
+      "create",
+      "create inventory capability request",
+      "erpbridge",
+      "inventory",
+      "inventory erp",
+      "mcp",
+      "request",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "inventory.create_inventory_capability_request supports create inventory capability request in Inventory ERP for BPI2019_P2P workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  }
+]

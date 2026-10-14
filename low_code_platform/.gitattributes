@@ -1,0 +1,7 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+*.sh text eol=lf
+# Frozen Go crypto vectors hash these fixture bytes, including CRLF. Preserve
+# their captured encoding on every checkout; expected hashes stay unchanged.
+backend-ts/fixtures/parity/http/runtime/all_tools_master_registry.json text eol=crlf
+backend-ts/fixtures/parity/http/runtime/all_rules_master_registry.json text eol=crlf

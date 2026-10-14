@@ -1,0 +1,29 @@
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+.page-heading {
+  font-size: clamp(1.65rem, 2vw, 2.4rem);
+  line-height: 1.12;
+  font-weight: 700;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.metric-number {
+  font-size: clamp(1.5rem, 2vw, 2rem);
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+@media (max-width: 640px) {
+  .page-heading {
+    font-size: 1.45rem;
+    line-height: 1.18;
+  }
+}

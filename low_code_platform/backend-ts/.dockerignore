@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+node_modules
+dist
+coverage
+tests
+*.log
+*.pem
+*.key
+service-account.json
+*-service-account.json
+firestore-debug.log
+firestore.emulator.json
+Dockerfile*
+docs

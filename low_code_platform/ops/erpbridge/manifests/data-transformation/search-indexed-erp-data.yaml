@@ -1,0 +1,112 @@
+apiVersion: erpbridge.io/v1
+kind: MCPTool
+metadata:
+  name: search_indexed_erp_data
+  version: 1.0.0
+  module: data_transformation
+spec:
+  description:
+    short: "Search indexed ERP records and uploaded document chunks within an exact source scope."
+    whenToUse:
+      - "Find an employee or business record by name after choosing its source system and entity"
+      - "Locate an uploaded PDF or image chunk related to an exact employee or record key"
+    whenNotToUse:
+      - "Do not use for uploading files"
+      - "Do not use when the source system and source entity are unknown; ask the user to identify them"
+    examples:
+      - "Find Lakshan in hr_system employee records"
+      - "Find the birth certificate indexed for employee EMP-10042"
+  annotations:
+    title: "Search indexed ERP data"
+    readOnlyHint: true
+    destructiveHint: false
+    idempotentHint: true
+    openWorldHint: true
+  rateLimit:
+    requestsPerSecond: 5
+    burst: 10
+  concurrency:
+    limit: 4
+    perPrincipal: true
+  inputSchema:
+    type: object
+    properties:
+      q:
+        type: string
+        description: "Natural-language search text such as a person name or document fact."
+      source_system_id:
+        type: string
+        description: "Exact source system supplied when the record or document was indexed."
+      source_entity:
+        type: string
+        description: "Exact source entity supplied when the record or document was indexed."
+      employee_id:
+        type: string
+        description: "Optional exact employee or record key used to restrict results."
+      limit:
+        type: integer
+        description: "Maximum ranked hits to return; use a small value before resolving text."
+        default: 5
+      include_cold:
+        type: boolean
+        description: "Whether archived tiers may be rehydrated; leave false for normal chat retrieval."
+        default: false
+    required: [q, source_system_id, source_entity]
+  outputSchema:
+    type: object
+    properties:
+      query_model:
+        type: string
+      dimension:
+        type: integer
+      hits:
+        type: array
+        items:
+          type: object
+          properties:
+            representation_id:
+              type: string
+            canonical_record_id:
+              type: [string, "null"]
+            source_system_id:
+              type: string
+            source_entity:
+              type: string
+            record_key:
+              type: [string, "null"]
+            content_kind:
+              type: [string, "null"]
+            score:
+              type: number
+            tier:
+              type: string
+      filters_applied:
+        type: object
+      deep_search_used:
+        type: boolean
+      took_ms:
+        type: [number, "null"]
+  execution:
+    type: http
+    method: GET
+    endpoint: /v1/search
+    parameterLocations:
+      q: query
+      source_system_id: query
+      source_entity: query
+      employee_id: query
+      limit: query
+      include_cold: query
+  security:
+    authType: api-key
+    authHeader: X-API-Key
+    credentialRef: ERP_DATA_TRANSFORMATION_API_KEY
+    credentialSource: env
+    dataClass: restricted
+    allowedRoles: [platform_admin, workflow_builder, client]
+  cache:
+    enabled: false
+    ttlSeconds: 0
+    isReadOnly: true
+    flushOn: []
+

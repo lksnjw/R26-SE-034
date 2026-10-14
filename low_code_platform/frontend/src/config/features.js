@@ -1,0 +1,24 @@
+// These are disabled because their backend endpoints are unavailable or their response contracts do not match; set a flag to true to re-enable.
+import { appConfig } from "./app";
+
+export const features = Object.freeze({
+  authentication: true,
+  workflows: true,
+  dashboard: true,
+  company: true,
+  chat: true,
+  executions: true,
+  analytics: true,
+  users: true,
+  settings: true,
+  models: true,
+  registry: true,
+  profile: true,
+  datafeed: false,
+  pipelineUpload: appConfig.pipelineUploadEnabled,
+  registrySearch: false,
+  registryImport: false,
+  registryContext: false,
+  mcpBridge: false,
+  semanticSearch: false,
+});

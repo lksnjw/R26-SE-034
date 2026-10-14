@@ -1,0 +1,28 @@
+import { Icon } from "@iconify/react";
+import Card from "../shared/ui/Card";
+
+/*******************************************************************************
+ * Function: Content
+ *
+ * Performs the Content operation on the application for the HealingReport module.
+ ******************************************************************************/
+function Content({ report }) {
+  if (!report || report.status === "NO_HEALING_REQUIRED") return <p className="text-sm text-gray-500">No recovery action is recorded in this report. Automatic replay is disabled.</p>;
+  return (
+    <div className="flex items-start gap-4">
+      <span className="flex h-12 w-12 items-center justify-center rounded-full bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-500/15 dark:text-fuchsia-300"><Icon icon="mdi:shield-refresh-outline" className="h-6 w-6" /></span>
+      <div><h2 className="section-title">Self-Healing Report</h2><p className="mt-2 text-xs font-bold uppercase tracking-wide text-fuchsia-600">{report.status}</p><p className="mt-2 text-sm leading-6 text-gray-500 dark:text-gray-400">{report.summary}</p></div>
+    </div>
+  );
+}
+
+/*******************************************************************************
+ * Function: HealingReport
+ *
+ * Performs the Healing Report operation on report for the HealingReport module.
+ ******************************************************************************/
+function HealingReport({ report, embedded = false }) {
+  return embedded ? <Content report={report} /> : <Card><Content report={report} /></Card>;
+}
+
+export default HealingReport;

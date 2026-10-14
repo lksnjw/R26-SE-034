@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.npm-cache/
+.npm-appdata/
+.edge-*/
+vite-dev*.log
+qa-*.png
+.env.local
+.env.hosting.local

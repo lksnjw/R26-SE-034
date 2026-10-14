@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Application commands and ERPBridge dispatch go through authenticated
+    // backend RBAC/IAM, not the browser Firestore SDK. No Firebase Auth migration.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

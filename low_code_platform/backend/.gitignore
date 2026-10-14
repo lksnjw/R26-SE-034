@@ -1,0 +1,13 @@
+.env
+.env.local
+.env.development
+bin/
+tmp/
+.gocache/
+.gomodcache/
+coverage.out
+*.test
+*.log
+test-results/*
+!test-results/experiment_results.csv
+!test-results/metrics.json

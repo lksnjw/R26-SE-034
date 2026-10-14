@@ -1,0 +1,18 @@
+[
+  {
+    "tool_id": "TEST-READ-ECHO",
+    "name": "demo.echo",
+    "mcp_tool_name": "demo.echo",
+    "description": "SDK-envelope echo fixture, never a live deployment.",
+    "input_schema": {
+      "type": "object",
+      "properties": { "value": { "type": "string" } },
+      "required": ["value"],
+      "additionalProperties": false
+    },
+    "required_parameters": ["value"],
+    "allowed_roles": ["Platform Admin"],
+    "is_read_only": true,
+    "risk_level": "low"
+  }
+]

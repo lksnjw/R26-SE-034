@@ -1,0 +1,89 @@
+apiVersion: erpbridge.io/v1
+kind: MCPTool
+metadata:
+  name: retrieve_indexed_erp_data
+  version: 1.0.0
+  module: data_transformation
+spec:
+  description:
+    short: "Retrieve current indexed ERP document text in one bounded, source-scoped call."
+    whenToUse:
+      - "Read an uploaded image, certificate or PDF for a known person/record key"
+      - "Search by a person name within a known source system and entity, returning evidence text"
+      - "Prefer record_key with no q for an exact lookup; use q for semantic name/fact ranking"
+    whenNotToUse:
+      - "Do not guess source identifiers; discover the catalog first"
+      - "Do not treat a name as a unique person when multiple record keys match"
+      - "Do not upload files or request all records"
+    examples:
+      - "Read document details for EMP-10042 in hr_system employees"
+  annotations:
+    title: "Retrieve indexed ERP document evidence"
+    readOnlyHint: true
+    destructiveHint: false
+    idempotentHint: true
+    openWorldHint: true
+  rateLimit: {requestsPerSecond: 5, burst: 10}
+  concurrency: {limit: 4, perPrincipal: true}
+  inputSchema:
+    type: object
+    properties:
+      source_system_id: {type: string, description: "Exact source system from upload or catalog."}
+      source_entity: {type: string, description: "Exact source entity from upload or catalog."}
+      q: {type: string, description: "Optional name or semantic query. Supply q or record_key."}
+      record_key: {type: string, description: "Exact person/business ID; omit q to bypass embedding for this lookup."}
+      document_type: {type: string, description: "Optional exact document category supplied at upload."}
+      content_kind: {type: string, enum: [structured_record, document_chunk, schema]}
+      limit: {type: integer, default: 5, description: "1 to 20 evidence chunks."}
+      min_score: {type: number, default: 0.2, description: "Semantic threshold from -1 to 1; exact lookups are unaffected."}
+      max_text_chars: {type: integer, default: 12000, description: "Total text budget across all hits, 1 to 24000 characters."}
+    required: [source_system_id, source_entity]
+  outputSchema:
+    type: object
+    properties:
+      retrieval_mode: {type: string}
+      hits:
+        type: array
+        items:
+          type: object
+          properties:
+            representation_id: {type: string}
+            canonical_record_id: {type: [string, "null"]}
+            source_system_id: {type: [string, "null"]}
+            source_entity: {type: [string, "null"]}
+            record_key: {type: [string, "null"]}
+            content_kind: {type: [string, "null"]}
+            score: {type: number}
+            tier: {type: string}
+            text: {type: [string, "null"]}
+            text_available: {type: boolean}
+            text_truncated: {type: boolean}
+            metadata: {type: object}
+          required: [representation_id, score, tier, text_available, text_truncated]
+      filters_applied: {type: object}
+      text_chars_returned: {type: integer}
+      max_text_chars: {type: integer}
+      took_ms: {type: [number, "null"]}
+    required: [retrieval_mode, hits, filters_applied, text_chars_returned, max_text_chars]
+  execution:
+    type: http
+    method: GET
+    endpoint: /v1/retrieve
+    parameterLocations:
+      source_system_id: query
+      source_entity: query
+      q: query
+      record_key: query
+      document_type: query
+      content_kind: query
+      limit: query
+      min_score: query
+      max_text_chars: query
+  security:
+    authType: api-key
+    authHeader: X-API-Key
+    credentialRef: ERP_DATA_TRANSFORMATION_API_KEY
+    credentialSource: env
+    dataClass: restricted
+    allowedRoles: [platform_admin, workflow_builder, client]
+  cache: {enabled: false, ttlSeconds: 0, isReadOnly: true, flushOn: []}

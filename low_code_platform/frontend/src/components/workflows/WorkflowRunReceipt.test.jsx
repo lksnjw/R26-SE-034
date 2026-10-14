@@ -1,0 +1,53 @@
+/** @jest-environment jsdom */
+import React from "react";
+import { afterEach, expect, jest, test } from "@jest/globals";
+import { act, cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import WorkflowRunReceipt from "./WorkflowRunReceipt";
+import { executionService, normalizeExecution } from "../../services/execution.service";
+
+afterEach(() => { cleanup(); jest.restoreAllMocks(); });
+const initial = (status = "PENDING") => normalizeExecution({ id: "run/one", status, tokens: { input: 0, output: 0, total: 0 } });
+async function mount(run, dismiss = jest.fn()) {
+  let view;
+  await act(async () => { view = render(<MemoryRouter><WorkflowRunReceipt initialExecution={run} onDismiss={dismiss} /></MemoryRouter>); });
+  return view;
+}
+function mockMonitor(execution) {
+  jest.spyOn(executionService, "getEvents").mockResolvedValue({ events: [], cursor: 0, lastSequence: 0, hasMore: false, status: execution.status, profile: "legacy-no-journal" });
+  jest.spyOn(executionService, "get").mockResolvedValue(execution); jest.spyOn(executionService, "getTimeline").mockResolvedValue([]);
+  return { run: jest.spyOn(executionService, "run"), retry: jest.spyOn(executionService, "retry"), cancel: jest.spyOn(executionService, "cancel") };
+}
+test.each([["PENDING", "Pending"], ["RUNNING", "Running"], ["AWAITING_APPROVAL", "Awaiting approval"], ["RECOVERY_REQUIRED", "Recovery required"], ["RECONCILIATION_REQUIRED", "ERP reconciliation required"], ["CANCELLED", "Cancelled"], ["FAILED", "Failed"]])(
+  "%s remains a distinct recorded state, never inferred as failure or success", async (status, label) => {
+    const run = initial(status), writes = mockMonitor(run), dismiss = jest.fn();
+    await mount(run, dismiss);
+    expect(screen.getByTestId("execution-status").textContent).toBe(label);
+    expect(screen.getByRole("link", { name: "Open run details and controls" }).getAttribute("href")).toBe("/executions/run%2Fone");
+    const dismissButton = screen.getByRole("button", { name: "Dismiss run summary" });
+    expect(dismissButton.disabled).toBe(!["FAILED", "CANCELLED"].includes(status));
+    fireEvent.click(dismissButton); expect(dismiss).toHaveBeenCalledTimes(["FAILED", "CANCELLED"].includes(status) ? 1 : 0);
+    for (const spy of Object.values(writes)) expect(spy).not.toHaveBeenCalled();
+    if (["PENDING", "RUNNING", "AWAITING_APPROVAL"].includes(status)) expect(screen.getByText("No confirmed output has been saved yet.")).toBeTruthy();
+    await screen.findByRole("region", { name: "Recorded model usage" });
+  });
+test("follows the saved run to DONE, shows readable actual output and recorded usage, without a second run", async () => {
+  const done = normalizeExecution({ id: "run/one", status: "DONE", tokens: { input: 11, output: 7, total: 18 }, finalOutput: { structuredContent: { departmentCount: 8 } } });
+  const writes = mockMonitor(done);
+  const view = await mount(initial());
+  await screen.findByText("Done"); expect(screen.getByText("18")).toBeTruthy(); expect(screen.getByText("8")).toBeTruthy();
+  expect(view.container.querySelector("pre")).toBeNull(); expect(screen.queryByText(/"departmentCount"/)).toBeNull();
+  for (const spy of Object.values(writes)) expect(spy).not.toHaveBeenCalled();
+});
+test("transport failure retains explicitly stale evidence; authorization loss hides it", async () => {
+  const run = { ...initial("RUNNING"), stepOutputs: { first: { structuredContent: { answer: "Saved answer" } } } };
+  const writes = mockMonitor(run);
+  executionService.getEvents.mockRejectedValue(new Error("Network unavailable"));
+  const view = await mount(run);
+  await screen.findByRole("status"); expect(screen.getByText(/Saved evidence may be stale/)).toBeTruthy(); expect(screen.getByText("Saved answer")).toBeTruthy();
+  expect(screen.getByTestId("execution-status").textContent).toBe("Running");
+  view.unmount(); executionService.getEvents.mockRejectedValue({ response: { status: 403 } });
+  await mount(run);
+  await screen.findByRole("alert"); expect(screen.queryByText("Saved answer")).toBeNull(); expect(screen.queryByRole("region", { name: "Recorded model usage" })).toBeNull();
+  for (const spy of Object.values(writes)) expect(spy).not.toHaveBeenCalled();
+});

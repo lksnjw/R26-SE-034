@@ -1,0 +1,80 @@
+/*******************************************************************************
+ * Function: unwrap
+ *
+ * Performs the unwrap operation on the application for the api module.
+ ******************************************************************************/
+export function unwrap(response, fallback = null) {
+  const payload = response?.data;
+  if (payload?.success === false) {
+    throw new Error(payload.message || "Request failed");
+  }
+  return payload?.data ?? fallback;
+}
+
+/*******************************************************************************
+ * Function: apiErrorDetails
+ *
+ * Performs the api Error Details operation on error details for the api module.
+ ******************************************************************************/
+export function apiErrorDetails(error, fallback = "The request could not be completed.") {
+  const payload = error?.response?.data;
+  const admissionMessage = typeof error?.runAdmissionMessage === "string" ? error.runAdmissionMessage : "";
+  const message = typeof payload?.message === "string" && payload.message.trim()
+    ? payload.message
+    : admissionMessage || fallback;
+  const meta = payload?.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta)
+    ? payload.meta
+    : null;
+
+  return { message, meta };
+}
+
+/*******************************************************************************
+ * Function: apiErrorMessage
+ *
+ * Performs the api Error Message operation on error message for the api module.
+ ******************************************************************************/
+export function apiErrorMessage(error, fallback = "The request could not be completed.") {
+  return apiErrorDetails(error, fallback).message;
+}
+
+/*******************************************************************************
+ * Function: formatRelativeTime
+ *
+ * Formats relative time for the api module.
+ ******************************************************************************/
+export function formatRelativeTime(value) {
+  if (!value) return "Never";
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "Unknown";
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/*******************************************************************************
+ * Function: formatDuration
+ *
+ * Formats duration for the api module.
+ ******************************************************************************/
+export function formatDuration(milliseconds = 0) {
+  if (!milliseconds) return "0ms";
+  if (milliseconds < 1000) return `${milliseconds}ms`;
+  const seconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+/*******************************************************************************
+ * Function: formatTokens
+ *
+ * Formats tokens for the api module.
+ ******************************************************************************/
+export function formatTokens(value = 0) {
+  if (value < 1000) return String(value);
+  return `${(value / 1000).toFixed(1)}K`;
+}

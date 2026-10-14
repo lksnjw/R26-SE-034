@@ -1,0 +1,4890 @@
+[
+  {
+    "tool_id": "TOOL-HR-001",
+    "name": "hr.list_employees",
+    "display_name": "List Employees",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "mock_endpoint_available_schema_missing",
+    "description": "List Employees capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "List Employees",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/employees",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.list_employees_api_v1_hr_employees_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date_from": {
+          "type": "string",
+          "format": "date"
+        },
+        "date_to": {
+          "type": "string",
+          "format": "date"
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "page",
+      "page_size",
+      "status",
+      "date_from",
+      "date_to"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for list employees.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.list_employees only when the user intent requires list employees and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "employees",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "list",
+      "list employees",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.list_employees supports list employees in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Mock endpoint exists in ERPBridge, but the MCP schema is not registered in the middleware schema registry."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-002",
+    "name": "hr.get_employee",
+    "display_name": "Get Employee",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "mock_endpoint_available_schema_missing",
+    "description": "Get Employee capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Employee",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/employees/{employee_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_employee_api_v1_hr_employees_employee_id_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get employee.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_employee only when the user intent requires get employee and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "employee",
+      "erpbridge",
+      "get",
+      "get employee",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_employee supports get employee in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Mock endpoint exists in ERPBridge, but the MCP schema is not registered in the middleware schema registry."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-003",
+    "name": "hr.list_departments",
+    "display_name": "List Departments",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "mock_endpoint_available_schema_missing",
+    "description": "List Departments capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "List Departments",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/departments",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.list_departments_api_v1_hr_departments_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date_from": {
+          "type": "string",
+          "format": "date"
+        },
+        "date_to": {
+          "type": "string",
+          "format": "date"
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "page",
+      "page_size",
+      "status",
+      "date_from",
+      "date_to"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for list departments.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.list_departments only when the user intent requires list departments and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "departments",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "list",
+      "list departments",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.list_departments supports list departments in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Mock endpoint exists in ERPBridge, but the MCP schema is not registered in the middleware schema registry."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-004",
+    "name": "hr.check_employee_role",
+    "display_name": "Check Employee Role",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Check Employee Role capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Check Employee Role",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/check-employee-role",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.check_employee_role_api_v1_hr_check_employee_role_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id",
+        "role"
+      ]
+    },
+    "required_parameters": [
+      "employee_id",
+      "role"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for check employee role.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided.",
+      "role must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.check_employee_role only when the user intent requires check employee role and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "check",
+      "check employee role",
+      "employee",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "role",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.check_employee_role supports check employee role in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-005",
+    "name": "hr.verify_manager",
+    "display_name": "Verify Manager",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Verify Manager capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Verify Manager",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/verify-manager",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.verify_manager_api_v1_hr_verify_manager_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manager_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id",
+        "manager_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id",
+      "manager_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for verify manager.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided.",
+      "manager_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.verify_manager only when the user intent requires verify manager and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "manager",
+      "mcp",
+      "validator",
+      "verify",
+      "verify manager",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.verify_manager supports verify manager in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-006",
+    "name": "hr.verify_department",
+    "display_name": "Verify Department",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Verify Department capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Verify Department",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/verify-department",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.verify_department_api_v1_hr_verify_department_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "department_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id",
+        "department_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id",
+      "department_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for verify department.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided.",
+      "department_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.verify_department only when the user intent requires verify department and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "department",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validator",
+      "verify",
+      "verify department",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.verify_department supports verify department in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-007",
+    "name": "hr.validate_employee_active_status",
+    "display_name": "Validate Employee Active Status",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Validate Employee Active Status capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Employee Active Status",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/validate-employee-active-status",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.validate_employee_active_status_api_v1_hr_validate_employee_active_status_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for validate employee active status.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.validate_employee_active_status only when the user intent requires validate employee active status and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "active",
+      "bpi2020_travel",
+      "employee",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "status",
+      "validate",
+      "validate employee active status",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.validate_employee_active_status supports validate employee active status in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-008",
+    "name": "hr.submit_leave_request",
+    "display_name": "Submit Leave Request",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Submit Leave Request capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Submit Leave Request",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/submit-leave-request",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.submit_leave_request_api_v1_hr_submit_leave_request_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "end_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "leave_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id",
+        "start_date",
+        "end_date",
+        "leave_type"
+      ]
+    },
+    "required_parameters": [
+      "employee_id",
+      "start_date",
+      "end_date",
+      "leave_type"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for submit leave request.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "employee_id must be provided.",
+      "start_date must be provided.",
+      "end_date must be provided.",
+      "leave_type must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.submit_leave_request only when the user intent requires submit leave request and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "leave",
+      "mcp",
+      "request",
+      "submit",
+      "submit leave request",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.submit_leave_request supports submit leave request in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-009",
+    "name": "hr.approve_leave_request",
+    "display_name": "Approve Leave Request",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Approve Leave Request capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Approve Leave Request",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/approve-leave-request",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.approve_leave_request_api_v1_hr_approve_leave_request_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "leave_request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approver_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_comment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "leave_request_id",
+        "approver_id"
+      ]
+    },
+    "required_parameters": [
+      "leave_request_id",
+      "approver_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "approval_comment"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for approve leave request.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "high",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "leave_request_id must be provided.",
+      "approver_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.approve_leave_request only when the user intent requires approve leave request and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "approve",
+      "approve leave request",
+      "bpi2020_travel",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "leave",
+      "mcp",
+      "request",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.approve_leave_request supports approve leave request in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-010",
+    "name": "hr.get_employee_cost_center",
+    "display_name": "Get Employee Cost Center",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Get Employee Cost Center capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Employee Cost Center",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/get-employee-cost-center/{employee_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_employee_cost_center_api_v1_hr_get_employee_cost_center_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get employee cost center.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_employee_cost_center only when the user intent requires get employee cost center and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "center",
+      "cost",
+      "employee",
+      "erpbridge",
+      "get",
+      "get employee cost center",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_employee_cost_center supports get employee cost center in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-011",
+    "name": "hr.write_hr_audit_log",
+    "display_name": "Write Hr Audit Log",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Write Hr Audit Log capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Write Hr Audit Log",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/write-hr-audit-log",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.write_hr_audit_log_api_v1_hr_write_hr_audit_log_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor_role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id",
+        "event_type",
+        "actor_role"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id",
+      "event_type",
+      "actor_role"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for write hr audit log.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "workflow_id must be provided.",
+      "event_type must be provided.",
+      "actor_role must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.write_hr_audit_log only when the user intent requires write hr audit log and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "audit",
+      "bpi2020_travel",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "log",
+      "mcp",
+      "validator",
+      "workflow",
+      "write",
+      "write hr audit log"
+    ],
+    "semantic_search_description": "hr.write_hr_audit_log supports write hr audit log in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-012",
+    "name": "hr.get_approval_chain",
+    "display_name": "Get Approval Chain",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Get Approval Chain capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Approval Chain",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/get-approval-chain",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_approval_chain_api_v1_hr_get_approval_chain_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get approval chain.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_approval_chain only when the user intent requires get approval chain and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "approval",
+      "bpi2020_travel",
+      "chain",
+      "erpbridge",
+      "get",
+      "get approval chain",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_approval_chain supports get approval chain in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-013",
+    "name": "hr.validate_employment_type",
+    "display_name": "Validate Employment Type",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Validate Employment Type capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Employment Type",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/validate-employment-type",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.validate_employment_type_api_v1_hr_validate_employment_type_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for validate employment type.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.validate_employment_type only when the user intent requires validate employment type and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "employment",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "type",
+      "validate",
+      "validate employment type",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.validate_employment_type supports validate employment type in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-014",
+    "name": "hr.check_delegated_approver",
+    "display_name": "Check Delegated Approver",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Check Delegated Approver capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Check Delegated Approver",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/check-delegated-approver",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.check_delegated_approver_api_v1_hr_check_delegated_approver_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approver_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_comment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "approver_id",
+      "approval_comment"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for check delegated approver.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.check_delegated_approver only when the user intent requires check delegated approver and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "approver",
+      "bpi2020_travel",
+      "check",
+      "check delegated approver",
+      "delegated",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.check_delegated_approver supports check delegated approver in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-015",
+    "name": "hr.list_direct_reports",
+    "display_name": "List Direct Reports",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "List Direct Reports capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "List Direct Reports",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/list-direct-reports",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.list_direct_reports_api_v1_hr_list_direct_reports_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date_from": {
+          "type": "string",
+          "format": "date"
+        },
+        "date_to": {
+          "type": "string",
+          "format": "date"
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "page",
+      "page_size",
+      "status",
+      "date_from",
+      "date_to"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for list direct reports.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.list_direct_reports only when the user intent requires list direct reports and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "direct",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "list",
+      "list direct reports",
+      "mcp",
+      "reports",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.list_direct_reports supports list direct reports in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-016",
+    "name": "hr.get_role_assignments",
+    "display_name": "Get Role Assignments",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Get Role Assignments capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Role Assignments",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/get-role-assignments",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_role_assignments_api_v1_hr_get_role_assignments_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get role assignments.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_role_assignments only when the user intent requires get role assignments and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "assignments",
+      "bpi2020_travel",
+      "erpbridge",
+      "get",
+      "get role assignments",
+      "hr",
+      "hr erp",
+      "mcp",
+      "role",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_role_assignments supports get role assignments in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-017",
+    "name": "hr.update_employee_manager",
+    "display_name": "Update Employee Manager",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Update Employee Manager capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Update Employee Manager",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/update-employee-manager/{employee_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "hr.update_employee_manager_api_v1_hr_update_employee_manager_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for update employee manager.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.update_employee_manager only when the user intent requires update employee manager and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "employee",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "manager",
+      "mcp",
+      "update",
+      "update employee manager",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.update_employee_manager supports update employee manager in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-018",
+    "name": "hr.create_employee_onboarding_case",
+    "display_name": "Create Employee Onboarding Case",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Create Employee Onboarding Case capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Employee Onboarding Case",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/create-employee-onboarding-case",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.create_employee_onboarding_case_api_v1_hr_create_employee_onboarding_case_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for create employee onboarding case.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.create_employee_onboarding_case only when the user intent requires create employee onboarding case and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "case",
+      "create",
+      "create employee onboarding case",
+      "employee",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "onboarding",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.create_employee_onboarding_case supports create employee onboarding case in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-019",
+    "name": "hr.create_employee_offboarding_case",
+    "display_name": "Create Employee Offboarding Case",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Create Employee Offboarding Case capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Employee Offboarding Case",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/create-employee-offboarding-case",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.create_employee_offboarding_case_api_v1_hr_create_employee_offboarding_case_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for create employee offboarding case.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.create_employee_offboarding_case only when the user intent requires create employee offboarding case and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "case",
+      "create",
+      "create employee offboarding case",
+      "employee",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "offboarding",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.create_employee_offboarding_case supports create employee offboarding case in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-020",
+    "name": "hr.verify_cost_center_owner",
+    "display_name": "Verify Cost Center Owner",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Verify Cost Center Owner capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Verify Cost Center Owner",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/verify-cost-center-owner",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.verify_cost_center_owner_api_v1_hr_verify_cost_center_owner_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for verify cost center owner.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.verify_cost_center_owner only when the user intent requires verify cost center owner and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "center",
+      "cost",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "owner",
+      "validator",
+      "verify",
+      "verify cost center owner",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.verify_cost_center_owner supports verify cost center owner in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-021",
+    "name": "hr.get_employee_location",
+    "display_name": "Get Employee Location",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Get Employee Location capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Employee Location",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/get-employee-location/{employee_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_employee_location_api_v1_hr_get_employee_location_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get employee location.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_employee_location only when the user intent requires get employee location and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "employee",
+      "erpbridge",
+      "get",
+      "get employee location",
+      "hr",
+      "hr erp",
+      "location",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_employee_location supports get employee location in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-022",
+    "name": "hr.check_travel_eligibility",
+    "display_name": "Check Travel Eligibility",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Check Travel Eligibility capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Check Travel Eligibility",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/check-travel-eligibility",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.check_travel_eligibility_api_v1_hr_check_travel_eligibility_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "amount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_comment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "amount",
+      "currency",
+      "approval_comment"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for check travel eligibility.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.check_travel_eligibility only when the user intent requires check travel eligibility and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "check",
+      "check travel eligibility",
+      "eligibility",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "travel",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.check_travel_eligibility supports check travel eligibility in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-023",
+    "name": "hr.mark_employee_inactive",
+    "display_name": "Mark Employee Inactive",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Mark Employee Inactive capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Mark Employee Inactive",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/mark-employee-inactive/{employee_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "hr.mark_employee_inactive_api_v1_hr_mark_employee_inactive_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for mark employee inactive.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.mark_employee_inactive only when the user intent requires mark employee inactive and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "employee",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "inactive",
+      "mark",
+      "mark employee inactive",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.mark_employee_inactive supports mark employee inactive in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-024",
+    "name": "hr.update_department_assignment",
+    "display_name": "Update Department Assignment",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Update Department Assignment capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Update Department Assignment",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/update-department-assignment/{employee_id}",
+    "http_method": "PATCH",
+    "mcp_tool_name": "hr.update_department_assignment_api_v1_hr_update_department_assignment_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for update department assignment.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.update_department_assignment only when the user intent requires update department assignment and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "assignment",
+      "bpi2020_travel",
+      "department",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "update",
+      "update department assignment",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.update_department_assignment supports update department assignment in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-025",
+    "name": "hr.lookup_hr_policy",
+    "display_name": "Lookup Hr Policy",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Lookup Hr Policy capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Lookup Hr Policy",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/lookup-hr-policy",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.lookup_hr_policy_api_v1_hr_lookup_hr_policy_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for lookup hr policy.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.lookup_hr_policy only when the user intent requires lookup hr policy and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "lookup",
+      "lookup hr policy",
+      "mcp",
+      "policy",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.lookup_hr_policy supports lookup hr policy in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-026",
+    "name": "hr.verify_separation_of_duties_for_approver",
+    "display_name": "Verify Separation Of Duties For Approver",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Verify Separation Of Duties For Approver capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Verify Separation Of Duties For Approver",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/verify-separation-of-duties-for-approver",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.verify_separation_of_duties_for_approver_api_v1_hr_verify_separation_of_duties_for_approver_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approver_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_comment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "approver_id",
+      "approval_comment"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for verify separation of duties for approver.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.verify_separation_of_duties_for_approver only when the user intent requires verify separation of duties for approver and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "approver",
+      "bpi2020_travel",
+      "duties",
+      "erpbridge",
+      "for",
+      "hr",
+      "hr erp",
+      "mcp",
+      "of",
+      "separation",
+      "validator",
+      "verify",
+      "verify separation of duties for approver",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.verify_separation_of_duties_for_approver supports verify separation of duties for approver in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-027",
+    "name": "hr.get_payroll_eligibility",
+    "display_name": "Get Payroll Eligibility",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Get Payroll Eligibility capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Payroll Eligibility",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/get-payroll-eligibility",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_payroll_eligibility_api_v1_hr_get_payroll_eligibility_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get payroll eligibility.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_payroll_eligibility only when the user intent requires get payroll eligibility and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "eligibility",
+      "erpbridge",
+      "get",
+      "get payroll eligibility",
+      "hr",
+      "hr erp",
+      "mcp",
+      "payroll",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_payroll_eligibility supports get payroll eligibility in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-028",
+    "name": "hr.sync_employee_directory",
+    "display_name": "Sync Employee Directory",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Sync Employee Directory capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Sync Employee Directory",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/sync-employee-directory",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.sync_employee_directory_api_v1_hr_sync_employee_directory_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for sync employee directory.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.sync_employee_directory only when the user intent requires sync employee directory and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "directory",
+      "employee",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "sync",
+      "sync employee directory",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.sync_employee_directory supports sync employee directory in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-029",
+    "name": "hr.create_hr_compliance_alert",
+    "display_name": "Create Hr Compliance Alert",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Create Hr Compliance Alert capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Hr Compliance Alert",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/create-hr-compliance-alert",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.create_hr_compliance_alert_api_v1_hr_create_hr_compliance_alert_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for create hr compliance alert.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.create_hr_compliance_alert only when the user intent requires create hr compliance alert and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "alert",
+      "bpi2020_travel",
+      "compliance",
+      "create",
+      "create hr compliance alert",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.create_hr_compliance_alert supports create hr compliance alert in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-030",
+    "name": "hr.get_employee_supervisor_chain",
+    "display_name": "Get Employee Supervisor Chain",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Get Employee Supervisor Chain capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Employee Supervisor Chain",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/get-employee-supervisor-chain/{employee_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_employee_supervisor_chain_api_v1_hr_get_employee_supervisor_chain_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get employee supervisor chain.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_employee_supervisor_chain only when the user intent requires get employee supervisor chain and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "chain",
+      "employee",
+      "erpbridge",
+      "get",
+      "get employee supervisor chain",
+      "hr",
+      "hr erp",
+      "mcp",
+      "supervisor",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_employee_supervisor_chain supports get employee supervisor chain in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-031",
+    "name": "hr.validate_work_country",
+    "display_name": "Validate Work Country",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Validate Work Country capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Work Country",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/validate-work-country",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.validate_work_country_api_v1_hr_validate_work_country_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for validate work country.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.validate_work_country only when the user intent requires validate work country and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "country",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validate",
+      "validate work country",
+      "validator",
+      "work",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.validate_work_country supports validate work country in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-032",
+    "name": "hr.list_department_managers",
+    "display_name": "List Department Managers",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "List Department Managers capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "List Department Managers",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/list-department-managers",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.list_department_managers_api_v1_hr_list_department_managers_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date_from": {
+          "type": "string",
+          "format": "date"
+        },
+        "date_to": {
+          "type": "string",
+          "format": "date"
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "page",
+      "page_size",
+      "status",
+      "date_from",
+      "date_to"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for list department managers.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.list_department_managers only when the user intent requires list department managers and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "department",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "list",
+      "list department managers",
+      "managers",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.list_department_managers supports list department managers in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-033",
+    "name": "hr.record_hr_approval",
+    "display_name": "Record Hr Approval",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Record Hr Approval capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Record Hr Approval",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/record-hr-approval",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.record_hr_approval_api_v1_hr_record_hr_approval_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for record hr approval.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.record_hr_approval only when the user intent requires record hr approval and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "approval",
+      "bpi2020_travel",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "record",
+      "record hr approval",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.record_hr_approval supports record hr approval in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-034",
+    "name": "hr.reject_leave_request",
+    "display_name": "Reject Leave Request",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Reject Leave Request capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Reject Leave Request",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/reject-leave-request",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.reject_leave_request_api_v1_hr_reject_leave_request_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approver_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_comment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "approver_id",
+      "approval_comment"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for reject leave request.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.reject_leave_request only when the user intent requires reject leave request and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "leave",
+      "mcp",
+      "reject",
+      "reject leave request",
+      "request",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.reject_leave_request supports reject leave request in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-035",
+    "name": "hr.cancel_leave_request",
+    "display_name": "Cancel Leave Request",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Cancel Leave Request capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Cancel Leave Request",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/cancel-leave-request/{workflow_id}",
+    "http_method": "DELETE",
+    "mcp_tool_name": "hr.cancel_leave_request_api_v1_hr_cancel_leave_request_delete",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "workflow_id"
+      ]
+    },
+    "required_parameters": [
+      "workflow_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for cancel leave request.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "workflow_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.cancel_leave_request only when the user intent requires cancel leave request and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "cancel",
+      "cancel leave request",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "leave",
+      "mcp",
+      "request",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.cancel_leave_request supports cancel leave request in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-036",
+    "name": "hr.get_leave_balance",
+    "display_name": "Get Leave Balance",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Get Leave Balance capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Leave Balance",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/get-leave-balance",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_leave_balance_api_v1_hr_get_leave_balance_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get leave balance.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_leave_balance only when the user intent requires get leave balance and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "balance",
+      "bpi2020_travel",
+      "erpbridge",
+      "get",
+      "get leave balance",
+      "hr",
+      "hr erp",
+      "leave",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_leave_balance supports get leave balance in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-037",
+    "name": "hr.validate_leave_balance",
+    "display_name": "Validate Leave Balance",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Validate Leave Balance capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Leave Balance",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/validate-leave-balance",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.validate_leave_balance_api_v1_hr_validate_leave_balance_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for validate leave balance.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.validate_leave_balance only when the user intent requires validate leave balance and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "balance",
+      "bpi2020_travel",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "leave",
+      "mcp",
+      "validate",
+      "validate leave balance",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.validate_leave_balance supports validate leave balance in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-038",
+    "name": "hr.get_employee_grade",
+    "display_name": "Get Employee Grade",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Get Employee Grade capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Employee Grade",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/get-employee-grade/{employee_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_employee_grade_api_v1_hr_get_employee_grade_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get employee grade.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_employee_grade only when the user intent requires get employee grade and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "employee",
+      "erpbridge",
+      "get",
+      "get employee grade",
+      "grade",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_employee_grade supports get employee grade in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-039",
+    "name": "hr.check_probation_status",
+    "display_name": "Check Probation Status",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Check Probation Status capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Check Probation Status",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/check-probation-status",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.check_probation_status_api_v1_hr_check_probation_status_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for check probation status.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.check_probation_status only when the user intent requires check probation status and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "check",
+      "check probation status",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "probation",
+      "status",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.check_probation_status supports check probation status in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-040",
+    "name": "hr.validate_department_budget_owner",
+    "display_name": "Validate Department Budget Owner",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Validate Department Budget Owner capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Department Budget Owner",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/validate-department-budget-owner",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.validate_department_budget_owner_api_v1_hr_validate_department_budget_owner_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "amount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_comment": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id",
+      "amount",
+      "currency",
+      "approval_comment"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for validate department budget owner.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.validate_department_budget_owner only when the user intent requires validate department budget owner and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "budget",
+      "department",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "owner",
+      "validate",
+      "validate department budget owner",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.validate_department_budget_owner supports validate department budget owner in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-041",
+    "name": "hr.create_manager_escalation_case",
+    "display_name": "Create Manager Escalation Case",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Create Manager Escalation Case capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Create Manager Escalation Case",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/create-manager-escalation-case",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.create_manager_escalation_case_api_v1_hr_create_manager_escalation_case_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for create manager escalation case.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.create_manager_escalation_case only when the user intent requires create manager escalation case and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "case",
+      "create",
+      "create manager escalation case",
+      "erpbridge",
+      "escalation",
+      "hr",
+      "hr erp",
+      "manager",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.create_manager_escalation_case supports create manager escalation case in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-042",
+    "name": "hr.get_employee_policy_exceptions",
+    "display_name": "Get Employee Policy Exceptions",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Get Employee Policy Exceptions capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Get Employee Policy Exceptions",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/get-employee-policy-exceptions/{employee_id}",
+    "http_method": "GET",
+    "mcp_tool_name": "hr.get_employee_policy_exceptions_api_v1_hr_get_employee_policy_exceptions_get",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for get employee policy exceptions.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.get_employee_policy_exceptions only when the user intent requires get employee policy exceptions and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "employee",
+      "erpbridge",
+      "exceptions",
+      "get",
+      "get employee policy exceptions",
+      "hr",
+      "hr erp",
+      "mcp",
+      "policy",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.get_employee_policy_exceptions supports get employee policy exceptions in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-043",
+    "name": "hr.record_employee_consent_reference",
+    "display_name": "Record Employee Consent Reference",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Record Employee Consent Reference capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Record Employee Consent Reference",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/record-employee-consent-reference",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.record_employee_consent_reference_api_v1_hr_record_employee_consent_reference_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "required_parameters": [
+      "employee_id"
+    ],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for record employee consent reference.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin.",
+      "employee_id must be provided."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.record_employee_consent_reference only when the user intent requires record employee consent reference and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "bpi2020_travel",
+      "consent",
+      "employee",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "record",
+      "record employee consent reference",
+      "reference",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.record_employee_consent_reference supports record employee consent reference in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-044",
+    "name": "hr.validate_cross_border_data_access",
+    "display_name": "Validate Cross Border Data Access",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Validate Cross Border Data Access capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Validate Cross Border Data Access",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/validate-cross-border-data-access",
+    "http_method": "POST",
+    "mcp_tool_name": "hr.validate_cross_border_data_access_api_v1_hr_validate_cross_border_data_access_post",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for validate cross border data access.",
+    "allowed_roles": [
+      "hr_viewer",
+      "hr_manager",
+      "department_manager",
+      "auditor",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_viewer",
+      "recommended_key_ref": "hr-key-001"
+    },
+    "risk_level": "low",
+    "is_read_only": true,
+    "cache_policy": {
+      "enabled": true,
+      "ttl_seconds": 300,
+      "semantic_cache_allowed": true,
+      "flush_on": []
+    },
+    "side_effects": [],
+    "preconditions": [
+      "Caller role must be one of: hr_viewer, hr_manager, department_manager, auditor, admin."
+    ],
+    "postconditions": [
+      "Read-only response is safe to use for retrieval grounding."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "cache_safety_for_read",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.validate_cross_border_data_access only when the user intent requires validate cross border data access and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "access",
+      "border",
+      "bpi2020_travel",
+      "cross",
+      "data",
+      "erpbridge",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validate",
+      "validate cross border data access",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.validate_cross_border_data_access supports validate cross border data access in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  },
+  {
+    "tool_id": "TOOL-HR-045",
+    "name": "hr.archive_hr_workflow_evidence",
+    "display_name": "Archive Hr Workflow Evidence",
+    "erp_system": "HR ERP",
+    "module": "hr",
+    "status": "recommended_future_capability",
+    "description": "Archive Hr Workflow Evidence capability for HR ERP workflows with semantic validation and audit-aware execution.",
+    "business_capability": "Archive Hr Workflow Evidence",
+    "bpi_process_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "endpoint": "/api/v1/hr/archive-hr-workflow-evidence",
+    "http_method": "PATCH",
+    "mcp_tool_name": "hr.archive_hr_workflow_evidence_api_v1_hr_archive_hr_workflow_evidence_patch",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": []
+    },
+    "required_parameters": [],
+    "optional_parameters": [
+      "request_id",
+      "correlation_id"
+    ],
+    "output_summary": "Returns structured hr result data, decision metadata, and trace identifiers for archive hr workflow evidence.",
+    "allowed_roles": [
+      "hr_manager",
+      "admin"
+    ],
+    "auth_requirements": {
+      "auth_type": "api-key",
+      "required_role": "hr_manager",
+      "recommended_key_ref": "hr-key-002"
+    },
+    "risk_level": "medium",
+    "is_read_only": false,
+    "cache_policy": {
+      "enabled": false,
+      "ttl_seconds": 0,
+      "semantic_cache_allowed": false,
+      "flush_on": [
+        "hr",
+        "audit",
+        "semantic_index"
+      ]
+    },
+    "side_effects": [
+      "May create or update hr business records.",
+      "Must emit an audit event."
+    ],
+    "preconditions": [
+      "Caller role must be one of: hr_manager, admin."
+    ],
+    "postconditions": [
+      "Business state is changed only after validator approval.",
+      "Audit log entry must be written."
+    ],
+    "failure_modes": [
+      "missing_required_parameter",
+      "rbac_denied",
+      "policy_violation",
+      "mcp_schema_missing"
+    ],
+    "validator_checks": [
+      "tool_exists_in_registry",
+      "required_parameters_present",
+      "role_allowed",
+      "policy_rules_satisfied",
+      "audit_required_for_write",
+      "capability_gap_detection"
+    ],
+    "prompt_usage_guidance": "Use hr.archive_hr_workflow_evidence only when the user intent requires archive hr workflow evidence and all required parameters are available or can be safely requested.",
+    "semantic_search_keywords": [
+      "archive",
+      "archive hr workflow evidence",
+      "bpi2020_travel",
+      "erpbridge",
+      "evidence",
+      "hr",
+      "hr erp",
+      "mcp",
+      "validator",
+      "workflow"
+    ],
+    "semantic_search_description": "hr.archive_hr_workflow_evidence supports archive hr workflow evidence in HR ERP for BPI2020_TRAVEL workflows.",
+    "execution_notes": "Direct execution is allowed only after Go Semantic Validator approval and role-bound authentication.",
+    "current_gaps": [
+      "Recommended BPI-aligned capability; ERPBridge mock endpoint and MCP schema must be created before direct execution."
+    ]
+  }
+]

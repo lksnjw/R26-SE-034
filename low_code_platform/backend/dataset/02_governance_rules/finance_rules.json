@@ -1,0 +1,2153 @@
+[
+  {
+    "rule_id": "FIN-RBAC-001",
+    "rule_name": "Finance viewer read-only access",
+    "rule_type": "rbac",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "finance_viewer can only read finance data and must not run mutating invoice or payment tools.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021",
+      "TOOL-FIN-022",
+      "TOOL-FIN-023",
+      "TOOL-FIN-034",
+      "TOOL-FIN-035",
+      "TOOL-FIN-045",
+      "TOOL-FIN-048",
+      "TOOL-FIN-049",
+      "TOOL-FIN-050",
+      "TOOL-FIN-053",
+      "TOOL-FIN-054",
+      "TOOL-FIN-055"
+    ],
+    "applies_to_roles": [
+      "finance_viewer"
+    ],
+    "condition": {
+      "type": "role_permission",
+      "parameter": "user_role",
+      "operator": "==",
+      "value": "finance_viewer"
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "finance_viewer cannot execute finance write tools.",
+    "llm_prompt_instruction": "Do not generate write steps for finance_viewer.",
+    "healing_guidance": "Replace write step with read-only lookup or request finance_editor approval.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RBAC-002",
+    "rule_name": "Finance editor write without approval override",
+    "rule_type": "rbac",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "finance_editor can create and edit invoices but cannot override manager or admin approval controls.",
+    "applies_to_tools": [
+      "TOOL-FIN-009",
+      "TOOL-FIN-022"
+    ],
+    "applies_to_roles": [
+      "finance_editor"
+    ],
+    "condition": {
+      "type": "role_permission",
+      "parameter": "user_role",
+      "operator": "==",
+      "value": "finance_editor"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Finance approval requires finance_manager or admin.",
+    "llm_prompt_instruction": "Add approval.request_human_approval before approval tools when the requester is finance_editor.",
+    "healing_guidance": "Route to finance_manager or admin.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RBAC-003",
+    "rule_name": "Finance manager approval for high value workflows",
+    "rule_type": "amount_threshold",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Invoice amount above 50000 LKR requires finance_manager or admin approval.",
+    "applies_to_tools": [
+      "TOOL-FIN-008",
+      "TOOL-FIN-007"
+    ],
+    "applies_to_roles": [
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "amount_threshold",
+      "parameter": "amount",
+      "operator": ">",
+      "value": 50000
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "High-value invoice workflow requires finance manager approval.",
+    "llm_prompt_instruction": "Add a human approval step for amounts above 50000 LKR.",
+    "healing_guidance": "Insert approval.request_human_approval with approver_role finance_manager.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PARAM-001",
+    "rule_name": "Invoice identifier required",
+    "rule_type": "parameter_required",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "invoice_id is required for get, clear, update, reject, hold, release, and reverse invoice operations.",
+    "applies_to_tools": [
+      "TOOL-FIN-002",
+      "TOOL-FIN-007",
+      "TOOL-FIN-004",
+      "TOOL-FIN-010"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "invoice_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "invoice_id is required for the requested invoice action.",
+    "llm_prompt_instruction": "Ask for invoice_id when it is missing.",
+    "healing_guidance": "Request missing invoice_id from the user.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PARAM-002",
+    "rule_name": "Create invoice required fields",
+    "rule_type": "parameter_required",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "create invoice requires vendor_id, vendor_name, amount, currency, and due_date.",
+    "applies_to_tools": [
+      "TOOL-FIN-003"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "required_parameters",
+      "operator": "exists",
+      "value": [
+        "vendor_id",
+        "vendor_name",
+        "amount",
+        "currency",
+        "due_date"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Create invoice is missing required vendor or payment fields.",
+    "llm_prompt_instruction": "Do not generate create_invoice until all required fields are present.",
+    "healing_guidance": "Ask for vendor_id, vendor_name, amount, currency, and due_date.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-THRESH-001",
+    "rule_name": "Finance manager approval threshold",
+    "rule_type": "amount_threshold",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Invoice amount above 50000 LKR requires finance_manager or admin approval.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-008"
+    ],
+    "applies_to_roles": [
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "amount_threshold",
+      "parameter": "amount",
+      "operator": ">",
+      "value": 50000
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Amount above 50000 LKR requires finance manager approval.",
+    "llm_prompt_instruction": "Add manager approval before payment request.",
+    "healing_guidance": "Insert approval.request_human_approval.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-THRESH-002",
+    "rule_name": "Admin approval threshold",
+    "rule_type": "amount_threshold",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Invoice amount above 250000 LKR requires admin approval.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-008"
+    ],
+    "applies_to_roles": [
+      "admin"
+    ],
+    "condition": {
+      "type": "amount_threshold",
+      "parameter": "amount",
+      "operator": ">",
+      "value": 250000
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "critical",
+    "validator_message": "Amount above 250000 LKR requires admin approval.",
+    "llm_prompt_instruction": "Do not execute critical finance workflow without admin approval.",
+    "healing_guidance": "Escalate to admin.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PROC-001",
+    "rule_name": "Invoice receipt before clearing",
+    "rule_type": "process_order",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "clear_invoice requires record_invoice_receipt to have occurred first.",
+    "applies_to_tools": [
+      "TOOL-FIN-006",
+      "TOOL-FIN-007"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_order",
+      "parameter": "workflow.steps",
+      "operator": "before",
+      "value": [
+        "finance.record_invoice_receipt",
+        "finance.clear_invoice"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Invoice cannot be cleared before invoice receipt is recorded.",
+    "llm_prompt_instruction": "Order invoice receipt before clearing.",
+    "healing_guidance": "Move record_invoice_receipt before clear_invoice.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PROC-002",
+    "rule_name": "Goods receipt required for PO-linked invoice",
+    "rule_type": "process_order",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "A PO-linked invoice cannot be cleared unless goods receipt evidence exists.",
+    "applies_to_tools": [
+      "TOOL-FIN-007",
+      "TOOL-FIN-016"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "process_evidence",
+      "parameter": "goods_receipt_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "high",
+    "validator_message": "Goods receipt is required before clearing PO-linked invoice.",
+    "llm_prompt_instruction": "Include goods receipt lookup or three-way match before clearing.",
+    "healing_guidance": "Add procurement.match_po_with_goods_receipt or finance.three_way_match_invoice.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-POLICY-001",
+    "rule_name": "Duplicate invoice block",
+    "rule_type": "execution_safety",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Duplicate invoices must be detected and blocked before validation or payment.",
+    "applies_to_tools": [
+      "TOOL-FIN-011",
+      "TOOL-FIN-005",
+      "TOOL-FIN-008"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "duplicate_check",
+      "parameter": "duplicate_invoice_detected",
+      "operator": "==",
+      "value": true
+    },
+    "enforcement_action": "block",
+    "severity": "critical",
+    "validator_message": "Duplicate invoice detected; payment workflow blocked.",
+    "llm_prompt_instruction": "Always run duplicate detection before payment workflows.",
+    "healing_guidance": "Reject duplicate path and escalate exception.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PROC-003",
+    "rule_name": "Payment after invoice validation",
+    "rule_type": "process_order",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Payment must not occur before invoice validation passes.",
+    "applies_to_tools": [
+      "TOOL-FIN-005",
+      "TOOL-FIN-008"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_order",
+      "parameter": "workflow.steps",
+      "operator": "before",
+      "value": [
+        "finance.validate_invoice",
+        "finance.request_payment"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Payment request cannot occur before invoice validation.",
+    "llm_prompt_instruction": "Generate validate_invoice before request_payment.",
+    "healing_guidance": "Reorder workflow candidate.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-AUDIT-001",
+    "rule_name": "Finance writes require audit log",
+    "rule_type": "audit",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "All finance write operations must write an audit log.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021",
+      "TOOL-FIN-022",
+      "TOOL-FIN-023",
+      "TOOL-FIN-034",
+      "TOOL-FIN-035",
+      "TOOL-FIN-045",
+      "TOOL-FIN-048",
+      "TOOL-FIN-049",
+      "TOOL-FIN-050",
+      "TOOL-FIN-053",
+      "TOOL-FIN-054",
+      "TOOL-FIN-055",
+      "TOOL-GLB-004"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "audit",
+      "parameter": "audit.write_audit_log",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "high",
+    "validator_message": "Finance write workflow requires audit logging.",
+    "llm_prompt_instruction": "Append audit.write_audit_log to finance write workflows.",
+    "healing_guidance": "Add audit.write_audit_log with workflow_id, event_type, actor_role, and decision.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [
+      "workflow_id",
+      "event_type",
+      "actor_role",
+      "decision"
+    ],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-CONFIG-001",
+    "rule_name": "Create invoice key role alignment",
+    "rule_type": "execution_safety",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "finance.create_invoice must use finance-key-002 or admin-key-001 because finance-key-001 maps to finance_viewer.",
+    "applies_to_tools": [
+      "TOOL-FIN-003"
+    ],
+    "applies_to_roles": [
+      "finance_editor",
+      "admin"
+    ],
+    "condition": {
+      "type": "auth_key",
+      "parameter": "recommended_key_ref",
+      "operator": "!=",
+      "value": "finance-key-001"
+    },
+    "enforcement_action": "block",
+    "severity": "critical",
+    "validator_message": "finance.create_invoice cannot use finance-key-001.",
+    "llm_prompt_instruction": "Ground create_invoice with finance-key-002 or admin-key-001 only.",
+    "healing_guidance": "Switch auth reference to finance-key-002 or route to admin.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PARAM-101",
+    "rule_name": "Finance ERP generated parameter required control 1",
+    "rule_type": "parameter_required",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 1 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 1 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 1 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-AUDIT-102",
+    "rule_name": "Finance ERP generated audit control 2",
+    "rule_type": "audit",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 2 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 2 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 2 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-CACHE-103",
+    "rule_name": "Finance ERP generated cache safety control 3",
+    "rule_type": "cache_safety",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 3 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "finance"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 3 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 3 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-DATA-104",
+    "rule_name": "Finance ERP generated data confidentiality control 4",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 4 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 4 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 4 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RISK-105",
+    "rule_name": "Finance ERP generated risk escalation control 5",
+    "rule_type": "risk_escalation",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "High-risk actions require explicit approval. Generated control variant 5 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Finance ERP control 5 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 5 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-ORDER-106",
+    "rule_name": "Finance ERP generated process order control 6",
+    "rule_type": "process_order",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Required precheck must be present before execution. Generated control variant 6 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 6 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 6 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RBAC-107",
+    "rule_name": "Finance ERP generated rbac control 7",
+    "rule_type": "rbac",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 7 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 7 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 7 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PARAM-108",
+    "rule_name": "Finance ERP generated parameter required control 8",
+    "rule_type": "parameter_required",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 8 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 8 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 8 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-AUDIT-109",
+    "rule_name": "Finance ERP generated audit control 9",
+    "rule_type": "audit",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 9 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 9 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 9 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-CACHE-110",
+    "rule_name": "Finance ERP generated cache safety control 10",
+    "rule_type": "cache_safety",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 10 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "finance"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 10 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 10 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-DATA-111",
+    "rule_name": "Finance ERP generated data confidentiality control 11",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 11 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 11 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 11 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RISK-112",
+    "rule_name": "Finance ERP generated risk escalation control 12",
+    "rule_type": "risk_escalation",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "High-risk actions require explicit approval. Generated control variant 12 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Finance ERP control 12 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 12 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-ORDER-113",
+    "rule_name": "Finance ERP generated process order control 13",
+    "rule_type": "process_order",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Required precheck must be present before execution. Generated control variant 13 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 13 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 13 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RBAC-114",
+    "rule_name": "Finance ERP generated rbac control 14",
+    "rule_type": "rbac",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 14 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 14 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 14 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PARAM-115",
+    "rule_name": "Finance ERP generated parameter required control 15",
+    "rule_type": "parameter_required",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 15 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 15 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 15 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-AUDIT-116",
+    "rule_name": "Finance ERP generated audit control 16",
+    "rule_type": "audit",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 16 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 16 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 16 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-CACHE-117",
+    "rule_name": "Finance ERP generated cache safety control 17",
+    "rule_type": "cache_safety",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 17 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "finance"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 17 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 17 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-DATA-118",
+    "rule_name": "Finance ERP generated data confidentiality control 18",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 18 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 18 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 18 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RISK-119",
+    "rule_name": "Finance ERP generated risk escalation control 19",
+    "rule_type": "risk_escalation",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "High-risk actions require explicit approval. Generated control variant 19 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Finance ERP control 19 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 19 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-ORDER-120",
+    "rule_name": "Finance ERP generated process order control 20",
+    "rule_type": "process_order",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Required precheck must be present before execution. Generated control variant 20 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 20 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 20 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RBAC-121",
+    "rule_name": "Finance ERP generated rbac control 21",
+    "rule_type": "rbac",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 21 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 21 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 21 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PARAM-122",
+    "rule_name": "Finance ERP generated parameter required control 22",
+    "rule_type": "parameter_required",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 22 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 22 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 22 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-AUDIT-123",
+    "rule_name": "Finance ERP generated audit control 23",
+    "rule_type": "audit",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 23 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 23 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 23 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-CACHE-124",
+    "rule_name": "Finance ERP generated cache safety control 24",
+    "rule_type": "cache_safety",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 24 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "finance"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 24 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 24 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-DATA-125",
+    "rule_name": "Finance ERP generated data confidentiality control 25",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 25 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 25 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 25 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RISK-126",
+    "rule_name": "Finance ERP generated risk escalation control 26",
+    "rule_type": "risk_escalation",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "High-risk actions require explicit approval. Generated control variant 26 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Finance ERP control 26 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 26 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-ORDER-127",
+    "rule_name": "Finance ERP generated process order control 27",
+    "rule_type": "process_order",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Required precheck must be present before execution. Generated control variant 27 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 27 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 27 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RBAC-128",
+    "rule_name": "Finance ERP generated rbac control 28",
+    "rule_type": "rbac",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 28 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 28 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 28 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PARAM-129",
+    "rule_name": "Finance ERP generated parameter required control 29",
+    "rule_type": "parameter_required",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 29 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 29 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 29 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-AUDIT-130",
+    "rule_name": "Finance ERP generated audit control 30",
+    "rule_type": "audit",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 30 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 30 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 30 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-CACHE-131",
+    "rule_name": "Finance ERP generated cache safety control 31",
+    "rule_type": "cache_safety",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 31 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "finance"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 31 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 31 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-DATA-132",
+    "rule_name": "Finance ERP generated data confidentiality control 32",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 32 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 32 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 32 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RISK-133",
+    "rule_name": "Finance ERP generated risk escalation control 33",
+    "rule_type": "risk_escalation",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "High-risk actions require explicit approval. Generated control variant 33 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Finance ERP control 33 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 33 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-ORDER-134",
+    "rule_name": "Finance ERP generated process order control 34",
+    "rule_type": "process_order",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Required precheck must be present before execution. Generated control variant 34 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 34 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 34 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-RBAC-135",
+    "rule_name": "Finance ERP generated rbac control 35",
+    "rule_type": "rbac",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 35 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Finance ERP control 35 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 35 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-PARAM-136",
+    "rule_name": "Finance ERP generated parameter required control 36",
+    "rule_type": "parameter_required",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 36 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 36 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 36 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "FIN-AUDIT-137",
+    "rule_name": "Finance ERP generated audit control 37",
+    "rule_type": "audit",
+    "erp_system": "Finance ERP",
+    "domain": "finance",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 37 for Finance ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-FIN-003",
+      "TOOL-FIN-004",
+      "TOOL-FIN-006",
+      "TOOL-FIN-007",
+      "TOOL-FIN-008",
+      "TOOL-FIN-009",
+      "TOOL-FIN-010",
+      "TOOL-FIN-017",
+      "TOOL-FIN-018",
+      "TOOL-FIN-021"
+    ],
+    "applies_to_roles": [
+      "finance_viewer",
+      "finance_editor",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "finance_editor",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Finance ERP control 37 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 37 for finance workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  }
+]

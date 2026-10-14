@@ -1,0 +1,25 @@
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+import OperationReconciliationReview from "../../components/executions/OperationReconciliationReview";
+import OperationStatusQueries from "../../components/executions/OperationStatusQueries";
+import OperationRecoveryArtifacts from "../../components/executions/OperationRecoveryArtifacts";
+import { executionService } from "../../services/execution.service";
+import { ErrorState, LoadingState } from "../../components/shared/ResourceState";
+import usePermissions from "../../hooks/usePermissions";
+
+export default function ExecutionReconciliationPage({ executionId }) {
+  const { hasAny } = usePermissions(), canUseWorkspace = hasAny(["chat:use", "workflow:write"]);
+  const canUseInbox = hasAny(["execution:approve", "execution:reconcile"]);
+  const query = useQuery({ queryKey: ["execution-reconciliation", executionId], queryFn: () => executionService.getReconciliation(executionId), retry: false, refetchOnWindowFocus: false });
+  const reload = async () => { const result = await query.refetch(); if (result.error) throw result.error; return result.data; };
+  if (query.isLoading) return <LoadingState label="Loading exact uncertain-operation evidence…" />;
+  if (query.error) return <ErrorState error={query.error} onRetry={() => { void reload().catch(() => {}); }} />;
+  if (!query.data) return null;
+  const review = query.data.operationReconciliation;
+  return <div className="max-w-3xl space-y-5"><Link className="text-sm font-semibold text-primary dark:text-violet-300" to={canUseInbox ? "/executions/reviews" : canUseWorkspace ? "/chat" : "/company"}>{canUseInbox ? "← Review inbox" : canUseWorkspace ? "← Workspace" : "← Company"}</Link>
+    <OperationReconciliationReview key={`${executionId}:${review.intentId}:${review.version}:${review.factsHash}`} execution={query.data} onReload={reload}
+      statusQueries={<OperationStatusQueries executionId={executionId} intentId={review.intentId} nodeId={review.nodeId} onCaseChanged={reload} />} />
+    {review.state === "RESOLVED" && <OperationRecoveryArtifacts executionId={executionId} />}
+    {canUseInbox && canUseWorkspace ? <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-primary dark:text-violet-300" to="/chat">← Workspace</Link> : null}
+  </div>;
+}

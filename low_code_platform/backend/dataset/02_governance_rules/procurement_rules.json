@@ -1,0 +1,2157 @@
+[
+  {
+    "rule_id": "PROC-RBAC-001",
+    "rule_name": "Procurement officer creation authority",
+    "rule_type": "rbac",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "procurement_officer can create purchase requests and orders but cannot approve own high-value PO.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-003"
+    ],
+    "applies_to_roles": [
+      "procurement_officer"
+    ],
+    "condition": {
+      "type": "role_permission",
+      "parameter": "user_role",
+      "operator": "==",
+      "value": "procurement_officer"
+    },
+    "enforcement_action": "allow",
+    "severity": "medium",
+    "validator_message": "Procurement officer may create but not self-approve high-value PO.",
+    "llm_prompt_instruction": "Add separate approval for high-value PO.",
+    "healing_guidance": "Route approval to procurement_manager.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RBAC-002",
+    "rule_name": "Procurement manager approval authority",
+    "rule_type": "rbac",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "procurement_manager can approve high-value purchase orders.",
+    "applies_to_tools": [
+      "TOOL-PROC-002",
+      "TOOL-PROC-010"
+    ],
+    "applies_to_roles": [
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "role_permission",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "allow",
+    "severity": "medium",
+    "validator_message": "Procurement approval requires procurement_manager or admin.",
+    "llm_prompt_instruction": "Use approval role for high-value PO.",
+    "healing_guidance": "Request procurement manager approval.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PARAM-001",
+    "rule_name": "Purchase order required fields",
+    "rule_type": "parameter_required",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Purchase order requires vendor_id, item_id, quantity, and unit_price.",
+    "applies_to_tools": [
+      "TOOL-PROC-003"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "required_parameters",
+      "operator": "exists",
+      "value": [
+        "vendor_id",
+        "item_id",
+        "quantity",
+        "unit_price"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Purchase order is missing vendor, item, quantity, or unit price.",
+    "llm_prompt_instruction": "Ask for missing purchase order fields.",
+    "healing_guidance": "Request missing vendor_id, item_id, quantity, or unit_price.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-THRESH-001",
+    "rule_name": "Quantity approval threshold",
+    "rule_type": "quantity_threshold",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Purchase quantity above 100 requires procurement manager approval.",
+    "applies_to_tools": [
+      "TOOL-PROC-003"
+    ],
+    "applies_to_roles": [
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "quantity_threshold",
+      "parameter": "quantity",
+      "operator": ">",
+      "value": 100
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Quantity above 100 requires procurement manager approval.",
+    "llm_prompt_instruction": "Add procurement manager approval for high quantity.",
+    "healing_guidance": "Insert approval.request_human_approval.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-THRESH-002",
+    "rule_name": "PO value finance approval threshold",
+    "rule_type": "amount_threshold",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "PO value above 500000 LKR requires finance approval.",
+    "applies_to_tools": [
+      "TOOL-PROC-003",
+      "TOOL-PROC-057"
+    ],
+    "applies_to_roles": [
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "amount_threshold",
+      "parameter": "po_value",
+      "operator": ">",
+      "value": 500000
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "critical",
+    "validator_message": "PO value above 500000 LKR requires finance approval.",
+    "llm_prompt_instruction": "Add finance approval before releasing high-value PO.",
+    "healing_guidance": "Insert request_finance_budget_approval and human approval.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-POLICY-001",
+    "rule_name": "Vendor must be active",
+    "rule_type": "execution_safety",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Vendor must be active before purchase order creation.",
+    "applies_to_tools": [
+      "TOOL-PROC-008",
+      "TOOL-PROC-003"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "vendor_status",
+      "parameter": "vendor_active",
+      "operator": "==",
+      "value": true
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Inactive vendor cannot be used for PO creation.",
+    "llm_prompt_instruction": "Validate vendor before creating PO.",
+    "healing_guidance": "Add validate_vendor and select active vendor.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PROC-001",
+    "rule_name": "Goods receipt after PO",
+    "rule_type": "process_order",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Goods receipt must occur after PO creation.",
+    "applies_to_tools": [
+      "TOOL-PROC-003",
+      "TOOL-INV-007"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_order",
+      "parameter": "workflow.steps",
+      "operator": "before",
+      "value": [
+        "procurement.create_purchase_order",
+        "inventory.record_goods_receipt"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Goods receipt cannot occur before purchase order creation.",
+    "llm_prompt_instruction": "Order create_purchase_order before record_goods_receipt.",
+    "healing_guidance": "Reorder candidate.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PROC-002",
+    "rule_name": "Invoice receipt after PO",
+    "rule_type": "process_order",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Invoice receipt must occur after PO creation.",
+    "applies_to_tools": [
+      "TOOL-PROC-003",
+      "TOOL-FIN-006"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_order",
+      "parameter": "workflow.steps",
+      "operator": "before",
+      "value": [
+        "procurement.create_purchase_order",
+        "finance.record_invoice_receipt"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Invoice receipt cannot occur before purchase order creation.",
+    "llm_prompt_instruction": "Order PO creation before invoice receipt.",
+    "healing_guidance": "Reorder candidate.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PROC-003",
+    "rule_name": "Three-way match before clearing",
+    "rule_type": "process_order",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Clear invoice requires PO, goods receipt, and invoice receipt match.",
+    "applies_to_tools": [
+      "TOOL-PROC-034",
+      "TOOL-FIN-007"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_order",
+      "parameter": "workflow.steps",
+      "operator": "before",
+      "value": [
+        "procurement.validate_three_way_match",
+        "finance.clear_invoice"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "critical",
+    "validator_message": "Invoice clearing requires validated three-way match.",
+    "llm_prompt_instruction": "Generate PO, goods receipt, invoice receipt, and match before clear_invoice.",
+    "healing_guidance": "Add validate_three_way_match before clearing.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-SOD-001",
+    "rule_name": "Requester cannot approve own high-value PO",
+    "rule_type": "separation_of_duties",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Requester cannot approve own high-value PO.",
+    "applies_to_tools": [
+      "TOOL-PROC-003",
+      "TOOL-PROC-010"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager"
+    ],
+    "condition": {
+      "type": "separation_of_duties",
+      "parameter": "requester_id",
+      "operator": "!=",
+      "value": "approver_id"
+    },
+    "enforcement_action": "block",
+    "severity": "critical",
+    "validator_message": "Requester cannot approve own high-value purchase order.",
+    "llm_prompt_instruction": "Use a different approver for high-value PO.",
+    "healing_guidance": "Assign independent procurement_manager approver.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-POLICY-002",
+    "rule_name": "Rejected PO cannot clear invoice",
+    "rule_type": "process_order",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Rejected PO cannot be used for invoice clearing.",
+    "applies_to_tools": [
+      "TOOL-PROC-021",
+      "TOOL-FIN-007"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "po_status",
+      "parameter": "purchase_order_status",
+      "operator": "!=",
+      "value": "rejected"
+    },
+    "enforcement_action": "block",
+    "severity": "critical",
+    "validator_message": "Rejected purchase order cannot support invoice clearing.",
+    "llm_prompt_instruction": "Do not clear invoice linked to rejected PO.",
+    "healing_guidance": "Escalate purchase exception.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PARAM-002",
+    "rule_name": "Missing PO core fields block",
+    "rule_type": "parameter_required",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Missing vendor_id, item_id, or quantity blocks procurement execution.",
+    "applies_to_tools": [
+      "TOOL-PROC-003",
+      "TOOL-PROC-001"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "required_parameters",
+      "operator": "exists",
+      "value": [
+        "vendor_id",
+        "item_id",
+        "quantity"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Missing vendor_id, item_id, or quantity blocks procurement workflow.",
+    "llm_prompt_instruction": "Ask for missing procurement fields.",
+    "healing_guidance": "Request vendor_id, item_id, and quantity.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-AUDIT-001",
+    "rule_name": "Procurement writes require audit",
+    "rule_type": "audit",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "All procurement write operations must write an audit log.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013",
+      "TOOL-PROC-016",
+      "TOOL-PROC-017",
+      "TOOL-PROC-018",
+      "TOOL-PROC-020",
+      "TOOL-PROC-021",
+      "TOOL-PROC-022",
+      "TOOL-PROC-024",
+      "TOOL-PROC-029",
+      "TOOL-PROC-030",
+      "TOOL-PROC-031",
+      "TOOL-PROC-033",
+      "TOOL-PROC-035",
+      "TOOL-PROC-036",
+      "TOOL-PROC-037",
+      "TOOL-PROC-038",
+      "TOOL-PROC-042",
+      "TOOL-PROC-044",
+      "TOOL-PROC-047",
+      "TOOL-PROC-048",
+      "TOOL-PROC-049",
+      "TOOL-PROC-050",
+      "TOOL-PROC-051",
+      "TOOL-PROC-053",
+      "TOOL-PROC-054",
+      "TOOL-PROC-057",
+      "TOOL-PROC-058",
+      "TOOL-PROC-059",
+      "TOOL-PROC-060",
+      "TOOL-PROC-061",
+      "TOOL-PROC-062",
+      "TOOL-PROC-063",
+      "TOOL-PROC-065",
+      "TOOL-GLB-004"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "audit",
+      "parameter": "audit.write_audit_log",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "high",
+    "validator_message": "Procurement write workflow requires audit logging.",
+    "llm_prompt_instruction": "Append audit.write_audit_log to procurement write workflows.",
+    "healing_guidance": "Add audit log step.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [
+      "workflow_id",
+      "event_type",
+      "actor_role",
+      "decision"
+    ],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PARAM-101",
+    "rule_name": "Procurement ERP generated parameter required control 1",
+    "rule_type": "parameter_required",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 1 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 1 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 1 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-AUDIT-102",
+    "rule_name": "Procurement ERP generated audit control 2",
+    "rule_type": "audit",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 2 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 2 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 2 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-CACHE-103",
+    "rule_name": "Procurement ERP generated cache safety control 3",
+    "rule_type": "cache_safety",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 3 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "procurement"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 3 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 3 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-DATA-104",
+    "rule_name": "Procurement ERP generated data confidentiality control 4",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 4 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 4 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 4 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RISK-105",
+    "rule_name": "Procurement ERP generated risk escalation control 5",
+    "rule_type": "risk_escalation",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "High-risk actions require explicit approval. Generated control variant 5 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 5 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 5 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-ORDER-106",
+    "rule_name": "Procurement ERP generated process order control 6",
+    "rule_type": "process_order",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Required precheck must be present before execution. Generated control variant 6 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 6 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 6 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RBAC-107",
+    "rule_name": "Procurement ERP generated rbac control 7",
+    "rule_type": "rbac",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 7 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 7 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 7 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PARAM-108",
+    "rule_name": "Procurement ERP generated parameter required control 8",
+    "rule_type": "parameter_required",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 8 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 8 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 8 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-AUDIT-109",
+    "rule_name": "Procurement ERP generated audit control 9",
+    "rule_type": "audit",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 9 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 9 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 9 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-CACHE-110",
+    "rule_name": "Procurement ERP generated cache safety control 10",
+    "rule_type": "cache_safety",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 10 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "procurement"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 10 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 10 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-DATA-111",
+    "rule_name": "Procurement ERP generated data confidentiality control 11",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 11 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 11 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 11 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RISK-112",
+    "rule_name": "Procurement ERP generated risk escalation control 12",
+    "rule_type": "risk_escalation",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "High-risk actions require explicit approval. Generated control variant 12 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 12 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 12 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-ORDER-113",
+    "rule_name": "Procurement ERP generated process order control 13",
+    "rule_type": "process_order",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Required precheck must be present before execution. Generated control variant 13 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 13 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 13 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RBAC-114",
+    "rule_name": "Procurement ERP generated rbac control 14",
+    "rule_type": "rbac",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 14 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 14 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 14 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PARAM-115",
+    "rule_name": "Procurement ERP generated parameter required control 15",
+    "rule_type": "parameter_required",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 15 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 15 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 15 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-AUDIT-116",
+    "rule_name": "Procurement ERP generated audit control 16",
+    "rule_type": "audit",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 16 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 16 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 16 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-CACHE-117",
+    "rule_name": "Procurement ERP generated cache safety control 17",
+    "rule_type": "cache_safety",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 17 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "procurement"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 17 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 17 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-DATA-118",
+    "rule_name": "Procurement ERP generated data confidentiality control 18",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 18 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 18 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 18 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RISK-119",
+    "rule_name": "Procurement ERP generated risk escalation control 19",
+    "rule_type": "risk_escalation",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "High-risk actions require explicit approval. Generated control variant 19 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 19 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 19 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-ORDER-120",
+    "rule_name": "Procurement ERP generated process order control 20",
+    "rule_type": "process_order",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Required precheck must be present before execution. Generated control variant 20 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 20 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 20 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RBAC-121",
+    "rule_name": "Procurement ERP generated rbac control 21",
+    "rule_type": "rbac",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 21 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 21 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 21 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PARAM-122",
+    "rule_name": "Procurement ERP generated parameter required control 22",
+    "rule_type": "parameter_required",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 22 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 22 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 22 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-AUDIT-123",
+    "rule_name": "Procurement ERP generated audit control 23",
+    "rule_type": "audit",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 23 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 23 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 23 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-CACHE-124",
+    "rule_name": "Procurement ERP generated cache safety control 24",
+    "rule_type": "cache_safety",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 24 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "procurement"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 24 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 24 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-DATA-125",
+    "rule_name": "Procurement ERP generated data confidentiality control 25",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 25 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 25 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 25 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RISK-126",
+    "rule_name": "Procurement ERP generated risk escalation control 26",
+    "rule_type": "risk_escalation",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "High-risk actions require explicit approval. Generated control variant 26 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 26 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 26 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-ORDER-127",
+    "rule_name": "Procurement ERP generated process order control 27",
+    "rule_type": "process_order",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Required precheck must be present before execution. Generated control variant 27 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 27 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 27 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RBAC-128",
+    "rule_name": "Procurement ERP generated rbac control 28",
+    "rule_type": "rbac",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 28 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 28 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 28 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PARAM-129",
+    "rule_name": "Procurement ERP generated parameter required control 29",
+    "rule_type": "parameter_required",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 29 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 29 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 29 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-AUDIT-130",
+    "rule_name": "Procurement ERP generated audit control 30",
+    "rule_type": "audit",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 30 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 30 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 30 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-CACHE-131",
+    "rule_name": "Procurement ERP generated cache safety control 31",
+    "rule_type": "cache_safety",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 31 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "procurement"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 31 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 31 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-DATA-132",
+    "rule_name": "Procurement ERP generated data confidentiality control 32",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 32 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 32 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 32 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RISK-133",
+    "rule_name": "Procurement ERP generated risk escalation control 33",
+    "rule_type": "risk_escalation",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "High-risk actions require explicit approval. Generated control variant 33 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 33 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 33 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-ORDER-134",
+    "rule_name": "Procurement ERP generated process order control 34",
+    "rule_type": "process_order",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Required precheck must be present before execution. Generated control variant 34 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 34 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 34 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-RBAC-135",
+    "rule_name": "Procurement ERP generated rbac control 35",
+    "rule_type": "rbac",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 35 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Procurement ERP control 35 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 35 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-PARAM-136",
+    "rule_name": "Procurement ERP generated parameter required control 36",
+    "rule_type": "parameter_required",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 36 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 36 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 36 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "PROC-AUDIT-137",
+    "rule_name": "Procurement ERP generated audit control 37",
+    "rule_type": "audit",
+    "erp_system": "Procurement ERP",
+    "domain": "procurement",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 37 for Procurement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-PROC-001",
+      "TOOL-PROC-002",
+      "TOOL-PROC-003",
+      "TOOL-PROC-005",
+      "TOOL-PROC-006",
+      "TOOL-PROC-007",
+      "TOOL-PROC-010",
+      "TOOL-PROC-011",
+      "TOOL-PROC-012",
+      "TOOL-PROC-013"
+    ],
+    "applies_to_roles": [
+      "procurement_officer",
+      "procurement_manager",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "procurement_officer",
+      "procurement_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Procurement ERP control 37 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 37 for procurement workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2019_P2P"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  }
+]

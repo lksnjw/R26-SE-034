@@ -1,0 +1,28 @@
+.workflow-canvas-grid {
+  background-color: #f8fafc;
+  background-image:
+    linear-gradient(rgba(132, 0, 106, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(132, 0, 106, 0.08) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.dark .workflow-canvas-grid {
+  background-color: #111111;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+}
+
+.workflow-node {
+  min-width: 168px;
+  border-radius: 14px;
+  border: 1px solid rgba(132, 0, 106, 0.18);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 12px 25px rgba(15, 15, 15, 0.08);
+}
+
+.dark .workflow-node {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(26, 26, 26, 0.94);
+  box-shadow: 0 18px 32px rgba(0, 0, 0, 0.34);
+}

@@ -1,0 +1,2405 @@
+[
+  {
+    "rule_id": "TRV-RBAC-001",
+    "rule_name": "Employee submit-only travel access",
+    "rule_type": "rbac",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "employee can submit travel requests but cannot approve them.",
+    "applies_to_tools": [
+      "TOOL-TRV-002",
+      "TOOL-TRV-008"
+    ],
+    "applies_to_roles": [
+      "employee"
+    ],
+    "condition": {
+      "type": "role_permission",
+      "parameter": "user_role",
+      "operator": "==",
+      "value": "employee"
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Employee cannot approve travel or reimbursement requests.",
+    "llm_prompt_instruction": "Do not generate approval tools for employee role.",
+    "healing_guidance": "Route approval to department_manager or finance_manager.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RBAC-002",
+    "rule_name": "Department manager travel approval",
+    "rule_type": "rbac",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "department_manager can approve employee travel requests if not self-approving.",
+    "applies_to_tools": [
+      "TOOL-TRV-002",
+      "TOOL-TRV-034"
+    ],
+    "applies_to_roles": [
+      "department_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "role_permission",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "allow",
+    "severity": "medium",
+    "validator_message": "Department manager approval required for travel permit.",
+    "llm_prompt_instruction": "Use department_manager for permit approval.",
+    "healing_guidance": "Request department manager approval.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-PROC-001",
+    "rule_name": "Permit before declaration",
+    "rule_type": "process_order",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Travel permit must be approved before travel declaration.",
+    "applies_to_tools": [
+      "TOOL-TRV-002",
+      "TOOL-TRV-004"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_order",
+      "parameter": "workflow.steps",
+      "operator": "before",
+      "value": [
+        "travel.approve_travel_permit",
+        "travel.submit_travel_declaration"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel declaration requires approved travel permit.",
+    "llm_prompt_instruction": "Generate permit approval before declaration.",
+    "healing_guidance": "Reorder candidate.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-PROC-002",
+    "rule_name": "Declaration before reimbursement",
+    "rule_type": "process_order",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Travel declaration must be completed before reimbursement.",
+    "applies_to_tools": [
+      "TOOL-TRV-004",
+      "TOOL-TRV-007"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_order",
+      "parameter": "workflow.steps",
+      "operator": "before",
+      "value": [
+        "travel.submit_travel_declaration",
+        "travel.submit_reimbursement_claim"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Reimbursement requires completed travel declaration.",
+    "llm_prompt_instruction": "Generate declaration before reimbursement claim.",
+    "healing_guidance": "Reorder candidate.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-THRESH-001",
+    "rule_name": "High-value reimbursement approval",
+    "rule_type": "amount_threshold",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Reimbursement amount above 50000 LKR requires department manager and finance approval.",
+    "applies_to_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-008"
+    ],
+    "applies_to_roles": [
+      "department_manager",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "amount_threshold",
+      "parameter": "amount",
+      "operator": ">",
+      "value": 50000
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "High-value reimbursement requires department manager and finance approval.",
+    "llm_prompt_instruction": "Add department and finance approval steps.",
+    "healing_guidance": "Insert request_department_manager_approval and request_finance_reimbursement_approval.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-SOD-001",
+    "rule_name": "Employee cannot approve own reimbursement",
+    "rule_type": "separation_of_duties",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Employee cannot approve own reimbursement.",
+    "applies_to_tools": [
+      "TOOL-TRV-007",
+      "TOOL-TRV-008"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "finance_manager"
+    ],
+    "condition": {
+      "type": "separation_of_duties",
+      "parameter": "employee_id",
+      "operator": "!=",
+      "value": "approver_id"
+    },
+    "enforcement_action": "block",
+    "severity": "critical",
+    "validator_message": "Employee cannot approve own reimbursement.",
+    "llm_prompt_instruction": "Use independent approver for reimbursement.",
+    "healing_guidance": "Assign department_manager or finance_manager.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-PARAM-001",
+    "rule_name": "Travel request required fields",
+    "rule_type": "parameter_required",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Missing employee_id, destination, start_date, end_date, or amount blocks travel execution.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-007"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "required_parameters",
+      "operator": "exists",
+      "value": [
+        "employee_id",
+        "destination",
+        "start_date",
+        "end_date",
+        "amount"
+      ]
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel workflow is missing employee, destination, dates, or amount.",
+    "llm_prompt_instruction": "Ask for missing travel fields.",
+    "healing_guidance": "Request employee_id, destination, start_date, end_date, and amount.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-GAP-001",
+    "rule_name": "Travel future schema capability gap",
+    "rule_type": "capability_gap",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Travel tools are recommended future capabilities unless ERPBridge schema exists.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014",
+      "TOOL-TRV-015",
+      "TOOL-TRV-017",
+      "TOOL-TRV-018",
+      "TOOL-TRV-021",
+      "TOOL-TRV-022",
+      "TOOL-TRV-027",
+      "TOOL-TRV-028",
+      "TOOL-TRV-029",
+      "TOOL-TRV-032",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-036",
+      "TOOL-TRV-037",
+      "TOOL-TRV-038",
+      "TOOL-TRV-042",
+      "TOOL-TRV-044",
+      "TOOL-TRV-045",
+      "TOOL-TRV-046",
+      "TOOL-TRV-048",
+      "TOOL-TRV-049",
+      "TOOL-TRV-050",
+      "TOOL-TRV-051",
+      "TOOL-TRV-052",
+      "TOOL-TRV-053",
+      "TOOL-TRV-054",
+      "TOOL-TRV-055",
+      "TOOL-TRV-006",
+      "TOOL-TRV-010",
+      "TOOL-TRV-012",
+      "TOOL-TRV-013",
+      "TOOL-TRV-016",
+      "TOOL-TRV-019",
+      "TOOL-TRV-020",
+      "TOOL-TRV-023",
+      "TOOL-TRV-024",
+      "TOOL-TRV-025",
+      "TOOL-TRV-026",
+      "TOOL-TRV-030",
+      "TOOL-TRV-031",
+      "TOOL-TRV-033",
+      "TOOL-TRV-039",
+      "TOOL-TRV-040",
+      "TOOL-TRV-041",
+      "TOOL-TRV-043",
+      "TOOL-TRV-047"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_status",
+      "parameter": "status",
+      "operator": "==",
+      "value": "recommended_future_capability"
+    },
+    "enforcement_action": "require_schema_generation",
+    "severity": "medium",
+    "validator_message": "Travel ERPBridge schema is missing for requested tool.",
+    "llm_prompt_instruction": "Generate capability request instead of direct travel execution.",
+    "healing_guidance": "Use capability.create_capability_request.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-GAP-002",
+    "rule_name": "Missing travel endpoint capability request",
+    "rule_type": "capability_gap",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "If travel endpoint or schema is missing, create capability request instead of execution.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014",
+      "TOOL-TRV-015",
+      "TOOL-TRV-017",
+      "TOOL-TRV-018",
+      "TOOL-TRV-021",
+      "TOOL-TRV-022",
+      "TOOL-TRV-027",
+      "TOOL-TRV-028",
+      "TOOL-TRV-029",
+      "TOOL-TRV-032",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-036",
+      "TOOL-TRV-037",
+      "TOOL-TRV-038",
+      "TOOL-TRV-042",
+      "TOOL-TRV-044",
+      "TOOL-TRV-045",
+      "TOOL-TRV-046",
+      "TOOL-TRV-048",
+      "TOOL-TRV-049",
+      "TOOL-TRV-050",
+      "TOOL-TRV-051",
+      "TOOL-TRV-052",
+      "TOOL-TRV-053",
+      "TOOL-TRV-054",
+      "TOOL-TRV-055",
+      "TOOL-GLB-005"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "tool_status",
+      "parameter": "active_mcp_schema_present",
+      "operator": "!=",
+      "value": true
+    },
+    "enforcement_action": "require_schema_generation",
+    "severity": "medium",
+    "validator_message": "Travel endpoint/schema missing; direct execution not allowed.",
+    "llm_prompt_instruction": "Route to capability request.",
+    "healing_guidance": "Create capability request with missing endpoint detail.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-AUDIT-001",
+    "rule_name": "Travel writes require audit",
+    "rule_type": "audit",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "All travel and reimbursement write operations must write an audit log.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014",
+      "TOOL-TRV-015",
+      "TOOL-TRV-017",
+      "TOOL-TRV-018",
+      "TOOL-TRV-021",
+      "TOOL-TRV-022",
+      "TOOL-TRV-027",
+      "TOOL-TRV-028",
+      "TOOL-TRV-029",
+      "TOOL-TRV-032",
+      "TOOL-TRV-034",
+      "TOOL-TRV-035",
+      "TOOL-TRV-036",
+      "TOOL-TRV-037",
+      "TOOL-TRV-038",
+      "TOOL-TRV-042",
+      "TOOL-TRV-044",
+      "TOOL-TRV-045",
+      "TOOL-TRV-046",
+      "TOOL-TRV-048",
+      "TOOL-TRV-049",
+      "TOOL-TRV-050",
+      "TOOL-TRV-051",
+      "TOOL-TRV-052",
+      "TOOL-TRV-053",
+      "TOOL-TRV-054",
+      "TOOL-TRV-055",
+      "TOOL-GLB-004"
+    ],
+    "applies_to_roles": [],
+    "condition": {
+      "type": "audit",
+      "parameter": "audit.write_audit_log",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "high",
+    "validator_message": "Travel write workflow requires audit logging.",
+    "llm_prompt_instruction": "Append audit.write_audit_log to travel write workflows.",
+    "healing_guidance": "Add audit log step.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [
+      "workflow_id",
+      "event_type",
+      "actor_role",
+      "decision"
+    ],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-PARAM-101",
+    "rule_name": "Travel & Reimbursement ERP generated parameter required control 1",
+    "rule_type": "parameter_required",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 1 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 1 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 1 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-AUDIT-102",
+    "rule_name": "Travel & Reimbursement ERP generated audit control 2",
+    "rule_type": "audit",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 2 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 2 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 2 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-CACHE-103",
+    "rule_name": "Travel & Reimbursement ERP generated cache safety control 3",
+    "rule_type": "cache_safety",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 3 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "travel"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 3 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 3 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-DATA-104",
+    "rule_name": "Travel & Reimbursement ERP generated data confidentiality control 4",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 4 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 4 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 4 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RISK-105",
+    "rule_name": "Travel & Reimbursement ERP generated risk escalation control 5",
+    "rule_type": "risk_escalation",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "High-risk actions require explicit approval. Generated control variant 5 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 5 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 5 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-ORDER-106",
+    "rule_name": "Travel & Reimbursement ERP generated process order control 6",
+    "rule_type": "process_order",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Required precheck must be present before execution. Generated control variant 6 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 6 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 6 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RBAC-107",
+    "rule_name": "Travel & Reimbursement ERP generated rbac control 7",
+    "rule_type": "rbac",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 7 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 7 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 7 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-PARAM-108",
+    "rule_name": "Travel & Reimbursement ERP generated parameter required control 8",
+    "rule_type": "parameter_required",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 8 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 8 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 8 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-AUDIT-109",
+    "rule_name": "Travel & Reimbursement ERP generated audit control 9",
+    "rule_type": "audit",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 9 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 9 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 9 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-CACHE-110",
+    "rule_name": "Travel & Reimbursement ERP generated cache safety control 10",
+    "rule_type": "cache_safety",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 10 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "travel"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 10 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 10 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-DATA-111",
+    "rule_name": "Travel & Reimbursement ERP generated data confidentiality control 11",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 11 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 11 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 11 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RISK-112",
+    "rule_name": "Travel & Reimbursement ERP generated risk escalation control 12",
+    "rule_type": "risk_escalation",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "High-risk actions require explicit approval. Generated control variant 12 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 12 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 12 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-ORDER-113",
+    "rule_name": "Travel & Reimbursement ERP generated process order control 13",
+    "rule_type": "process_order",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Required precheck must be present before execution. Generated control variant 13 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 13 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 13 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RBAC-114",
+    "rule_name": "Travel & Reimbursement ERP generated rbac control 14",
+    "rule_type": "rbac",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 14 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 14 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 14 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-PARAM-115",
+    "rule_name": "Travel & Reimbursement ERP generated parameter required control 15",
+    "rule_type": "parameter_required",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 15 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 15 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 15 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-AUDIT-116",
+    "rule_name": "Travel & Reimbursement ERP generated audit control 16",
+    "rule_type": "audit",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 16 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 16 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 16 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-CACHE-117",
+    "rule_name": "Travel & Reimbursement ERP generated cache safety control 17",
+    "rule_type": "cache_safety",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 17 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "travel"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 17 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 17 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-DATA-118",
+    "rule_name": "Travel & Reimbursement ERP generated data confidentiality control 18",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 18 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 18 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 18 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RISK-119",
+    "rule_name": "Travel & Reimbursement ERP generated risk escalation control 19",
+    "rule_type": "risk_escalation",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "High-risk actions require explicit approval. Generated control variant 19 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 19 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 19 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-ORDER-120",
+    "rule_name": "Travel & Reimbursement ERP generated process order control 20",
+    "rule_type": "process_order",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Required precheck must be present before execution. Generated control variant 20 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 20 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 20 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RBAC-121",
+    "rule_name": "Travel & Reimbursement ERP generated rbac control 21",
+    "rule_type": "rbac",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 21 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 21 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 21 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-PARAM-122",
+    "rule_name": "Travel & Reimbursement ERP generated parameter required control 22",
+    "rule_type": "parameter_required",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 22 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 22 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 22 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-AUDIT-123",
+    "rule_name": "Travel & Reimbursement ERP generated audit control 23",
+    "rule_type": "audit",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 23 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 23 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 23 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-CACHE-124",
+    "rule_name": "Travel & Reimbursement ERP generated cache safety control 24",
+    "rule_type": "cache_safety",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 24 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "travel"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 24 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 24 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-DATA-125",
+    "rule_name": "Travel & Reimbursement ERP generated data confidentiality control 25",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 25 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 25 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 25 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RISK-126",
+    "rule_name": "Travel & Reimbursement ERP generated risk escalation control 26",
+    "rule_type": "risk_escalation",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "High-risk actions require explicit approval. Generated control variant 26 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 26 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 26 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-ORDER-127",
+    "rule_name": "Travel & Reimbursement ERP generated process order control 27",
+    "rule_type": "process_order",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Required precheck must be present before execution. Generated control variant 27 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 27 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 27 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RBAC-128",
+    "rule_name": "Travel & Reimbursement ERP generated rbac control 28",
+    "rule_type": "rbac",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 28 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 28 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 28 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-PARAM-129",
+    "rule_name": "Travel & Reimbursement ERP generated parameter required control 29",
+    "rule_type": "parameter_required",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 29 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 29 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 29 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-AUDIT-130",
+    "rule_name": "Travel & Reimbursement ERP generated audit control 30",
+    "rule_type": "audit",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 30 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 30 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 30 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-CACHE-131",
+    "rule_name": "Travel & Reimbursement ERP generated cache safety control 31",
+    "rule_type": "cache_safety",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 31 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "travel"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 31 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 31 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-DATA-132",
+    "rule_name": "Travel & Reimbursement ERP generated data confidentiality control 32",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 32 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 32 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 32 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RISK-133",
+    "rule_name": "Travel & Reimbursement ERP generated risk escalation control 33",
+    "rule_type": "risk_escalation",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "High-risk actions require explicit approval. Generated control variant 33 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 33 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 33 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-ORDER-134",
+    "rule_name": "Travel & Reimbursement ERP generated process order control 34",
+    "rule_type": "process_order",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Required precheck must be present before execution. Generated control variant 34 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "process_order",
+      "parameter": "workflow.steps",
+      "operator": "after",
+      "value": "required_precheck"
+    },
+    "enforcement_action": "require_additional_tool",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 34 failed: Required precheck must be present before execution.",
+    "llm_prompt_instruction": "Respect process order control 34 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RBAC-135",
+    "rule_name": "Travel & Reimbursement ERP generated rbac control 35",
+    "rule_type": "rbac",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Caller role must be explicitly known and allowed. Generated control variant 35 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "rbac",
+      "parameter": "user_role",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 35 failed: Caller role must be explicitly known and allowed.",
+    "llm_prompt_instruction": "Respect rbac control 35 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-PARAM-136",
+    "rule_name": "Travel & Reimbursement ERP generated parameter required control 36",
+    "rule_type": "parameter_required",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Workflows must include a request_id for traceability. Generated control variant 36 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "parameter_required",
+      "parameter": "request_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 36 failed: Workflows must include a request_id for traceability.",
+    "llm_prompt_instruction": "Respect parameter required control 36 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-AUDIT-137",
+    "rule_name": "Travel & Reimbursement ERP generated audit control 37",
+    "rule_type": "audit",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Execution must include workflow_id for audit correlation. Generated control variant 37 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "audit",
+      "parameter": "workflow_id",
+      "operator": "exists",
+      "value": null
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 37 failed: Execution must include workflow_id for audit correlation.",
+    "llm_prompt_instruction": "Respect audit control 37 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-CACHE-138",
+    "rule_name": "Travel & Reimbursement ERP generated cache safety control 38",
+    "rule_type": "cache_safety",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Mutating operations must flush domain semantic caches. Generated control variant 38 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "cache_safety",
+      "parameter": "flush_on",
+      "operator": "exists",
+      "value": "travel"
+    },
+    "enforcement_action": "write_audit_log",
+    "severity": "medium",
+    "validator_message": "Travel & Reimbursement ERP control 38 failed: Mutating operations must flush domain semantic caches.",
+    "llm_prompt_instruction": "Respect cache safety control 38 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-DATA-139",
+    "rule_name": "Travel & Reimbursement ERP generated data confidentiality control 39",
+    "rule_type": "data_confidentiality",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "Sensitive fields must not be sent to LLM prompt context. Generated control variant 39 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "data_confidentiality",
+      "parameter": "sensitive_fields",
+      "operator": "not_exists",
+      "value": null
+    },
+    "enforcement_action": "block",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 39 failed: Sensitive fields must not be sent to LLM prompt context.",
+    "llm_prompt_instruction": "Respect data confidentiality control 39 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  },
+  {
+    "rule_id": "TRV-RISK-140",
+    "rule_name": "Travel & Reimbursement ERP generated risk escalation control 40",
+    "rule_type": "risk_escalation",
+    "erp_system": "Travel & Reimbursement ERP",
+    "domain": "travel",
+    "description": "High-risk actions require explicit approval. Generated control variant 40 for Travel & Reimbursement ERP semantic validation.",
+    "applies_to_tools": [
+      "TOOL-TRV-001",
+      "TOOL-TRV-002",
+      "TOOL-TRV-003",
+      "TOOL-TRV-004",
+      "TOOL-TRV-005",
+      "TOOL-TRV-007",
+      "TOOL-TRV-008",
+      "TOOL-TRV-009",
+      "TOOL-TRV-011",
+      "TOOL-TRV-014"
+    ],
+    "applies_to_roles": [
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "auditor",
+      "admin",
+      "employee",
+      "department_manager",
+      "travel_admin",
+      "finance_manager",
+      "admin"
+    ],
+    "condition": {
+      "type": "risk_escalation",
+      "parameter": "risk_level",
+      "operator": ">=",
+      "value": "high"
+    },
+    "enforcement_action": "require_human_approval",
+    "severity": "high",
+    "validator_message": "Travel & Reimbursement ERP control 40 failed: High-risk actions require explicit approval.",
+    "llm_prompt_instruction": "Respect risk escalation control 40 for travel workflows.",
+    "healing_guidance": "Regenerate workflow with the required precheck, approval, audit, or parameter correction.",
+    "bpi_alignment": [
+      "BPI2020_TRAVEL"
+    ],
+    "audit_fields_required": [],
+    "enabled": true
+  }
+]
