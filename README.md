@@ -8,7 +8,7 @@ workflow automation without invasive changes to the ERP core.
 
 <p align="center">
   <a href="https://lksnjw.github.io/r26-se-034-research-website/dist/index.html">
-    <img src="./docs/assets/ai-erp-integration-hero.png" width="100%" alt="Conceptual visual of governed AI, secure middleware, low-code workflows, and semantic data connected around a traditional ERP">
+    <img src="./docs/assets/ai-erp-problem-solution-hero.png" width="100%" alt="Legacy ERP complexity transformed through a governed AI-agent integration layer into adaptable workflows, semantic data access, secure middleware, approvals, and verified outcomes">
   </a>
 </p>
 
