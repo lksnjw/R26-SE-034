@@ -8,7 +8,7 @@ workflow automation without invasive changes to the ERP core.
 
 <p align="center">
   <a href="https://lksnjw.github.io/r26-se-034-research-website/dist/index.html">
-    <img src="https://lksnjw.github.io/r26-se-034-research-website/dist/assets/ai-brain-legacy-erp.png" width="620" alt="An AI integration layer connected to a traditional ERP system">
+    <img src="./docs/assets/research-website-preview.png" width="100%" alt="Preview of the R26-SE-034 research website home page">
   </a>
 </p>
 
