@@ -1,0 +1,14 @@
+.git
+.github
+dist
+schemas
+mock-erp/.venv
+mock-erp/__pycache__
+internal/cache/testdata
+*.test
+*.out
+coverage.*
+.env
+bridgectl
+erpbridge-server
+middleware

@@ -1,0 +1,13 @@
+FROM alpine:3.22.4
+ARG TARGETPLATFORM
+WORKDIR /app
+
+RUN addgroup -S erpbridge && \
+    adduser -S erpbridge -G erpbridge
+
+COPY $TARGETPLATFORM/erpbridge-server .
+RUN chown erpbridge:erpbridge ./erpbridge-server
+
+USER erpbridge
+EXPOSE 8080
+ENTRYPOINT ["./erpbridge-server"]

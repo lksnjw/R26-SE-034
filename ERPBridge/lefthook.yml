@@ -1,0 +1,52 @@
+# Lefthook configuration for ERPBridge
+# https://github.com/evilmartians/lefthook
+pre-commit:
+  parallel: false
+  skip:
+    - merge
+    - rebase
+  commands:
+    fmt:
+      priority: 1
+      glob: "*.go"
+      run: golangci-lint fmt {staged_files}
+      stage_fixed: true # re-stage files reformatted by gofmt/gci
+    lint:
+      priority: 2
+      glob: "*.go"
+      run: golangci-lint run ./...
+    govet:
+      priority: 3
+      glob: "*.go"
+      run: go vet ./...
+    test-short:
+      priority: 4
+      run: go test -short ./...
+
+pre-push:
+  commands:
+    sync-mirror:
+      run: |
+        remote={1}
+        if [ "$remote" = "origin" ]; then
+          echo "Syncing changes to mirror (lksnjw/R26-SE-034)..."
+          # --no-verify skips hooks on the mirror remote (intentional)
+          git push mirror main:ERPBridge --force-with-lease --no-verify
+        fi
+    test-full:
+      run: go test ./...
+
+commit-msg:
+  commands:
+    lint:
+      run: |
+        msg=$(cat {1})
+        if [ ${#msg} -lt 10 ]; then
+          echo "Commit message too short!"
+          exit 1
+        fi
+
+post-merge:
+  commands:
+    tidy:
+      run: go mod tidy

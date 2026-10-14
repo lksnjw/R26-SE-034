@@ -1,0 +1,155 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: erpbridge
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: erpbridge-server
+    main: ./services/erpbridge-server/main.go
+    binary: erpbridge-server
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    goarm64:
+      - v8.0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -extldflags "-static"
+
+  - id: bridgectl
+    main: ./tools/bridgectl/main.go
+    binary: bridgectl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    goarm64:
+     - v8.0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -extldflags "-static"
+
+archives:
+  - id: erpbridge-server
+    ids: [erpbridge-server]
+    formats: ["tar.gz"]
+    name_template: >-
+      erpbridge-server_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - README.md
+
+  - id: bridgectl
+    ids: [bridgectl]
+    formats: ["tar.gz"]
+    name_template: >-
+      bridgectl_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - README.md
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
+
+dockers_v2:
+  - ids:
+      - erpbridge-server
+    dockerfile: Dockerfile.server.releaser
+    images:
+      - "ghcr.io/{{ .Env.REPO_OWNER }}/erpbridge-server"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      "org.opencontainers.image.created": "{{.Date}}"
+      "org.opencontainers.image.title": "erpbridge-server"
+      "org.opencontainers.image.revision": "{{.FullCommit}}"
+      "org.opencontainers.image.version": "{{.Version}}"
+      "org.opencontainers.image.source": "{{.GitURL}}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "⚡ Performance"
+      regexp: "^perf"
+      order: 2
+    - title: "🔒 Security"
+      regexp: "^sec"
+      order: 3
+    - title: "Other"
+      order: 999
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+
+release:
+  github:
+    owner: nmdra
+    name: ERPBridge
+  replace_existing_artifacts: true
+  draft: false
+  prerelease: auto
+  name_template: "ERPBridge {{.Tag}}"
+  footer: |
+    ---
+    **Full Changelog**: https://github.com/nmdra/ERPBridge/compare/{{ .PreviousTag }}...{{ .Tag }}
+    Released by [GoReleaser](https://goreleaser.com).
+
+sboms:
+  - artifacts: archive
+
+signs:
+  - cmd: cosign
+    args:
+      - "sign-blob"
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
