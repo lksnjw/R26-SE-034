@@ -151,6 +151,8 @@ support. The repository includes LoRA-oriented model experiments, JSONL ERP
 datasets, an Ollama evaluation script, and a finance policy gate that combines
 deterministic rules with role-aware retrieval and a citation-constrained judge.
 
+**Evaluation results of Component:** [View evaluation report](https://lucent-speculoos-51e317.netlify.app)
+
 Key areas:
 
 - [`FineTuneModel/evaluate_model.py`](./FineTuneModel/evaluate_model.py) — format and ROUGE-L evaluation through an Ollama-served model.
