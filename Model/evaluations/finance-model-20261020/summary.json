@@ -1,0 +1,38 @@
+{
+  "status": "complete",
+  "evaluated": 50,
+  "expected_count": 50,
+  "in_scope_count": 40,
+  "out_of_scope_count": 10,
+  "errors": 0,
+  "truncated": 0,
+  "in_scope_whw_format_rate": 0.975,
+  "out_of_scope_refusal_proxy_rate": 1.0,
+  "in_scope_false_refusal_proxy_rate": 0.0,
+  "response_scope_proxy_matrix": {
+    "IN_SCOPE": {
+      "ANSWER": 40,
+      "REFUSAL": 0,
+      "ERROR": 0
+    },
+    "OUT_OF_SCOPE": {
+      "ANSWER": 0,
+      "REFUSAL": 10,
+      "ERROR": 0
+    }
+  },
+  "in_scope_rouge": {
+    "rouge1": 0.46888325887437876,
+    "rouge2": 0.1562926909284243,
+    "rougeL": 0.3219098768827757
+  },
+  "in_scope_rougeL_standard_agreement_rate": 0.275,
+  "in_scope_rougeL_strict_agreement_rate": 0.025,
+  "latency_seconds": {
+    "p50": 22.0939650000073,
+    "p95": 29.485206225002184
+  },
+  "median_generation_tokens_per_second": 4.299731036284696,
+  "factual_correctness": "NOT_MEASURED_REQUIRES_HUMAN_REVIEW",
+  "fine_tuning_improvement": "NOT_MEASURED_MATCHED_BASE_MODEL_NOT_RUN"
+}

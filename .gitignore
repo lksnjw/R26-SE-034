@@ -12,3 +12,4 @@ env/
 .ipynb_checkpoints/
 *.egg-info/
 .pytest_cache/
+Rag/rag-system/var/

@@ -1,0 +1,33 @@
+{
+  "started_at": "2026-10-20T08:39:08.197954+05:30",
+  "model": "erp-finance-eval-20261020",
+  "dataset_file": "D:\\Research\\Implementation\\R26-SE-034\\Data\\erp_eval_realistic_50.jsonl",
+  "dataset_sha256": "9baaaec97bd3b01f804dd8c843572f77eedcdfca4a708b4932050f63c30fcdc4",
+  "selected_count": 50,
+  "samples_requested": 50,
+  "standard_threshold": 0.35,
+  "strict_threshold": 0.5,
+  "generation_options": {
+    "temperature": 0,
+    "seed": 3407,
+    "num_ctx": 2048,
+    "num_predict": 384
+  },
+  "api": "/api/chat",
+  "timeout_seconds": 600,
+  "source_notebook": "Model/llna 3.1 with drive.ipynb",
+  "source_notebook_sha256": "efbe6ad27808f4c894796da87ba42bc0bdaced19d8fe4b9fd2dab22384a39af4",
+  "evaluator_sha256": "e3cae821276df161de4522b285c0aff9d4b8a1e8b9dc419653d631cb010eca07",
+  "provenance": "User confirmed GGUF export from the older notebook",
+  "dependencies": {
+    "requests": "2.33.1",
+    "rouge-score": "0.1.2"
+  },
+  "gguf": {
+    "path": "D:\\Research\\Model\\Meta-Llama-3.1-8B-Instruct.Q4_K_M.gguf",
+    "size_bytes": 4920738976,
+    "sha256": "74182a9876b2491c51f8a5bd73f6932fe1b1563477bd294212cef355c8ad8fb0"
+  },
+  "ollama_version": "0.31.1",
+  "finished_at": "2026-10-20T08:56:33.553276+05:30"
+}

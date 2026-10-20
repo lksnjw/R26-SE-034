@@ -1,0 +1,45 @@
+{
+  "unique_evaluation_prompts": 1,
+  "duplicate_evaluation_rows": 0,
+  "scanned_files": [
+    {
+      "file": "erp_finance_dataset_4000_v2_clean.jsonl",
+      "sha256": "bbd9a691ae20586444a6ccdf5848d0a21d8f7682616a05461befd1cf1c71d3df",
+      "rows": 4000,
+      "exact_normalized_prompt_overlap": 0
+    },
+    {
+      "file": "erp_finance_dataset_4000_v2_test_clean.jsonl",
+      "sha256": "94e345cd9a57e77218f708ac6ca1a46a81332616a459d56bf6385f3a488cb9f1",
+      "rows": 402,
+      "exact_normalized_prompt_overlap": 0
+    },
+    {
+      "file": "erp_finance_dataset_4000_v2_train_clean.jsonl",
+      "sha256": "c428c91f4953767a0808ff1af06ca992a5b3029d03f24ee087c38dc43f7de712",
+      "rows": 3165,
+      "exact_normalized_prompt_overlap": 0
+    },
+    {
+      "file": "erp_finance_dataset_4000_v2_validation_clean.jsonl",
+      "sha256": "b801abfbf999e2ca74b7d67f3ac6877507334df78710d3a78fcc9c050609c95e",
+      "rows": 433,
+      "exact_normalized_prompt_overlap": 0
+    },
+    {
+      "file": "erp_vj_10000.dedup.jsonl",
+      "sha256": "56a5ac1ea2d6ff4dce8c7fc84a2cc8c3c7f12f17a7e485160cd9ed75d2f2d143",
+      "rows": 2459,
+      "exact_normalized_prompt_overlap": 0
+    },
+    {
+      "file": "erp_vj_1000_balanced.jsonl",
+      "sha256": "2752bd1a4831f8a00c01596aa826f0213e0d5eeed284558c2e183c73106b239a",
+      "rows": 1000,
+      "exact_normalized_prompt_overlap": 0
+    }
+  ],
+  "original_notebook_training_filename": "erp_whw_1000_balanced.jsonl",
+  "original_training_file_present": false,
+  "limitation": "Exact prompt overlap only. The original training file is not verified; zero overlap with available files does not prove an untouched test set."
+}
