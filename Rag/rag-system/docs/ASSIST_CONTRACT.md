@@ -1,3 +1,5 @@
+> Historical finance-prototype documentation. For the active employee-registration API, authentication, seeding and payload contract, see [the current README](../README.md).
+
 # Assist Contract — v0.1 (IMPLEMENTED, with the deviations noted below)
 
 **Audience:** the developer building the agent loop / MCP client

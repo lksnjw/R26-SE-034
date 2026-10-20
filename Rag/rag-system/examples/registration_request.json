@@ -1,0 +1,22 @@
+{
+  "employee": {
+    "gender": "Male",
+    "birth_date": "1998-04-12",
+    "phone": "0771234567",
+    "location": "Colombo, Sri Lanka",
+    "email": "nimal.perera@example.lk",
+    "first_name": "Nimal",
+    "middle_name": "",
+    "last_name": "Perera",
+    "language": "English",
+    "time_zone": "Asia/Colombo"
+  },
+  "requester": {
+    "user_id": "replace-with-authenticated-user-id",
+    "roles": ["HR Administrator"],
+    "authenticated": true,
+    "self_registration": false
+  },
+  "employee_reference": "registration-request-123",
+  "duplicate_check": null
+}

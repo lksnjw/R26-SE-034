@@ -1,3 +1,5 @@
+> Historical finance-prototype documentation. For the active employee-registration API, authentication, seeding and payload contract, see [the current README](../README.md).
+
 # Deployment — AI Decision Module (RAG + LLM)
 
 Scope: **this component only.** The ERP frontend, the middleware/agent loop, and

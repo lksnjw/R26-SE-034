@@ -1,4 +1,4 @@
-# ERP Finance Policy Gate — container image.
+# Sri Lanka Employee Registration Policy Gate — container image.
 #
 # The image holds the API and nothing else. No model weights, no Ollama, no GPU:
 # the LLM and the embedding model are reached over HTTP (MODEL_PROVIDER=api) and
@@ -15,7 +15,7 @@
 # The corpus is NOT seeded by this image. Seeding writes to a shared Qdrant
 # collection, and a container that re-seeds on boot would rewrite the corpus
 # every time the platform scaled it out. Run it once, from anywhere:
-#   python -m scripts.seed_qdrant_policies --recreate
+#   python -m scripts.seed_qdrant_policies --prune-legacy
 
 FROM python:3.13-slim AS base
 
@@ -37,6 +37,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
 COPY scripts/ ./scripts/
+COPY fixtures/employee_registration_policies_sri_lanka/ ./fixtures/employee_registration_policies_sri_lanka/
 
 # Run as a non-root user. A container process that does not need to write to the
 # filesystem should not be able to.

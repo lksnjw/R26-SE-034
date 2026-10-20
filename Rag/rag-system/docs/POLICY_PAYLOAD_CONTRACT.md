@@ -1,3 +1,5 @@
+> Historical finance-prototype documentation. For the active employee-registration API, authentication, seeding and payload contract, see [the current README](../README.md).
+
 # Policy Payload Contract — v0.1 (DRAFT, for review)
 
 **Audience:** the developer building the data-transport / vectorisation layer

@@ -4,6 +4,7 @@ from pydantic import AliasChoices, Field
 #pyrefly: ignore [missing-import]
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import Literal
 
 
 class Settings(BaseSettings):
@@ -89,6 +90,11 @@ class Settings(BaseSettings):
 
     # Policy gate
     POLICY_COLLECTION: str = "policy_docs"   # kept separate from QDRANT_COLLECTION
+    REGISTRATION_EMAIL_DOMAINS: str = ""  # No invented company-domain restriction.
+    REGISTRATION_MAP_UTC_OFFSET: bool = False
+    REGISTRATION_AUDIT_PATH: str = "var/registration_audit.jsonl"
+    REGISTRATION_AUDIT_BACKEND: Literal["file", "qdrant"] = "file"
+    REGISTRATION_AUDIT_COLLECTION: str = "registration_audit"
     POLICY_TOP_K: int = 20                   # recall over precision — missing a rule allows it
     POLICY_CHUNK_SIZE: int = 1200            # large enough to keep a whole rule intact
     POLICY_CHUNK_OVERLAP: int = 200
@@ -116,15 +122,13 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # ── Inbound access control ───────────────────────────────────────────────
-    # See src/api/security.py. Comma-separated; empty disables the check, which
-    # is right for localhost and wrong for anything with a public address.
+    # Trusted-backend secrets. Empty refuses validation with HTTP 503.
     API_KEYS: str = ""
     # Comma-separated allowed origins. "*" suits local development; narrow it to
     # the calling application's origin once deployed.
     CORS_ORIGINS: str = "*"
-    # The demo page holds a key in the browser in order to call the API, so it
-    # hands that key to anyone who can load the page. Off wherever that matters.
-    ENABLE_DEMO: bool = True
+    # Legacy setting accepted for old environments; no demo route is mounted.
+    ENABLE_DEMO: bool = False
 
     @property
     def api_keys(self) -> set[str]:

@@ -1,0 +1,60 @@
+{
+  "info": {
+    "name": "Sri Lanka Employee Registration Policy Gate",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Backend-only integration. Keep gate_api_key private. The sample has no duplicate evidence, so it cannot ALLOW. Replace requester assertions with authenticated-session facts."
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://policy-gate.victoriousglacier-3e6fd5f9.centralindia.azurecontainerapps.io"
+    },
+    {
+      "key": "gate_api_key",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/health"
+      }
+    },
+    {
+      "name": "API schema",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/openapi.json"
+      }
+    },
+    {
+      "name": "Validate employee registration",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/policy/employee-registration/validate",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{gate_api_key}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"employee\": {\n    \"gender\": \"Male\",\n    \"birth_date\": \"1998-04-12\",\n    \"phone\": \"0771234567\",\n    \"location\": \"Colombo, Sri Lanka\",\n    \"email\": \"nimal.perera@example.lk\",\n    \"first_name\": \"Nimal\",\n    \"middle_name\": \"\",\n    \"last_name\": \"Perera\",\n    \"language\": \"English\",\n    \"time_zone\": \"Asia/Colombo\"\n  },\n  \"requester\": {\n    \"user_id\": \"replace-with-authenticated-user-id\",\n    \"roles\": [\"HR Administrator\"],\n    \"authenticated\": true,\n    \"self_registration\": false\n  },\n  \"employee_reference\": \"registration-request-123\",\n  \"duplicate_check\": null\n}\n",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

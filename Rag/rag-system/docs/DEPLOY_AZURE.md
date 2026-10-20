@@ -1,3 +1,5 @@
+> Historical finance-prototype documentation. For the active employee-registration API, authentication, seeding and payload contract, see [the current README](../README.md).
+
 # Deploying to Azure Container Apps
 
 **Target:** Azure Container Apps — serverless containers, scale-to-zero, HTTPS

@@ -25,7 +25,10 @@ __pycache__/
 
 # Not needed at runtime: fixtures are for offline development, docs are for
 # humans, docker-compose is for the local Qdrant.
-fixtures/
+fixtures/*
+!fixtures/employee_registration_policies_sri_lanka/
+var/
+archive/
 docs/
 docker/
 README.md
