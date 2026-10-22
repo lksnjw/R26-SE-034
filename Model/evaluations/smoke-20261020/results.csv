@@ -1,6 +1,0 @@
-﻿case_id,expected_refusal,status,whw_format,refusal_proxy,rouge1,rouge2,rougeL,latency_seconds,done_reason,tokens_per_second,user,reference,generated
-ERP-001,False,ok,True,False,0.4680851063829787,0.17266187050359713,0.3120567375886525,34.65415729995584,stop,5.139779120048228,We have unbilled accrued expenses for period 006 2026 in company code 1000. Could you guide me on how to post the manual journal entry?,"WHAT: Post a manual accrual journal entry in Financial Accounting.
-HOW: Use FB50 or F-02, enter company code 1000, posting date in period 006 2026, document type SA, debit the expense account with cost center, credit the accrual liability account, enter reference text, then simulate and post after supervisor review.
-WHY: Manual accruals ensure period-end financials reflect obligations that have not yet been invoiced, supporting accurate profit and loss reporting.","WHAT: Post a manual journal entry for an accrued expense.
-HOW: Use F-32, enter account type 3 or 4, cost center 500301, amount 143,871 USD, document text accrual period 006 2026, then simulate and post after owner approval.
-WHY: Accrue liabilities before they are invoiced to maintain financial statement accuracy and prevent underreporting of expenses. Manual journals correct isolated booking errors while preserving a traceable audit record."

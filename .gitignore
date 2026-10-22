@@ -13,3 +13,7 @@ env/
 *.egg-info/
 .pytest_cache/
 Rag/rag-system/var/
+
+# Generated experiment results and API exports
+Model/evaluations/
+Rag/rag-system/docs/integration/
